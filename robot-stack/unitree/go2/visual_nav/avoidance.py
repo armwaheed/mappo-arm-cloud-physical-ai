@@ -1,0 +1,463 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Dynamic Window planner that avoids obstacles *where they are going to be*.
+
+``lib/navigation.py`` already plans in this repo — A* over an inflated occupancy grid
+from a LiDAR cloud. That is the right tool for walls and furniture and the wrong one
+for a walking person: a grid is a snapshot, so a person is re-planned around after
+they have already moved, and the robot chases their trail. Avoiding a mover needs the
+prediction to happen in *velocity* space, which is what this module does and why it
+sits alongside rather than inside the A* planner.
+
+Each control tick it samples reachable ``(vx, vy, wz)`` commands, rolls each one
+forward for a few seconds, rolls every tracked person forward on their estimated
+velocity for the same few seconds, and scores the pair. The robot therefore commits to
+a gap that will still be open when it gets there — it walks BEHIND someone crossing
+left-to-right rather than into the space they are vacating.
+
+WHAT IT DOES WHEN NOTHING IS SAFE, and why. The tempting answer is "take the
+highest-clearance command", but that lunges a 15 kg robot sideways on a monocular
+estimate at the exact moment its estimate is worst, and this robot has no rear or side
+sensing to lunge into. So the policy is **swerve early, stop late**: the horizon is
+long enough (:data:`PlannerConfig.horizon_s`) that the graceful sidestep happens while
+there is still room, and once no sampled command clears the hard gap the planner
+commands a stop. A stationary robot is also the case a person handles best — people
+walk around stopped obstacles instinctively, and a freeze is legible in a way that a
+sudden dodge is not.
+
+Two further safety properties are enforced here rather than left to the caller:
+
+  * **Never outrun the stopping distance.** Forward speed is capped at
+    ``sqrt(2·a·gap)``, so the robot is always able to stop inside the space it can
+    currently see to be clear.
+  * **Uncertainty widens obstacles.** The tracker's position sigma is added to each
+    obstacle's radius, so a person who has not been seen for a second is given a
+    berth that grows with how stale the estimate is.
+
+Body frame ``+x`` forward / ``+y`` left; planning frame is the estimator's odom frame.
+Pure numpy, no robot needed — ``python3 test_avoidance.py``.
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+
+import numpy as np
+
+from geometry import wrap_pi
+
+#: Soft gap for a MAPPED STATIC obstacle, metres — the counterpart to
+#: :attr:`PlannerConfig.soft_gap_m`, which is a person's. The soft gap measures how
+#: unpredictable a thing is, not how big it is: a bin cannot step sideways, so what it
+#: needs is a smooth path around it rather than a berth, and the berth is paid for in
+#: corridor width this robot has no way to sense. Measured in the closed-loop test, a
+#: robot giving the staged bin a person's 1.20 m swung 1.76 m off the direct line to
+#: clear an obstacle needing 0.63 m — in the 1.5 m lane it was staged in, that is a wall
+#: rather than a detour.
+STATIC_SOFT_GAP_M = 0.45
+
+
+@dataclass(frozen=True)
+class Limits:
+    """Velocity and acceleration envelope the planner may command.
+
+    Accelerations bound how far the command may move in ONE control period; that is
+    what makes the sampled window "dynamic" and keeps the vendor gait controller from
+    being handed a step it cannot follow.
+    """
+
+    max_vx: float = 0.35          # m/s forward. Reverse is never sampled (see below).
+    max_vy: float = 0.20          # m/s strafe — the Go2 can crab, which is the
+    #                               cheapest sidestep available to it.
+    max_wz: float = 0.70          # rad/s yaw
+    accel_x: float = 0.50         # m/s^2
+    accel_y: float = 0.40         # m/s^2
+    accel_wz: float = 1.50        # rad/s^2
+
+    def scaled(self, factor: float) -> Limits:
+        """A uniformly derated envelope (the arm-fitted conservative profile)."""
+        return Limits(max_vx=self.max_vx * factor, max_vy=self.max_vy * factor,
+                      max_wz=self.max_wz * factor, accel_x=self.accel_x * factor,
+                      accel_y=self.accel_y * factor, accel_wz=self.accel_wz * factor)
+
+
+@dataclass(frozen=True)
+class PlannerConfig:
+    """Rollout geometry, clearances and cost weights."""
+
+    horizon_s: float = 2.5        # long enough that the swerve beats the freeze
+    dt_s: float = 0.125           # rollout step
+    samples_vx: int = 6
+    samples_vy: int = 5
+    samples_wz: int = 11
+
+    robot_radius_m: float = 0.40  # Go2 is ~0.70 x 0.31 m; half-diagonal, rounded up
+    obstacle_radius_m: float = 0.35   # a person's personal footprint
+    hard_gap_m: float = 0.25      # free space that must remain between the two discs
+
+    # Below this, closeness starts costing. A PERSON's comfort distance, which is why
+    # it is this large and why Obstacle carries a per-obstacle override: the soft gap
+    # is about how unpredictable a thing is, not how big it is. Applied to a 0.30 m bin
+    # it is actively harmful — measured in the closed-loop test, a robot giving a bin
+    # 1.20 m of soft gap detoured 1.76 m off the direct line to clear an obstacle that
+    # needs 0.63 m, which in a real 1.5 m corridor is a wall rather than a detour.
+    soft_gap_m: float = 1.20
+
+    # Extra margin required to CHANGE the reported reason, in metres of gap — a Schmitt
+    # trigger on both `hold` and `avoid`. Observed live: `hold` and `avoid` alternated
+    # on 9 consecutive ticks, and the simulated approach to the staged bin flipped
+    # `goal`/`avoid` 44 times. No cost weight can damp either. `hold` is not a sampled
+    # candidate at all — it is a fallback taken when the feasible set is empty, so it
+    # never competes on cost — and `avoid` is a LABEL applied after the choice, so
+    # weight_smooth cannot see it. Both oscillations are a bare threshold sitting on the
+    # noise of a size-prior gap estimate, and the fix is the standard one: make changing
+    # your mind cost more than keeping it. Sized at a third of the hard gap, comfortably
+    # above frame-to-frame range jitter and well inside one tick of travel.
+    reason_hysteresis_m: float = 0.08
+
+    # Costs are summed after each is normalised to roughly 0..1, so these weights are
+    # directly comparable. Goal dominates in the open; clearance dominates near people.
+    weight_goal: float = 1.0
+    weight_heading: float = 0.6
+    weight_clearance: float = 2.0
+    weight_speed: float = 0.25
+    weight_smooth: float = 0.15
+
+    decel_for_stopping_m_s2: float = 0.5   # used for the stopping-distance speed cap
+
+
+@dataclass(frozen=True)
+class Obstacle:
+    """An obstacle in odom coordinates, as the planner sees it.
+
+    ``radius_m`` is already inflated for uncertainty by whoever built this — the planner
+    treats it as a hard footprint. A static obstacle is simply one with zero velocity;
+    the rollout maths needs no special case for it.
+    """
+
+    x: float
+    y: float
+    vx: float
+    vy: float
+    radius_m: float
+    label: str = "person"      # for logs and the overlay; the planner ignores it
+    #: Distance below which closeness starts costing, for THIS obstacle. ``None`` takes
+    #: the planner's default, which is a person's. A landmark wants a much smaller one:
+    #: a bin that cannot move needs a smooth path around it, not a wide berth, and the
+    #: berth is what the robot spends corridor width on.
+    soft_gap_m: float | None = None
+
+
+@dataclass(frozen=True)
+class Command:
+    """A velocity command plus why the planner chose it."""
+
+    vx: float
+    vy: float
+    wz: float
+    reason: str            # "goal" | "avoid" | "hold" | "arrived"
+    gap_m: float           # predicted worst free gap over the horizon (inf if clear)
+    feasible: int = 0      # how many sampled commands cleared the hard gap
+    evaluated: int = 0     # how many were sampled
+
+    @property
+    def is_stop(self) -> bool:
+        return self.vx == 0.0 and self.vy == 0.0 and self.wz == 0.0
+
+
+class DynamicWindowPlanner:
+    """Samples reachable velocities and scores them against predicted obstacle motion."""
+
+    def __init__(self, limits: Limits | None = None,
+                 config: PlannerConfig | None = None) -> None:
+        self.limits = limits or Limits()
+        self.config = config or PlannerConfig()
+
+    # ── Sampling ────────────────────────────────────────────────────────────
+    def _window(self, current: tuple[float, float, float], control_dt: float
+                ) -> np.ndarray:
+        """Candidate ``(vx, vy, wz)`` triples reachable within one control period.
+
+        ``current`` is the last COMMANDED velocity, not the measured one: the vendor
+        gait controller lags its target by design, and feeding the lag back in would
+        ratchet the window shut and stop the robot ever reaching commanded speed.
+        """
+        cfg, lim = self.config, self.limits
+        vx0, vy0, wz0 = current
+
+        # Reverse is deliberately not sampled. The Go2 has no rear-facing sensing on
+        # this unit, so backing away from a person means moving blind into space this
+        # pipeline has never observed.
+        vx = np.linspace(max(0.0, vx0 - lim.accel_x * control_dt),
+                         min(lim.max_vx, vx0 + lim.accel_x * control_dt),
+                         cfg.samples_vx)
+        vy = np.linspace(max(-lim.max_vy, vy0 - lim.accel_y * control_dt),
+                         min(lim.max_vy, vy0 + lim.accel_y * control_dt),
+                         cfg.samples_vy)
+        wz = np.linspace(max(-lim.max_wz, wz0 - lim.accel_wz * control_dt),
+                         min(lim.max_wz, wz0 + lim.accel_wz * control_dt),
+                         cfg.samples_wz)
+
+        grid = np.stack(np.meshgrid(vx, vy, wz, indexing="ij"), axis=-1)
+        # DELIBERATELY NOT a full-stop row appended here, though one used to be, "so
+        # the planner can never be forced to keep moving". It did two things wrong.
+        #
+        # It broke the dynamic window. Cruising at 0.30 m/s the reachable set is
+        # [0.25, 0.35]; a zero row is a command the robot cannot execute in one control
+        # period, which is the single constraint this whole sampling scheme exists to
+        # respect.
+        #
+        # And it competed on COST, where standing still is unbeatable: a stationary
+        # rollout never approaches anything, so its clearance term is zero by
+        # construction while every real command pays. Measured on the staged scene —
+        # bin 2.15 m ahead, goal behind it, the lane passable and all 331 candidates
+        # feasible — the stop row scored 1.317 against 1.393 for the best moving
+        # command, and the planner returned ``reason="goal"`` with ``v=(0,0,0)``. That
+        # is worse than a hold: the log claims the robot is driving at the goal, and
+        # because the reason is not "hold" the rest-after-blocked timer never starts,
+        # so it stands there under load until the run times out.
+        #
+        # Stopping is still always available, and is still never forced: both `hold`
+        # branches in `plan` command a full stop directly, which is where an
+        # acceleration-limit-breaking emergency stop belongs. Decelerating for a normal
+        # obstacle is handled better without the row — the stopping-distance cap
+        # ratchets the window down over successive ticks, which is a smooth slowdown
+        # rather than a step to zero.
+        return grid.reshape(-1, 3)
+
+    # ── Rollout ─────────────────────────────────────────────────────────────
+    def _rollout(self, candidates: np.ndarray, pose: tuple[float, float, float]
+                 ) -> tuple[np.ndarray, np.ndarray]:
+        """Forward-simulate every candidate.
+
+        Returns ``(xy, yaw)`` with shapes ``(N, K, 2)`` and ``(N, K)`` for K steps.
+        Body velocities are held constant, so each path is an arc; integrating rather
+        than closed-forming keeps strafe-plus-yaw correct.
+        """
+        cfg = self.config
+        steps = max(1, round(cfg.horizon_s / cfg.dt_s))
+        x0, y0, yaw0 = pose
+        n = candidates.shape[0]
+
+        vx, vy, wz = candidates[:, 0], candidates[:, 1], candidates[:, 2]
+        xy = np.empty((n, steps, 2))
+        yaws = np.empty((n, steps))
+
+        x = np.full(n, x0)
+        y = np.full(n, y0)
+        yaw = np.full(n, yaw0)
+        for k in range(steps):
+            cos_y, sin_y = np.cos(yaw), np.sin(yaw)
+            x = x + (vx * cos_y - vy * sin_y) * cfg.dt_s
+            y = y + (vx * sin_y + vy * cos_y) * cfg.dt_s
+            yaw = yaw + wz * cfg.dt_s
+            xy[:, k, 0], xy[:, k, 1] = x, y
+            yaws[:, k] = yaw
+        return xy, yaws
+
+    def _gaps(self, xy: np.ndarray, obstacles: list[Obstacle]) -> np.ndarray:
+        """Worst free gap over the horizon, per candidate PER OBSTACLE: ``(N, M)``.
+
+        "Gap" is surface-to-surface: centre distance minus both radii. Obstacles are
+        advanced on their estimated velocity at each step, which is the whole point —
+        the robot is scored against where the person WILL be.
+
+        Kept per-obstacle rather than collapsed to a single minimum because the soft gap
+        is per-obstacle: a candidate 0.5 m from a bin and 2 m from a person is close for
+        one and comfortable for the other, and a single worst-gap number cannot say
+        which. Feasibility, which uses one hard gap for everything, takes the row
+        minimum at the call site.
+        """
+        steps = xy.shape[1]
+        if not obstacles:
+            return np.full((xy.shape[0], 0), math.inf)
+
+        times = (np.arange(steps) + 1) * self.config.dt_s          # (K,)
+        centres = np.array([[o.x, o.y] for o in obstacles])         # (M, 2)
+        velocities = np.array([[o.vx, o.vy] for o in obstacles])    # (M, 2)
+        radii = np.array([o.radius_m for o in obstacles])           # (M,)
+
+        # (M, K, 2): each obstacle's predicted position at each rollout step.
+        predicted = centres[:, None, :] + velocities[:, None, :] * times[None, :, None]
+        # (N, M, K): distance from candidate n at step k to obstacle m at step k.
+        delta = xy[:, None, :, :] - predicted[None, :, :, :]
+        distance = np.linalg.norm(delta, axis=-1)
+        gaps = distance - radii[None, :, None] - self.config.robot_radius_m
+        return gaps.min(axis=2)
+
+    def _soft_gaps(self, obstacles: list[Obstacle]) -> np.ndarray:
+        """Each obstacle's soft gap, defaulting to the planner's, shape ``(M,)``."""
+        default = self.config.soft_gap_m
+        return np.array([default if o.soft_gap_m is None else o.soft_gap_m
+                         for o in obstacles], dtype=float)
+
+    @staticmethod
+    def _worst_gap(gaps: np.ndarray) -> np.ndarray:
+        """Collapse ``(N, M)`` per-obstacle gaps to the worst per candidate, ``(N,)``."""
+        if gaps.shape[1] == 0:
+            return np.full(gaps.shape[0], math.inf)
+        return gaps.min(axis=1)
+
+    def current_gap(self, pose: tuple[float, float, float],
+                    obstacles: list[Obstacle]) -> float:
+        """Free gap to the nearest obstacle right now (``inf`` if there are none).
+
+        Evaluated at t=0, unlike :meth:`_gaps` which scores a whole rollout, because
+        the stopping-distance cap must reflect the space that is clear *now*.
+        """
+        if not obstacles:
+            return math.inf
+        return min(
+            math.hypot(o.x - pose[0], o.y - pose[1])
+            - o.radius_m - self.config.robot_radius_m
+            for o in obstacles)
+
+    # ── Planning ────────────────────────────────────────────────────────────
+    def plan(self, pose: tuple[float, float, float], goal: tuple[float, float],
+             last_command: tuple[float, float, float], obstacles: list[Obstacle],
+             control_dt: float = 0.1, last_reason: str = "goal") -> Command:
+        """Choose a velocity command for this tick.
+
+        Args:
+            pose: robot ``(x, y, yaw)`` in odom.
+            goal: target ``(x, y)`` in odom.
+            last_command: previously commanded ``(vx, vy, wz)``.
+            obstacles: predicted obstacles, radius already inflated for uncertainty.
+            control_dt: seconds until the next command — sets the dynamic window.
+            last_reason: the previous tick's :attr:`Command.reason`. Only the hold
+                hysteresis reads it, and passing it keeps :meth:`plan` a pure function
+                of its arguments — the alternative, a ``self._holding`` flag, would make
+                every test depend on call order.
+        """
+        cfg = self.config
+        candidates = self._window(last_command, control_dt)
+        xy, yaws = self._rollout(candidates, pose)
+        per_obstacle_gaps = self._gaps(xy, obstacles)
+        gaps = self._worst_gap(per_obstacle_gaps)
+
+        # Starting is harder than continuing: see PlannerConfig.reason_hysteresis_m.
+        required_gap = cfg.hard_gap_m
+        if last_reason == "hold":
+            required_gap += cfg.reason_hysteresis_m
+
+        feasible = gaps >= required_gap
+        if not feasible.any():
+            # Swerve early, stop late — see the module docstring.
+            return Command(0.0, 0.0, 0.0, reason="hold",
+                           gap_m=float(gaps.max()), feasible=0,
+                           evaluated=int(candidates.shape[0]))
+
+        # Never commit to a speed that outruns the space known to be clear. The margin
+        # is NOT added here: this cap is about stopping distance, a physical quantity,
+        # and inflating it while holding would make the robot creep out of a hold more
+        # slowly the longer it held.
+        current_gap = self.current_gap(pose, obstacles)
+        stopping_cap = math.sqrt(max(0.0, 2.0 * cfg.decel_for_stopping_m_s2
+                                     * max(0.0, current_gap - cfg.hard_gap_m)))
+        feasible &= candidates[:, 0] <= max(stopping_cap, 1e-6)
+        if not feasible.any():
+            return Command(0.0, 0.0, 0.0, reason="hold", gap_m=float(current_gap),
+                           feasible=0, evaluated=int(candidates.shape[0]))
+
+        # Built once and shared: the clearance cost and the avoid decision are two
+        # views of the same quantity, and deriving the soft gaps twice invites them to
+        # drift apart under a later edit.
+        soft_gaps = self._soft_gaps(obstacles)
+        clearance = self._clearance_cost(per_obstacle_gaps, soft_gaps)
+        cost = self._cost(candidates, xy, yaws, clearance, goal, pose, last_command)
+        cost = np.where(feasible, cost, np.inf)
+        best = int(np.argmin(cost))
+
+        # "Avoiding" means the chosen path is inside SOME obstacle's soft gap, with the
+        # same hysteresis the hold decision gets: `avoid` is a label applied after the
+        # choice, so weight_smooth cannot damp it and a bare threshold chatters.
+        slack = self._soft_slack(per_obstacle_gaps, soft_gaps)
+        avoid_threshold = 0.0
+        if last_reason == "avoid":
+            avoid_threshold = cfg.reason_hysteresis_m
+        return Command(
+            vx=float(candidates[best, 0]), vy=float(candidates[best, 1]),
+            wz=float(candidates[best, 2]),
+            reason="avoid" if slack[best] < avoid_threshold else "goal",
+            gap_m=float(gaps[best]), feasible=int(feasible.sum()),
+            evaluated=int(candidates.shape[0]))
+
+    @staticmethod
+    def _soft_slack(per_obstacle_gaps: np.ndarray,
+                    soft_gaps: np.ndarray) -> np.ndarray:
+        """How much room each candidate has to spare inside every soft gap, ``(N,)``.
+
+        Negative means at least one obstacle is being crowded. Per-obstacle because a
+        bin's soft gap and a person's differ by more than a factor of two, so a single
+        distance cannot answer "is this candidate close to anything?".
+
+        The empty guard is load-bearing, not defensive: with no obstacles the arrays are
+        ``(N, 0)`` and a reduction over a zero-length axis raises.
+        """
+        if soft_gaps.size == 0:
+            return np.full(per_obstacle_gaps.shape[0], math.inf)
+        return (per_obstacle_gaps - soft_gaps[None, :]).min(axis=1)
+
+    @staticmethod
+    def _clearance_cost(per_obstacle_gaps: np.ndarray,
+                        soft_gaps: np.ndarray) -> np.ndarray:
+        """Normalised 0..1 crowding per candidate, worst obstacle wins, ``(N,)``.
+
+        Each obstacle is normalised by ITS OWN soft gap before the maximum is taken, so
+        the number stays comparable across obstacles of very different kinds — being
+        halfway inside a person's 1.20 m and halfway inside a bin's 0.45 m both score
+        0.5, which is what makes one weight sensible for both.
+
+        Same zero-length-axis guard as :meth:`_soft_slack`.
+        """
+        if soft_gaps.size == 0:
+            return np.zeros(per_obstacle_gaps.shape[0])
+        soft = soft_gaps[None, :]
+        crowding = np.clip((soft - per_obstacle_gaps) / soft, 0.0, 1.0)
+        return crowding.max(axis=1)
+
+    def _cost(self, candidates: np.ndarray, xy: np.ndarray, yaws: np.ndarray,
+              clearance_cost: np.ndarray, goal: tuple[float, float],
+              pose: tuple[float, float, float],
+              last_command: tuple[float, float, float]) -> np.ndarray:
+        """Total cost per candidate. Every term is normalised to ~0..1 first.
+
+        ``clearance_cost`` arrives already normalised from :meth:`_clearance_cost`,
+        which is the one term that needs per-obstacle knowledge.
+        """
+        cfg, lim = self.config, self.limits
+        goal_xy = np.asarray(goal, dtype=float)
+
+        start_distance = max(float(np.hypot(goal_xy[0] - pose[0],
+                                            goal_xy[1] - pose[1])), 1e-6)
+        end_xy = xy[:, -1, :]
+        end_distance = np.linalg.norm(end_xy - goal_xy, axis=-1)
+        # Fraction of the remaining distance still left at the end of the rollout.
+        # Clipped because a candidate can overshoot past the goal.
+        goal_cost = np.clip(end_distance / start_distance, 0.0, 2.0)
+
+        # Point the nose where we are going: without this the planner is happy to
+        # crab sideways to the goal and arrive facing a wall, which also means the
+        # camera stops looking where the robot is heading.
+        bearing_to_goal = np.arctan2(goal_xy[1] - end_xy[:, 1],
+                                     goal_xy[0] - end_xy[:, 0])
+        heading_cost = np.abs(wrap_pi(bearing_to_goal - yaws[:, -1])) / math.pi
+
+        speed_cost = (lim.max_vx - candidates[:, 0]) / max(lim.max_vx, 1e-6)
+
+        # Penalise jerky command changes — the vendor gait tracks a smooth target far
+        # better, and it stops the planner dithering between two equal-cost swerves.
+        smooth_cost = (
+            np.abs(candidates[:, 0] - last_command[0]) / max(lim.max_vx, 1e-6)
+            + np.abs(candidates[:, 1] - last_command[1]) / max(lim.max_vy, 1e-6)
+            + np.abs(candidates[:, 2] - last_command[2]) / max(lim.max_wz, 1e-6)
+        ) / 3.0
+
+        return (cfg.weight_goal * goal_cost
+                + cfg.weight_heading * heading_cost
+                + cfg.weight_clearance * clearance_cost
+                + cfg.weight_speed * speed_cost
+                + cfg.weight_smooth * smooth_cost)

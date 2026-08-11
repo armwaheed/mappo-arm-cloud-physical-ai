@@ -1,0 +1,8 @@
+# robotics-connect Go2 host/robot deps (Python 3.8+ on the Go2 Jetson).
+# unitree_sdk2py is installed editable from a git clone by install.sh (not on PyPI):
+#     git clone https://github.com/unitreerobotics/unitree_sdk2_python && pip install -e .
+cyclonedds==0.10.2      # match the Go2's on-robot CycloneDDS (link against ~/cyclonedds_ws)
+numpy                   # lidar_sight geometry + deploy joint math
+matplotlib              # optional — only for lidar_sight/_capture_scene.py reference scans
+# The Unitree D1 arm messages (unitree_arm/ArmString, PubServoInfo) ship with the D1 SDK.
+# unitree/go2/d1_arm vendors a self-contained ArmString if the D1 SDK isn't installed.

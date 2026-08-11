@@ -1,0 +1,15 @@
+{
+  "cx": 960.0,
+  "cy": 540.0,
+  "focal_px": 1290.1637909789656,
+  "height": 1080,
+  "height_m": 0.32,
+  "hfov_deg": 85.26661299465316,
+  "method": "spin",
+  "pitch_rad": 0.0,
+  "residual_deg_rms": 3.1333,
+  "samples": 53,
+  "target": "'person'",
+  "width": 1920,
+  "yaw_span_deg": 80.05
+}

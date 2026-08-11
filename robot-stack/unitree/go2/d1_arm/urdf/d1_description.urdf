@@ -1,0 +1,118 @@
+<?xml version="1.0"?>
+<!--
+  Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+  SPDX-License-Identifier: Apache-2.0
+
+  Unitree D1-550 6-DOF servo arm + parallel jaw. KINEMATICS ONLY.
+
+  WHAT THIS IS
+  The joint tree, joint origins, rotation axes and travel limits of the D1. These are
+  measurements of a physical object: facts about where its axes are, not authored
+  expression. They are reproduced here so robotics-connect can do forward kinematics,
+  Jacobians and IK without depending on a vendor SDK download.
+
+  WHAT THIS DELIBERATELY OMITS
+  No visual, collision, inertial or mesh elements. The D1 STL meshes and the mass and
+  inertia tensors are Unitree's copyrighted assets and are NOT redistributed here.
+  Nothing in this repo needs them: FK, IK and the Jacobian require only origins and axes.
+
+  PROVENANCE
+  Unitree ships d1_description.urdf inside the D1 SDK
+  (https://oss-global-cdn.unitree.com/static/b37d684fd97a40b59b61b7c4fdcd39c6.zip) but has
+  never published it standalone; unitreerobotics/unitree_ros#116 asks for it and is
+  unanswered. The geometry below was cross-checked against two independent community
+  copies. They agree with each other and disagree only on the sign of Joint1, consistent
+  with the Caltech SURF 2025 report finding that the stock export has two joint axes
+  flipped relative to hardware. See ../README.md, References.
+
+  VERIFIED ON HARDWARE (Go2 EDU unit 192.168.123.18, 2026-07-09)
+  * Reach reconciles with the vendor spec once measured from the right datum. Unitree
+    quotes reach from the SHOULDER AXIS, not this base_link mounting face (0.11 m lower).
+    From the shoulder axis this model gives a wrist reach of 0.553 m against Unitree's
+    published 550 mm arm length / working radius, a 3 mm match. From base_link the jaw
+    reaches 0.733 m and the wrist 0.662 m.
+  * Two independent hand-taught grasp poses, captured 20 min apart across a battery swap,
+    differing by 7.3 deg at the elbow and 11.5 deg at the wrist, map through this model to
+    Cartesian points 18 mm apart. Both were on the marker.
+  * A marker grasp and 58 mm lift was executed open loop from this model alone
+    (predicted +62.5 mm, measured +57.7 mm).
+
+  CAUTION: COMMANDABLE IS NOT MECHANICAL. The limit values below are the MECHANICAL travel
+  from the source model. The D1 FIRMWARE clamps every commanded angle to Unitree's
+  documented envelope (J0 +/-135, J1 +/-90, J2 +/-90, J3 +/-135, J4 +/-90, J5 +/-135 deg),
+  measured 2026-07-09: commanding -95 deg parks the shoulder at -90.3 deg. Plan IK against
+  the DOCUMENTED envelope (d1_fk.COMMANDABLE_LIMITS_DEG), not against these limits, or you
+  will generate poses the arm can be pushed into by hand but never driven to.
+
+  Frames: base_link is the mounting face on the Go2's trunk, +x toward the robot's head,
+  +z up. Angles are radians here; the DDS wire protocol is in DEGREES.
+-->
+<robot name="d1_550">
+
+  <link name="base_link"/>
+  <link name="Link1"/>
+  <link name="Link2"/>
+  <link name="Link3"/>
+  <link name="Link4"/>
+  <link name="Link5"/>
+  <link name="Link6"/>
+  <link name="Link7_1"/>
+  <link name="Link7_2"/>
+
+  <joint name="Joint1" type="revolute">
+    <parent link="base_link"/>
+    <child  link="Link1"/>
+    <origin xyz="0 0 0.0533" rpy="0 0 -3.1416"/>
+    <axis   xyz="0 0 1"/>
+    <limit  lower="-2.35" upper="2.35" effort="0" velocity="0"/>
+  </joint>
+  <joint name="Joint2" type="revolute">
+    <parent link="Link1"/>
+    <child  link="Link2"/>
+    <origin xyz="0 0.028 0.0563" rpy="1.5708 0 -3.1416"/>
+    <axis   xyz="0 0 -1"/>
+    <limit  lower="-1.57" upper="1.57" effort="0" velocity="0"/>
+  </joint>
+  <joint name="Joint3" type="revolute">
+    <parent link="Link2"/>
+    <child  link="Link3"/>
+    <origin xyz="0 0.2693 0.0009" rpy="0 0 0"/>
+    <axis   xyz="0 0 -1"/>
+    <limit  lower="-1.57" upper="1.57" effort="0" velocity="0"/>
+  </joint>
+  <joint name="Joint4" type="revolute">
+    <parent link="Link3"/>
+    <child  link="Link4"/>
+    <origin xyz="0.0577 0.042 -0.0275" rpy="-1.5708 0 -1.5708"/>
+    <axis   xyz="0 0 1"/>
+    <limit  lower="-2.35" upper="2.35" effort="0" velocity="0"/>
+  </joint>
+  <joint name="Joint5" type="revolute">
+    <parent link="Link4"/>
+    <child  link="Link5"/>
+    <origin xyz="-0.0001 -0.0237 0.14018" rpy="1.5708 -1.5708 0"/>
+    <axis   xyz="0 0 -1"/>
+    <limit  lower="-1.57" upper="1.57" effort="0" velocity="0"/>
+  </joint>
+  <joint name="Joint6" type="revolute">
+    <parent link="Link5"/>
+    <child  link="Link6"/>
+    <origin xyz="0.0825 -0.0010782 -0.023822" rpy="-1.5708 0 -1.5708"/>
+    <axis   xyz="0 0 -1"/>
+    <limit  lower="-2.35" upper="2.35" effort="0" velocity="0"/>
+  </joint>
+  <joint name="Joint7_1" type="prismatic">
+    <parent link="Link6"/>
+    <child  link="Link7_1"/>
+    <origin xyz="-0.0056012 -0.029636 0.0706" rpy="-1.5714 -1.5708 0"/>
+    <axis   xyz="0 0 -1"/>
+    <limit  lower="0" upper="0.03" effort="0" velocity="0"/>
+  </joint>
+  <joint name="Joint7_2" type="prismatic">
+    <parent link="Link6"/>
+    <child  link="Link7_2"/>
+    <origin xyz="-0.0056388 0.02964 0.0706" rpy="1.5702 -1.5708 0"/>
+    <axis   xyz="0 0 1"/>
+    <limit  lower="-0.03" upper="0" effort="0" velocity="0"/>
+  </joint>
+</robot>

@@ -1,0 +1,31 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint settings for unitree/go2/visual_nav. Scoped to this directory because the
+# repo has no root-level ruff config and adopting one across it is a separate call.
+#
+#   ruff check .                                    # this config
+#   ruff check . --select E722,E731,C901,PLR0911,PLR0912,PLR0913,PLR0915   # SE pass
+#
+# line-length 100 rather than the default 88: this code carries dense numeric
+# expressions and long topic/parameter names, and the surrounding repo has no stated
+# limit at all (existing modules run past 200 columns). 100 is a real, enforced
+# ceiling — every file here is clean under it.
+line-length = 100
+
+# Python 3.8 is what the robot's Jetson runs (Ubuntu 20.04 / JetPack 5). This is what
+# stops the linter proposing 3.9+ syntax that would not import on the target:
+# `zip(..., strict=)` (3.10) and subscripted `collections.abc` generics (3.9).
+target-version = "py38"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
+
+[lint.per-file-ignores]
+# The runnable entry points and the tests must put the package directory on sys.path
+# before importing their siblings, so their imports genuinely are not at the top of
+# the file. Same idiom as the repo's existing test modules.
+"visual_nav.py" = ["E402"]
+"calibrate_camera.py" = ["E402"]
+"replay.py" = ["E402"]
+"test_*.py" = ["E402"]

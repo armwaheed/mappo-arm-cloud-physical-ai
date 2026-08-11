@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+
+SPDX-License-Identifier: Apache-2.0
+
+CycloneDDS config for a HOST talking to a Unitree Go2 on its 192.168.123.0/24 net.
+It mirrors the robot's own config (unicast SPDP discovery on the wired interface) so
+unitree_sdk2py's ChannelFactoryInitialize(0, "<iface>") sees rt/lowstate,
+rt/sportmodestate, rt/utlidar/*, rt/arm_Command, etc.
+
+Set the interface name to YOUR host's Go2-facing NIC (Linux: eth0/enpXsY;
+macOS: en0). Pass the same interface to ChannelFactoryInitialize and point
+CYCLONEDDS_URI at this file.
+-->
+<CycloneDDS xmlns="https://cdds.io/config" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="https://cdds.io/config https://raw.githubusercontent.com/eclipse-cyclonedds/cyclonedds/master/etc/cyclonedds.xsd">
+    <Domain Id="any">
+        <General>
+            <Interfaces>
+                <NetworkInterface name="eth0" priority="default" multicast="default" />
+            </Interfaces>
+            <AllowMulticast>spdp</AllowMulticast>
+        </General>
+    </Domain>
+</CycloneDDS>

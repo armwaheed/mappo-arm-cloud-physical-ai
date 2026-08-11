@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Build / deploy artifacts
+dist/
+*.tar
+*.tgz
+offline/
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store

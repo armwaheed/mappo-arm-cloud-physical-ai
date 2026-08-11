@@ -1,0 +1,1064 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Walk a Unitree Go2 to a goal using only its front RGB camera, avoiding people.
+
+    # off-robot rehearsal: perceive and plan, never move a leg
+    python3 visual_nav.py --marker-size 0.20 --record run.mp4
+
+    # live: stand, walk, lie back down
+    python3 visual_nav.py --marker-size 0.20 --live --record run.mp4
+
+One camera, no depth, no LiDAR. The pipeline is:
+
+    VideoClient JPEG -+-> MobileNet-SSD person boxes -+-> fisheye bearing + size-prior
+                      |                                |   range
+                      +-> HSV colour blob (a prop no  -+
+                      |   detector was trained on)     |
+                      |                                +-> constant-velocity tracker
+                      |                                |   (MOVERS, odom frame)
+                      |                                +-> landmark map (STATIC, odom)
+                      +-> cropped SSD pass -> the goal, latched in odom
+                                                       |
+                                                       v
+             dynamic-window planner scored against PREDICTED obstacle positions
+                                                       |
+                                                       v
+                                              SportClient velocity
+
+Each stage's reasoning lives in its own module; three decisions are properties of the
+whole and belong here.
+
+**Perception runs at ~5-7 Hz, control at 10 Hz, and they are not the same clock.**
+Measured on this Jetson: the person pass costs 114 ms, colour segmentation 10 ms, and
+the throttled goal pass another 69 ms on the cycles it lands. Blocking the control loop
+on that would leave the legs holding a stale velocity for a fifth of a second at a time,
+so perception runs in its own thread and the controller consumes the newest result it
+has. That result is a few hundred milliseconds old by the time it is used (measured over
+a run with all three passes: median 309 ms, p90 436 ms), so tracks are extrapolated to
+the present before planning and their radii grow to cover the extrapolation — the robot
+plans against where people are NOW, with honest uncertainty, not where they were when
+the shutter opened. Landmarks need neither, because they do not move.
+
+The margin here is thinner than it looks: ``perception_timeout_s`` is 0.6 s and the
+worst observed cycle was 0.598 s. Running the goal pass every cycle rather than on its
+throttle put it over repeatedly. Adding a fourth pass needs this re-measured, not
+assumed.
+
+**The robot rests prone and stands only to walk.** The D1 arm loads the hind legs
+continuously (see ``safety.py``), so standing is treated as a cost rather than the
+default posture: the run starts prone, acquires its goal prone, stands to walk, lies
+down again if the path stays blocked longer than ``--rest-after``, and always lies
+down on the way out. Perception is fully functional while prone, which is what makes
+this practical rather than merely careful.
+
+**Motion is opt-in.** Without ``--live`` every stage runs for real against the real
+camera and the planner prints what it would command, but no leg moves and the robot
+never leaves the floor. That is the mode to develop in.
+
+**The D1 arm must be latched before anything walks.** An unpowered D1 back-drives —
+its base yaw crept 13.4 deg during a turning test — and 3.15 kg sitting off the dorsal
+centreline throws the vendor locomotion controller off balance. So ``main`` latches it
+by default and REFUSES the run if the latch did not take. The operator still hand-poses
+it flat along the spine first; ``latch_arm`` only ever holds joints where they already
+are.
+
+SCOPE — read this before trusting it near furniture. This pipeline models MOVING
+obstacles, plus ONE NAMED STATIC PROP, and the difference between those two things and
+"static-obstacle sensing" is the whole of the safety case.
+
+With ``--static-prop`` the robot finds a *specific* object it has been told the colour
+and size of, checks it against three shape gates, and maps it in odom. That is not
+sensing; it is recognising one thing it was told to expect. A monocular camera with a
+size prior can range a *person* because it knows how big people are, and can range the
+bin because it was handed a tape measure — it still knows nothing about a wall, a table
+leg or a doorframe, and it never will. The lane must still be clear of everything except
+the props, and there must still be an operator on the remote. For general static geometry
+the robot's LiDAR and ``lib/navigation.py`` are the right tools, and combining the two is
+the obvious next step rather than something this module quietly pretends to do.
+
+SCOPE — IT PLANS AROUND PEOPLE IT CAN SEE, PLUS A SHORT GRACE PERIOD. A track that
+leaves the field of view coasts on its last velocity while its covariance inflates
+(``tracker.py``), and that inflation is added to the obstacle's radius. Once the
+uncertainty outgrows the space between robot and person, no sampled command clears the
+hard gap and the robot stops — for someone who may be nowhere near its path — until the
+track is pruned at :data:`tracker.COAST_TIMEOUT_S`. Measured, for a person seen and then
+lost from view, as the time until the commanded velocity reaches zero:
+
+    range when lost   1.0 m   2.0 m   3.0 m   4.0 m   5.0 m   6.0 m
+    keeps moving      0.30 s  0.59 s  1.16 s  1.59 s  2.02 s  2.45 s
+
+An earlier version of this table read 0.87/1.45/1.87/2.30/2.73 s past the first column.
+Those were measured as the time until the planner REPORTED ``hold``, and the two were
+not the same thing: a full-stop candidate was appended to every velocity window and
+competed on cost, and a stationary rollout has a clearance cost of zero by construction,
+so near an obstacle the planner commanded ``v=(0,0,0)`` while still calling it ``goal``.
+The robot had stopped; only the label had not. The numbers above are what the legs do.
+
+Note the direction: the budget is SHORTEST for the closest people, because a smaller
+gap is swallowed sooner — this is not a maximum-range limit and staying close does not
+help. While the person stays in view the behaviour is sound across the detector's whole
+usable band, and stopping for someone 1 m ahead is the correct answer, not a defect.
+The operational rule is therefore about visibility, not distance: keep the person in
+frame. A volunteer who crosses the frame and walks on is exactly the case this handles;
+one who steps out of shot and stays there parks the robot for up to three seconds.
+"""
+
+from __future__ import annotations
+
+import argparse
+import math
+import sys
+import threading
+import time
+from collections import Counter
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import Sequence
+
+import cv2
+import numpy as np
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))       # sibling modules
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # locomotion/, d1_arm/
+
+import contextlib
+
+import overlay
+from avoidance import (
+    STATIC_SOFT_GAP_M,
+    DynamicWindowPlanner,
+    Limits,
+    Obstacle,
+    PlannerConfig,
+)
+from camera import Go2Camera
+from camera_model import FisheyeCamera
+from colour_detector import PROFILES, ColourBlobDetector, ColourProfile
+from goal import (
+    DEFAULT_GOAL_CROP,
+    DEFAULT_GOAL_INPUT_SIZE,
+    DEFAULT_GOAL_REFRESH_S,
+    DEFAULT_MARKER_ID,
+    DEFAULT_MARKER_SIZE_M,
+    ArucoGoal,
+    DetectedObjectGoal,
+    GoalSource,
+    OdomWaypoint,
+)
+from person_detector import (
+    DEFAULT_CONFIDENCE,
+    DYNAMIC_CLASSES,
+    PERSON_PRIOR,
+    PersonDetector,
+    SizePrior,
+    range_detections,
+)
+from safety import (
+    LATCH_DRIFT_TOLERANCE_DEG,
+    STOWED_YAW_DEG,
+    ArmStowMonitor,
+    HealthMonitor,
+    latch_arm,
+    lie_down,
+    stand_up,
+)
+from static_map import StaticObstacleMap
+from telemetry import TelemetryWriter
+from tracker import PROCESS_ACCEL_SIGMA, ObstacleTracker, observation_from
+
+DEFAULT_MODEL_DIR = Path.home() / "go2_models"
+# One frame per PERCEPTION cycle, so every frame in the video is a decision the planner
+# really made rather than a resampled copy. The playback rate, though, is this fixed
+# number and NOT the rate perception achieved — those differ whenever the detector runs
+# slower than 7 Hz, which it does under walking load. Measured on a live run: 145 cycles
+# over 20.5 s is 7.1 Hz nominal but the recording plays in 13.1 s, so the video runs
+# ~1.6x fast. Re-time it before quoting a duration off the footage.
+RECORD_FPS = 7.0
+
+
+@dataclass
+class NavConfig:
+    """Everything tunable about a run."""
+
+    control_hz: float = 10.0
+    perception_timeout_s: float = 0.6   # newest frame older than this -> stop
+    max_run_s: float = 90.0
+    arrive_tolerance_m: float = 1.0     # stop this far short of the goal marker
+    rest_after_s: float = 15.0          # held this long -> lie down and wait
+    goal_search_s: float = 20.0         # give up if the goal is never sighted
+    live: bool = False
+    require_arm: bool = True
+    latch_arm: bool = True              # hard requirement — see main()
+    motion_mode: str = "normal"
+
+
+@dataclass(frozen=True)
+class PerceptionResult:
+    """One completed perception cycle."""
+
+    seq: int
+    capture_time: float
+    pose: tuple[float, float, float]
+    observations: list          # tracker Observations of MOVERS, odom frame
+    ranged: list                # RangedDetections, for the overlay
+    static_observations: Sequence = ()   # tracker Observations of STATIC props
+    goal_fix: object = None
+    image: np.ndarray | None = None
+    detect_ms: float = 0.0
+
+
+class PerceptionWorker:
+    """Runs detection and goal-fixing on its own thread, at whatever rate it manages."""
+
+    #: Failed cycles reported individually before the log is silenced. A detector that
+    #: throws on every frame would otherwise bury the console it is trying to warn.
+    _ERROR_LOG_LIMIT = 5
+
+    def __init__(self, camera: Go2Camera, detector: PersonDetector,
+                 camera_model: FisheyeCamera, goal_source: GoalSource,
+                 pose_fn, prior: SizePrior = PERSON_PRIOR,
+                 colour_detector: ColourBlobDetector | None = None) -> None:
+        self._camera = camera
+        self._detector = detector
+        self._model = camera_model
+        self._goal = goal_source
+        self._pose_fn = pose_fn
+        self._prior = prior
+        self._colour = colour_detector
+        self._thread: threading.Thread | None = None
+        self._stop = threading.Event()
+        self._lock = threading.Lock()
+        self._result: PerceptionResult | None = None
+        self._cycles = 0
+        self._errors = 0
+
+    def start(self) -> None:
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="go2-perception",
+                                        daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=3.0)
+            self._thread = None
+
+    def latest(self) -> PerceptionResult | None:
+        with self._lock:
+            return self._result
+
+    @property
+    def cycles(self) -> int:
+        """Completed perception cycles — how much the run actually saw."""
+        return self._cycles
+
+    @property
+    def errors(self) -> int:
+        """Cycles that raised. Non-zero means the belief the planner acted on was
+        assembled from fewer frames than the run's duration suggests."""
+        return self._errors
+
+    def alive(self) -> bool:
+        """Whether the worker thread is still running.
+
+        The navigator checks this rather than inferring it from frame age: a dead
+        thread and a stalled camera both freeze ``latest()``, but only one of them is
+        worth aborting the run over.
+        """
+        return self._thread is not None and self._thread.is_alive()
+
+    def _run(self) -> None:
+        last_seq = 0
+        while not self._stop.is_set():
+            try:
+                last_seq = self._cycle(last_seq)
+            except Exception as exc:
+                # A throw here used to kill this thread silently: latest() would then
+                # keep returning the last good result forever, the navigator would see
+                # a frame that never ages past the stale check for only one tick, and
+                # the run would end as "timeout after 90s" with no hint that perception
+                # had died 80 s earlier. Record it and carry on — a detector that fails
+                # on one frame is usually not fatal, and a detector that fails on every
+                # frame now says so.
+                self._errors += 1
+                if self._errors <= self._ERROR_LOG_LIMIT:
+                    print(f"[perception] cycle failed: {exc!r}")
+                    if self._errors == self._ERROR_LOG_LIMIT:
+                        print("[perception] (further errors suppressed)")
+                time.sleep(0.05)   # do not spin hot on a persistent failure
+
+    def _cycle(self, last_seq: int) -> int:
+        """One perception cycle. Returns the sequence number to wait past next."""
+        frame = self._camera.wait_for_new(last_seq, timeout=0.5)
+        if frame is None:
+            return last_seq
+        last_seq = frame.seq
+        # Pose sampled when the shutter fired, not now — see the module docstring.
+        pose = frame.stamp if frame.stamp is not None else self._pose_fn()
+
+        started = time.monotonic()
+        goal_fix = self._goal.update(frame.image, pose)
+        detections = self._detector.detect(frame.image)
+        # Colour segmentation costs 10.2 ms against the person detector's 114 ms, so
+        # the static props ride along with the mover pass rather than earning a cadence
+        # of their own. The GOAL pass is the expensive one and throttles itself.
+        colour_detections = ([] if self._colour is None
+                             else self._colour.detect(frame.image))
+        detect_ms = (time.monotonic() - started) * 1000.0
+
+        ranged = range_detections(detections, self._model, self._prior)
+        observations = [
+            observation_from(item.bearing_rad, item.range_m, item.source,
+                             item.label, pose)
+            for item in ranged
+        ]
+        # Ranged with the PROP's size prior, not the person's — the two detectors find
+        # different things and a shared prior would scale one of them wrongly.
+        static_ranged = ([] if self._colour is None else
+                         range_detections(colour_detections, self._model,
+                                          self._colour.profile.prior))
+        static_observations = [
+            observation_from(item.bearing_rad, item.range_m, item.source,
+                             item.label, pose)
+            for item in static_ranged
+        ]
+
+        self._cycles += 1
+        result = PerceptionResult(
+            seq=frame.seq, capture_time=frame.capture_time, pose=pose,
+            observations=observations, ranged=ranged + static_ranged,
+            static_observations=static_observations, goal_fix=goal_fix,
+            image=frame.image, detect_ms=detect_ms)
+        with self._lock:
+            self._result = result
+        return last_seq
+
+
+class VisualNavigator:
+    """Drives the Go2 to a goal on camera alone, resting prone whenever it can."""
+
+    def __init__(self, loco, perception: PerceptionWorker,
+                 planner: DynamicWindowPlanner, tracker: ObstacleTracker,
+                 goal_source: GoalSource, health: HealthMonitor, config: NavConfig,
+                 recorder: cv2.VideoWriter | None = None,
+                 static_map: StaticObstacleMap | None = None,
+                 telemetry: TelemetryWriter | None = None) -> None:
+        self._loco = loco
+        self._perception = perception
+        self._planner = planner
+        self._tracker = tracker
+        self._goal = goal_source
+        self._health = health
+        self._config = config
+        self._recorder = recorder
+        self._static_map = static_map
+        self._telemetry = telemetry
+
+        self._standing = False
+        self._frames_written = 0
+        self._last_command = (0.0, 0.0, 0.0)
+        self._last_reason = "goal"
+        self._tracker_time = time.monotonic()
+        self._consumed_seq = 0
+        self._recorded_seq = 0
+
+    # ── Posture ─────────────────────────────────────────────────────────────
+    def _stand_up(self) -> None:
+        """Stand, tracking the posture. Blocks ~3 s — callers must re-plan afterwards."""
+        if self._standing or not self._config.live:
+            self._standing = True
+            return
+        print("[visual_nav] standing up")
+        stand_up(self._loco)
+        self._standing = True
+
+    def _lie_down(self) -> None:
+        if not self._config.live:
+            self._standing = False
+            return
+        lie_down(self._loco)
+        self._standing = False
+
+    def park(self) -> None:
+        """Stop and lie down. Idempotent; safe from any exit path."""
+        if self._standing:
+            print("[visual_nav] parking: stop + lie down")
+            self._lie_down()
+        elif self._config.live:
+            with contextlib.suppress(Exception):
+                self._loco.stop()
+
+    # ── Obstacles ───────────────────────────────────────────────────────────
+    def _obstacles(self, now: float) -> list[Obstacle]:
+        """Confirmed tracks, extrapolated to NOW and inflated for their uncertainty.
+
+        The filter runs in measurement time (the newest measurement is ~160 ms old),
+        so positions are advanced on their estimated velocity to the present. The
+        radius absorbs both the filter's own position sigma and the extra error that
+        extrapolation could have introduced if the person accelerated.
+
+        THE INTERVAL IS THE PERCEPTION LATENCY, NOT THE AGE OF THE TRACK. ``predict()``
+        runs over every track on every perception cycle, so an unobserved track has
+        already been advanced — and its covariance already grown — right up to
+        ``_tracker_time``. Extrapolating from ``track.last_seen`` instead integrates
+        the coast a second time, on top of a sigma that has counted it once: measured,
+        a person who simply walked out of shot reached an 11 m radius inside the 3 s
+        coast window, and the robot held for a ghost 4 m away and 20 deg off its path.
+
+        WHAT IS STILL NOT FIXED, and why it is left alone. Halving the radius moves the
+        stop out but does not remove it: the remainder is ``position_sigma``, the
+        filter's own honest account of a target it has not measured for a second or
+        more. Capping that would be inventing a number, so the behaviour is documented
+        as an operating limit (see the module docstring) rather than tuned from a desk.
+        The live run is what should decide whether a track this uncertain belongs in
+        the obstacle set at all — note that once inflated it stops carrying direction
+        as well as position, so a person off to one side blocks exactly as hard as one
+        dead ahead.
+        """
+        latency = max(0.0, now - self._tracker_time)
+        extrapolation_sigma = 0.5 * PROCESS_ACCEL_SIGMA * latency * latency
+        obstacles = [
+            Obstacle(x=float(track.state[0] + track.state[2] * latency),
+                     y=float(track.state[1] + track.state[3] * latency),
+                     vx=float(track.state[2]), vy=float(track.state[3]),
+                     radius_m=(self._planner.config.obstacle_radius_m
+                               + track.position_sigma + extrapolation_sigma),
+                     label=track.label)
+            for track in self._tracker.confirmed_tracks()
+        ]
+        # Landmarks need none of the above. They are not extrapolated because they do
+        # not move, and their radius carries no latency term for the same reason — the
+        # only uncertainty in a bin's position is where the robot thinks IT is.
+        if self._static_map is not None:
+            obstacles.extend(
+                Obstacle(x=landmark.x, y=landmark.y, vx=0.0, vy=0.0,
+                         radius_m=landmark.planning_radius_m, label=landmark.label,
+                         soft_gap_m=STATIC_SOFT_GAP_M)
+                for landmark in self._static_map.confirmed())
+        return obstacles
+
+    # ── Main loop ───────────────────────────────────────────────────────────
+    def run(self) -> str:
+        config = self._config
+        period = 1.0 / config.control_hz
+        started = time.monotonic()
+        hold_since: float | None = None
+        outcome = "unknown"
+
+        print(f"[visual_nav] goal: {self._goal.description}")
+        print(f"[visual_nav] {'LIVE — legs will move' if config.live else 'DRY RUN — no motion'}")
+
+        while True:
+            tick_start = time.monotonic()
+            now = tick_start
+            elapsed = now - started
+
+            if elapsed > config.max_run_s:
+                outcome = f"timeout after {elapsed:.0f}s"
+                break
+
+            blocked = self._health.abort_reason()
+            if blocked is not None:
+                outcome = f"health abort: {blocked}"
+                break
+
+            # A dead perception thread freezes latest() at its last good result, which
+            # then ages past the stale check and holds the robot for the rest of the
+            # budget under the wrong diagnosis. Say what actually happened.
+            if not self._perception.alive():
+                outcome = (f"perception thread died after {self._perception.cycles} "
+                           f"cycles ({self._perception.errors} errors)")
+                break
+
+            result = self._perception.latest()
+            if result is None:
+                if elapsed > 5.0:
+                    outcome = "no perception result"
+                    break
+                time.sleep(period)
+                continue
+
+            if result.seq > self._consumed_seq:
+                self._tracker.predict(max(0.0, result.capture_time - self._tracker_time))
+                # Static props first: the map they build is what tells the tracker a
+                # person who vanished did so BEHIND something rather than by leaving.
+                # Both consume the same cycle's pose, so the order is bookkeeping, not
+                # a one-frame lag.
+                occluders = ()
+                if self._static_map is not None:
+                    self._static_map.observe(result.static_observations,
+                                             result.capture_time, *result.pose)
+                    occluders = tuple(self._static_map.occluders(*result.pose))
+                self._tracker.update(result.observations, result.capture_time,
+                                     *result.pose, occluders=occluders)
+                self._tracker_time = result.capture_time
+                self._consumed_seq = result.seq
+
+            # Pose and obstacles are read BEFORE the branches below, not inside the one
+            # that happens to need them. Every path through this loop is a tick that a
+            # consumer has to be able to see — a stale-perception skip and a goal search
+            # are as much a part of the episode as a stride — and the plan-view inset
+            # went blank on exactly the paths that used to skip this.
+            pose_obj = self._loco.pose()
+            pose = (pose_obj.x, pose_obj.y, pose_obj.yaw)
+            obstacles = self._obstacles(now)
+
+            frame_age = now - result.capture_time
+            if frame_age > config.perception_timeout_s:
+                # Blind. Stop rather than coast on a stale belief. Odometry is a DDS
+                # topic and is still good here, so the tick is still worth recording.
+                self._command((0.0, 0.0, 0.0))
+                print(f"[visual_nav] perception stale ({frame_age:.2f}s) — holding")
+                self._telemetry_tick(elapsed, pose, None, None, obstacles,
+                                     frame_age, result)
+                time.sleep(period)
+                continue
+
+            goal_xy = self._goal.goal_xy()
+            if goal_xy is None:
+                if elapsed > config.goal_search_s:
+                    outcome = f"goal never sighted in {config.goal_search_s:.0f}s"
+                    break
+                self._command((0.0, 0.0, 0.0))
+                frame = self._record(result, pose, None, obstacles)
+                self._telemetry_tick(elapsed, pose, None, None, obstacles,
+                                     frame_age, result, video_frame=frame)
+                time.sleep(max(0.0, period - (time.monotonic() - tick_start)))
+                continue
+
+            distance = math.hypot(goal_xy[0] - pose[0], goal_xy[1] - pose[1])
+            if distance <= config.arrive_tolerance_m:
+                outcome = f"arrived ({distance:.2f} m from goal)"
+                self._command((0.0, 0.0, 0.0))
+                frame = self._record(result, pose, None, obstacles)
+                self._telemetry_tick(elapsed, pose, goal_xy, distance, obstacles,
+                                     frame_age, result, video_frame=frame)
+                break
+
+            command = self._planner.plan(pose, goal_xy, self._last_command,
+                                         obstacles, control_dt=period,
+                                         last_reason=self._last_reason)
+            self._last_reason = command.reason
+
+            # Rest the legs whenever the way stays blocked — the arm makes standing
+            # expensive, so a long hold is spent lying down rather than braced.
+            if command.reason == "hold":
+                # `hold_since or now` would restart the timer on a monotonic clock that
+                # happened to read 0.0. Vanishingly unlikely, but the explicit test is
+                # the same length and says what it means.
+                hold_since = now if hold_since is None else hold_since
+                if self._standing and now - hold_since >= config.rest_after_s:
+                    print(f"[visual_nav] blocked {now - hold_since:.0f}s — resting prone")
+                    self._lie_down()
+            else:
+                hold_since = None
+                if not self._standing:
+                    self._stand_up()
+                    # Standing blocks this loop for ~3 s, so `command` is now a plan
+                    # made three seconds ago — made, in fact, while the robot was
+                    # still lying down and the person it is about to walk past was
+                    # three seconds further back. Driving off on it is the one moment
+                    # in the run where the commanded velocity is guaranteed stale.
+                    # Give up this tick and re-plan on the next one, 100 ms later.
+                    self._command((0.0, 0.0, 0.0))
+                    frame = self._record(result, pose, None, obstacles)
+                    self._telemetry_tick(elapsed, pose, goal_xy, distance, obstacles,
+                                         frame_age, result, video_frame=frame)
+                    continue
+
+            self._command((command.vx, command.vy, command.wz)
+                          if self._standing else (0.0, 0.0, 0.0))
+            self._log(elapsed, command, distance, obstacles, frame_age)
+            frame = self._record(result, pose, command, obstacles)
+            self._telemetry_tick(elapsed, pose, goal_xy, distance, obstacles,
+                                 frame_age, result, command=command,
+                                 video_frame=frame)
+
+            time.sleep(max(0.0, period - (time.monotonic() - tick_start)))
+
+        # How much the run actually perceived, so a short or empty run can be told
+        # apart from a long blind one when reading the log afterwards.
+        print(f"[visual_nav] perception: {self._perception.cycles} cycles, "
+              f"{self._perception.errors} errors")
+        print(f"[visual_nav] outcome: {outcome}")
+        if self._telemetry is not None:
+            self._telemetry.write_outcome(
+                outcome, perception_cycles=self._perception.cycles,
+                perception_errors=self._perception.errors,
+                elapsed_s=round(time.monotonic() - started, 3))
+        return outcome
+
+    def _telemetry_tick(self, elapsed: float, pose, goal_xy, distance,
+                        obstacles: Sequence[Obstacle], frame_age: float,
+                        result: PerceptionResult, command=None,
+                        video_frame: int | None = None) -> None:
+        """Record one tick for a machine, whether or not it commanded motion.
+
+        Separate from ``_log``, which is for a person reading a console. The two have
+        genuinely different obligations: the console line is edited freely to make a run
+        legible (``people=0`` became ``obst=[binx1,personx1]`` the week a mapped bin
+        stopped being distinguishable from a ghost), while this one is a versioned
+        contract someone else parses.
+        """
+        if self._telemetry is None:
+            return
+        self._telemetry.write_tick(
+            elapsed_s=elapsed, pose=pose, goal_xy=goal_xy,
+            goal_distance_m=distance, command=command, obstacles=obstacles,
+            frame_age_s=frame_age, perception_seq=result.seq,
+            detect_ms=result.detect_ms, standing=self._standing,
+            live=self._config.live, video_frame=video_frame,
+            health=self._health.latest())
+
+    def _command(self, velocity: tuple[float, float, float]) -> None:
+        if self._config.live and self._standing:
+            self._loco.set_velocity(*velocity)
+        self._last_command = velocity
+
+    def _log(self, elapsed: float, command, distance: float,
+             obstacles: list[Obstacle], frame_age: float) -> None:
+        health = self._health.latest()
+        temperature = f"{health.max_motor_temp_c:.0f}C" if health else "?"
+        gap = "inf" if math.isinf(command.gap_m) else f"{command.gap_m:.2f}m"
+        # In a dry run the posture is simulated, so say so rather than printing
+        # "STAND" next to a robot that is plainly lying on the floor.
+        posture = "prone"
+        if self._standing:
+            posture = "STAND" if self._config.live else "stand(sim)"
+        # Count by label rather than printing a bare total. "obst=2" cannot distinguish
+        # the run working (bin mapped, nobody about) from the run stopping for a ghost,
+        # and that is the first question asked of every log line here.
+        tally = Counter(obstacle.label for obstacle in obstacles)
+        seen = ",".join(f"{label}x{n}" for label, n in sorted(tally.items())) or "none"
+        print(f"[{elapsed:5.1f}s] {command.reason:<7} "
+              f"v=({command.vx:+.2f},{command.vy:+.2f},{command.wz:+.2f}) "
+              f"goal={distance:.2f}m gap={gap} obst=[{seen}] "
+              f"lat={frame_age * 1000:.0f}ms motor={temperature} {posture}")
+
+    def _record(self, result: PerceptionResult, pose, command,
+                obstacles: Sequence[Obstacle] = ()) -> int | None:
+        """Write one annotated frame — once per PERCEPTION cycle, not per control tick.
+
+        The control loop runs faster than perception, so recording per tick would
+        duplicate frames and make the video play back faster than the run happened.
+
+        Returns the 0-based index of the frame written, or ``None`` on a tick that wrote
+        none. That index is the join key between the telemetry file and the MP4, and it
+        is why this returns anything at all — it is the only honest way to answer "what
+        did the camera see at this tick?" without putting pixels in a log.
+        """
+        if self._recorder is None or result.image is None:
+            return None
+        if result.seq <= self._recorded_seq:
+            return None
+        self._recorded_seq = result.seq
+        canvas = result.image.copy()
+        overlay.draw_detections(canvas, result.ranged)
+        overlay.draw_goal(canvas, result.goal_fix)
+        overlay.draw_plan_view(canvas, pose, obstacles, self._goal.goal_xy(), command)
+        health = self._health.latest()
+        if self._standing:
+            posture = "STANDING" if self._config.live else "STANDING(sim)"
+        else:
+            posture = "PRONE"
+        overlay.draw_status(canvas, [
+            f"{'LIVE' if self._config.live else 'DRY RUN'}  {posture}  "
+            f"det {result.detect_ms:.0f}ms",
+            (f"cmd {command.reason} v=({command.vx:+.2f},{command.vy:+.2f},"
+             f"{command.wz:+.2f})" if command is not None else "cmd -"),
+            (f"motor {health.max_motor_temp_c:.0f}C  batt {health.battery_soc_pct:.0f}%"
+             if health else "health -"),
+        ])
+        self._recorder.write(canvas)
+        self._frames_written += 1
+        return self._frames_written - 1
+
+
+def build_camera_model(width: int, height: int,
+                       calibration: str | None) -> FisheyeCamera:
+    """Load a calibrated model, or fall back to the nominal field of view."""
+    if calibration:
+        model = FisheyeCamera.load(calibration)
+        if (model.width, model.height) != (width, height):
+            model = model.scaled(width, height)
+        print(f"[visual_nav] camera model: {calibration} "
+              f"(f={model.focal_px:.1f}px, HFOV={model.hfov_deg:.1f}deg)")
+        return model
+    model = FisheyeCamera.from_hfov(width, height)
+    print(f"[visual_nav] camera model: NOMINAL HFOV={model.hfov_deg:.1f}deg — ranges "
+          f"and bearings are un-calibrated. Run calibrate_camera.py.")
+    return model
+
+
+def static_profile(args) -> ColourProfile:
+    """The named colour profile, with any measured overrides applied.
+
+    Overrides are ``replace`` on a frozen dataclass rather than mutation, so a profile
+    is never edited in place — ``PROFILES`` is module-level and shared, and one run
+    quietly rewriting the bin's height for every later one is the kind of bug that only
+    shows up as ranges being wrong in the NEXT session.
+    """
+    profile = PROFILES[args.static_prop]
+    changes = {}
+    if args.prop_height is not None:
+        changes["height_m"] = args.prop_height
+        # Width is the fallback prior once the base drops out of frame at close
+        # quarters. Keeping the profile's measured aspect ratio is the only defensible
+        # thing to do with it when only the height was re-measured.
+        changes["width_m"] = profile.width_m * (args.prop_height / profile.height_m)
+    if args.prop_radius is not None:
+        changes["radius_m"] = args.prop_radius
+    return replace(profile, **changes) if changes else profile
+
+
+def build_goal_source(args, camera_model: FisheyeCamera, pose_fn) -> GoalSource:
+    """Pick the goal source the flags asked for, newest-to-oldest in specificity.
+
+    Split out of ``main`` for the same reason ``build_parser`` is: it is the one place
+    the mutually-exclusive goal flags are resolved, and a test can check that resolution
+    without a robot, a camera or a DDS stack.
+    """
+    if args.waypoint is not None:
+        return OdomWaypoint(pose_fn(), args.waypoint[0], args.waypoint[1])
+    if args.goal_class is not None:
+        if args.goal_height is None:
+            raise SystemExit(
+                "[visual_nav] --goal-class needs --goal-height: the range to the goal "
+                "scales linearly on it, so there is no safe default to guess.")
+        # A SECOND detector instance, not the obstacle one. It wants a different class
+        # and a different confidence, and it runs on a crop; sharing would mean the
+        # obstacle pass paid the goal's threshold or vice versa.
+        goal_detector = PersonDetector(args.model_dir, input_size=args.goal_input_size,
+                                       confidence=args.goal_confidence,
+                                       classes=(args.goal_class,))
+        return DetectedObjectGoal(camera_model, goal_detector, label=args.goal_class,
+                                  height_m=args.goal_height, width_m=args.goal_width,
+                                  crop=args.goal_crop, refresh_s=args.goal_refresh,
+                                  min_score=args.goal_confidence)
+    return ArucoGoal(camera_model, marker_id=args.marker_id,
+                     marker_size_m=args.marker_size)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """The CLI, separated from ``main`` so it can be exercised without a robot.
+
+    Same split as ``calibrate_camera.build_parser``. It is what lets a test assert
+    that the D1 latch is on by default, which is a safety property rather than a
+    preference.
+    """
+    ap = argparse.ArgumentParser(
+        description="Walk the Go2 to a goal on RGB alone, avoiding moving people.")
+    # Defaults are read from the dataclasses rather than repeated here as literals,
+    # which would be two places to change and one to forget: the dataclass is what a
+    # caller constructing this in-process gets, so the CLI agrees with it by
+    # construction rather than by inspection.
+    limits, nav, planner = Limits(), NavConfig(), PlannerConfig()
+
+    ap.add_argument("--iface", default="eth0", help="DDS network interface")
+    ap.add_argument("--live", action="store_true",
+                    help="DANGER: actually move the legs. Without this the robot "
+                         "perceives and plans but never leaves the floor.")
+    ap.add_argument("--model-dir", default=str(DEFAULT_MODEL_DIR),
+                    help="directory holding the MobileNet-SSD files")
+    ap.add_argument("--calibration", default=None,
+                    help="camera model JSON from calibrate_camera.py")
+    ap.add_argument("--input-size", type=int, default=300,
+                    help="detector input size (300 accurate, 224 ~1.7x faster)")
+    ap.add_argument("--confidence", type=float, default=DEFAULT_CONFIDENCE,
+                    help="minimum detection score (lower = fewer misses, more stops)")
+    ap.add_argument("--classes", nargs="+", default=list(DYNAMIC_CLASSES),
+                    metavar="VOC_CLASS",
+                    help="what counts as a moving obstacle. Defaults to person. Adding "
+                         "e.g. 'bottle' lets a hand-slid object stand in for a walking "
+                         "person when no volunteer is available — but the size priors "
+                         "in camera_model are a PERSON's, so any other class is ranged "
+                         "with the wrong prior unless you say what it is")
+    ap.add_argument("--obstacle-height", type=float, default=None,
+                    help="true height of the tracked object in metres, when --classes "
+                         "is something other than person")
+    ap.add_argument("--obstacle-radius", type=float, default=planner.obstacle_radius_m,
+                    help="plan-view footprint of a TRACKED MOVER in metres. The default "
+                         "is a person's; anything smaller wants its own number, because "
+                         "inflating a small object to person-size is what turns a "
+                         "passable gap into a local minimum")
+
+    static = ap.add_argument_group("static obstacles")
+    static.add_argument("--static-prop", default=None, choices=sorted(PROFILES),
+                        help="segment a known-coloured static prop by colour and map "
+                             "it in odom. No detector is trained on a recycling bin, "
+                             "so this is the only way the pipeline sees one at all")
+    static.add_argument("--prop-height", type=float, default=None,
+                        help="override the profile's height in metres (measured, not "
+                             "estimated — every range scales linearly on it)")
+    static.add_argument("--prop-radius", type=float, default=None,
+                        help="override the profile's plan-view radius in metres")
+
+    goal_group = ap.add_argument_group("goal")
+    goal_group.add_argument("--marker-id", type=int, default=DEFAULT_MARKER_ID,
+                            help="ArUco id to walk toward")
+    goal_group.add_argument("--marker-size", type=float, default=DEFAULT_MARKER_SIZE_M,
+                            help="printed marker's black square, in metres")
+    goal_group.add_argument("--waypoint", type=float, nargs=2, metavar=("FWD", "LEFT"),
+                            default=None,
+                            help="use a dead-reckoned waypoint instead of the marker")
+    goal_group.add_argument("--goal-class", default=None, metavar="VOC_CLASS",
+                            help="walk toward a detected object (e.g. chair) instead "
+                                 "of a marker. Needs --goal-height")
+    goal_group.add_argument("--goal-height", type=float, default=None,
+                            help="the goal object's real height in metres, floor to top")
+    goal_group.add_argument("--goal-width", type=float, default=None,
+                            help="the goal object's real width in metres. Optional; "
+                                 "used only once the box is cut off by the frame edge")
+    goal_group.add_argument("--goal-crop", type=float, default=DEFAULT_GOAL_CROP,
+                            help="fraction of the frame the goal detector looks at. "
+                                 "Cropping is what makes a distant object detectable "
+                                 "at all — the network squashes its input to 300x300, "
+                                 "so a chair 240 px wide in a 1920 frame is 37 px to it "
+                                 "and is missed entirely. 1.0 disables cropping")
+    goal_group.add_argument("--goal-input-size", type=int, default=DEFAULT_GOAL_INPUT_SIZE,
+                            help="detector input size for the GOAL pass. Smaller than "
+                                 "--input-size on purpose: the crop has already "
+                                 "multiplied the target's effective resolution, so 224 "
+                                 "on a half crop resolves better than 300 on the full "
+                                 "frame and costs 69 ms instead of 130")
+    goal_group.add_argument("--goal-refresh", type=float, default=DEFAULT_GOAL_REFRESH_S,
+                            help="seconds between goal-detection passes once a goal is "
+                                 "held. A latched goal only needs re-measuring as fast "
+                                 "as the odometry under it drifts")
+    goal_group.add_argument("--goal-confidence", type=float, default=0.5,
+                            help="minimum score to latch a goal. Higher than the "
+                                 "obstacle threshold on purpose: missing a goal costs "
+                                 "a frame, latching a false one walks at a wall")
+
+    envelope = ap.add_argument_group("envelope")
+    envelope.add_argument("--max-vx", type=float, default=limits.max_vx,
+                          help="m/s forward cap")
+    envelope.add_argument("--max-vy", type=float, default=limits.max_vy,
+                          help="m/s strafe cap")
+    envelope.add_argument("--max-wz", type=float, default=limits.max_wz,
+                          help="rad/s yaw cap")
+    envelope.add_argument("--derate", type=float, default=1.0,
+                          help="scale the whole envelope. NOTE this scales yaw too, and "
+                               "below ~0.4 rad/s this robot does not reliably turn at "
+                               "all — so 0.6 puts max yaw at 0.42, right on the "
+                               "deadband, and costs the authority avoidance needs")
+    envelope.add_argument("--max-seconds", type=float, default=nav.max_run_s,
+                          help="hard run-time budget")
+    envelope.add_argument("--rest-after", type=float, default=nav.rest_after_s,
+                          help="seconds held before lying down to rest the legs")
+    envelope.add_argument("--arrive", type=float, default=nav.arrive_tolerance_m,
+                          help="stop this far short of the goal. Check it against the "
+                               "staging: an arrival circle that encloses a mapped "
+                               "obstacle has no reachable point on it")
+    envelope.add_argument("--horizon", type=float, default=planner.horizon_s,
+                          help="seconds the planner rolls each candidate forward. At "
+                               "the default speed 2.5 s sees 0.88 m ahead, which is "
+                               "about one blocking radius — raise it if the robot "
+                               "reacts to a static obstacle too late to swerve")
+    envelope.add_argument("--no-require-arm", action="store_true",
+                          help="proceed without D1 feedback (arm physically removed)")
+    envelope.add_argument("--no-latch-arm", action="store_true",
+                          help="do NOT lock the D1 before walking. The arm is latched "
+                               "by default because an unpowered one back-drives and "
+                               "3.15 kg off the dorsal centreline unbalances the "
+                               "vendor gait controller. Use only if it is already "
+                               "locked by other means")
+
+    envelope.add_argument("--motion-mode", default="normal", choices=("normal", "ai"),
+                          help="Go2 sport mode to select before walking")
+    ap.add_argument("--record", default=None, help="write an annotated MP4 here")
+    ap.add_argument("--telemetry", default=None, metavar="PATH.jsonl",
+                    help="write a machine-readable record of every control tick here: "
+                         "pose, goal, the full obstacle list with positions and radii, "
+                         "the command, and the index of the matching --record frame. "
+                         "This is the interface for anything downstream — the console "
+                         "log is prose and its fields change to stay legible")
+    return ap
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+
+    from locomotion.go2_locomotion import Go2Locomotion
+
+    config = NavConfig(live=args.live, max_run_s=args.max_seconds,
+                       arrive_tolerance_m=args.arrive, rest_after_s=args.rest_after,
+                       require_arm=not args.no_require_arm,
+                       latch_arm=not args.no_latch_arm,
+                       motion_mode=args.motion_mode)
+
+    loco = Go2Locomotion(iface=args.iface)
+    loco.connect()
+
+    health = HealthMonitor()
+    health.start()
+    arm = ArmStowMonitor()
+    arm.start()
+
+    camera = perception = recorder = telemetry = None
+    navigator = None
+    try:
+        # ── Pre-flight, all of it with the robot still lying down ───────────
+        blocking = arm.blocking_reason(required=config.require_arm)
+        if blocking is not None:
+            raise SystemExit(f"[visual_nav] REFUSING TO WALK: {blocking}")
+        reach = arm.reach_m()
+        if reach is not None:
+            jaw = arm.jaw_xyz()
+            sway = arm.sway_deg()
+            # Sway is printed against its limit because it is the one pre-flight number
+            # that CREEPS ACROSS RUNS — the operator needs to see how much budget is
+            # left, not just that this run passed.
+            print(f"[visual_nav] D1 arm stowed (jaw {reach:.3f} m from base, sway "
+                  f"{sway:.1f} deg of {STOWED_YAW_DEG:.1f} deg allowed, "
+                  f"{abs(jaw[1]) * 1000:.0f} mm off the dorsal centreline)")
+            # LATCHING IS A HARD REQUIREMENT, not a nicety. An unpowered D1 back-drives
+            # — its base yaw crept 13.4 deg during a turning test — and 3.15 kg
+            # swinging off the centreline throws the vendor locomotion controller off
+            # balance. So this is on by default and a latch that did not take refuses
+            # the run, rather than being an opt-in flag the operator can forget.
+            # It happens here, with the robot still prone and before sport mode is
+            # selected, because latch_arm() only ever holds joints where they already
+            # are and standing is what puts load on them.
+            if config.latch_arm:
+                latch = latch_arm(arm, iface=args.iface)
+                print(f"[visual_nav] {latch}")
+                if not latch.held:
+                    raise SystemExit(
+                        f"[visual_nav] REFUSING TO WALK: the D1 latch did not take "
+                        f"(joints drifted {latch.drift_deg:.2f} deg after enable, "
+                        f"tolerance {LATCH_DRIFT_TOLERANCE_DEG:.1f} deg). Hand-pose "
+                        f"the arm flat along the spine and retry. Pass --no-latch-arm "
+                        f"only if it is already locked by other means.")
+        unhealthy = health.abort_reason()
+        if unhealthy is not None:
+            raise SystemExit(f"[visual_nav] REFUSING TO WALK: {unhealthy}")
+        sample = health.latest()
+        print(f"[visual_nav] motors {sample.max_motor_temp_c:.0f}C, "
+              f"battery {sample.battery_soc_pct:.0f}%")
+        # The checklist asks an operator to eyeball "motors < 55 C" by hand against a
+        # threshold this module already holds. Say it instead of expecting them to.
+        warning = health.warning_reason()
+        if warning is not None:
+            print(f"[visual_nav] WARNING: {warning}")
+
+        def pose_tuple() -> tuple[float, float, float]:
+            pose = loco.pose()
+            return (pose.x, pose.y, pose.yaw)
+
+        camera = Go2Camera(iface=args.iface, init_dds=False, stamp_fn=pose_tuple)
+        camera.start()
+        first = camera.latest()
+        height, width = first.image.shape[:2]
+        print(f"[visual_nav] camera live: {width}x{height}")
+
+        camera_model = build_camera_model(width, height, args.calibration)
+        detector = PersonDetector(args.model_dir, input_size=args.input_size,
+                                  confidence=args.confidence,
+                                  classes=tuple(args.classes))
+        if args.obstacle_height is not None:
+            prior = SizePrior.of_height(args.obstacle_height)
+        else:
+            prior = SizePrior()
+            if set(args.classes) != set(DYNAMIC_CLASSES):
+                print(f"[visual_nav] WARNING: tracking {args.classes} but ranging with "
+                      f"a PERSON size prior ({prior.height_m:.2f} m). Pass "
+                      f"--obstacle-height or every range will be wrong.")
+        print(f"[visual_nav] obstacles: {args.classes}, height prior "
+              f"{prior.height_m:.3f} m")
+
+        goal_source = build_goal_source(args, camera_model, pose_tuple)
+
+        colour_detector = static_map = None
+        if args.static_prop:
+            profile = static_profile(args)
+            colour_detector = ColourBlobDetector(profile)
+            static_map = StaticObstacleMap(
+                radii={profile.label: profile.radius_m},
+                fov_rad=math.radians(camera_model.hfov_deg))
+            print(f"[visual_nav] static prop: {profile.label} "
+                  f"{profile.height_m:.4f} m tall, {profile.radius_m:.3f} m radius")
+
+        limits = Limits(max_vx=args.max_vx, max_vy=args.max_vy,
+                        max_wz=args.max_wz).scaled(args.derate)
+        print(f"[visual_nav] envelope: vx<={limits.max_vx:.2f} vy<={limits.max_vy:.2f} "
+              f"wz<={limits.max_wz:.2f}")
+        planner_config = PlannerConfig(horizon_s=args.horizon,
+                                       obstacle_radius_m=args.obstacle_radius)
+        print(f"[visual_nav] planner: horizon {planner_config.horizon_s:.1f}s "
+              f"({planner_config.horizon_s * limits.max_vx:.2f} m of lookahead at "
+              f"top speed), mover radius {planner_config.obstacle_radius_m:.2f} m")
+        planner = DynamicWindowPlanner(limits=limits, config=planner_config)
+        tracker = ObstacleTracker(fov_rad=math.radians(camera_model.hfov_deg))
+
+        perception = PerceptionWorker(camera, detector, camera_model, goal_source,
+                                      pose_tuple, prior, colour_detector)
+        perception.start()
+
+        if args.record:
+            recorder = cv2.VideoWriter(args.record, cv2.VideoWriter_fourcc(*"mp4v"),
+                                       RECORD_FPS, (width, height))
+            # A codec the build cannot encode yields a writer that silently swallows
+            # every frame, a 0-byte file and a cheerful "wrote run.mp4" at the end.
+            # The recording IS the evidence for a live run, so fail here — before the
+            # legs move — rather than after the only chance to capture it has passed.
+            if not recorder.isOpened():
+                raise SystemExit(
+                    f"[visual_nav] cannot open {args.record} for writing (mp4v). "
+                    f"The run would produce an empty file, so it is not starting. "
+                    f"Check the path is writable and that this OpenCV has FFMPEG.")
+
+        if config.live:
+            loco.ensure_sport_mode(config.motion_mode)
+
+        if args.telemetry:
+            telemetry = TelemetryWriter(args.telemetry)
+            telemetry.write_header(
+                live=config.live, goal=goal_source.description,
+                classes=list(args.classes), confidence=args.confidence,
+                static_prop=args.static_prop,
+                arrive_tolerance_m=config.arrive_tolerance_m,
+                control_hz=config.control_hz,
+                camera={"width": width, "height": height,
+                        "focal_px": camera_model.focal_px,
+                        "hfov_deg": camera_model.hfov_deg,
+                        "height_m": camera_model.height_m},
+                envelope={"max_vx": limits.max_vx, "max_vy": limits.max_vy,
+                          "max_wz": limits.max_wz},
+                planner={"horizon_s": planner_config.horizon_s,
+                         "robot_radius_m": planner_config.robot_radius_m,
+                         "hard_gap_m": planner_config.hard_gap_m,
+                         "soft_gap_m": planner_config.soft_gap_m,
+                         "static_soft_gap_m": STATIC_SOFT_GAP_M},
+                video=args.record)
+
+        navigator = VisualNavigator(loco, perception, planner, tracker,
+                                    goal_source, health, config, recorder, static_map,
+                                    telemetry)
+        navigator.run()
+    finally:
+        # Order matters: stop the legs first, then tear down what was feeding them.
+        if navigator is not None:
+            navigator.park()
+        if perception is not None:
+            perception.stop()
+        if camera is not None:
+            camera.stop()
+        if recorder is not None:
+            recorder.release()
+            print(f"[visual_nav] wrote {args.record}")
+        if telemetry is not None:
+            telemetry.close()
+            print(f"[visual_nav] wrote {args.telemetry} "
+                  f"({telemetry.records} records)")
+        arm.stop()
+        health.stop()
+        loco.shutdown()
+
+
+if __name__ == "__main__":
+    main()

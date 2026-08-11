@@ -1,0 +1,125 @@
+[Go2Locomotion] odom live  mode='mcf'  pose=(-2.46, +1.37, -82.8°)
+[Go2Locomotion] WARNING: motion mode is 'mcf', not a sport mode — Move commands may be ignored. Call ensure_sport_mode().
+[visual_nav] D1 arm stowed (jaw 0.142 m from base, 0 mm off the dorsal centreline)
+[D1Arm] PubServoInfo IDL not found — per-servo angle readback disabled (commands + rt/arm_Feedback still work).
+[visual_nav] arm latched at [1.4, -90.5, 89.7, -0.8, 14.9, -0.5] deg, jaw x=+0.078 y=+0.000 z=+0.119 m (reach 0.142 m), drift 0.00 deg — HELD
+[visual_nav] motors 31C, battery 84%
+[visual_nav] camera live: 1920x1080
+[visual_nav] camera model: /home/unitree/go2_front_camera.json (f=1290.2px, HFOV=85.3deg)
+[visual_nav] obstacles: ['person'], height prior 1.700 m
+[visual_nav] envelope: vx<=0.35 vy<=0.20 wz<=0.70
+[Go2Locomotion] switching motion mode -> 'normal'
+[visual_nav] goal: odom waypoint +3.00 m fwd, +0.00 m left of start
+[visual_nav] LIVE — legs will move
+[visual_nav] standing up
+[  4.5s] goal    v=(+0.05,+0.00,+0.00) goal=3.02m gap=inf people=0 lat=188ms motor=31C STAND
+[  4.6s] goal    v=(+0.10,+0.00,+0.00) goal=3.02m gap=inf people=0 lat=242ms motor=31C STAND
+[  4.7s] goal    v=(+0.15,+0.00,+0.00) goal=3.02m gap=inf people=0 lat=193ms motor=31C STAND
+[  4.8s] goal    v=(+0.20,+0.00,+0.00) goal=3.01m gap=inf people=0 lat=239ms motor=31C STAND
+[  4.9s] goal    v=(+0.25,+0.00,+0.00) goal=2.99m gap=inf people=0 lat=340ms motor=31C STAND
+[  5.0s] goal    v=(+0.30,+0.00,+0.00) goal=2.98m gap=inf people=0 lat=288ms motor=31C STAND
+[  5.1s] goal    v=(+0.35,+0.00,+0.00) goal=2.96m gap=inf people=0 lat=235ms motor=31C STAND
+[  5.2s] goal    v=(+0.35,+0.00,+0.00) goal=2.94m gap=inf people=0 lat=228ms motor=31C STAND
+[  5.4s] goal    v=(+0.35,+0.00,+0.00) goal=2.91m gap=inf people=0 lat=181ms motor=31C STAND
+[  5.5s] goal    v=(+0.35,+0.00,+0.00) goal=2.88m gap=inf people=0 lat=166ms motor=31C STAND
+[  5.6s] goal    v=(+0.35,-0.02,+0.00) goal=2.85m gap=inf people=0 lat=280ms motor=31C STAND
+[  5.7s] goal    v=(+0.35,-0.02,+0.00) goal=2.82m gap=inf people=0 lat=231ms motor=31C STAND
+[  5.8s] goal    v=(+0.35,-0.02,+0.00) goal=2.79m gap=inf people=0 lat=251ms motor=31C STAND
+[  5.9s] goal    v=(+0.35,-0.02,+0.00) goal=2.77m gap=inf people=0 lat=236ms motor=31C STAND
+[  6.0s] goal    v=(+0.35,-0.02,+0.00) goal=2.74m gap=inf people=0 lat=174ms motor=31C STAND
+[  6.1s] goal    v=(+0.35,-0.02,+0.00) goal=2.72m gap=inf people=0 lat=222ms motor=31C STAND
+[  6.2s] goal    v=(+0.35,-0.02,+0.00) goal=2.69m gap=inf people=0 lat=322ms motor=31C STAND
+[  6.3s] goal    v=(+0.35,-0.02,+0.00) goal=2.66m gap=inf people=0 lat=285ms motor=31C STAND
+[  6.4s] goal    v=(+0.35,-0.04,+0.00) goal=2.64m gap=inf people=0 lat=189ms motor=31C STAND
+[  6.5s] goal    v=(+0.35,-0.04,+0.00) goal=2.61m gap=inf people=0 lat=212ms motor=31C STAND
+[  6.6s] goal    v=(+0.35,-0.04,+0.00) goal=2.58m gap=inf people=0 lat=186ms motor=31C STAND
+[  6.7s] goal    v=(+0.35,-0.04,+0.00) goal=2.55m gap=inf people=0 lat=177ms motor=31C STAND
+[  6.8s] goal    v=(+0.35,-0.04,+0.00) goal=2.53m gap=inf people=0 lat=210ms motor=31C STAND
+[  7.0s] goal    v=(+0.35,-0.04,+0.00) goal=2.49m gap=inf people=0 lat=194ms motor=31C STAND
+[  7.1s] goal    v=(+0.35,-0.04,+0.00) goal=2.46m gap=inf people=0 lat=153ms motor=31C STAND
+[  7.2s] goal    v=(+0.35,-0.04,+0.00) goal=2.44m gap=inf people=0 lat=254ms motor=31C STAND
+[  7.3s] goal    v=(+0.35,-0.04,+0.00) goal=2.42m gap=inf people=0 lat=214ms motor=31C STAND
+[  7.4s] goal    v=(+0.35,-0.04,+0.00) goal=2.39m gap=inf people=0 lat=222ms motor=31C STAND
+[  7.5s] goal    v=(+0.35,-0.04,+0.00) goal=2.37m gap=inf people=0 lat=230ms motor=31C STAND
+[  7.6s] avoid   v=(+0.35,-0.04,+0.00) goal=2.34m gap=0.99m people=1 lat=194ms motor=31C STAND
+[  7.8s] avoid   v=(+0.35,-0.02,+0.00) goal=2.29m gap=1.00m people=1 lat=268ms motor=31C STAND
+[  8.0s] hold    v=(+0.00,+0.00,+0.00) goal=2.23m gap=-0.56m people=1 lat=258ms motor=31C STAND
+[  8.3s] avoid   v=(+0.00,-0.04,+0.00) goal=2.20m gap=0.27m people=1 lat=364ms motor=31C STAND
+[  8.6s] avoid   v=(+0.05,-0.04,+0.00) goal=2.20m gap=0.61m people=1 lat=262ms motor=31C STAND
+[  8.8s] hold    v=(+0.00,+0.00,+0.00) goal=2.19m gap=0.10m people=1 lat=304ms motor=31C STAND
+[  9.0s] hold    v=(+0.00,+0.00,+0.00) goal=2.18m gap=0.07m people=1 lat=518ms motor=31C STAND
+[  9.1s] hold    v=(+0.00,+0.00,+0.00) goal=2.19m gap=0.12m people=1 lat=376ms motor=31C STAND
+[  9.4s] avoid   v=(+0.05,+0.00,-0.03) goal=2.19m gap=0.83m people=1 lat=334ms motor=31C STAND
+[  9.5s] avoid   v=(+0.10,+0.00,-0.03) goal=2.18m gap=1.01m people=1 lat=325ms motor=31C STAND
+[  9.9s] avoid   v=(+0.15,+0.00,-0.03) goal=2.17m gap=1.14m people=1 lat=373ms motor=31C STAND
+[ 10.2s] goal    v=(+0.20,+0.00,+0.00) goal=2.15m gap=1.23m people=1 lat=298ms motor=31C STAND
+[ 10.3s] goal    v=(+0.25,+0.00,+0.00) goal=2.14m gap=1.26m people=1 lat=408ms motor=31C STAND
+[ 10.4s] goal    v=(+0.30,+0.00,+0.00) goal=2.13m gap=1.25m people=1 lat=301ms motor=31C STAND
+[ 10.6s] goal    v=(+0.35,+0.00,+0.00) goal=2.09m gap=1.28m people=2 lat=408ms motor=31C STAND
+[ 10.9s] goal    v=(+0.35,+0.00,+0.00) goal=2.02m gap=3.21m people=1 lat=318ms motor=31C STAND
+[ 11.2s] goal    v=(+0.35,+0.00,+0.00) goal=1.95m gap=2.78m people=1 lat=396ms motor=31C STAND
+[ 11.4s] goal    v=(+0.35,+0.00,+0.00) goal=1.90m gap=2.27m people=1 lat=443ms motor=31C STAND
+[ 11.6s] goal    v=(+0.35,+0.00,+0.00) goal=1.85m gap=1.71m people=1 lat=384ms motor=31C STAND
+[ 11.8s] avoid   v=(+0.30,+0.04,-0.03) goal=1.81m gap=1.18m people=1 lat=309ms motor=31C STAND
+[ 12.0s] goal    v=(+0.00,+0.00,+0.00) goal=1.76m gap=1.34m people=1 lat=334ms motor=31C STAND
+[ 12.2s] avoid   v=(+0.00,+0.04,-0.03) goal=1.74m gap=0.81m people=1 lat=327ms motor=31C STAND
+[ 12.3s] avoid   v=(+0.00,+0.08,-0.06) goal=1.74m gap=0.41m people=1 lat=282ms motor=31C STAND
+[ 12.5s] avoid   v=(+0.00,+0.12,-0.06) goal=1.74m gap=0.34m people=1 lat=460ms motor=31C STAND
+[ 12.6s] hold    v=(+0.00,+0.00,+0.00) goal=1.75m gap=0.03m people=1 lat=385ms motor=31C STAND
+[ 12.8s] hold    v=(+0.00,+0.00,+0.00) goal=1.75m gap=-0.74m people=1 lat=268ms motor=31C STAND
+[ 12.9s] hold    v=(+0.00,+0.00,+0.00) goal=1.75m gap=-0.81m people=1 lat=409ms motor=31C STAND
+[ 13.0s] hold    v=(+0.00,+0.00,+0.00) goal=1.75m gap=-1.27m people=1 lat=306ms motor=31C STAND
+[ 13.2s] hold    v=(+0.00,+0.00,+0.00) goal=1.76m gap=-1.74m people=1 lat=317ms motor=31C STAND
+[ 13.4s] hold    v=(+0.00,+0.00,+0.00) goal=1.76m gap=-2.29m people=1 lat=292ms motor=31C STAND
+[ 13.6s] hold    v=(+0.00,+0.00,+0.00) goal=1.76m gap=-0.64m people=1 lat=354ms motor=32C STAND
+[ 13.9s] hold    v=(+0.00,+0.00,+0.00) goal=1.76m gap=0.07m people=1 lat=178ms motor=31C STAND
+[ 14.2s] avoid   v=(+0.05,+0.00,-0.03) goal=1.76m gap=0.47m people=1 lat=312ms motor=31C STAND
+[ 14.4s] avoid   v=(+0.10,+0.00,-0.03) goal=1.76m gap=0.93m people=1 lat=315ms motor=31C STAND
+[ 14.6s] avoid   v=(+0.15,+0.00,-0.03) goal=1.75m gap=0.92m people=1 lat=502ms motor=31C STAND
+[ 14.7s] goal    v=(+0.20,+0.00,-0.03) goal=1.75m gap=1.38m people=1 lat=388ms motor=31C STAND
+[ 14.9s] goal    v=(+0.25,+0.00,-0.03) goal=1.73m gap=1.63m people=1 lat=314ms motor=32C STAND
+[ 15.1s] goal    v=(+0.30,+0.02,-0.03) goal=1.71m gap=1.73m people=1 lat=245ms motor=32C STAND
+[ 15.3s] goal    v=(+0.35,+0.02,-0.03) goal=1.69m gap=1.76m people=1 lat=244ms motor=31C STAND
+[ 15.4s] goal    v=(+0.35,+0.02,-0.03) goal=1.65m gap=1.79m people=1 lat=405ms motor=31C STAND
+[ 15.5s] goal    v=(+0.35,+0.02,-0.03) goal=1.63m gap=1.79m people=1 lat=361ms motor=32C STAND
+[ 15.6s] goal    v=(+0.35,+0.02,-0.03) goal=1.61m gap=1.71m people=1 lat=179ms motor=32C STAND
+[ 15.8s] goal    v=(+0.35,+0.00,+0.00) goal=1.56m gap=1.56m people=1 lat=274ms motor=32C STAND
+[ 16.1s] goal    v=(+0.35,+0.00,+0.00) goal=1.52m gap=1.56m people=1 lat=322ms motor=32C STAND
+[ 16.3s] goal    v=(+0.35,+0.02,+0.00) goal=1.47m gap=1.54m people=1 lat=377ms motor=32C STAND
+[ 16.4s] goal    v=(+0.35,+0.04,-0.03) goal=1.46m gap=1.53m people=1 lat=246ms motor=32C STAND
+[ 16.5s] goal    v=(+0.35,+0.04,-0.03) goal=1.43m gap=1.51m people=1 lat=242ms motor=32C STAND
+[ 16.6s] goal    v=(+0.35,+0.04,-0.03) goal=1.40m gap=1.50m people=1 lat=342ms motor=32C STAND
+[ 16.7s] goal    v=(+0.35,+0.04,-0.03) goal=1.38m gap=inf people=0 lat=238ms motor=32C STAND
+[ 16.8s] goal    v=(+0.35,+0.04,-0.03) goal=1.36m gap=inf people=0 lat=340ms motor=32C STAND
+[ 16.9s] goal    v=(+0.35,+0.04,-0.03) goal=1.34m gap=inf people=0 lat=290ms motor=32C STAND
+[ 17.0s] goal    v=(+0.35,+0.08,-0.06) goal=1.31m gap=inf people=0 lat=304ms motor=32C STAND
+[ 17.1s] goal    v=(+0.35,+0.10,-0.09) goal=1.27m gap=inf people=0 lat=215ms motor=32C STAND
+[ 17.3s] goal    v=(+0.35,+0.12,-0.12) goal=1.25m gap=inf people=0 lat=219ms motor=32C STAND
+[ 17.4s] goal    v=(+0.35,+0.12,-0.12) goal=1.22m gap=inf people=0 lat=322ms motor=32C STAND
+[ 17.5s] goal    v=(+0.35,+0.12,-0.12) goal=1.20m gap=inf people=0 lat=239ms motor=32C STAND
+[ 17.6s] goal    v=(+0.35,+0.12,-0.12) goal=1.17m gap=inf people=0 lat=155ms motor=32C STAND
+[ 17.7s] goal    v=(+0.35,+0.16,-0.18) goal=1.14m gap=inf people=0 lat=322ms motor=32C STAND
+[ 17.8s] hold    v=(+0.00,+0.00,+0.00) goal=1.11m gap=-0.19m people=1 lat=315ms motor=32C STAND
+[ 18.0s] avoid   v=(+0.05,+0.02,+0.03) goal=1.09m gap=0.59m people=1 lat=255ms motor=32C STAND
+[ 18.1s] hold    v=(+0.00,+0.00,+0.00) goal=1.09m gap=0.16m people=1 lat=251ms motor=32C STAND
+[ 18.3s] hold    v=(+0.00,+0.00,+0.00) goal=1.09m gap=-0.44m people=1 lat=296ms motor=32C STAND
+[ 18.5s] hold    v=(+0.00,+0.00,+0.00) goal=1.10m gap=-0.35m people=1 lat=304ms motor=32C STAND
+[ 18.7s] hold    v=(+0.00,+0.00,+0.00) goal=1.10m gap=-0.23m people=1 lat=303ms motor=32C STAND
+[ 18.8s] hold    v=(+0.00,+0.00,+0.00) goal=1.11m gap=-0.10m people=1 lat=282ms motor=32C STAND
+[ 19.0s] hold    v=(+0.00,+0.00,+0.00) goal=1.11m gap=0.07m people=1 lat=331ms motor=32C STAND
+[ 19.1s] hold    v=(+0.00,+0.00,+0.00) goal=1.11m gap=0.15m people=1 lat=280ms motor=32C STAND
+[ 19.3s] avoid   v=(+0.00,+0.04,+0.00) goal=1.11m gap=0.32m people=1 lat=278ms motor=32C STAND
+[ 19.5s] avoid   v=(+0.00,+0.04,+0.00) goal=1.11m gap=0.43m people=1 lat=251ms motor=32C STAND
+[ 19.6s] avoid   v=(+0.05,+0.04,+0.00) goal=1.11m gap=0.51m people=1 lat=210ms motor=32C STAND
+[ 19.7s] avoid   v=(+0.10,+0.04,+0.00) goal=1.11m gap=0.65m people=1 lat=320ms motor=32C STAND
+[ 19.8s] avoid   v=(+0.15,+0.04,+0.00) goal=1.11m gap=0.71m people=1 lat=253ms motor=32C STAND
+[ 19.9s] avoid   v=(+0.20,+0.06,-0.03) goal=1.10m gap=0.85m people=1 lat=354ms motor=32C STAND
+[ 20.0s] avoid   v=(+0.25,+0.10,-0.09) goal=1.09m gap=0.93m people=1 lat=316ms motor=32C STAND
+[ 20.1s] avoid   v=(+0.30,+0.14,-0.18) goal=1.07m gap=1.06m people=1 lat=308ms motor=32C STAND
+[ 20.2s] avoid   v=(+0.35,+0.18,-0.27) goal=1.06m gap=1.20m people=1 lat=408ms motor=32C STAND
+[ 20.3s] goal    v=(+0.35,+0.20,-0.33) goal=1.04m gap=1.26m people=1 lat=282ms motor=32C STAND
+[ 20.5s] goal    v=(+0.35,+0.19,-0.30) goal=1.01m gap=1.39m people=1 lat=247ms motor=32C STAND
+[visual_nav] perception: 145 cycles, 0 errors
+[visual_nav] outcome: arrived (0.96 m from goal)
+[visual_nav] parking: stop + lie down
+[visual_nav] wrote /home/unitree/run.mp4
