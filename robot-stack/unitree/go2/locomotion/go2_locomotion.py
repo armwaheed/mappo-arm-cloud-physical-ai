@@ -24,12 +24,12 @@ WHAT'S DIFFERENT FROM THE G1 — and why this is not just a copy:
   * **Persistent Move, no dead-man.** ``SportClient.Move`` commands a velocity that
     persists until the next command — there is no built-in timeout. So EVERY exit
     path must ``StopMove`` and callers MUST guard a walk in a ``try/finally`` that
-    stops the robot (the closed-loop helpers in ``arm_mhs_robotkit.locomotion`` already do). Pair
-    this with the controller abort (``unitree/go2/controller``) and ``arm_mhs_robotkit.safe_stop``.
+    stops the robot (the closed-loop helpers in ``arm_dc_robotkit.locomotion`` already do). Pair
+    this with the controller abort (``unitree/go2/controller``) and ``arm_dc_robotkit.safe_stop``.
 
 Frames: body ``+x`` forward / ``+y`` left, planar pose in the estimator's odom
 frame. The shared closed-loop helpers (``walk_to``, ``turn_to``, ``walk_forward``)
-live in ``arm_mhs_robotkit.locomotion``.
+live in ``arm_dc_robotkit.locomotion``.
 
 Safety: ``set_velocity`` / ``stand`` / ``recover`` move the legs. The caller is
 responsible for a clear area, an operator on the e-stop, and adequate battery.
@@ -42,7 +42,7 @@ import math
 import threading
 import time
 
-from arm_mhs_robotkit.locomotion import LocomotionController, Pose
+from arm_dc_robotkit.locomotion import LocomotionController, Pose
 
 ODOM_TOPIC = "rt/sportmodestate"
 # Same stall-gate DESIGN as the G1 (only a sustained near-total stop while commanded

@@ -1,9 +1,9 @@
 # Unitree Go2 EDU (+ Unitree D1 arm) — control + perception stack
 
 The control + perception stack for the **Unitree Go2** quadruped carrying a **Unitree D1** servo arm on its
-back. Same pattern as [`unitree/g1`](https://github.com/arm/arm-mhs-unitree-g1/blob/main/unitree/g1/): robot-scoped capability modules, each a `SKILL.md` beside
-verified code, all driven by the one [robot descriptor](https://github.com/arm/arm-mhs-robotkit/blob/main/skills/discover-robot/descriptors/unitree_go2_edu.json).
-The robot-agnostic control lives in [`lib/`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/); this tree is the Go2 binding of it.
+back. Same pattern as [`unitree/g1`](https://github.com/arm/arm-dc-unitree-g1/blob/main/unitree/g1/): robot-scoped capability modules, each a `SKILL.md` beside
+verified code, all driven by the one [robot descriptor](arm-dc-robotkit/blob/main/skills/discover-robot/descriptors/unitree_go2_edu.json).
+The robot-agnostic control lives in `lib/` (arm-dc-robotkit `lib/`); this tree is the Go2 binding of it.
 
 > ⚠️ **Before any on-hardware control, read [`SAFETY.md`](../../SAFETY.md).** The Go2's high-level
 > `SportClient.Move` commands a **persistent** velocity with no dead-man, and the low-level `rt/lowcmd`
@@ -30,7 +30,7 @@ south door — the environment the stack was brought up in.</em></p>
 | [`controller/`](controller/SKILL.md) | Handheld remote → **any-button abort** (same 40-byte struct as the G1). Software halt, not the e-stop. |
 | [`deploy/`](deploy/README.md) | Low-level `rt/lowcmd` `RobotIO` for the RL de-risk ladder, incl. the SDK↔Isaac **joint-order remap**. Scaffold — read the warnings. |
 | [`depth_camera_sight/`](depth_camera_sight/README.md) | The front camera (VideoHub) + the add-on RealSense (VIO). Characterization **PENDING** an on-robot capture. |
-| [`driver/go2`](../../driver/go2/SKILL.md) | The Go2 as an **MHS device** — walk / stand / arm / status RPCs over the fabric (the two-env bridge). |
+| [`driver/go2`](../../driver/go2/SKILL.md) | The Go2 as an **DC device** — walk / stand / arm / status RPCs over the fabric (the two-env bridge). |
 
 ## The robot — as discovered
 
@@ -55,9 +55,9 @@ node in the descriptor — see [`d1_arm/README.md`](d1_arm/README.md).
   the G1 has none, so its `lidar_sight` reimplements A* — here that's the fallback.
 - The **arm is a payload**, not integral DOF (the G1's arms are `effectors`).
 - **Cross-quadruped by design:** the reuse is the `LocomotionController` ABC + descriptor, so a
-  DEEP Robotics dog drops in via [`lib/ros2_twist_locomotion.py`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/ros2_twist_locomotion.py)
+  DEEP Robotics dog drops in via `lib/ros2_twist_locomotion.py` (arm-dc-robotkit `lib/ros2_twist_locomotion.py`)
   (`cmd_vel`/`odom`) with no native code. See
-  [`operate the Go2 vendor-neutrally`](https://github.com/arm/arm-mhs-robotkit/blob/main/skills/quadruped-locomotion/SKILL.md).
+  `operate the Go2 vendor-neutrally` (arm-dc-robotkit `skills/quadruped-locomotion/SKILL.md`).
 
 ## Verified status — honest
 
@@ -67,7 +67,7 @@ arm interface**, the **expansion dock**, and the onboard SLAM/VIO modules. **Rea
 locomotion/arm/lidar/deploy code compiles, and every pure algorithm (arm protocol, LiDAR room-crop,
 joint-order remap, controller latch, Twist mapping, driver RPC plumbing) is **unit-tested off-robot**
 (44 cases). **Not yet done:** reading this unit's live `rt/lowstate` for its exact gains, a `lidar_sight` scan for the LiDAR
-envelope, and one supervised motion + D1 move. The [descriptor's `provenance`](https://github.com/arm/arm-mhs-robotkit/blob/main/skills/discover-robot/descriptors/unitree_go2_edu.json)
+envelope, and one supervised motion + D1 move. The [descriptor's `provenance`](arm-dc-robotkit/blob/main/skills/discover-robot/descriptors/unitree_go2_edu.json)
 lists the exact promote-to-verified steps.
 
 ## Quick start

@@ -17,7 +17,7 @@ metadata:
 Turn the Go2's onboard LiDAR cloud into clean body-frame geometry. The cloud topic, the room-crop, the
 occupancy grid, and the SLAM-reuse guidance are in **[`README.md`](README.md)** — this skill is the agent
 entry point. Module: [`go2_lidar_sight.py`](go2_lidar_sight.py); planning in
-[`lib/navigation.py`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/navigation.py).
+`lib/navigation.py` (arm-dc-robotkit `lib/navigation.py`).
 
 ## When to use
 

@@ -147,6 +147,43 @@ def test_a_tick_that_commanded_nothing_is_still_written():
     assert record["pose"]["x"] == POSE[0], "pose is still known while blind"
 
 
+def test_the_measured_velocity_is_recorded_beside_the_command():
+    """A run that commands 0.12 m/s and moves nothing reads, in the command alone,
+    exactly like a run that is walking. Only this tells them apart."""
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer, measured=(0.0, 0.0, 0.0))
+        record = _read(directory)[0]
+    assert record["command"]["vx"] == 0.35, "commanded"
+    assert record["measured"] == {"vx": 0.0, "vy": 0.0, "wz": 0.0}, "achieved"
+
+
+def test_a_backend_that_cannot_report_velocity_is_not_fatal():
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer, measured=None)
+        assert _read(directory)[0]["measured"] is None
+
+
+def test_a_stale_tick_keeps_its_goal_and_says_it_was_blind():
+    """A stale frame means the robot cannot SEE, not that it has forgotten where it is
+    going. Recording a null goal there reads downstream as "goal lost"."""
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer, command=None, stale=True)
+        record = _read(directory)[0]
+    assert record["perception"]["stale"] is True
+    assert record["goal"] is not None, "the goal is latched; blindness does not clear it"
+    assert record["command"] is None
+
+
+def test_a_normal_tick_is_not_marked_stale():
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer)
+        assert _read(directory)[0]["perception"]["stale"] is False
+
+
 def test_the_video_frame_index_is_the_join_key_to_the_mp4():
     with tempfile.TemporaryDirectory() as directory:
         with _writer(directory) as writer:

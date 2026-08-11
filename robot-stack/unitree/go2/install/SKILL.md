@@ -18,7 +18,7 @@ Stand up the `unitree_sdk2py` environment, then prove the robot's DDS is visible
 ## When to use
 
 - First time on a **fresh host/robot** before running any Go2 skill.
-- As the **step-zero** of [`discover-robot`](https://github.com/arm/arm-mhs-robotkit/blob/main/skills/discover-robot/SKILL.md) for a Go2.
+- As the **step-zero** of `discover-robot` (arm-dc-robotkit `skills/discover-robot/SKILL.md`) for a Go2.
 - To **verify** the DDS link (`--verify` / `verify.sh`) after a network change.
 
 ## How to use

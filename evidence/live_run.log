@@ -1,0 +1,140 @@
+[Go2Locomotion] odom live  mode='mcf'  pose=(-2.43, +1.90, -81.6°)
+[Go2Locomotion] WARNING: motion mode is 'mcf', not a sport mode — Move commands may be ignored. Call ensure_sport_mode().
+[visual_nav] D1 arm stowed (jaw 0.142 m from base, sway 0.4 deg of 3.0 deg allowed, 1 mm off the dorsal centreline)
+[visual_nav] motors 40C, battery 37%
+[visual_nav] camera live: 1920x1080
+[visual_nav] camera model: /home/unitree/go2_front_camera.json (f=1290.2px, HFOV=85.3deg)
+[visual_nav] obstacles: ['person'], height prior 1.700 m
+[visual_nav] static prop: bin 0.3048 m tall, 0.150 m radius
+[visual_nav] envelope: vx<=0.35 vy<=0.20 wz<=0.70
+[visual_nav] planner: horizon 2.5s (0.88 m of lookahead at top speed), robot radius 0.25 m, mover radius 0.35 m
+[Go2Locomotion] switching motion mode -> 'normal'
+[visual_nav] goal: detected chair (1.067 m tall), 1 sightings in 1 passes
+[visual_nav] LIVE — legs will move
+[visual_nav] standing up
+[  4.5s] goal    v=(+0.05,+0.00,-0.06) goal=3.49m gap=1.34m obst=[binx1] lat=298ms motor=40C STAND
+[  4.7s] goal    v=(+0.10,+0.00,-0.06) goal=3.48m gap=1.25m obst=[binx1] lat=384ms motor=40C STAND
+[  4.9s] avoid   v=(+0.13,+0.00,-0.06) goal=3.46m gap=1.19m obst=[binx1,personx1] lat=416ms motor=40C STAND
+[  5.1s] avoid   v=(+0.18,+0.00,-0.06) goal=3.45m gap=1.07m obst=[binx1,personx1] lat=399ms motor=40C STAND
+[  5.3s] avoid   v=(+0.21,+0.00,-0.06) goal=3.43m gap=0.98m obst=[binx1,personx1] lat=557ms motor=40C STAND
+[  5.4s] avoid   v=(+0.16,+0.00,-0.06) goal=3.43m gap=1.09m obst=[binx1,personx1] lat=395ms motor=40C STAND
+[  5.6s] avoid   v=(+0.11,+0.04,-0.06) goal=3.08m gap=1.11m obst=[binx1,personx1] lat=587ms motor=40C STAND
+[visual_nav] perception stale (0.69s) — holding
+[  5.8s] avoid   v=(+0.05,+0.00,-0.06) goal=3.06m gap=0.87m obst=[binx1,personx1] lat=495ms motor=40C STAND
+[  6.0s] avoid   v=(+0.06,+0.00,-0.06) goal=3.06m gap=0.44m obst=[binx1,personx1] lat=353ms motor=40C STAND
+[  6.2s] avoid   v=(+0.07,+0.00,-0.06) goal=3.05m gap=0.35m obst=[binx1,personx1] lat=542ms motor=40C STAND
+[  6.3s] avoid   v=(+0.12,+0.00,-0.06) goal=3.05m gap=1.19m obst=[binx1,personx1] lat=335ms motor=40C STAND
+[  6.5s] avoid   v=(+0.17,+0.00,-0.06) goal=3.04m gap=1.06m obst=[binx1,personx1] lat=290ms motor=40C STAND
+[  6.7s] avoid   v=(+0.22,+0.00,-0.06) goal=3.03m gap=0.93m obst=[binx1,personx1] lat=323ms motor=40C STAND
+[  7.0s] avoid   v=(+0.27,-0.02,-0.03) goal=3.00m gap=0.78m obst=[binx1,personx1] lat=333ms motor=40C STAND
+[  7.2s] avoid   v=(+0.32,-0.02,-0.03) goal=2.98m gap=0.63m obst=[binx1,personx1] lat=370ms motor=40C STAND
+[  7.3s] avoid   v=(+0.35,-0.02,-0.03) goal=2.96m gap=0.55m obst=[binx1,personx1] lat=261ms motor=40C STAND
+[  7.6s] avoid   v=(+0.35,-0.02,-0.03) goal=2.92m gap=0.51m obst=[binx1] lat=300ms motor=40C STAND
+[  7.7s] avoid   v=(+0.35,-0.02,-0.03) goal=2.87m gap=0.47m obst=[binx1] lat=227ms motor=40C STAND
+[  7.9s] avoid   v=(+0.35,-0.02,-0.03) goal=2.84m gap=0.43m obst=[binx1] lat=387ms motor=40C STAND
+[  8.0s] avoid   v=(+0.35,-0.02,-0.03) goal=2.81m gap=0.40m obst=[binx1] lat=487ms motor=40C STAND
+[  8.1s] avoid   v=(+0.35,-0.02,-0.03) goal=2.78m gap=0.38m obst=[binx1] lat=379ms motor=40C STAND
+[  8.3s] avoid   v=(+0.35,-0.02,-0.03) goal=2.74m gap=0.34m obst=[binx1] lat=294ms motor=40C STAND
+[  8.4s] avoid   v=(+0.35,-0.04,+0.00) goal=2.69m gap=0.30m obst=[binx1] lat=452ms motor=40C STAND
+[  8.6s] avoid   v=(+0.35,-0.04,+0.00) goal=2.67m gap=0.27m obst=[binx1] lat=342ms motor=40C STAND
+[  8.7s] avoid   v=(+0.35,-0.04,+0.00) goal=3.00m gap=0.23m obst=[binx1] lat=508ms motor=40C STAND
+[visual_nav] perception stale (0.61s) — holding
+[  8.9s] avoid   v=(+0.05,+0.00,-0.03) goal=2.96m gap=0.92m obst=[binx1] lat=476ms motor=40C STAND
+[visual_nav] perception stale (0.68s) — holding
+[  9.2s] avoid   v=(+0.05,+0.00,-0.03) goal=2.95m gap=0.90m obst=[binx1] lat=382ms motor=40C STAND
+[  9.5s] avoid   v=(+0.10,+0.00,-0.03) goal=2.94m gap=0.77m obst=[binx1] lat=299ms motor=40C STAND
+[  9.7s] avoid   v=(+0.15,+0.00,-0.03) goal=2.93m gap=0.63m obst=[binx1] lat=521ms motor=40C STAND
+[  9.8s] avoid   v=(+0.20,+0.00,-0.03) goal=2.93m gap=0.50m obst=[binx1] lat=395ms motor=40C STAND
+[ 10.0s] avoid   v=(+0.25,+0.00,+0.00) goal=2.91m gap=0.34m obst=[binx1] lat=417ms motor=40C STAND
+[ 10.2s] avoid   v=(+0.30,-0.02,+0.00) goal=2.89m gap=0.21m obst=[binx1] lat=374ms motor=40C STAND
+[ 10.3s] avoid   v=(+0.31,-0.06,+0.00) goal=2.88m gap=0.20m obst=[binx1] lat=276ms motor=40C STAND
+[ 10.5s] avoid   v=(+0.33,-0.10,-0.03) goal=2.85m gap=0.20m obst=[binx1] lat=256ms motor=40C STAND
+[ 10.7s] avoid   v=(+0.34,-0.14,+0.00) goal=2.82m gap=0.22m obst=[binx1] lat=434ms motor=40C STAND
+[ 10.8s] avoid   v=(+0.34,-0.18,+0.06) goal=2.80m gap=0.21m obst=[binx1] lat=304ms motor=40C STAND
+[ 10.9s] avoid   v=(+0.34,-0.20,+0.09) goal=2.76m gap=0.21m obst=[binx1] lat=452ms motor=40C STAND
+[ 11.0s] avoid   v=(+0.35,-0.20,+0.06) goal=2.74m gap=0.21m obst=[binx1] lat=340ms motor=40C STAND
+[ 11.2s] avoid   v=(+0.35,-0.20,+0.06) goal=2.70m gap=0.21m obst=[binx1] lat=497ms motor=40C STAND
+[ 11.3s] avoid   v=(+0.35,-0.20,+0.06) goal=2.67m gap=0.20m obst=[binx1] lat=294ms motor=40C STAND
+[ 11.5s] avoid   v=(+0.34,-0.20,+0.06) goal=2.61m gap=0.20m obst=[binx1] lat=502ms motor=40C STAND
+[ 11.6s] avoid   v=(+0.35,-0.20,+0.03) goal=2.59m gap=0.20m obst=[binx1] lat=348ms motor=40C STAND
+[ 11.8s] avoid   v=(+0.35,-0.20,+0.03) goal=2.54m gap=0.20m obst=[binx1] lat=513ms motor=40C STAND
+[visual_nav] perception stale (0.61s) — holding
+[ 12.0s] avoid   v=(+0.05,+0.00,+0.00) goal=2.50m gap=0.40m obst=[binx1] lat=442ms motor=40C STAND
+[visual_nav] perception stale (0.67s) — holding
+[ 12.3s] avoid   v=(+0.05,+0.00,+0.00) goal=2.47m gap=0.35m obst=[binx1] lat=376ms motor=40C STAND
+[ 12.5s] avoid   v=(+0.10,-0.02,+0.00) goal=2.47m gap=0.21m obst=[binx2] lat=339ms motor=40C STAND
+[ 12.7s] avoid   v=(+0.11,-0.06,+0.03) goal=2.46m gap=0.21m obst=[binx2] lat=319ms motor=40C STAND
+[ 12.9s] avoid   v=(+0.14,-0.10,+0.03) goal=2.44m gap=0.20m obst=[binx2] lat=212ms motor=40C STAND
+[ 13.1s] avoid   v=(+0.17,-0.14,+0.06) goal=2.43m gap=0.21m obst=[binx2] lat=304ms motor=40C STAND
+[ 13.2s] avoid   v=(+0.22,-0.18,+0.09) goal=2.43m gap=0.20m obst=[binx2] lat=415ms motor=40C STAND
+[ 13.3s] avoid   v=(+0.25,-0.20,+0.09) goal=2.42m gap=0.20m obst=[binx2] lat=370ms motor=40C STAND
+[ 13.4s] avoid   v=(+0.26,-0.20,+0.06) goal=2.42m gap=0.20m obst=[binx2] lat=206ms motor=40C STAND
+[ 13.6s] avoid   v=(+0.25,-0.20,+0.09) goal=2.40m gap=0.20m obst=[binx2] lat=197ms motor=40C STAND
+[ 13.7s] avoid   v=(+0.24,-0.20,+0.09) goal=2.37m gap=0.21m obst=[binx2] lat=350ms motor=40C STAND
+[ 13.8s] avoid   v=(+0.23,-0.20,+0.12) goal=2.36m gap=0.20m obst=[binx2] lat=299ms motor=40C STAND
+[ 14.0s] avoid   v=(+0.24,-0.20,+0.06) goal=2.34m gap=0.20m obst=[binx2] lat=218ms motor=40C STAND
+[ 14.1s] avoid   v=(+0.23,-0.20,+0.09) goal=2.31m gap=0.20m obst=[binx2] lat=375ms motor=40C STAND
+[ 14.2s] avoid   v=(+0.22,-0.20,+0.09) goal=2.29m gap=0.20m obst=[binx2] lat=297ms motor=40C STAND
+[ 14.4s] avoid   v=(+0.23,-0.20,+0.06) goal=2.27m gap=0.20m obst=[binx2] lat=279ms motor=40C STAND
+[ 14.5s] avoid   v=(+0.22,-0.20,+0.06) goal=2.24m gap=0.20m obst=[binx2] lat=211ms motor=40C STAND
+[ 14.6s] avoid   v=(+0.21,-0.20,+0.09) goal=2.21m gap=0.20m obst=[binx2] lat=323ms motor=40C STAND
+[ 14.7s] avoid   v=(+0.18,-0.20,+0.12) goal=2.19m gap=0.20m obst=[binx2] lat=234ms motor=40C STAND
+[ 14.9s] avoid   v=(+0.17,-0.20,+0.12) goal=2.18m gap=0.20m obst=[binx2] lat=352ms motor=40C STAND
+[ 15.0s] avoid   v=(+0.16,-0.20,+0.12) goal=2.17m gap=0.20m obst=[binx2] lat=452ms motor=40C STAND
+[ 15.1s] avoid   v=(+0.17,-0.20,+0.12) goal=2.16m gap=0.19m obst=[binx2] lat=361ms motor=40C STAND
+[ 15.2s] avoid   v=(+0.18,-0.20,+0.12) goal=2.14m gap=0.18m obst=[binx2] lat=232ms motor=40C STAND
+[ 15.4s] avoid   v=(+0.19,-0.20,+0.12) goal=2.12m gap=0.18m obst=[binx2] lat=299ms motor=40C STAND
+[ 15.5s] avoid   v=(+0.22,-0.20,+0.15) goal=2.11m gap=0.17m obst=[binx2] lat=401ms motor=40C STAND
+[ 15.6s] avoid   v=(+0.23,-0.20,+0.15) goal=2.10m gap=0.18m obst=[binx2] lat=240ms motor=40C STAND
+[ 15.7s] avoid   v=(+0.22,-0.20,+0.18) goal=2.07m gap=0.18m obst=[binx2] lat=224ms motor=40C STAND
+[ 15.9s] avoid   v=(+0.21,-0.20,+0.18) goal=2.04m gap=0.17m obst=[binx2] lat=363ms motor=40C STAND
+[ 16.0s] avoid   v=(+0.22,-0.20,+0.21) goal=2.03m gap=0.18m obst=[binx2] lat=271ms motor=40C STAND
+[ 16.1s] avoid   v=(+0.21,-0.20,+0.21) goal=2.02m gap=0.18m obst=[binx2] lat=267ms motor=40C STAND
+[ 16.2s] avoid   v=(+0.20,-0.20,+0.21) goal=2.01m gap=0.17m obst=[binx2] lat=231ms motor=40C STAND
+[ 16.3s] avoid   v=(+0.19,-0.20,+0.21) goal=2.00m gap=0.17m obst=[binx2] lat=335ms motor=40C STAND
+[ 16.4s] avoid   v=(+0.16,-0.20,+0.21) goal=1.98m gap=0.16m obst=[binx2] lat=257ms motor=40C STAND
+[ 16.6s] avoid   v=(+0.17,-0.20,+0.18) goal=1.97m gap=0.16m obst=[binx2] lat=266ms motor=40C STAND
+[ 16.7s] avoid   v=(+0.18,-0.20,+0.18) goal=1.96m gap=0.17m obst=[binx2] lat=385ms motor=40C STAND
+[ 16.8s] avoid   v=(+0.19,-0.20,+0.18) goal=1.95m gap=0.17m obst=[binx2] lat=293ms motor=40C STAND
+[ 17.0s] avoid   v=(+0.20,-0.20,+0.18) goal=1.91m gap=0.17m obst=[binx2] lat=310ms motor=40C STAND
+[ 17.2s] avoid   v=(+0.19,-0.20,+0.18) goal=1.89m gap=0.17m obst=[binx2] lat=253ms motor=40C STAND
+[ 17.4s] avoid   v=(+0.20,-0.20,+0.15) goal=1.87m gap=0.17m obst=[binx2] lat=285ms motor=40C STAND
+[ 17.5s] avoid   v=(+0.21,-0.20,+0.15) goal=1.85m gap=0.18m obst=[binx2] lat=241ms motor=40C STAND
+[ 17.6s] avoid   v=(+0.22,-0.20,+0.15) goal=1.84m gap=0.18m obst=[binx2] lat=345ms motor=40C STAND
+[ 17.7s] avoid   v=(+0.23,-0.20,+0.15) goal=1.82m gap=0.18m obst=[binx2] lat=267ms motor=40C STAND
+[ 17.8s] avoid   v=(+0.24,-0.20,+0.15) goal=1.80m gap=0.19m obst=[binx2] lat=390ms motor=40C STAND
+[ 17.9s] avoid   v=(+0.25,-0.20,+0.15) goal=1.78m gap=0.20m obst=[binx2] lat=321ms motor=40C STAND
+[ 18.0s] avoid   v=(+0.26,-0.20,+0.15) goal=1.76m gap=0.20m obst=[binx2] lat=422ms motor=40C STAND
+[ 18.1s] avoid   v=(+0.25,-0.20,+0.15) goal=1.73m gap=0.20m obst=[binx2] lat=522ms motor=40C STAND
+[ 18.2s] avoid   v=(+0.26,-0.20,+0.15) goal=1.72m gap=0.21m obst=[binx2] lat=428ms motor=40C STAND
+[ 18.4s] avoid   v=(+0.27,-0.20,+0.15) goal=1.70m gap=0.21m obst=[binx2] lat=233ms motor=40C STAND
+[ 18.5s] avoid   v=(+0.28,-0.20,+0.15) goal=1.66m gap=0.21m obst=[binx2] lat=212ms motor=40C STAND
+[ 18.7s] avoid   v=(+0.27,-0.20,+0.15) goal=1.63m gap=0.22m obst=[binx2] lat=236ms motor=40C STAND
+[ 18.8s] avoid   v=(+0.30,-0.20,+0.15) goal=1.61m gap=0.23m obst=[binx2] lat=363ms motor=40C STAND
+[ 18.9s] avoid   v=(+0.29,-0.20,+0.15) goal=1.61m gap=0.23m obst=[binx2] lat=263ms motor=40C STAND
+[ 19.1s] avoid   v=(+0.30,-0.20,+0.12) goal=1.61m gap=0.23m obst=[binx2] lat=231ms motor=40C STAND
+[ 19.2s] avoid   v=(+0.29,-0.20,+0.12) goal=1.61m gap=0.23m obst=[binx2] lat=214ms motor=40C STAND
+[ 19.4s] avoid   v=(+0.30,-0.20,+0.12) goal=1.61m gap=0.23m obst=[binx2] lat=164ms motor=40C STAND
+[ 19.5s] avoid   v=(+0.31,-0.20,+0.12) goal=1.61m gap=0.22m obst=[binx2] lat=310ms motor=40C STAND
+[ 19.6s] avoid   v=(+0.30,-0.20,+0.12) goal=1.61m gap=0.23m obst=[binx2] lat=264ms motor=40C STAND
+[ 19.7s] avoid   v=(+0.31,-0.20,+0.12) goal=1.61m gap=0.22m obst=[binx2] lat=383ms motor=40C STAND
+[ 19.8s] avoid   v=(+0.29,-0.20,+0.12) goal=1.61m gap=0.23m obst=[binx2] lat=286ms motor=40C STAND
+[ 19.9s] avoid   v=(+0.30,-0.20,+0.12) goal=1.61m gap=0.22m obst=[binx2] lat=388ms motor=40C STAND
+[ 20.1s] avoid   v=(+0.29,-0.20,+0.12) goal=1.61m gap=0.23m obst=[binx2] lat=316ms motor=40C STAND
+[ 20.2s] avoid   v=(+0.30,-0.20,+0.12) goal=1.61m gap=0.21m obst=[binx2] lat=271ms motor=40C STAND
+[ 20.3s] avoid   v=(+0.31,-0.19,+0.12) goal=1.61m gap=0.21m obst=[binx2] lat=206ms motor=40C STAND
+[ 20.5s] avoid   v=(+0.30,-0.20,+0.12) goal=1.61m gap=0.22m obst=[binx2] lat=362ms motor=40C STAND
+[ 20.6s] avoid   v=(+0.31,-0.19,+0.12) goal=1.61m gap=0.22m obst=[binx2] lat=264ms motor=40C STAND
+[ 20.7s] avoid   v=(+0.29,-0.20,+0.12) goal=1.61m gap=0.22m obst=[binx2] lat=378ms motor=40C STAND
+[ 20.8s] avoid   v=(+0.30,-0.19,+0.12) goal=1.61m gap=0.22m obst=[binx2] lat=310ms motor=40C STAND
+[ 20.9s] avoid   v=(+0.29,-0.20,+0.12) goal=1.61m gap=0.21m obst=[binx2] lat=223ms motor=40C STAND
+[ 21.0s] avoid   v=(+0.30,-0.19,+0.12) goal=1.61m gap=0.22m obst=[binx2] lat=323ms motor=40C STAND
+[ 21.1s] avoid   v=(+0.31,-0.19,+0.12) goal=1.61m gap=0.21m obst=[binx2] lat=424ms motor=40C STAND
+[ 21.2s] avoid   v=(+0.30,-0.20,+0.12) goal=1.61m gap=0.20m obst=[binx2] lat=329ms motor=40C STAND
+[ 21.3s] avoid   v=(+0.31,-0.19,+0.12) goal=1.61m gap=0.21m obst=[binx2] lat=439ms motor=40C STAND
+[ 21.4s] avoid   v=(+0.29,-0.20,+0.12) goal=1.61m gap=0.21m obst=[binx2] lat=323ms motor=40C STAND
+[visual_nav] perception: 122 cycles, 0 errors
+[visual_nav] outcome: stalled: commanded 0.36 m/s for 4.0s and moved 0.28 m of an expected 1.45 m. Something is holding the robot — check the tether, and whether it has walked into something this pipeline cannot see.
+[visual_nav] parking: stop + lie down
+[visual_nav] wrote /home/unitree/hero6.mp4
+[visual_nav] wrote /home/unitree/hero6.jsonl (124 records)

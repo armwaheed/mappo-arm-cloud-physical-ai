@@ -94,6 +94,29 @@ POSITION_SIGMA_FLOOR_M = 0.08
 #: un-freezes the POSITION.
 DRIFT_SIGMA_M_PER_S = 0.02
 
+#: Position sigma, metres, beyond which a landmark is no longer planned against. It is
+#: kept and can re-converge — it is simply not evidence yet.
+#:
+#: Measured on the failed live run: a landmark reached sigma 0.52 m, so the planner saw a
+#: 0.69 m disc, and four of them between the robot and its goal. A landmark that uncertain
+#: has stopped carrying DIRECTION as well as position — it blocks a bearing the robot
+#: could have taken as hard as one it could not — so planning against it is worse than
+#: ignoring it.
+#:
+#: Sized from BOTH sides rather than picked round. A legitimately acquired landmark is
+#: already at 0.27 m after its first two sightings of the staged bin at 2.15 m, and falls
+#: below 0.10 m within ten; the run's ghosts sat at 0.52 m. Set it at 0.30 and a real
+#: landmark one metre further out would fail to confirm and the robot would walk at it.
+MAX_PLANNING_SIGMA_M = 0.40
+
+#: Most landmarks of one label the map will plan against, best-evidenced first. ONE bin
+#: cannot be in four places, and on the failed run it was: odometry that reads
+#: "stationary" while the robot is physically dragged projects every sighting to a
+#: different odom point, and each becomes its own landmark. The duplicates then box the
+#: robot in. This does not fix the odometry — nothing here can — it bounds the damage,
+#: and the stall abort in visual_nav is what actually catches the cause.
+MAX_LANDMARKS_PER_LABEL = 2
+
 #: Seconds an UNCONFIRMED landmark survives without being seen again. Confirmed ones
 #: have no such limit — a bin that has been seen properly has no reason to stop existing
 #: because nobody looked. This bounds the other case: a one-frame colour false positive
@@ -175,8 +198,27 @@ class StaticObstacleMap:
         return list(self._landmarks)
 
     def confirmed(self) -> list[Landmark]:
-        """Landmarks stable enough to plan against."""
-        return [lm for lm in self._landmarks if lm.confirmed]
+        """Landmarks stable enough, and certain enough, to plan against.
+
+        Three gates, and the last two exist because of a live run that failed on exactly
+        this: enough sightings, a position the map is still sure of
+        (:data:`MAX_PLANNING_SIGMA_M`), and no more than
+        :data:`MAX_LANDMARKS_PER_LABEL` of any one kind — best-evidenced first, since a
+        duplicate spawned by bad odometry has few sightings and a wide covariance while
+        the real one has many and a tight one.
+        """
+        candidates = [lm for lm in self._landmarks
+                      if lm.confirmed and lm.position_sigma <= MAX_PLANNING_SIGMA_M]
+        by_label: dict = {}
+        for landmark in candidates:
+            by_label.setdefault(landmark.label, []).append(landmark)
+        kept = []
+        for landmarks in by_label.values():
+            landmarks.sort(key=lambda lm: (-lm.sightings, lm.position_sigma))
+            kept.extend(landmarks[:MAX_LANDMARKS_PER_LABEL])
+        # Map order, not ranking order, so the overlay and the logs stay stable.
+        keep = {id(lm) for lm in kept}
+        return [lm for lm in self._landmarks if id(lm) in keep]
 
     def radius_for(self, label: str) -> float:
         return float(self.radii.get(label, self.default_radius_m))

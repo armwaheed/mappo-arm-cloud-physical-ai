@@ -57,7 +57,22 @@ from geometry import wrap_pi
 #: robot giving the staged bin a person's 1.20 m swung 1.76 m off the direct line to
 #: clear an obstacle needing 0.63 m — in the 1.5 m lane it was staged in, that is a wall
 #: rather than a detour.
-STATIC_SOFT_GAP_M = 0.45
+#:
+#: Measured again against the closed-loop test after a live run walked into that wall:
+#: below about 0.25 m this stops mattering at all, because the swerve is then set by the
+#: HARD constraint (obstacle radius + hard_gap_m + robot_radius_m = 0.90 m for the staged
+#: bin) rather than by comfort. 0.45 was costing 0.11 m of extra lateral travel for
+#: nothing. Anyone wanting a narrower pass than 0.90 m has to argue with a safety margin,
+#: not with this number.
+STATIC_SOFT_GAP_M = 0.20
+
+#: Hard gap for a MAPPED STATIC obstacle, metres — the counterpart to
+#: :attr:`PlannerConfig.hard_gap_m`, which is a person's. Smaller because the margin is
+#: added on top of a radius that ALREADY carries the landmark's position uncertainty, so
+#: a person's value counts the same caution twice, and because the thing it guards
+#: against — the obstacle moving into the gap after the robot has committed — is
+#: something a person can do and a bin cannot.
+STATIC_HARD_GAP_M = 0.12
 
 
 @dataclass(frozen=True)
@@ -106,6 +121,15 @@ class PlannerConfig:
     # needs 0.63 m, which in a real 1.5 m corridor is a wall rather than a detour.
     soft_gap_m: float = 1.20
 
+    # Gap below which the chosen path is REPORTED as `avoid`. Reporting only, never
+    # planning — it is deliberately not the soft gap, because that number sizes the
+    # berth and this one decides what a human reads in the log and the overlay. They
+    # were the same field until tightening the berth for a narrow corridor silently
+    # stopped a run that visibly swerved around a bin from ever saying `avoid`, which is
+    # the one word that makes the footage legible. A berth is a control decision; a label
+    # is an explanation, and tuning one must not quietly delete the other.
+    avoid_report_gap_m: float = 1.20
+
     # Extra margin required to CHANGE the reported reason, in metres of gap — a Schmitt
     # trigger on both `hold` and `avoid`. Observed live: `hold` and `avoid` alternated
     # on 9 consecutive ticks, and the simulated approach to the staged bin flipped
@@ -149,6 +173,18 @@ class Obstacle:
     #: a bin that cannot move needs a smooth path around it, not a wide berth, and the
     #: berth is what the robot spends corridor width on.
     soft_gap_m: float | None = None
+    #: Free space that must REMAIN between the two discs for a path to be allowed at all,
+    #: for THIS obstacle. ``None`` takes the planner's default.
+    #:
+    #: Per-obstacle for the same reason the soft gap is, and the reason is stronger here:
+    #: this margin is added ON TOP of a radius that already carries the object's position
+    #: uncertainty, so applying a person's value to a mapped landmark counts the caution
+    #: twice. Measured live — the robot stopped with a reported gap of 0.21 m against a
+    #: 0.25 m threshold, which was 0.43 m of actual air between robot and bin, in a lane
+    #: where it needed every centimetre. A person can step sideways into the gap while
+    #: the robot is committed to it; a bin cannot, and that difference is exactly what
+    #: this margin is for.
+    hard_gap_m: float | None = None
 
 
 @dataclass(frozen=True)
@@ -294,6 +330,12 @@ class DynamicWindowPlanner:
         return np.array([default if o.soft_gap_m is None else o.soft_gap_m
                          for o in obstacles], dtype=float)
 
+    def _hard_gaps(self, obstacles: list[Obstacle]) -> np.ndarray:
+        """Each obstacle's hard gap, defaulting to the planner's, shape ``(M,)``."""
+        default = self.config.hard_gap_m
+        return np.array([default if o.hard_gap_m is None else o.hard_gap_m
+                         for o in obstacles], dtype=float)
+
     @staticmethod
     def _worst_gap(gaps: np.ndarray) -> np.ndarray:
         """Collapse ``(N, M)`` per-obstacle gaps to the worst per candidate, ``(N,)``."""
@@ -339,11 +381,15 @@ class DynamicWindowPlanner:
         gaps = self._worst_gap(per_obstacle_gaps)
 
         # Starting is harder than continuing: see PlannerConfig.reason_hysteresis_m.
-        required_gap = cfg.hard_gap_m
-        if last_reason == "hold":
-            required_gap += cfg.reason_hysteresis_m
-
-        feasible = gaps >= required_gap
+        margin = cfg.reason_hysteresis_m if last_reason == "hold" else 0.0
+        if obstacles:
+            # Per-obstacle: a candidate is feasible when it clears EVERY obstacle by
+            # that obstacle's own hard gap, not when its worst gap clears a single
+            # planner-wide number that was chosen for people.
+            required = self._hard_gaps(obstacles)[None, :] + margin
+            feasible = (per_obstacle_gaps >= required).all(axis=1)
+        else:
+            feasible = np.ones(gaps.shape[0], dtype=bool)
         if not feasible.any():
             # Swerve early, stop late — see the module docstring.
             return Command(0.0, 0.0, 0.0, reason="hold",
@@ -355,8 +401,10 @@ class DynamicWindowPlanner:
         # and inflating it while holding would make the robot creep out of a hold more
         # slowly the longer it held.
         current_gap = self.current_gap(pose, obstacles)
+        nearest_hard_gap = (float(self._hard_gaps(obstacles).min()) if obstacles
+                            else cfg.hard_gap_m)
         stopping_cap = math.sqrt(max(0.0, 2.0 * cfg.decel_for_stopping_m_s2
-                                     * max(0.0, current_gap - cfg.hard_gap_m)))
+                                     * max(0.0, current_gap - nearest_hard_gap)))
         feasible &= candidates[:, 0] <= max(stopping_cap, 1e-6)
         if not feasible.any():
             return Command(0.0, 0.0, 0.0, reason="hold", gap_m=float(current_gap),
@@ -371,35 +419,19 @@ class DynamicWindowPlanner:
         cost = np.where(feasible, cost, np.inf)
         best = int(np.argmin(cost))
 
-        # "Avoiding" means the chosen path is inside SOME obstacle's soft gap, with the
-        # same hysteresis the hold decision gets: `avoid` is a label applied after the
-        # choice, so weight_smooth cannot damp it and a bare threshold chatters.
-        slack = self._soft_slack(per_obstacle_gaps, soft_gaps)
-        avoid_threshold = 0.0
+        # "Avoiding" means an obstacle is close enough to be shaping the chosen path,
+        # with the same hysteresis the hold decision gets: `avoid` is a label applied
+        # after the choice, so weight_smooth cannot damp it and a bare threshold
+        # chatters.
+        avoid_threshold = cfg.avoid_report_gap_m
         if last_reason == "avoid":
-            avoid_threshold = cfg.reason_hysteresis_m
+            avoid_threshold += cfg.reason_hysteresis_m
         return Command(
             vx=float(candidates[best, 0]), vy=float(candidates[best, 1]),
             wz=float(candidates[best, 2]),
-            reason="avoid" if slack[best] < avoid_threshold else "goal",
+            reason="avoid" if gaps[best] < avoid_threshold else "goal",
             gap_m=float(gaps[best]), feasible=int(feasible.sum()),
             evaluated=int(candidates.shape[0]))
-
-    @staticmethod
-    def _soft_slack(per_obstacle_gaps: np.ndarray,
-                    soft_gaps: np.ndarray) -> np.ndarray:
-        """How much room each candidate has to spare inside every soft gap, ``(N,)``.
-
-        Negative means at least one obstacle is being crowded. Per-obstacle because a
-        bin's soft gap and a person's differ by more than a factor of two, so a single
-        distance cannot answer "is this candidate close to anything?".
-
-        The empty guard is load-bearing, not defensive: with no obstacles the arrays are
-        ``(N, 0)`` and a reduction over a zero-length axis raises.
-        """
-        if soft_gaps.size == 0:
-            return np.full(per_obstacle_gaps.shape[0], math.inf)
-        return (per_obstacle_gaps - soft_gaps[None, :]).min(axis=1)
 
     @staticmethod
     def _clearance_cost(per_obstacle_gaps: np.ndarray,

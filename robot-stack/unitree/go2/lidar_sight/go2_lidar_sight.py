@@ -94,7 +94,7 @@ def room_occupancy(cloud: np.ndarray, bounds: RoomBounds, cell_m: float = 0.05,
     Points in the height band ``[z_floor, z_ceiling]`` mark obstacle cells (the
     floor and ceiling are excluded so they don't fill the grid). Returns a boolean
     array indexed ``[ix, iy]`` (True = occupied). For A* planning, feed the cropped
-    cloud to ``arm_mhs_robotkit.navigation`` instead — this grid is for a quick top-down view.
+    cloud to ``arm_dc_robotkit.navigation`` instead — this grid is for a quick top-down view.
     """
     cloud = np.asarray(cloud, dtype=float).reshape(-1, 3)
     nx = max(1, int(math.ceil((bounds.x_max - bounds.x_min) / cell_m)))

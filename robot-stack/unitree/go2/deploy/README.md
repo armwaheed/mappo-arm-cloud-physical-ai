@@ -1,6 +1,6 @@
 # Unitree Go2 — Deploy (low-level policy on the real motors)
 
-The Go2 binding of the [`lib/policy_deploy`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/policy_deploy.py) **de-risk ladder**: a
+The Go2 binding of the `lib/policy_deploy` (arm-dc-robotkit `lib/policy_deploy.py`) **de-risk ladder**: a
 `RobotIO` that reads `rt/lowstate` and commands `rt/lowcmd` so a trained RL policy can drive the legs.
 Module: [`go2_robot_io.py`](go2_robot_io.py) → `Go2RobotIO`.
 

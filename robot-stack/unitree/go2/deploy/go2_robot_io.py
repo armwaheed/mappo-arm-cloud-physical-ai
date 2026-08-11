@@ -2,13 +2,13 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Unitree Go2 binding of the ``arm_mhs_robotkit.policy_deploy`` de-risk ladder (LOW-LEVEL).
+"""Unitree Go2 binding of the ``arm_dc_robotkit.policy_deploy`` de-risk ladder (LOW-LEVEL).
 
 This is the Go2 ``RobotIO`` for putting a trained RL policy on the **real motors**
 via ``rt/lowcmd`` — the most safety-sensitive path in the stack. High-level walking
 does NOT come through here (use ``unitree/go2/locomotion``, the vendor balancer);
 this is only for a low-level whole-body policy deployed through
-``arm_mhs_robotkit.policy_deploy.PolicyDeploy``'s offline → partial → whole de-risk rungs.
+``arm_dc_robotkit.policy_deploy.PolicyDeploy``'s offline → partial → whole de-risk rungs.
 
 Two Go2-specific facts this module carries:
 
@@ -16,7 +16,7 @@ Two Go2-specific facts this module carries:
     (FR hip/thigh/calf, then FL, RR, RL — :data:`GO2_JOINT_ORDER`), while IsaacLab
     orders the articulation **per-level** (all hips, all thighs, all calves —
     :data:`GO2_ISAAC_JOINT_ORDER`). A policy trained in Isaac emits actions in the
-    per-level order; deploying it requires a remap. ``arm_mhs_robotkit.policy_deploy`` maps by
+    per-level order; deploying it requires a remap. ``arm_dc_robotkit.policy_deploy`` maps by
     joint NAME (so a proper contract handles this), and :func:`reorder` is the pure
     helper for any path that carries bare index vectors.
   * **Mode release.** Low-level control only works once the sport service has
@@ -39,7 +39,7 @@ import time
 
 import numpy as np
 
-from arm_mhs_robotkit.policy_deploy import RobotIO, RobotState
+from arm_dc_robotkit.policy_deploy import RobotIO, RobotState
 
 # ── Go2 joint order ───────────────────────────────────────────────────────────
 # SDK LowState/LowCmd motor index order (per-leg): the on-wire order for rt/lowstate
@@ -190,7 +190,7 @@ class Go2RobotIO(RobotIO):
             raise RuntimeError(
                 "rt/lowcmd is disabled — construct Go2RobotIO(enable_lowcmd=True) to command "
                 "motors, and only after releasing sport mode + climbing the de-risk ladder "
-                "(see SAFETY.md and arm_mhs_robotkit.policy_deploy).")
+                "(see SAFETY.md and arm_dc_robotkit.policy_deploy).")
         cmd = self._new_lowcmd()
         for name, i in _NAME_TO_SDK_INDEX.items():
             m = cmd.motor_cmd[i]

@@ -4,8 +4,8 @@ This document is the **non-negotiable** safety layer for running motor-level con
 physical humanoid: velocity-walk, `rt/arm_sdk` overlays, and
 especially **whole-body RL-policy deploy** (`rt/lowcmd` with the vendor balance controller
 released). It is written from a real incident — read it before any of the on-hardware
-control skills ([deploy-policy](https://github.com/arm/arm-mhs-nvidia-isaaclab/blob/main/skills/deploy-policy/SKILL.md), [locomotion](https://github.com/arm/arm-mhs-unitree-g1/blob/main/unitree/g1/locomotion/README.md),
-[controller](https://github.com/arm/arm-mhs-unitree-g1/blob/main/unitree/g1/controller/README.md)).
+control skills ([deploy-policy](https://github.com/arm/arm-dc-nvidia-isaaclab/blob/main/skills/deploy-policy/SKILL.md), [locomotion](https://github.com/arm/arm-dc-unitree-g1/blob/main/unitree/g1/locomotion/README.md),
+[controller](https://github.com/arm/arm-dc-unitree-g1/blob/main/unitree/g1/controller/README.md)).
 
 It is humanoid-general; G1 specifics are called out.
 
@@ -35,7 +35,7 @@ right stop; the hard-kill undid it.
 
 A `SIGKILL` cannot be caught, so a process cannot damp on the way out. That is *why* you never
 use it as a stop — and why every deploy process must install a catchable-signal damp handler
-(§2, [`lib/safe_stop.py`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/safe_stop.py)).
+(§2, `lib/safe_stop.py` (arm-dc-robotkit `lib/safe_stop.py`)).
 
 ---
 
@@ -49,11 +49,11 @@ Always have the higher tiers physically in reach before any motion.
    firmware, so it works **even if your control process has hung or DDS has stalled**; sets the
    joints **compliant** (`kp→0`). This is the backstop for when software can no longer help.
 3. **In-loop ANY-button abort (the primary abort during a run)** — the
-   [`G1Remote`](https://github.com/arm/arm-mhs-unitree-g1/blob/main/unitree/g1/controller/README.md) **any-button latch** wired into the control loop:
+   [`G1Remote`](https://github.com/arm/arm-dc-unitree-g1/blob/main/unitree/g1/controller/README.md) **any-button latch** wired into the control loop:
    the operator presses **ANY button** and the loop catches it within one ~20 ms tick, runs the
    clean `kp=0, kd≈small, tau=0` damp on **all** joints (or releases the arm overlay), then exits.
    You should **never have to hunt for a specific combo to stop a run — mash any button.** This is
-   what the loop polls every tick and what [`SafeStop`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/safe_stop.py) damps on. It is
+   what the loop polls every tick and what `SafeStop` (arm-dc-robotkit `lib/safe_stop.py`) damps on. It is
    software-mediated, so tiers 1–2 remain the backstops if the loop itself ever stalls.
    ⚠️ **The any-button latch is a *clean* abort in Develop mode** (the vendor controller is paused,
    so buttons are not bound to gestures — they are just bits the loop reads). In **Regular / AI-Sport
@@ -71,10 +71,10 @@ confirm the robot is compliant, then terminate** — and never with `-9`.
 
 Every process that commands motors MUST guarantee a damp on **every** exit — normal return,
 exception, `SIGINT` (Ctrl-C), and `SIGTERM` (`kill` without `-9`). Use
-[`lib/safe_stop.py`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/safe_stop.py):
+`lib/safe_stop.py` (arm-dc-robotkit `lib/safe_stop.py`):
 
 ```python
-from arm_mhs_robotkit.safe_stop import SafeStop
+from arm_dc_robotkit.safe_stop import SafeStop
 
 def damp():               # command compliant on ALL joints (kp=0, kd≈3, tau=0), ~1 s
     g1.publish_damp(seconds=1.0)
@@ -204,8 +204,8 @@ task furniture in front of it for a balance test, and clear space makes a fall c
 ## 6. Pre-run checklist (every on-hardware control run)
 
 - [ ] Hardware e-stop / battery in reach; operator's hand on it.
-- [ ] Controller abort **armed** and wired into the loop ([`G1Remote`](https://github.com/arm/arm-mhs-unitree-g1/blob/main/unitree/g1/controller/README.md)).
-- [ ] Process uses [`SafeStop`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/safe_stop.py) (damps on return/exception/SIGINT/SIGTERM).
+- [ ] Controller abort **armed** and wired into the loop ([`G1Remote`](https://github.com/arm/arm-dc-unitree-g1/blob/main/unitree/g1/controller/README.md)).
+- [ ] Process uses `SafeStop` (arm-dc-robotkit `lib/safe_stop.py`) (damps on return/exception/SIGINT/SIGTERM).
 - [ ] Rung 2 only: robot on a **gantry** with slack; clear area; vendor-release verified.
 - [ ] You know the **panic-damp** command for a second shell.
 - [ ] Verify by **what you see**, not telemetry — but use telemetry to confirm *inert* before approaching.

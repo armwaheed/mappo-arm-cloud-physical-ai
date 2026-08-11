@@ -112,7 +112,8 @@ class TelemetryWriter:
     def write_tick(self, *, elapsed_s: float, pose, goal_xy, goal_distance_m,
                    command, obstacles, frame_age_s: float, perception_seq: int,
                    detect_ms: float, standing: bool, live: bool,
-                   video_frame: int | None = None, health=None) -> None:
+                   video_frame: int | None = None, stale: bool = False,
+                   measured=None, health=None) -> None:
         """One control tick, whether or not it commanded motion.
 
         EVERY tick is written, including holds, stale-perception skips and the
@@ -146,7 +147,20 @@ class TelemetryWriter:
             "perception": {"seq": int(perception_seq),
                            "frame_age_s": round(float(frame_age_s), 4),
                            "detect_ms": round(float(detect_ms), 2),
-                           "video_frame": video_frame},
+                           "video_frame": video_frame,
+                           # The robot is BLIND this tick and holding, but it has not
+                           # forgotten its goal. Distinguishing the two matters: a null
+                           # goal means "never acquired / lost", which is a different
+                           # event entirely.
+                           "stale": bool(stale)},
+            # What the robot ACTUALLY did, beside what it was told to do. Recording only
+            # the command makes a whole class of failure undiagnosable from the file: a
+            # run that commanded 0.12 m/s forward and 0.20 m/s of strafe for fifty
+            # seconds and moved nothing reads, in the command alone, exactly like a run
+            # that was walking. The two are told apart here and nowhere else.
+            "measured": (None if measured is None else
+                         {"vx": _finite(measured[0]), "vy": _finite(measured[1]),
+                          "wz": _finite(measured[2])}),
             "posture": ("standing" if standing else "prone"),
             "live": bool(live),
             "health": (None if health is None else {

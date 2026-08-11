@@ -264,15 +264,36 @@ def test_it_commits_to_one_side_rather_than_splitting_the_difference():
     offsets = [(-px * math.sin(bearing) + py * math.cos(bearing)) for px, py in path]
     swing = max(abs(min(offsets)), abs(max(offsets)))
     # Bounds from the CONFIGURATION, not from what this run happened to do. The bin sits
-    # on the robot-to-chair line, so clearing it needs at least obstacle+robot radius of
-    # lateral room, and the planner is asking for that plus one soft gap. A trajectory
-    # outside that band means the geometry is no longer driving the detour — too small
-    # and it is clipping the bin, too large and it is spending corridor width the robot
-    # cannot sense on a berth nothing asked for.
-    minimum = _bin().radius_m + planner.config.robot_radius_m
-    assert swing >= minimum, f"only {swing:.2f} m of offset; needs {minimum:.2f} m"
+    # on the robot-to-chair line, so clearing it needs the full HARD constraint of
+    # lateral room — obstacle radius, the robot's own, and the hard gap between them —
+    # and the planner is asking for that plus one soft gap on top. A trajectory outside
+    # that band means the geometry is no longer driving the detour: too small and it is
+    # clipping the bin, too large and it is spending corridor width the robot cannot
+    # sense on a berth nothing asked for.
+    #
+    # `hard_gap_m` belongs in this sum and was once left out of it, which made the upper
+    # bound 0.25 m too generous and hid a real over-swerve until a live run drove into a
+    # wall. It is also the term that dominates: below about 0.25 m of soft gap the swerve
+    # stops shrinking at all, because this is what is setting it.
+    minimum = (_bin().radius_m + planner.config.robot_radius_m
+               + planner.config.hard_gap_m)
+    assert swing >= minimum - 0.05, f"only {swing:.2f} m of offset; needs {minimum:.2f} m"
     assert swing <= minimum + STATIC_SOFT_GAP_M, (
-        f"detoured {swing:.2f} m to clear a 0.30 m bin needing {minimum:.2f} m")
+        f"detoured {swing:.2f} m to clear a bin needing {minimum:.2f} m")
+
+
+def test_the_avoid_label_survives_a_tight_berth():
+    """The berth and the label are separate numbers, and this is why.
+
+    They were one field. Tightening the berth for a narrow corridor then silently
+    stopped a run that visibly swerved around a bin from ever reporting `avoid` — losing
+    the single word that makes the footage and the log legible. A berth is a control
+    decision; a label is an explanation.
+    """
+    planner = _planner()
+    _, reasons, outcome = _drive(planner, ORIGIN, CHAIR_XY, [_bin(soft_gap_m=0.05)])
+    assert outcome == "arrived", outcome
+    assert "avoid" in reasons, "a visible swerve must still say so"
 
 
 def test_a_bin_does_not_get_a_persons_berth():
@@ -455,14 +476,14 @@ def test_a_crowded_bin_outranks_a_comfortable_person():
 
 def test_an_empty_scene_survives_the_zero_length_reduction():
     """With no obstacles the per-obstacle arrays are (N, 0), and numpy raises on a
-    reduction over a zero-length axis. The guards in _clearance_cost / _soft_slack are
-    load-bearing rather than defensive, so pin them."""
+    reduction over a zero-length axis. The guard in _clearance_cost is load-bearing
+    rather than defensive, so pin it."""
     planner = _planner()
     import numpy as np
     empty_gaps = np.full((7, 0), math.inf)
     empty_soft = np.array([])
     assert planner._clearance_cost(empty_gaps, empty_soft).tolist() == [0.0] * 7
-    assert all(math.isinf(v) for v in planner._soft_slack(empty_gaps, empty_soft))
+    assert all(math.isinf(v) for v in planner._worst_gap(empty_gaps))
 
 
 def test_a_bin_and_a_person_are_both_planned_against():

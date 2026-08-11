@@ -113,7 +113,7 @@ import math
 import sys
 import threading
 import time
-from collections import Counter
+from collections import Counter, deque
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Sequence
@@ -128,6 +128,7 @@ import contextlib
 
 import overlay
 from avoidance import (
+    STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
     DynamicWindowPlanner,
     Limits,
@@ -177,6 +178,21 @@ DEFAULT_MODEL_DIR = Path.home() / "go2_models"
 # over 20.5 s is 7.1 Hz nominal but the recording plays in 13.1 s, so the video runs
 # ~1.6x fast. Re-time it before quoting a duration off the footage.
 RECORD_FPS = 7.0
+
+# ── Stall detection ─────────────────────────────────────────────────────────
+# Seconds of pose history the stall gate judges on. Long enough that a legitimate slow
+# manoeuvre is not mistaken for being stuck — a spot turn commands little translation and
+# a careful sidestep is slow — and short enough that a robot pushing into something is
+# stopped in seconds rather than for the rest of the run's budget.
+PROGRESS_WINDOW_S = 4.0
+# Fraction of the commanded travel the robot must actually achieve over that window. Low
+# on purpose: the vendor gait lags its target, a swerve trades forward speed for lateral,
+# and the odometry itself drifts. The failure this catches is total, not marginal —
+# across two live runs the measured figure was ZERO for 21 s and then 12 s.
+PROGRESS_FRACTION = 0.20
+# Below this commanded speed the robot is not being asked to go anywhere, so there is
+# nothing to fail to achieve.
+PROGRESS_MIN_COMMAND_M_S = 0.05
 
 
 @dataclass
@@ -360,6 +376,8 @@ class VisualNavigator:
 
         self._standing = False
         self._frames_written = 0
+        #: (time, x, y) over the last PROGRESS_WINDOW_S, for the stall gate.
+        self._progress: deque = deque()
         self._last_command = (0.0, 0.0, 0.0)
         self._last_reason = "goal"
         self._tracker_time = time.monotonic()
@@ -437,7 +455,8 @@ class VisualNavigator:
             obstacles.extend(
                 Obstacle(x=landmark.x, y=landmark.y, vx=0.0, vy=0.0,
                          radius_m=landmark.planning_radius_m, label=landmark.label,
-                         soft_gap_m=STATIC_SOFT_GAP_M)
+                         soft_gap_m=STATIC_SOFT_GAP_M,
+                         hard_gap_m=STATIC_HARD_GAP_M)
                 for landmark in self._static_map.confirmed())
         return obstacles
 
@@ -513,8 +532,16 @@ class VisualNavigator:
                 # topic and is still good here, so the tick is still worth recording.
                 self._command((0.0, 0.0, 0.0))
                 print(f"[visual_nav] perception stale ({frame_age:.2f}s) — holding")
-                self._telemetry_tick(elapsed, pose, None, None, obstacles,
-                                     frame_age, result)
+                # The LATCHED goal, not None. A stale frame means the robot cannot see,
+                # not that it has forgotten where it was going, and recording null here
+                # reads downstream as "goal lost" — which is a different and much more
+                # alarming event. `stale` is what says what actually happened.
+                latched = self._goal.goal_xy()
+                self._telemetry_tick(
+                    elapsed, pose, latched,
+                    None if latched is None else
+                    math.hypot(latched[0] - pose[0], latched[1] - pose[1]),
+                    obstacles, frame_age, result, stale=True)
                 time.sleep(period)
                 continue
 
@@ -572,6 +599,26 @@ class VisualNavigator:
 
             self._command((command.vx, command.vy, command.wz)
                           if self._standing else (0.0, 0.0, 0.0))
+
+            # COMMANDED TO MOVE AND NOT MOVING. Go2Locomotion has measured this all
+            # along — is_blocked() compares the odometry's speed against the commanded
+            # one over a 3 s grace — and nothing here ever asked it. Observed live: the
+            # Ethernet tether went taut, the robot veered into a cubicle wall, and the
+            # loop kept commanding 0.13 m/s forward and 0.20 m/s of strafe into it for
+            # FORTY SECONDS while the pose sat still. Nothing stopped it, and the run
+            # ended on its clock as "timeout".
+            #
+            # It is also what poisons everything downstream, so a late abort is not a
+            # cosmetic improvement. Odometry that says "stationary" while the robot is
+            # physically being dragged projects every sighting to a wrong odom point:
+            # that run finished with FOUR landmarks for one bin, up to 5.6 m from it,
+            # and a goal that jumped a metre between latches. The map is only as good as
+            # the frame under it.
+            blocked = self._blocked_reason(command, now, pose)
+            if blocked is not None:
+                outcome = blocked
+                break
+
             self._log(elapsed, command, distance, obstacles, frame_age)
             frame = self._record(result, pose, command, obstacles)
             self._telemetry_tick(elapsed, pose, goal_xy, distance, obstacles,
@@ -592,10 +639,63 @@ class VisualNavigator:
                 elapsed_s=round(time.monotonic() - started, 3))
         return outcome
 
+    def _blocked_reason(self, command, now: float, pose) -> str | None:
+        """``None``, or why the run should stop because the robot is going nowhere.
+
+        Only meaningful while actually walking: a dry run's legs never move, and a prone
+        robot is stationary on purpose.
+
+        MEASURED ON NET DISPLACEMENT, not on instantaneous speed, and that is the whole
+        point of doing it here rather than deferring to ``Go2Locomotion.is_blocked``.
+        That gate asks whether the measured speed is at least a tenth of the commanded
+        one — which for a 0.10 m/s command is **one centimetre per second**, a bar a
+        robot shuffling on the spot clears easily. It did: across two live runs the pose
+        sat still for 21 s and then 12 s while the loop commanded 0.10-0.14 m/s forward
+        and a full 0.20 m/s of strafe, and the gate never fired once.
+
+        A quadruped that is trotting hard against a taut tether IS moving its legs, and
+        its body velocity estimate is not zero. What it is not doing is getting anywhere.
+        So compare where it actually IS against where it was, over a window long enough
+        that a legitimate slow manoeuvre — a spot turn, a careful sidestep — is not
+        mistaken for it.
+        """
+        if not (self._config.live and self._standing):
+            self._progress.clear()
+            return None
+
+        self._progress.append((now, pose[0], pose[1]))
+        # Keep the NEWEST sample that is still at least a full window old, by discarding
+        # a sample only once the one behind it has itself aged past the window. Pruning
+        # everything older than the window instead — the obvious spelling — leaves the
+        # oldest survivor younger than the window by construction, so the "have I got a
+        # full window yet?" test below can only pass on a tick landing exactly on the
+        # boundary. At an irregular 10 Hz that never happens, and the gate silently never
+        # fires: a live run sat still for 12 s, commanded 0.23 m/s throughout, and was
+        # never once judged. A unit test with dt=0.5 hid it, because 0.5 divides 4.0.
+        while len(self._progress) > 1 and now - self._progress[1][0] >= PROGRESS_WINDOW_S:
+            self._progress.popleft()
+
+        commanded = math.hypot(command.vx, command.vy)
+        if commanded <= PROGRESS_MIN_COMMAND_M_S:
+            return None                       # not asking it to go anywhere
+        oldest_time, oldest_x, oldest_y = self._progress[0]
+        span = now - oldest_time
+        if span < PROGRESS_WINDOW_S:
+            return None                       # not enough history to judge yet
+
+        moved = math.hypot(pose[0] - oldest_x, pose[1] - oldest_y)
+        expected = commanded * span
+        if moved >= PROGRESS_FRACTION * expected:
+            return None
+        return (f"stalled: commanded {commanded:.2f} m/s for {span:.1f}s and moved "
+                f"{moved:.2f} m of an expected {expected:.2f} m. Something is holding "
+                f"the robot — check the tether, and whether it has walked into "
+                f"something this pipeline cannot see.")
+
     def _telemetry_tick(self, elapsed: float, pose, goal_xy, distance,
                         obstacles: Sequence[Obstacle], frame_age: float,
                         result: PerceptionResult, command=None,
-                        video_frame: int | None = None) -> None:
+                        video_frame: int | None = None, stale: bool = False) -> None:
         """Record one tick for a machine, whether or not it commanded motion.
 
         Separate from ``_log``, which is for a person reading a console. The two have
@@ -611,8 +711,19 @@ class VisualNavigator:
             goal_distance_m=distance, command=command, obstacles=obstacles,
             frame_age_s=frame_age, perception_seq=result.seq,
             detect_ms=result.detect_ms, standing=self._standing,
-            live=self._config.live, video_frame=video_frame,
-            health=self._health.latest())
+            live=self._config.live, video_frame=video_frame, stale=stale,
+            measured=self._measured_velocity(), health=self._health.latest())
+
+    def _measured_velocity(self):
+        """What the odometry says the body is doing, or ``None`` if it cannot say.
+
+        Guarded because not every locomotion backend exposes it, and a telemetry field
+        must never be the thing that ends a run.
+        """
+        try:
+            return self._loco.velocity()
+        except Exception:
+            return None
 
     def _command(self, velocity: tuple[float, float, float]) -> None:
         if self._config.live and self._standing:
@@ -780,6 +891,15 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--obstacle-height", type=float, default=None,
                     help="true height of the tracked object in metres, when --classes "
                          "is something other than person")
+    ap.add_argument("--robot-radius", type=float, default=planner.robot_radius_m,
+                    help="the robot's own plan-view radius in metres. The default 0.40 "
+                         "is the half-DIAGONAL of the 0.70x0.31 m body — correct if it "
+                         "might be at any yaw relative to an obstacle. Crabbing past "
+                         "something on its flank it stays aligned with its path, where "
+                         "the half-WIDTH 0.155 is what matters, so 0.40 asks for 2.6x "
+                         "the room it needs and a narrow lane will not give it. Lower "
+                         "this deliberately: it is the margin against clipping an "
+                         "obstacle with a leg")
     ap.add_argument("--obstacle-radius", type=float, default=planner.obstacle_radius_m,
                     help="plan-view footprint of a TRACKED MOVER in metres. The default "
                          "is a person's; anything smaller wants its own number, because "
@@ -988,10 +1108,12 @@ def main() -> None:
         print(f"[visual_nav] envelope: vx<={limits.max_vx:.2f} vy<={limits.max_vy:.2f} "
               f"wz<={limits.max_wz:.2f}")
         planner_config = PlannerConfig(horizon_s=args.horizon,
-                                       obstacle_radius_m=args.obstacle_radius)
+                                       obstacle_radius_m=args.obstacle_radius,
+                                       robot_radius_m=args.robot_radius)
         print(f"[visual_nav] planner: horizon {planner_config.horizon_s:.1f}s "
               f"({planner_config.horizon_s * limits.max_vx:.2f} m of lookahead at "
-              f"top speed), mover radius {planner_config.obstacle_radius_m:.2f} m")
+              f"top speed), robot radius {planner_config.robot_radius_m:.2f} m, "
+              f"mover radius {planner_config.obstacle_radius_m:.2f} m")
         planner = DynamicWindowPlanner(limits=limits, config=planner_config)
         tracker = ObstacleTracker(fov_rad=math.radians(camera_model.hfov_deg))
 

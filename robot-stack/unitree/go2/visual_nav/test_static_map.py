@@ -19,10 +19,14 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import numpy as np
+
 from static_map import (
     ASSOCIATION_GATE_M,
     CONFIRM_SIGHTINGS,
+    MAX_LANDMARKS_PER_LABEL,
     MAX_MISSES,
+    MAX_PLANNING_SIGMA_M,
     POSITION_SIGMA_FLOOR_M,
     StaticObstacleMap,
 )
@@ -249,6 +253,92 @@ def test_a_wider_uncertainty_casts_a_wider_shadow():
     fuzzy = _map()
     _see(fuzzy, CONFIRM_SIGHTINGS)
     assert fuzzy.occluders(*ORIGIN)[0][1] > sharp.occluders(*ORIGIN)[0][1]
+
+
+# ── Guards learned from a failed live run ───────────────────────────────────
+def test_a_landmark_the_map_is_unsure_of_is_not_planned_against():
+    """Measured live: a landmark reached sigma 0.52 m, so the planner saw a 0.69 m disc.
+
+    Once the uncertainty is that wide the landmark has stopped carrying direction as
+    well as position — it blocks a bearing the robot could have taken exactly as hard as
+    one it could not — so planning against it is worse than ignoring it.
+    """
+    mapping = _map()
+    _see(mapping, CONFIRM_SIGHTINGS)
+    landmark = mapping.landmarks[0]
+    assert mapping.confirmed() == [landmark], "a tight landmark is planned against"
+    landmark.covariance = np.eye(2) * (MAX_PLANNING_SIGMA_M + 0.2) ** 2
+    assert mapping.confirmed() == [], "a vague one is not"
+    assert mapping.landmarks == [landmark], "but it is KEPT, and may re-converge"
+
+
+def test_one_prop_cannot_be_planned_against_in_four_places():
+    """Measured live: four landmarks for one bin, up to 5.6 m away, boxing the robot in.
+
+    Odometry that reads "stationary" while the robot is physically dragged projects every
+    sighting to a different odom point, and each becomes its own landmark.
+    """
+    mapping = _map()
+    for bearing in (7.1, -25.0, 40.0, -45.0):
+        _see(mapping, CONFIRM_SIGHTINGS, bearing_deg=bearing, range_m=2.15)
+    assert len(mapping.landmarks) == 4, "the map still holds what it saw"
+    assert len(mapping.confirmed()) == MAX_LANDMARKS_PER_LABEL
+
+
+def test_the_best_evidenced_duplicate_is_the_one_kept():
+    """A duplicate spawned by bad odometry has few sightings and a wide covariance; the
+    real landmark has many and a tight one. Rank on that, not on arrival order."""
+    mapping = _map()
+    _see(mapping, 2, bearing_deg=-30.0)          # the ghost, seen twice
+    _see(mapping, 12, bearing_deg=7.1)           # the real bin, seen twelve times
+    _see(mapping, 2, bearing_deg=35.0)           # another ghost
+    confirmed = mapping.confirmed()
+    assert len(confirmed) == MAX_LANDMARKS_PER_LABEL
+    best = max(confirmed, key=lambda lm: lm.sightings)
+    assert best.sightings == 12, best.sightings
+    assert abs(best.x - 2.134) < 0.05, "the real bin must survive the cull"
+
+
+def test_the_cap_is_per_label_not_global():
+    """A bin and a crate compete for their own slots, not with each other."""
+    mapping = StaticObstacleMap(radii={"bin": 0.15, "crate": 0.2})
+    # All six in EVERY cycle: observing them in separate passes would leave the others
+    # unmatched-but-visible each time, and they would be missed to death rather than
+    # capped, which is a different rule and not the one under test.
+    for index in range(6):
+        mapping.observe(
+            [_sighting(b, 2.2) for b in (7.1, -25.0, 40.0)]
+            + [_sighting(b, 2.2, label="crate") for b in (14.0, -33.0, 47.0)],
+            index * 0.14, *ORIGIN)
+    labels = [lm.label for lm in mapping.confirmed()]
+    assert labels.count("bin") == MAX_LANDMARKS_PER_LABEL, labels
+    assert labels.count("crate") == MAX_LANDMARKS_PER_LABEL, labels
+
+
+def test_a_far_landmark_still_confirms_once_it_has_been_seen_enough():
+    """The sigma gate must not permanently exclude anything acquired at range.
+
+    Range sigma is proportional to distance, so far landmarks start vague. One first seen
+    at 4.5 m is above the cap on two sightings and has to earn its way in — otherwise the
+    robot walks at obstacles it can see perfectly well, just because it noticed them
+    early. The staged bin at 2.15 m is admitted immediately, which is the case that
+    matters and is covered above.
+    """
+    mapping = _map()
+    _see(mapping, CONFIRM_SIGHTINGS, range_m=4.5)
+    assert mapping.confirmed() == [], "two sightings at 4.5 m is not yet certain enough"
+    _see(mapping, 10, range_m=4.5, start=1.0)
+    assert len(mapping.confirmed()) == 1, "more evidence must let it in"
+
+
+def test_confirmed_preserves_map_order():
+    """The overlay and the log read this list; ranking order would make them jump."""
+    mapping = _map()
+    _see(mapping, 3, bearing_deg=-20.0)
+    _see(mapping, 9, bearing_deg=7.1)
+    confirmed = mapping.confirmed()
+    positions = [mapping.landmarks.index(lm) for lm in confirmed]
+    assert positions == sorted(positions), positions
 
 
 if __name__ == "__main__":

@@ -145,7 +145,7 @@ answer: for cable-free SSH, dongle the Orin.
 
 ### The G1's `setup-wifi.sh` does not port to the Go2
 
-Do not reach for [`unitree/g1/install/setup-wifi.sh`](https://github.com/arm/arm-mhs-unitree-g1/blob/main/unitree/g1/install/setup-wifi.sh)
+Do not reach for [`unitree/g1/install/setup-wifi.sh`](https://github.com/arm/arm-dc-unitree-g1/blob/main/unitree/g1/install/setup-wifi.sh)
 here. It assumes two things the Go2 does not have:
 
 | G1 assumption | Go2 reality |

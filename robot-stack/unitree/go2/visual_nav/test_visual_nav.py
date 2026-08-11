@@ -255,12 +255,24 @@ class _FakePose:
 class _FakeLoco:
     """Records every command, and how long the robot had been standing when it came."""
 
-    def __init__(self):
+    def __init__(self, blocked_after: int | None = None):
         self.commands: list = []
         self.calls: list = []
+        #: Tick count after which is_blocked starts reporting a stall, or None.
+        self._blocked_after = blocked_after
+        self.blocked_queries: list = []
 
     def pose(self):
         return _FakePose()
+
+    def is_blocked(self, commanded_vx):
+        """Stands in for the real stall gate, which integrates over consecutive ticks."""
+        self.blocked_queries.append(commanded_vx)
+        if self._blocked_after is None or commanded_vx <= 0.05:
+            return None
+        if len(self.blocked_queries) > self._blocked_after:
+            return "stalled"
+        return None
 
     def recover(self):
         self.calls.append("recover")
@@ -325,6 +337,14 @@ class _FakePlanner:
 
     def plan(self, *_args, **_kwargs):
         return Command(vx=0.30, vy=0.0, wz=0.0, reason="goal", gap_m=math.inf)
+
+
+def _navigator_with(loco, live=True, ticks=6) -> VisualNavigator:
+    """A navigator around a caller-supplied loco, for the stall tests."""
+    return VisualNavigator(
+        loco=loco, perception=_FakePerception(), planner=_FakePlanner(),
+        tracker=ObstacleTracker(), goal_source=_FakeGoal(), health=_FakeHealth(ticks),
+        config=NavConfig(live=live, control_hz=100.0))
 
 
 def _live_navigator(ticks=4) -> tuple[VisualNavigator, _FakeLoco]:
@@ -495,6 +515,103 @@ def test_landmarks_and_movers_reach_the_planner_together():
     navigator = _navigator(tracker, filter_time, static_map=mapping)
     labels = sorted(o.label for o in navigator._obstacles(filter_time + LATENCY_S))
     assert labels == ["bin", "person"], labels
+
+
+# ── The stall abort ─────────────────────────────────────────────────────────
+#: Deliberately NOT a divisor of PROGRESS_WINDOW_S, and irregular. A tidy dt=0.5 made
+#: every window land exactly on the 4.0 s boundary, which was the only case an
+#: off-by-one in the pruning could pass — so the tests went green while the gate could
+#: never fire on the robot, where ticks arrive at an irregular ~10 Hz.
+_TICK_DTS = (0.093, 0.117, 0.104, 0.131, 0.098, 0.112)
+
+
+def _walk(navigator, command, poses):
+    """Feed the stall gate a pose history and return its last verdict."""
+    verdict = None
+    now = 0.0
+    for index, (x, y) in enumerate(poses):
+        verdict = navigator._blocked_reason(command, now, (x, y, 0.0))
+        now += _TICK_DTS[index % len(_TICK_DTS)]
+    return verdict
+
+
+CRUISE = Command(vx=0.30, vy=0.0, wz=0.0, reason="goal", gap_m=math.inf)
+
+
+def test_a_robot_that_goes_nowhere_under_command_ends_the_run():
+    """Observed live, twice: the tether went taut, the robot veered into a cubicle wall,
+    and the loop kept commanding 0.10-0.14 m/s forward and a FULL 0.20 m/s of strafe
+    into it while the pose sat still — for 21 s, then 12 s. Nothing stopped it."""
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    verdict = _walk(navigator, CRUISE, [(0.0, 0.0)] * 60)
+    assert verdict is not None and "stalled" in verdict, verdict
+    assert "tether" in verdict, "the message should say where to look"
+
+
+def test_a_robot_that_is_walking_is_left_alone():
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    poses = [(0.030 * i, 0.0) for i in range(60)]     # ~0.28 m/s at ~0.11 s ticks
+    assert _walk(navigator, CRUISE, poses) is None
+
+
+def test_shuffling_on_the_spot_does_not_count_as_progress():
+    """THE reason this measures net displacement instead of deferring to
+    Go2Locomotion.is_blocked, whose bar is a tenth of the commanded speed — one
+    centimetre per second for a 0.10 m/s command. A quadruped trotting against a taut
+    tether IS moving its legs; its body-velocity estimate is not zero. What it is not
+    doing is getting anywhere."""
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    jitter = [(0.01 * (i % 2), 0.01 * ((i + 1) % 2)) for i in range(60)]
+    verdict = _walk(navigator, CRUISE, jitter)
+    assert verdict is not None, "a centimetre of twitch is not a walk"
+
+
+def test_a_slow_but_real_manoeuvre_is_not_called_a_stall():
+    """A careful sidestep is slow on purpose and must survive the window."""
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    creep = Command(vx=0.10, vy=0.05, wz=0.0, reason="avoid", gap_m=0.4)
+    poses = [(0.010 * i, 0.005 * i) for i in range(60)]
+    assert _walk(navigator, creep, poses) is None
+
+
+def test_the_gate_waits_for_a_full_window_before_judging():
+    """Two ticks after standing up is not evidence of anything."""
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    assert _walk(navigator, CRUISE, [(0.0, 0.0)] * 5) is None
+
+
+def test_a_stopped_robot_is_not_asked_to_have_moved():
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    held = Command(vx=0.0, vy=0.0, wz=0.0, reason="hold", gap_m=0.2)
+    assert _walk(navigator, held, [(0.0, 0.0)] * 60) is None
+
+
+def test_a_dry_run_never_reports_a_stall():
+    """No leg moves, so 'commanded to move and not moving' is true of every tick."""
+    navigator = _navigator_with(_FakeLoco(), live=False)
+    navigator._standing = True
+    assert _walk(navigator, CRUISE, [(0.0, 0.0)] * 60) is None
+
+
+def test_a_prone_robot_is_not_judged_for_standing_still():
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = False
+    assert _walk(navigator, CRUISE, [(0.0, 0.0)] * 60) is None
+
+
+def test_lying_down_clears_the_history():
+    """Otherwise the ticks spent prone count against the first ticks after standing."""
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = False
+    _walk(navigator, CRUISE, [(0.0, 0.0)] * 60)
+    navigator._standing = True
+    assert navigator._blocked_reason(CRUISE, 99.0, (0.0, 0.0, 0.0)) is None
 
 
 if __name__ == "__main__":

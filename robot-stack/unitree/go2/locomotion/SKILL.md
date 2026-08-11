@@ -17,8 +17,8 @@ metadata:
 Command a velocity through Unitree's balance controller and close the loop on measured odometry. The
 API, the mode/lease rules, the optional planner, and the safety rules are in
 **[`README.md`](README.md)** — this skill is the agent entry point. Modules:
-[`go2_locomotion.py`](go2_locomotion.py), [`lib/locomotion.py`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/locomotion.py),
-[`lib/navigation.py`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/navigation.py).
+[`go2_locomotion.py`](go2_locomotion.py), `lib/locomotion.py` (arm-dc-robotkit `lib/locomotion.py`),
+`lib/navigation.py` (arm-dc-robotkit `lib/navigation.py`).
 
 ## When to use
 

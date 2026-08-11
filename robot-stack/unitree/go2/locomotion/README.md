@@ -2,7 +2,7 @@
 
 Closed-loop velocity walking for the Go2 through Unitree's high-level **`SportClient`** balance/gait
 controller, steered on the robot's **measured** odometry (`rt/sportmodestate`). The robot-agnostic
-control lives in [`lib/locomotion.py`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/locomotion.py); this module is the Go2 binding
+control lives in `lib/locomotion.py` (arm-dc-robotkit `lib/locomotion.py`); this module is the Go2 binding
 ([`go2_locomotion.py`](go2_locomotion.py) → `Go2Locomotion`).
 
 > ⚠️ Read [`SAFETY.md`](../../../SAFETY.md) first. `SportClient.Move` commands a velocity that
@@ -48,7 +48,7 @@ navigation, feed the onboard LiDAR cloud (`rt/utlidar/cloud_deskewed`, via
 [`../lidar_sight`](../lidar_sight/)) to the shared `Navigator`:
 
 ```python
-from arm_mhs_robotkit.navigation import Navigator
+from arm_dc_robotkit.navigation import Navigator
 Navigator().navigate(loco, goal_xy=(3.0, 0.0), cloud_source=get_go2_lidar_cloud)
 ```
 
@@ -60,7 +60,7 @@ the dependency-free fallback for a quick clear-space traverse.
 ## Cross-quadruped
 
 `Go2Locomotion` is the native, high-fidelity binding. Any **other** ROS 2 quadruped is driven by the
-vendor-neutral [`lib/ros2_twist_locomotion.py`](https://github.com/arm/arm-mhs-robotkit/blob/main/lib/ros2_twist_locomotion.py)
+vendor-neutral `lib/ros2_twist_locomotion.py` (arm-dc-robotkit `lib/ros2_twist_locomotion.py`)
 (`Ros2TwistLocomotion` over `cmd_vel`/`odom`) — same `LocomotionController` interface, so every
 helper and the `Navigator` work unchanged.
 

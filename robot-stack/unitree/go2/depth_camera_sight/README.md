@@ -14,7 +14,7 @@ but intentionally code-light until the cameras are calibrated on the robot (the 
 
 ## To characterize (on the robot)
 
-Mirror the G1's [`depth_camera_sight`](https://github.com/arm/arm-mhs-unitree-g1/blob/main/unitree/g1/depth_camera_sight/) method:
+Mirror the G1's [`depth_camera_sight`](https://github.com/arm/arm-dc-unitree-g1/blob/main/unitree/g1/depth_camera_sight/) method:
 
 1. Capture RGB (VideoClient) + depth (RealSense) frames; save into [`images/`](images/) as the
    descriptor's `calibration.reference_media`.
