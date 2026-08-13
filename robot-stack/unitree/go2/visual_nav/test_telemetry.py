@@ -55,7 +55,8 @@ def _tick(writer, **overrides):
         "command": Command(0.35, -0.2, 0.1, reason="avoid", gap_m=0.8,
                            feasible=200, evaluated=330),
         "obstacles": [Obstacle(x=2.134, y=0.266, vx=0.0, vy=0.0, radius_m=0.23,
-                               label="bin")],
+                               label="bin", kind="static",
+                               object_id="landmark-1")],
         "frame_age_s": 0.31, "perception_seq": 42, "detect_ms": 124.5,
         "standing": True, "live": False, "video_frame": 7, "health": _Health(),
     }
@@ -108,6 +109,79 @@ def test_obstacles_carry_geometry_not_just_a_count():
     assert abs(obstacle["x"] - 2.134) < 1e-9
     assert abs(obstacle["radius_m"] - 0.23) < 1e-9
     assert obstacle["vx"] == 0.0 and obstacle["vy"] == 0.0
+
+
+def test_an_obstacle_says_which_subsystem_produced_it():
+    """`kind`, not `label`, separates a mapped prop from a tracked mover.
+
+    A consumer has to split the two — a mover is the stop-and-wait logic's job and a
+    landmark is something to path around — and every cue short of this field fails on
+    the case that matters. `label` is a CLASS name: it worked only while the scene had
+    exactly one mapped prop and one detector class. Velocity fails on a person who has
+    STOPPED, which is precisely when the distinction decides the behaviour.
+    """
+    stopped_person = Obstacle(x=3.0, y=0.0, vx=0.0, vy=0.0, radius_m=0.35,
+                              label="person", kind="tracked", object_id="track-7")
+    landmark = Obstacle(x=2.134, y=0.266, vx=0.0, vy=0.0, radius_m=0.23,
+                        label="bin", kind="static", object_id="landmark-1")
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer, obstacles=[stopped_person, landmark])
+        obstacles = _read(directory)[0]["obstacles"]
+    assert [o["kind"] for o in obstacles] == ["tracked", "static"]
+    # The two are indistinguishable by every other field a consumer might reach for.
+    assert all(o["vx"] == 0.0 and o["vy"] == 0.0 for o in obstacles)
+
+
+def test_an_obstacle_carries_a_stable_identity():
+    """Without an id a consumer re-associates by position and merges near neighbours.
+
+    The policy package this feeds matches an unidentified object to whatever it already
+    holds within 0.45 m, so two props closer than that become one — with the larger of
+    their radii, in the average of their positions. Both producers already have an id;
+    this only stops it being thrown away.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer)
+        obstacle = _read(directory)[0]["obstacles"][0]
+    assert obstacle["id"] == "landmark-1"
+
+
+def test_an_obstacle_with_no_identity_says_so_rather_than_inventing_one():
+    """`None` is a fact the consumer can act on; a synthesised index is a lie that is
+    stable within a tick and meaningless across two."""
+    anonymous = Obstacle(x=1.0, y=0.0, vx=0.0, vy=0.0, radius_m=0.2)
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer, obstacles=[anonymous])
+        assert _read(directory)[0]["obstacles"][0]["id"] is None
+
+
+def test_the_header_declares_which_frame_every_vector_is_in():
+    """The one thing a consumer cannot recover from the data.
+
+    Odom and body agree EXACTLY while the robot faces its start heading and diverge as
+    it turns, so an integration that reads `measured` as odom passes every bench test
+    and fails in the first corner. An integration note for the MAPPO policy package
+    proposed exactly that, because nothing in the file contradicted it.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            writer.write_header(live=True)
+        frames = _read(directory)[0]["frames"]
+    assert frames["pose"] == "odom"
+    assert frames["obstacles"] == "odom"
+    assert frames["measured"] == "body"
+    assert frames["command"] == "body"
+
+
+def test_the_frame_declaration_cannot_be_omitted_by_a_caller():
+    """It is a property of the schema, not of a run, so no call site gets to drop it."""
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            writer.write_header()
+        assert "frames" in _read(directory)[0]
 
 
 def test_an_infinite_gap_is_null_not_a_bare_Infinity_token():

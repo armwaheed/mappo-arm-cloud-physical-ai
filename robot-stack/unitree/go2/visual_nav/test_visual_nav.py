@@ -517,6 +517,33 @@ def test_landmarks_and_movers_reach_the_planner_together():
     assert labels == ["bin", "person"], labels
 
 
+def test_each_obstacle_says_which_subsystem_produced_it_and_which_object_it_is():
+    """The wiring, not the serialisation.
+
+    ``kind`` and ``object_id`` are what a downstream policy splits on — a mover belongs
+    to the stop-and-wait logic and a landmark is something to path around — and the
+    telemetry tests cannot pin them, because they hand the writer obstacles that already
+    carry the fields. This is the only place that would notice if ``_obstacles`` stopped
+    setting them. ``kind`` DEFAULTS to "tracked", so a landmark that lost the argument
+    would be silently reclassified as a mover rather than raising anything.
+    """
+    tracker, filter_time = _tracked_person()
+    mapping = StaticObstacleMap(radii={"bin": 0.15})
+    for index in range(4):
+        mapping.observe([Observation.from_bearing_range(
+            math.radians(-30.0), 2.15, 0.0, 0.0, 0.0, label="bin")],
+            filter_time + index * 0.14, 0.0, 0.0, 0.0)
+    navigator = _navigator(tracker, filter_time, static_map=mapping)
+    obstacles = {o.label: o for o in navigator._obstacles(filter_time + LATENCY_S)}
+    assert obstacles["person"].kind == "tracked"
+    assert obstacles["bin"].kind == "static"
+    # Identities come from the producers' own counters, so they survive a tick in which
+    # an object was not seen — which is exactly when re-associating by position fails.
+    assert obstacles["person"].object_id.startswith("track-")
+    assert obstacles["bin"].object_id.startswith("landmark-")
+    assert obstacles["person"].object_id != obstacles["bin"].object_id
+
+
 # ── The stall abort ─────────────────────────────────────────────────────────
 #: Deliberately NOT a divisor of PROGRESS_WINDOW_S, and irregular. A tidy dt=0.5 made
 #: every window land exactly on the 4.0 s boundary, which was the only case an

@@ -445,7 +445,8 @@ class VisualNavigator:
                      vx=float(track.state[2]), vy=float(track.state[3]),
                      radius_m=(self._planner.config.obstacle_radius_m
                                + track.position_sigma + extrapolation_sigma),
-                     label=track.label)
+                     label=track.label,
+                     kind="tracked", object_id=f"track-{track.track_id}")
             for track in self._tracker.confirmed_tracks()
         ]
         # Landmarks need none of the above. They are not extrapolated because they do
@@ -456,7 +457,8 @@ class VisualNavigator:
                 Obstacle(x=landmark.x, y=landmark.y, vx=0.0, vy=0.0,
                          radius_m=landmark.planning_radius_m, label=landmark.label,
                          soft_gap_m=STATIC_SOFT_GAP_M,
-                         hard_gap_m=STATIC_HARD_GAP_M)
+                         hard_gap_m=STATIC_HARD_GAP_M,
+                         kind="static", object_id=f"landmark-{landmark.landmark_id}")
                 for landmark in self._static_map.confirmed())
         return obstacles
 

@@ -77,12 +77,25 @@ python3 visual_nav.py ... --record run.mp4 --telemetry run.jsonl
 ```json
 {"type": "tick", "t": 6.46, "pose": {"x": -2.464, "y": 2.112, "yaw": -1.613},
  "goal": {"x": -2.332, "y": -0.800, "distance_m": 2.915},
- "obstacles": [{"label": "bin", "x": -2.276, "y": -0.081, "vx": 0.0, "vy": 0.0,
-                "radius_m": 0.23}],
+ "obstacles": [{"label": "bin", "kind": "static", "id": "landmark-1",
+                "x": -2.276, "y": -0.081, "vx": 0.0, "vy": 0.0, "radius_m": 0.23}],
  "command": {"vx": 0.35, "vy": -0.135, "wz": 0.09, "reason": "goal", "gap_m": 0.752},
- "perception": {"seq": 83, "frame_age_s": 0.564, "video_frame": null},
+ "measured": {"vx": 0.331, "vy": -0.128, "wz": 0.084},
+ "perception": {"seq": 83, "frame_age_s": 0.564, "video_frame": null, "stale": false},
  "posture": "standing", "live": false}
 ```
+
+The header line declares **which frame every vector is in** — `pose`, `goal` and
+`obstacles` are odom; `command` and `measured` are body. That is the one thing a consumer
+cannot recover from the data, because the two frames agree *exactly* while the robot
+faces its start heading and diverge only as it turns. An integration built on the wrong
+assumption passes every bench test and fails in the first corner.
+
+`kind` is `"static"` or `"tracked"`, and `label` is **not** a substitute for it: `label`
+is a class name, and it separated the two only while the scene had exactly one mapped
+prop and one detector class. A person who has *stopped* has a bin's velocity and a
+person's claim on the lane. `id` is the stable identity, so a consumer can follow one
+object across ticks instead of re-associating by position and merging near neighbours.
 
 Every tick is written — holds, stale-perception skips and the goal search included, since
 "it stood still for 1.4 s" is a signal rather than a gap. `perception.video_frame` is the
@@ -92,40 +105,64 @@ index of the matching frame in `--record`, which is the join back to the footage
 moved nothing" is indistinguishable from walking, which is a failure that cost three
 runs to see.
 
-## The adapter: object list → LiDAR-like range vector
+## Driving the MAPPO policy from a tick
 
-`integration/` turns a tick into the observation the policy expects. Sagar's plan —
-*"convert the detected object's position into the LiDAR-like vector that goes into the
-MAPPO agent"* — is implemented as exact ray-versus-disc geometry.
+The delivered policy package does its own ray casting, so the integration is a *mapping*,
+not an adapter: `integration/mappo_bridge.py` turns one telemetry tick into one
+`RobotInput`. Three of the mappings are not the obvious ones, and each is pinned by a
+test that says why.
 
 ```python
-from telemetry_reader import read_run
-from observation import observation_from_tick
+from mappo_bridge import robot_input
+from physical_ai_mappo import MappoController, RobotInput, StationaryObject
 
-run = read_run("run.jsonl")
-for tick in run.ticks:
-    observation = observation_from_tick(tick)      # None while searching for the goal
-    if observation:
-        action = policy(observation.as_vector())   # [goal_r, goal_bearing, *16 ranges, vx, vy, wz]
+for tick in read_run("run.jsonl").ticks:
+    mapped = robot_input(tick, reset_run=first)     # None while searching for the goal
+    if mapped is None:
+        continue
+    mapped["stationary_objects"] = [StationaryObject(**o)
+                                    for o in mapped["stationary_objects"]]
+    out = controller.step(RobotInput(**mapped))
 ```
 
-### ⚠️ A 16-ray 360° fan is blind to the staged bin
-
-This is measured, and it is the first thing to check against a checkpoint. Rays *sample*;
-they do not integrate. An object is only guaranteed to be hit while it subtends at least
-half the ray spacing:
-
-| fan | ray spacing | bin (r = 0.23 m) reliably seen to |
+| mapping | the obvious answer | why it is wrong |
 | --- | --- | --- |
-| 16 rays over 360° | 22.5° | **1.18 m** |
-| 16 rays over 85.27° *(default here)* | 5.3° | **4.95 m** |
-| 64 rays over 360° | 5.6° | 4.69 m |
+| `velocity_frame` | `"odom"` | `measured` is the estimator's **body**-frame velocity |
+| `external_hold` | `reason == "hold"` | the planner also holds for the *bin* — forwarding that zeroes the policy in the one scene it exists for |
+| `timestamp_s` | `wall_time` | it is compared against `time.monotonic()`; an epoch makes the age ≈ −1.8e9 s, so the staleness gate can never fire |
 
-The bin at 2 m subtends 13.2°, so on a 16-ray 360° fan it falls **entirely between two
-rays** and the policy is handed open floor where the only obstacle in the scene is.
-`observation.reliable_range_m()` computes this for any radius and fan, and the default
-FOV is the camera's real 85.27° for exactly this reason. If the checkpoint needs 360°,
-raise the ray count.
+### Replay is the test that the mapping is right
+
+A field-by-field table cannot catch a frame, a unit, or a field that is present and means
+something else. Replaying a recorded run through the real checkpoint can:
+
+```bash
+cd integration && python3 replay_mappo.py ../evidence/sample_telemetry.jsonl \
+    --package <policy package>
+```
+
+Every run is paired with its own control — the same ticks, through a second controller,
+with the obstacles removed. Without that, "the policy steered 36° off the goal bearing"
+is not evidence of anything: this checkpoint carries a 6–16° heading bias with no
+obstacle anywhere near it.
+
+### ⚠️ For this checkpoint the *horizon* binds, not the ray fan
+
+The general warning still holds — rays sample, they do not integrate, so an object is
+only guaranteed to be hit while it subtends half the ray spacing, and
+`observation.reliable_range_m()` computes that for any radius and fan. But the delivered
+checkpoint's 12-ray 360° fan is **not** what limits it:
+
+| limit on seeing the bin (r = 0.42 m as mapped live) | range |
+| --- | --- |
+| 12-ray 360° fan geometry | 1.62 m |
+| policy sensing horizon — 0.35 VMAS × 1.5 m/unit | **0.525 m** |
+
+The horizon binds first, by 3×. Measured over the recorded run, the obstacle is inside it
+on 59 of 121 ticks, and the response is a cliff rather than a ramp: **1.8° mean steering
+change when the bin is outside 0.525 m, 96.6° when it is inside**. The single most
+consequential number in the policy's config is therefore `meters_per_vmas_unit`, which
+sets that horizon — and `replay_mappo.py --config` exists to sweep it.
 
 ## What this cannot give the policy
 
@@ -151,7 +188,10 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Telemetry contract + observation adapter | 246 offline tests |
+| ✅ Telemetry contract + observation adapter | 272 offline tests |
+| ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
+| ⚠️ Policy sensing horizon | 0.525 m to the obstacle surface — it saw the bin on 59 of 121 ticks, and its steering response is a cliff at that range, not a ramp |
+| ⛔ Policy driving the legs | never run closed-loop, on hardware or in sim — the replay is open-loop against a path the shipped planner drove |
 | ⚠️ Arriving at the chair past the bin | needs ~0.3 m more lane than this corridor has |
 | ⚠️ D1 arm latch | its servo bus does not energise (Go2 stack issue #12); runs use `--no-latch-arm`, and the arm creeps a few degrees off the dorsal line each run |
 | ⛔ Multiple quadrupeds | one robot; peers not detectable (above) |
@@ -194,18 +234,20 @@ and can use a faster envelope.
 
 ```
 robot-stack/     the Go2 control stack, vendored — see PROVENANCE.md
-integration/     telemetry reader + observation adapter  (python3 test_observation.py)
+integration/     telemetry reader, observation adapter, MAPPO bridge and replay harness
 evidence/        the approved run, the static-obstacle dry run, a sample telemetry file
 ```
 
 ## Running the tests
 
 ```bash
-cd integration && python3 test_observation.py                 # 23, pure stdlib
-cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 223
+cd integration && for t in test_*.py; do python3 $t; done                          # 43
+cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 229
 ```
 
-The robot-stack suite needs `numpy` and `opencv-python`; `integration/` needs neither.
+The robot-stack suite needs `numpy` and `opencv-python`; `integration/` needs neither —
+except `replay_mappo.py`, which is a tool rather than a test and needs the policy package.
+Both directories carry a `ruff.toml`; `ruff check .` is clean in each.
 
 ## Safety
 
