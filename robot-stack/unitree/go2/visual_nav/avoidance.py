@@ -168,6 +168,19 @@ class Obstacle:
     vy: float
     radius_m: float
     label: str = "person"      # for logs and the overlay; the planner ignores it
+    #: Which subsystem produced this — ``"tracked"`` (a mover from the tracker) or
+    #: ``"static"`` (a landmark from the map). The planner ignores it, but a consumer
+    #: must not have to infer it. ``label`` cannot stand in: it is a CLASS name, and it
+    #: separates the two here only because this scene happens to have one mapped prop
+    #: and one detector class. A stopped person still has ``label="person"`` and a
+    #: velocity of zero, and telling those apart is the difference between "path around
+    #: it" and "wait for it to move".
+    kind: str = "tracked"
+    #: Stable identity across ticks, ``None`` if the producer has none. A consumer that
+    #: re-associates by position instead will merge two objects that pass within its
+    #: matching threshold. Both producers already have one — ``Track.track_id`` and
+    #: ``Landmark.landmark_id`` — so this only carries what exists.
+    object_id: str | None = None
     #: Distance below which closeness starts costing, for THIS obstacle. ``None`` takes
     #: the planner's default, which is a person's. A landmark wants a much smaller one:
     #: a bin that cannot move needs a smooth path around it, not a wide berth, and the

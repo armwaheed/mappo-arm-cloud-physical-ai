@@ -9,7 +9,7 @@ SPDX-License-Identifier: Apache-2.0
 Apache-2.0, copied here so this demo repository is self-contained for a collaboration
 that reaches outside Arm.
 
-Two things were changed on the way in, and both matter if you re-vendor:
+Three things were changed on the way in, and all of them matter if you re-vendor:
 
 - **The Device Connect driver was dropped.** `driver/` and its `pyproject.toml` package
   the Go2 as a Device Connect device. The demo never touches them — `visual_nav` imports
@@ -17,14 +17,26 @@ Two things were changed on the way in, and both matter if you re-vendor:
 - **The shared core is imported as `arm_dc_robotkit`**, matching the Device Connect
   naming. It is one import, in `unitree/go2/locomotion/go2_locomotion.py`. Deploy the
   shared core's `lib/` directory under that name (see below).
+- **Thirteen files were renamed away from the upstream product name.** This repository is
+  shared outside Arm and carries the Device Connect naming throughout; upstream does not.
+  Two are at the root and eleven under `unitree/go2/`, and **three of the eleven are
+  `.py`** — so a sweep that assumes the renaming only touched prose misses them. See
+  *Re-vendoring* below, which lists all thirteen, because a plain `rsync` puts every one
+  back.
 
 | | |
 | --- | --- |
 | Upstream | `github.com/the Arm Device Connect Go2 stack` (**internal** visibility) |
-| Branch | `feat/static-obstacle-nav` |
-| Commit | `4ceda535be7208c24e92e65b7dec66a3331988d2` |
-| Corresponds to | PR #14, which builds on merged PRs #10 and #11 |
-| Copied | 2026-08-11 |
+| Branch | `main` |
+| Commit | `4009938` |
+| Corresponds to | PR #14 (merged as `2f289ec`), plus the telemetry fields the policy integration needs |
+| Copied | 2026-08-12 |
+
+> The previous entry recorded `4ceda53` on `feat/static-obstacle-nav`. That was wrong:
+> the tree actually held `95550b8`, one commit later, which is a whole live-run fix pass
+> — and the branch has since merged, so `main` is the ref to track. Verified by
+> comparing each vendored file against both refs rather than trusting the table, which
+> is the only way this kind of drift is ever found.
 
 ## Read this before editing `robot-stack/`
 
@@ -43,12 +55,59 @@ commit message and open the upstream PR in the same session.
 
 ## Re-vendoring
 
+**Do not `rsync` the whole tree.** The recipe that used to be here did, and it would have
+undone all three of the changes listed above in one command: restoring `driver/` and
+`pyproject.toml`, and putting the upstream product name back into ten files. None of that
+fails a test, so it would have shipped.
+
+Sync only the source, then put back the one rename that lives inside it:
+
 ```bash
 git -C ../arm-dc-unitree-go2 fetch origin && git -C ../arm-dc-unitree-go2 checkout <ref>
-rsync -a --delete --exclude '.git' --exclude '__pycache__' --exclude '.ruff_cache' \
-      ../arm-dc-unitree-go2/ robot-stack/
-# then update the commit above, and re-run both test suites
+rsync -a --delete --include '*/' --include '*.py' --exclude '*' \
+      ../arm-dc-unitree-go2/unitree/ robot-stack/unitree/
+
+# Three of those .py files reference the shared core under the upstream name, so the
+# rsync undoes the rename in exactly the files a prose-only sweep would miss. The
+# upstream string is read out of upstream rather than written here, for the same reason
+# it is not written anywhere else in this repository.
+UPSTREAM_PKG=$(grep -ohm1 'arm_[a-z]*_robotkit' \
+               ../arm-dc-unitree-go2/unitree/go2/locomotion/go2_locomotion.py)
+grep -rl "$UPSTREAM_PKG" robot-stack/ \
+  | xargs sed -i '' "s/$UPSTREAM_PKG/arm_dc_robotkit/g"
 ```
+
+Then, before committing, confirm the only differences left are the intended ones:
+
+```bash
+diff -rq --exclude=.git --exclude=__pycache__ --exclude=.ruff_cache \
+     ../arm-dc-unitree-go2/ robot-stack/
+```
+
+Expect exactly these thirteen, and nothing else — anything more is unintended drift:
+
+| Deliberately different (13) | Deliberately absent |
+| --- | --- |
+| `README.md`, `SAFETY.md` | `driver/` |
+| `unitree/go2/README.md` | `pyproject.toml` |
+| `unitree/go2/{connect,install,lidar_sight}/SKILL.md` | |
+| `unitree/go2/locomotion/{README.md,SKILL.md,go2_locomotion.py}` | |
+| `unitree/go2/{deploy,depth_camera_sight}/README.md` | |
+| `unitree/go2/deploy/go2_robot_io.py` | |
+| `unitree/go2/lidar_sight/go2_lidar_sight.py` | |
+
+Finally, sweep for the names this repository does not carry — the upstream product name,
+its acronym, and the assistant vendor that appears in upstream commit trailers. They are
+not written here either; take the three terms from an upstream `README.md` title line and
+an upstream `git log`, then check **both** the tree and the history, because a trailer is
+not a file:
+
+```bash
+grep -rniE "<term1>|<term2>|<term3>" --exclude-dir=.git . && echo "LEAKED — do not commit"
+git log --format='%B%n%an %ae' | grep -icE "<term1>|<term2>|<term3>"   # must print 0
+```
+
+Update the commit in the table above, and re-run both test suites.
 
 ## Deploying to the robot
 

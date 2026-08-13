@@ -190,13 +190,17 @@ def main() -> None:
             obstacles = [
                 Obstacle(x=float(t.state[0]), y=float(t.state[1]),
                          vx=float(t.state[2]), vy=float(t.state[3]),
-                         radius_m=mover_radius_m + t.position_sigma, label=t.label)
+                         radius_m=mover_radius_m + t.position_sigma, label=t.label,
+                         kind="tracked", object_id=f"track-{t.track_id}")
                 for t in confirmed
             ]
             if static_map is not None:
                 obstacles.extend(
+                    # `kind` defaults to "tracked", so a landmark that omitted it would
+                    # be a mover in every consumer's eyes.
                     Obstacle(x=lm.x, y=lm.y, vx=0.0, vy=0.0,
-                             radius_m=lm.planning_radius_m, label=lm.label)
+                             radius_m=lm.planning_radius_m, label=lm.label,
+                             kind="static", object_id=f"landmark-{lm.landmark_id}")
                     for lm in static_map.confirmed())
             canvas = image.copy()
             overlay.draw_detections(canvas, ranged + static_ranged)

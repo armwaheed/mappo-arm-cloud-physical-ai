@@ -47,6 +47,21 @@ from pathlib import Path
 #: refuse a major they do not know rather than guess.
 SCHEMA = "go2.visual_nav.telemetry/1"
 
+#: WHICH FRAME EVERY VECTOR IN THIS FILE IS IN. Written into the header because it is a
+#: property of the schema, not of a run, and because it is the one thing a consumer
+#: cannot recover from the data: odom and body agree exactly while the robot faces its
+#: start heading and diverge as it turns, so an integration built on the wrong
+#: assumption passes every bench test and fails in the first corner. An integration note
+#: for the MAPPO policy package proposed reading `measured` as odom; it is body, and
+#: nothing in the file said so.
+FRAMES = {
+    "pose": "odom",                 # x, y metres; yaw radians CCW
+    "goal": "odom",
+    "obstacles": "odom",            # position AND velocity
+    "command": "body",              # vx forward, vy left, wz CCW
+    "measured": "body",             # the estimator's own body-frame velocity
+}
+
 
 def _finite(value):
     """JSON has no infinity. Emit ``null`` instead of a token no strict parser accepts.
@@ -104,9 +119,10 @@ class TelemetryWriter:
         Everything a consumer needs to interpret the ticks that follow — the camera
         model, the envelope, the priors — belongs here rather than being re-sent 900
         times, and belongs in the FILE rather than in a sibling document that can be
-        separated from it.
+        separated from it. :data:`FRAMES` is added unconditionally for that last reason:
+        it is not a run parameter and no caller should be able to omit it.
         """
-        self._emit({"type": "header", "schema": SCHEMA,
+        self._emit({"type": "header", "schema": SCHEMA, "frames": FRAMES,
                     "wall_time": self._clock(), **config})
 
     def write_tick(self, *, elapsed_s: float, pose, goal_xy, goal_distance_m,
@@ -137,9 +153,12 @@ class TelemetryWriter:
                 "feasible": int(command.feasible),
                 "evaluated": int(command.evaluated)}),
             # Positions and radii, not just a count: a consumer building an occupancy or
-            # range vector needs the geometry, and `label` is what separates a mapped
-            # static prop from a tracked mover — they want different treatment.
-            "obstacles": [{"label": o.label,
+            # range vector needs the geometry. `kind` separates a mapped static prop
+            # from a tracked mover and `label` does NOT — label is a class name, and it
+            # happened to work only while the scene had exactly one mapped prop and one
+            # detector class. `id` is the identity that lets a consumer follow one
+            # object across ticks instead of re-associating by position.
+            "obstacles": [{"label": o.label, "kind": o.kind, "id": o.object_id,
                            "x": _finite(o.x), "y": _finite(o.y),
                            "vx": _finite(o.vx), "vy": _finite(o.vy),
                            "radius_m": _finite(o.radius_m)}
