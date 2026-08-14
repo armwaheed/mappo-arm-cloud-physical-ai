@@ -63,8 +63,10 @@ source ../install/setup_env.sh                # mandatory: RPC segfaults without
 python3 calibrate_camera.py --spin --live --object-class person \
         --spin-rate 0.8 --spin-max-yaw 35 --start-delay 20 --latch-arm \
         --record calib.mp4 --out go2_front_camera.json
-python3 visual_nav.py --calibration go2_front_camera.json --record dry.mp4   # rehearse
-python3 visual_nav.py --calibration go2_front_camera.json --live --record run.mp4
+python3 visual_nav.py --calibration go2_front_camera.json --robot-radius 0.25 \
+        --record dry.mp4                                    # rehearse
+python3 visual_nav.py --calibration go2_front_camera.json --robot-radius 0.25 \
+        --live --record run.mp4
 ```
 
 `--live` is the ONLY flag that moves a leg. Everything else runs the real camera,
@@ -219,7 +221,25 @@ above — discharging a *raised* arm drops it.
 - `safety.py` **refuses to walk** unless the D1 arm is stowed (forward kinematics: jaw
   within 0.30 m of the arm base) and aborts on motor temperature or battery.
 - Envelope defaults are the arm-fitted conservative profile: 0.35 m/s forward,
-  0.20 m/s strafe, 0.70 rad/s yaw. `--derate` scales the lot.
+  0.20 m/s strafe, 0.70 rad/s yaw. `--derate` scales the lot. **Those are the numbers
+  COMMANDED, not the numbers achieved — see below.**
+- ⚠️ **The robot delivers about 0.45 of the velocity it is commanded.** Over the 116
+  standing ticks of the approved run it travelled **2.09 m against 4.32 m commanded**;
+  a least-squares fit of pose-derived body velocity against the command gives **0.45**
+  for translation and **0.44** for yaw, with 0.07 m/s of residual. The POSE is what
+  settles this — fitting against `measured` instead charges the whole shortfall to noise
+  and reports an unbiased 0.17 m/s, but the estimator's own error is only 0.041 m/s
+  against pose-derived velocity, so the shortfall is real motion. **Anything that plans
+  in time must halve its speed assumption**: "2 m at 0.35 m/s = 6 s" is out by a factor
+  of two, and `--max-seconds` set from it is a budget the robot cannot meet. One run,
+  tethered, with the 3.15 kg arm, on the derated envelope — a property of that
+  configuration rather than of a Go2.
+- **`--robot-radius` defaults to 0.40 m and every recorded run used 0.25.** The default
+  is the half-diagonal of the whole body, which is a defensible worst case and is not
+  what anybody has flown: the GIF at the top of this file, the approved run and every
+  telemetry header in `evidence/` were all `--robot-radius 0.25`. Run at the default and
+  you plan with a footprint 60% larger than every published measurement, so expect more
+  `hold`s and wider berths than this document describes. **Pass it explicitly.**
 - Reverse is never commanded — this unit has no rear-facing sensing.
 - Keep the lane clear of static obstacles and an operator on the remote.
 
@@ -256,3 +276,17 @@ above — discharging a *raised* arm drops it.
 - **`hold` and `avoid` are decided with hysteresis** (`PlannerConfig.reason_hysteresis_m`).
   Neither can be damped by `weight_smooth`: `hold` is a fallback that never competes on
   cost, and `avoid` is a label applied after the choice.
+- ⚠️ **`hold` can be terminal. There is no recovery behaviour.** Those two facts —
+  `hold` is a fallback taken when the feasible set is empty, and reverse is never
+  sampled — together mean the planner can walk itself into a position where nothing
+  clears the hard gap and then hold until the run budget expires. Measured in
+  closed-loop simulation over 30 seeded scenarios with one static obstacle 0.9–1.9 m out
+  and within ±0.35 m of the straight line, in a 3 m arena: **14/30 arrived, 14/30 timed
+  out holding, 2/30 collided.** A representative failure parks at 0.09 m of clearance —
+  inside `STATIC_HARD_GAP_M` — and emits `hold` for the remaining 40 s without moving.
+  Raising the actuator model to perfect tracking recovers it to 23/30, which says the
+  deadlock is substantially driven by the velocity gain above: the rollout assumes the
+  command is achieved, so the planner over-estimates its own progress and commits to
+  gaps it then cannot make. **A stationary `hold` is not necessarily transient**, and an
+  agent supervising a run should treat a long one as needing intervention rather than
+  patience.

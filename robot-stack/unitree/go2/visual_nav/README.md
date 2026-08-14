@@ -51,11 +51,19 @@ python3 visual_nav.py --calibration go2_front_camera.json --marker-size 0.20 \
 python3 visual_nav.py --calibration ~/go2_front_camera.json \
         --goal-class chair --goal-height 1.0668 --goal-width 0.62 \
         --static-prop bin --arrive 0.8 --confidence 0.45 \
+        --robot-radius 0.25 \
         --record run.mp4
 ```
 
 `--live` is the only thing that moves a leg. Without it every stage runs against the
 real camera and the planner prints what it *would* command.
+
+**`--robot-radius 0.25` is not decoration.** `PlannerConfig.robot_radius_m` defaults to
+0.40 m — the half-diagonal of the whole body, a defensible worst case and not what
+anybody has flown. Every recorded run on this robot, including the two whose footage is
+in this README and every telemetry header in `evidence/`, passed 0.25. At the default you
+plan with a footprint 60% larger than every measured number here was taken with, and get
+more `hold`s and wider berths than this document describes.
 
 ## Going around something the detector has never heard of
 
@@ -118,6 +126,51 @@ needs re-measuring as fast as the odometry under it drifts.
 | False positives, empty office | **0 in 139 frames, down to confidence 0.2** |
 | D1 arm at rest | jaw 0.137 m from base (max reach 0.733 m) |
 | Leg motors idle | ~30 °C |
+| **Velocity actually achieved** | **0.45 × commanded** (translation); **0.44** (yaw) |
+
+### ⚠️ The robot delivers under half the velocity it is commanded
+
+Over the 116 standing ticks of the approved run it travelled **2.09 m against 4.32 m
+commanded**. A least-squares fit of pose-derived body velocity against the command gives
+0.45 for translation and 0.44 for yaw, with 0.07 m/s of residual.
+
+**Fit it against `measured` and you get a different and wrong answer** — "unbiased, sd
+0.17 m/s", i.e. the entire shortfall charged to noise. The pose is what settles it: the
+estimator's own error is only 0.041 m/s against pose-derived velocity, so what is missing
+is real motion and not a bad reading. It is the same phenomenon the calibration section
+already documents for yaw (`0.30 rad/s commanded → 0.02–0.04 achieved`), which is worth
+noting because it means the effect is **rate-dependent** — small commands achieve
+proportionally less — and 0.45 is the fit across the range this run used.
+
+Anything that plans in *time* has to halve its speed assumption. "2 m at 0.35 m/s = 6 s"
+is out by a factor of two, and a `--max-seconds` budget set from it cannot be met.
+
+One run, tethered, with the 3.15 kg D1 arm, on the derated envelope. It is a property of
+that configuration rather than of a Go2, and it is the first thing to re-measure on any
+other robot.
+
+### ⚠️ `hold` can be terminal — there is no recovery behaviour
+
+`hold` is a fallback taken when no sampled command clears the hard gap, and reverse is
+never sampled. Together those make it possible for the planner to walk itself into a
+position it cannot leave, and then hold until the run budget expires.
+
+Measured in closed-loop simulation, 30 seeded scenarios, one static obstacle 0.9–1.9 m out
+and within ±0.35 m of the straight line, in a 3 m arena:
+
+| | |
+| --- | --- |
+| arrived | 14/30 |
+| **timed out holding** | **14/30** |
+| collided | 2/30 |
+
+A representative failure parks at 0.09 m of clearance — inside `STATIC_HARD_GAP_M` — and
+emits `hold` for the remaining 40 s without moving. Raising the actuator model to perfect
+tracking recovers it to 23/30, which says the deadlock is substantially **caused by the
+velocity gain above**: the rollout assumes the command is achieved, so the planner
+consistently over-estimates its own progress and commits to gaps it then cannot make.
+
+A long stationary `hold` therefore needs intervention rather than patience.
 
 ## The five decisions worth knowing
 

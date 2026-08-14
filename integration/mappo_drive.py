@@ -34,17 +34,19 @@ inside the bin", and only the second is worth overriding.
 are in `deploy/README.md`; raw collided and supervised did not, so raw is for a
 deliberately empty arena and nothing else.
 
-## ⚠️ Why this file monkey-patches, and what should replace it
+## How it substitutes: a supported seam, no longer a monkey-patch
 
-`robot-stack/` is VENDORED and `PROVENANCE.md` forbids editing it in place — that rule
-exists because this project has been bitten three times by fixes that lived only in a
-copy. The vendored `main()` has no seam to pass a planner through, so the three module
-globals are swapped before it runs. The alternative was to copy 150 lines of pre-flight,
-including the arm-latch refusal and the health gate, and a duplicated safety check is
-strictly worse than a documented patch. **The real fix is upstream: let `main()` accept a
-planner.** Until then a re-vendor that renames any of the three raises an AttributeError
-here rather than silently reverting to the shipped planner — see
-:func:`_install`, which asserts each one exists before replacing it.
+`visual_nav.main()` takes a ``planner_factory``, and ``DynamicWindowPlanner`` has a public
+``is_feasible``. Both landed upstream and were re-vendored, which is why this file is now
+about forty lines shorter than the version that swapped three module globals and reached
+into the planner's rollout internals. Everything the vendored ``main()`` does — the
+arm-latch refusal, the health gate, the recorder's codec check, the telemetry header, the
+teardown ordering — happens exactly as it does for an ordinary run.
+
+The one thing the seam does not carry is the MEASURED velocity, which ``plan()``'s
+signature has no room for and which matters here because this robot delivers about 0.45 of
+what it is commanded. The factory closes over ``loco``, which is the shape the upstream
+docstring suggests.
 
     python3 mappo_drive.py --live --telemetry run.jsonl --record run.mp4 \\
         --static-prop bin --goal-class chair --goal-height 1.067 \\
@@ -64,9 +66,9 @@ from pathlib import Path
 
 from mappo_policy import (
     DEFAULT_PACKAGE,
+    VETO_HORIZON_S,
     HeadingServo,
     PolicyRunner,
-    rollout_is_feasible,
     tick_from_state,
 )
 
@@ -234,8 +236,8 @@ class MappoPlanner(DynamicWindowPlanner):
             max(-self.limits.max_vy, min(self.limits.max_vy, step.vy_mps)),
             max(-self.limits.max_wz, min(self.limits.max_wz, step.wz_radps)))
 
-        if self._supervised and not rollout_is_feasible(self, pose, proposed,
-                                                        obstacles):
+        if self._supervised and not self.is_feasible(pose, proposed, obstacles,
+                                                     horizon_s=VETO_HORIZON_S):
             self.counts["vetoed"] += 1
             return Command(planned.vx, planned.vy, planned.wz,
                            reason=f"veto-{planned.reason}", gap_m=planned.gap_m,
@@ -281,36 +283,10 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return parser
 
 
-def _install(module, planner_factory, on_navigator):
-    """Swap the three module globals, refusing if any of them has moved.
-
-    An AttributeError here is the intended behaviour after a re-vendor that renames one
-    of them. The alternative — patching what is present and skipping what is not — leaves
-    the shipped planner quietly in charge of a run the operator believes is being driven
-    by the policy, which is the worst of the available failures.
-    """
-    for name in ("DynamicWindowPlanner", "VisualNavigator", "build_parser"):
-        if not hasattr(module, name):
-            raise SystemExit(
-                f"[mappo_drive] visual_nav has no {name!r}: the vendored stack has moved "
-                f"and this substitution is no longer valid. Fix it here before running.")
-
-    real_parser, real_navigator = module.build_parser, module.VisualNavigator
-    module.DynamicWindowPlanner = planner_factory
-    module.build_parser = lambda: _add_arguments(real_parser())
-
-    def navigator(loco, perception, planner, *args, **kwargs):
-        on_navigator(loco, planner)
-        return real_navigator(loco, perception, planner, *args, **kwargs)
-
-    module.VisualNavigator = navigator
-
-
 def main(argv=None) -> int:
     # Parsed twice on purpose: once here to build the policy before the vendored main()
-    # runs, and once by that main() for everything else. `parse_known_args` on a copy of
-    # the real parser means the policy flags are validated and `--help` still shows the
-    # whole set.
+    # runs, and once by that main() for everything else. `parse_known_args` on the real
+    # parser means the policy flags are validated and `--help` still shows the whole set.
     import visual_nav
 
     args, _ = _add_arguments(visual_nav.build_parser()).parse_known_args(argv)
@@ -344,21 +320,34 @@ def main(argv=None) -> int:
 
         planners: list = []
 
-        def factory(limits, config):
+        def planner_factory(limits, config):
+            """Called by the vendored ``main()`` in place of ``DynamicWindowPlanner``.
+
+            ``loco`` is reached through ``visual_nav``'s module-level locomotion client
+            after construction, via :meth:`MappoPlanner.attach` — see the call below.
+            """
             planner = MappoPlanner(limits, config, runner,
                                    supervised=args.policy_mode == "supervised",
                                    refusal_log=args.refusal_log)
             planners.append(planner)
             return planner
 
-        def attach(loco, planner):
+        # The measured velocity is the one thing plan() cannot reach, and it is not
+        # optional: the commanded and achieved velocities differ by about a factor of two
+        # on this robot, so a policy fed the command believes it is moving twice as fast
+        # as it is. VisualNavigator is where loco and the planner are both in scope.
+        real_navigator = visual_nav.VisualNavigator
+
+        def navigator(loco, perception, planner, *rest, **kwargs):
             if isinstance(planner, MappoPlanner):
                 planner.attach(loco)
+            return real_navigator(loco, perception, planner, *rest, **kwargs)
 
-        _install(visual_nav, factory, attach)
+        visual_nav.VisualNavigator = navigator
         try:
-            visual_nav.main()
+            visual_nav.main(argv=argv, planner_factory=planner_factory)
         finally:
+            visual_nav.VisualNavigator = real_navigator
             for planner in planners:
                 print(planner.report())
     return 0
@@ -366,6 +355,3 @@ def main(argv=None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-__all__ = ["_STOP_REASONS", "MappoPlanner", "_add_arguments", "_install", "main"]

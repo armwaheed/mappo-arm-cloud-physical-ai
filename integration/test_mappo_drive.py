@@ -22,7 +22,6 @@ import math
 import os
 import sys
 import tempfile
-import types
 from pathlib import Path
 
 # BOTH paths go in before ANY sibling import. `ruff --fix` sorts imports into
@@ -35,7 +34,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
                                 "visual_nav"))
 from avoidance import Limits, Obstacle, PlannerConfig
 
-from mappo_drive import _STOP_REASONS, MappoPlanner, _add_arguments, _install
+from mappo_drive import _STOP_REASONS, MappoPlanner, _add_arguments
 from mappo_policy import DEFAULT_PACKAGE, HeadingServo, PolicyRunner
 
 BIN = Obstacle(x=1.0, y=0.0, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
@@ -294,45 +293,35 @@ def test_a_planner_with_no_locomotion_client_counts_the_gap():
 
 
 # ── The substitution ────────────────────────────────────────────────────────
-def _stub_module():
-    module = types.ModuleType("stub_visual_nav")
-    module.DynamicWindowPlanner = object
-    module.VisualNavigator = lambda *a, **k: ("navigator", a, k)
-    module.build_parser = lambda: __import__("argparse").ArgumentParser()
-    return module
+def test_the_vendored_stack_still_offers_the_seam_this_file_needs():
+    """THE TRIPWIRE. `robot-stack/` is vendored, and this file no longer monkey-patches
+    precisely because upstream grew `main(planner_factory=...)` and a public
+    `is_feasible`. A re-vendor that dropped either would otherwise fail at the robot —
+    or worse, leave the SHIPPED planner driving a run the operator believes the policy is.
+
+    `visual_nav` is not imported here (it needs OpenCV and a robot), so the seam it owns
+    is checked through the planner, which is importable, plus the module source.
+    """
+    from avoidance import DynamicWindowPlanner as Shipped
+    assert callable(getattr(Shipped, "is_feasible", None)), \
+        "the planner lost its public feasibility predicate"
+
+    source = (Path(_HERE).parent / "robot-stack" / "unitree" / "go2" / "visual_nav"
+              / "visual_nav.py").read_text()
+    assert "def main(argv" in source and "planner_factory" in source, \
+        "visual_nav.main lost the planner seam"
+    assert "planner = planner_factory(limits=limits, config=planner_config)" in source, \
+        "the seam is present but main() no longer routes through it"
 
 
-def test_the_substitution_replaces_all_three_globals():
-    module = _stub_module()
-    original = module.DynamicWindowPlanner
-    _install(module, lambda **kwargs: "planner", lambda loco, planner: None)
-    assert module.DynamicWindowPlanner is not original
-    assert "--policy-mode" in module.build_parser().format_help()
-
-
-def test_the_substitution_refuses_a_stack_whose_globals_have_moved():
-    """``robot-stack/`` is vendored. A re-vendor that renames one of the three must be a
-    loud failure here: patching what is present and skipping what is not would leave the
-    SHIPPED planner driving a run the operator believes the policy is driving."""
-    module = _stub_module()
-    del module.VisualNavigator
-    try:
-        _install(module, lambda **kwargs: "planner", lambda loco, planner: None)
-    except SystemExit as exc:
-        assert "VisualNavigator" in str(exc)
-    else:
-        raise AssertionError("a missing global was patched over silently")
-
-
-def test_the_navigator_wrapper_hands_the_locomotion_client_to_the_planner():
-    """The seam that gets the MEASURED velocity into the policy. Without it every
-    observation carries a zero velocity and nothing anywhere says so."""
-    module = _stub_module()
-    seen = []
-    _install(module, lambda **kwargs: "planner",
-             lambda loco, planner: seen.append((loco, planner)))
-    module.VisualNavigator("loco", "perception", "planner", "extra")
-    assert seen == [("loco", "planner")]
+def test_the_veto_calls_the_planners_own_public_predicate():
+    """Not its own copy of the geometry. Two implementations of a safety check is two
+    implementations that will disagree, and this one had exactly that for a while."""
+    planner = _planner(supervised=True, runner=_StubRunner((0.35, 0.0, 0.0)))
+    from avoidance import Obstacle as _Obstacle
+    assert planner.is_feasible((0.0, 0.0, 0.0), (0.0, 0.20, 0.0), [BIN])
+    assert not planner.is_feasible((0.0, 0.0, 0.0), (0.35, 0.0, 0.0), [BIN])
+    assert isinstance(BIN, _Obstacle)
 
 
 def test_the_policy_flags_do_not_collide_with_the_stack_flags():

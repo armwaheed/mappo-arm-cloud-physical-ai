@@ -153,7 +153,9 @@ default — a runbook that repeats a config value is a second place for it to dr
 
 Every `visual_nav.py` flag still applies — this substitutes the choice of velocity and
 nothing else. The camera, detector, tracker, odom map, health monitor, arm gate, telemetry
-and teardown are all the shipped stack's.
+and teardown are all the shipped stack's, reached through `main(planner_factory=...)`,
+which the control stack grew for this and which was merged and re-vendored rather than
+patched around.
 
 **The veto**: the policy proposes, and the planner's own rollout must agree the proposed
 velocity keeps every obstacle's hard gap over 2.5 s. If it does not, the planner's command

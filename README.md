@@ -284,7 +284,7 @@ evidence/        the approved run, the static-obstacle dry run, a sample telemet
 | `replay_mappo.py` | a recorded run through the checkpoint, against an ablated control |
 | `closed_loop_sim.py` | the policy's own actions moving a simulated robot — issue #5's gate |
 | `mappo_shadow.py` | a **live** run, policy logged beside the planner. Cannot move a leg. |
-| `mappo_drive.py` | a live run, the policy driving under the planner's veto |
+| `mappo_drive.py` | a live run, the policy driving under the planner's veto, through a supported upstream seam |
 
 ## Running the tests
 

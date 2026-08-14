@@ -370,6 +370,40 @@ class DynamicWindowPlanner:
             - o.radius_m - self.config.robot_radius_m
             for o in obstacles)
 
+    def is_feasible(self, pose: tuple[float, float, float],
+                    command: tuple[float, float, float], obstacles: list[Obstacle],
+                    horizon_s: float | None = None) -> bool:
+        """Whether holding ``command`` from ``pose`` keeps every obstacle's hard gap.
+
+        The same feasibility test :meth:`plan` applies to every sampled candidate, asked
+        about ONE command instead. That is the natural question for a supervisory veto
+        over an external controller — let the other controller choose, and refuse only
+        what this planner's own geometry says ends inside something. Without it a
+        consumer has to reach into :meth:`_rollout`, :meth:`_gaps` and
+        :meth:`_hard_gaps`, and then a rename here becomes an ``AttributeError`` there.
+
+        Per-obstacle hard gaps, like :meth:`plan`: a mapped landmark and a person do not
+        want the same margin, which is why :class:`Obstacle` carries the override.
+
+        ``horizon_s`` defaults to :attr:`PlannerConfig.horizon_s`, and the default is the
+        one to use. A shorter window is tempting for a command that will be re-chosen
+        100 ms later — "what if the robot held this, blind, for 2.5 s" is not a question
+        anyone is actually asking — but it was swept downstream against a static obstacle
+        and shortening it cost collisions without even firing less often. A veto that
+        intervenes late lets the robot get closer, where it then has to intervene more.
+        The parameter is here so that argument can be re-run, not so it can be tuned
+        casually.
+        """
+        if not obstacles:
+            return True
+        xy, _ = self._rollout(np.asarray([list(command)], dtype=float), pose)
+        if horizon_s is not None:
+            # Truncating the path is equivalent to re-rolling with a shorter horizon and
+            # cheaper: _gaps derives its per-step obstacle prediction times from
+            # xy.shape[1], so slicing keeps the moving obstacles consistent with it.
+            xy = xy[:, :max(1, round(horizon_s / self.config.dt_s)), :]
+        return bool(np.all(self._gaps(xy, obstacles)[0] >= self._hard_gaps(obstacles)))
+
     # ── Planning ────────────────────────────────────────────────────────────
     def plan(self, pose: tuple[float, float, float], goal: tuple[float, float],
              last_command: tuple[float, float, float], obstacles: list[Obstacle],

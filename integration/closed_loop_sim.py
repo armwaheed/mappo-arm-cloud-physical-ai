@@ -90,7 +90,6 @@ from mappo_policy import (
     VETO_HORIZON_S,
     HeadingServo,
     PolicyRunner,
-    rollout_is_feasible,
     tick_from_state,
 )
 from observation import DEFAULT_FOV_RAD, DEFAULT_MAX_RANGE_M, wrap_pi
@@ -301,9 +300,9 @@ class SupervisedController(PolicyController):
         # A planner handed a cold start mid-run plans from a standstill it is not in.
         backup, backup_reason, _ = self._fallback.command(t, pose, goal, obstacles,
                                                           measured)
-        if rollout_is_feasible(self._fallback.planner, pose, proposed,
-                               [_to_planner(o) for o in obstacles],
-                               horizon_s=self._veto_horizon_s):
+        if self._fallback.planner.is_feasible(pose, proposed,
+                                              [_to_planner(o) for o in obstacles],
+                                              horizon_s=self._veto_horizon_s):
             self.driven += bool(obstacles)
             return proposed, reason, intent
         self.vetoed += 1

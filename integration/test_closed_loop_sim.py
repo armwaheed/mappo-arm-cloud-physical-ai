@@ -45,7 +45,6 @@ from closed_loop_sim import (
     run_once,
     scenarios,
 )
-from mappo_policy import rollout_is_feasible
 
 QUIET = replace(SimConfig(), velocity_noise_mps=0.0, yaw_noise_radps=0.0)
 BIN = SimObstacle(1.3, 0.0, 0.23, "static", "landmark-1")
@@ -121,25 +120,30 @@ def test_the_veto_refuses_a_command_that_drives_into_the_obstacle():
     """Remove the veto and this returns True. Straight ahead at top speed, from 1.3 m
     out, ends inside a 0.23 m disc well within the 2.5 s horizon."""
     planner = PlannerController(QUIET).planner
-    obstacles = [_to_planner(BIN)]
-    assert not rollout_is_feasible(planner, (0.0, 0.0, 0.0), (0.35, 0.0, 0.0), obstacles)
+    assert not planner.is_feasible((0.0, 0.0, 0.0), (0.35, 0.0, 0.0), [_to_planner(BIN)])
 
 
 def test_the_veto_allows_a_command_that_clears_the_obstacle():
     """A veto that refuses everything is not a safety feature, it is a brake."""
     planner = PlannerController(QUIET).planner
-    obstacles = [_to_planner(BIN)]
-    assert rollout_is_feasible(planner, (0.0, 0.0, 0.0), (0.30, 0.0, 0.55), obstacles)
-    assert rollout_is_feasible(planner, (0.0, 0.0, 0.0), (0.35, 0.0, 0.0), [])
+    assert planner.is_feasible((0.0, 0.0, 0.0), (0.0, 0.20, 0.0), [_to_planner(BIN)])
+    assert planner.is_feasible((0.0, 0.0, 0.0), (0.35, 0.0, 0.0), [])
 
 
-def test_the_veto_still_reaches_the_planner_internals_it_depends_on():
-    """``rollout_is_feasible`` uses ``_rollout``, ``_gaps`` and ``_hard_gaps`` because the public
-    ``plan`` scores a whole sampled window and cannot be asked about one command.
-    ``robot-stack/`` is vendored, so a re-vendor could move them. This is the tripwire."""
+def test_the_veto_uses_the_planners_own_public_predicate():
+    """It used to reach into ``_rollout``, ``_gaps`` and ``_hard_gaps``, because the public
+    ``plan`` scores a whole sampled window and cannot be asked about one command. Upstream
+    grew ``is_feasible`` for exactly that, so the coupling is gone — and this is the
+    tripwire that a re-vendor has not taken it away again.
+
+    It also pins that the simulation and the drive path share ONE veto. Two
+    implementations of a safety check is two implementations that will disagree, and these
+    two did for a while."""
+    from mappo_drive import MappoPlanner
     planner = PlannerController(QUIET).planner
-    for name in ("_rollout", "_gaps", "_hard_gaps"):
-        assert callable(getattr(planner, name, None)), f"planner lost {name}"
+    assert callable(getattr(planner, "is_feasible", None))
+    assert MappoPlanner.is_feasible is type(planner).is_feasible, \
+        "the drive path must veto with the same predicate the simulation does"
 
 
 def test_supervision_removes_the_collisions_the_raw_policy_has():
