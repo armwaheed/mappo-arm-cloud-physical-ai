@@ -1,0 +1,5 @@
+# The policy package's only dependency. Kept as delivered.
+#
+# The Go2's Jetson runs Python 3.8, whose last numpy is 1.24.x — that resolves fine and
+# is what deploy/install.sh gets there. Nothing in this package needs a newer one.
+numpy>=1.23

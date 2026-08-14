@@ -25,6 +25,8 @@ import sys
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import inspect
+
 import visual_nav
 from avoidance import (
     STATIC_SOFT_GAP_M,
@@ -429,6 +431,41 @@ def test_latching_the_arm_is_on_by_default():
     parser = build_parser()
     assert parser.parse_args([]).no_latch_arm is False
     assert parser.parse_args(["--no-latch-arm"]).no_latch_arm is True
+
+
+# ── The substitution seam ───────────────────────────────────────────────────
+def test_main_accepts_a_planner_factory_and_defaults_to_the_shipped_planner():
+    """A CONTRACT TRIPWIRE, and worth being honest about what it is: `main()` connects to
+    a robot, so what it does with the factory cannot be tested here. What can be tested
+    is that the seam exists and has not been renamed, which is the failure a downstream
+    consumer actually suffers — and suffers silently, if they were reaching around it.
+
+    The seam exists because everything in `main()` around that one line is what makes a
+    run safe: the arm-latch refusal, the health gate, the recorder's codec check, and a
+    `finally` whose ordering matters. A consumer who copies it will drift, and the drift
+    will be in the arm check.
+    """
+    parameters = inspect.signature(visual_nav.main).parameters
+    assert "planner_factory" in parameters, "the substitution seam has gone"
+    assert parameters["planner_factory"].default is DynamicWindowPlanner, \
+        "the default must stay the shipped planner — every existing caller relies on it"
+
+
+def test_main_takes_argv_so_a_wrapper_does_not_have_to_mutate_sys_argv():
+    """The other half of the seam. Without it a consumer has to rewrite `sys.argv` before
+    calling in, which breaks `--help` and makes the real argument list unrecoverable from
+    a crash."""
+    parameters = inspect.signature(visual_nav.main).parameters
+    assert "argv" in parameters
+    assert parameters["argv"].default is None, "no argv must still mean sys.argv"
+
+
+def test_the_factory_is_called_with_the_keywords_it_is_documented_with():
+    """`planner_factory(limits=..., config=...)`. Pinned by reading the call site,
+    because a positional call here would silently break every factory written against
+    the documented signature — and the docstring is the contract."""
+    source = inspect.getsource(visual_nav.main)
+    assert "planner_factory(limits=limits, config=planner_config)" in source
 
 
 # ── CLI resolution ──────────────────────────────────────────────────────────

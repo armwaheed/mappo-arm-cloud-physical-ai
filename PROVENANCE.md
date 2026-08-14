@@ -28,9 +28,20 @@ Three things were changed on the way in, and all of them matter if you re-vendor
 | --- | --- |
 | Upstream | `github.com/the Arm Device Connect Go2 stack` (**internal** visibility) |
 | Branch | `main` |
-| Commit | `4009938` |
-| Corresponds to | PR #14 (merged as `2f289ec`), plus the telemetry fields the policy integration needs |
-| Copied | 2026-08-12 |
+| Commit | `3f11b53` |
+| Corresponds to | the planner-substitution seam and the public feasibility predicate, on top of the telemetry fields the policy integration needs |
+| Copied | 2026-08-14 |
+
+> Re-vendored 2026-08-14 after two upstream changes made for this demo and merged there
+> first, which is the order `PROVENANCE.md` asks for: `visual_nav.main()` now accepts a
+> `planner_factory`, and `DynamicWindowPlanner` has a public `is_feasible`. Together they
+> let `integration/mappo_drive.py` substitute a controller through a supported seam
+> instead of swapping three module globals, and delete about forty lines of it.
+>
+> **The recipe below under-syncs and was corrected in the same pass.** Its rsync filter is
+> `*.py` only, but `visual_nav/README.md` and `visual_nav/SKILL.md` are NOT in the
+> deliberately-different list — they are supposed to track upstream, and a `.py`-only sync
+> silently leaves them behind. They are copied explicitly now.
 
 > The previous entry recorded `4ceda53` on `feat/static-obstacle-nav`. That was wrong:
 > the tree actually held `95550b8`, one commit later, which is a whole live-run fix pass
@@ -66,6 +77,11 @@ Sync only the source, then put back the one rename that lives inside it:
 git -C ../arm-dc-unitree-go2 fetch origin && git -C ../arm-dc-unitree-go2 checkout <ref>
 rsync -a --delete --include '*/' --include '*.py' --exclude '*' \
       ../arm-dc-unitree-go2/unitree/ robot-stack/unitree/
+
+# visual_nav's docs are NOT in the deliberately-different list, so they track upstream —
+# and the .py-only filter above silently leaves them stale. Copy them explicitly.
+cp ../arm-dc-unitree-go2/unitree/go2/visual_nav/{README.md,SKILL.md} \
+   robot-stack/unitree/go2/visual_nav/
 
 # Three of those .py files reference the shared core under the upstream name, so the
 # rsync undoes the rename in exactly the files a prose-only sweep would miss. The

@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from avoidance import (
+    STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
     DynamicWindowPlanner,
     Limits,
@@ -496,6 +497,74 @@ def test_a_bin_and_a_person_are_both_planned_against():
     # The reported gap is the WORST over both, so it cannot exceed either one alone.
     bin_only = planner.plan(ORIGIN, CHAIR_XY, CRUISING, [_bin()])
     assert command.gap_m <= bin_only.gap_m + 1e-9
+
+
+# ── is_feasible: the same test plan() applies, asked about ONE command ──────
+def test_a_command_driving_into_someone_is_not_feasible():
+    """The point of the predicate. Straight ahead at cruise, at a person 1.2 m away, ends
+    inside them well within the horizon."""
+    blocker = Obstacle(x=1.2, y=0.0, vx=0.0, vy=0.0, radius_m=0.35)
+    assert not _planner().is_feasible(ORIGIN, (0.30, 0.0, 0.0), [blocker])
+
+
+def test_a_command_that_clears_them_is_feasible():
+    """A predicate that refuses everything is not a veto, it is a brake."""
+    blocker = Obstacle(x=1.2, y=0.0, vx=0.0, vy=0.0, radius_m=0.35)
+    planner = _planner()
+    # Sidestep rather than a turn: a constant yaw rate held for the whole horizon traces
+    # an arc that can curve back towards the obstacle, which is a true answer about a
+    # command nobody would hold that long and a confusing one to assert on.
+    assert planner.is_feasible(ORIGIN, (0.0, 0.20, 0.0), [blocker])
+    assert planner.is_feasible(ORIGIN, (0.30, 0.0, 0.0), []), "an empty scene is feasible"
+
+
+def test_it_agrees_with_the_command_plan_actually_chose():
+    """The two must not be able to disagree — a veto that refuses the planner's own
+    output would deadlock any consumer that fell back to it."""
+    for obstacles in ([], [Obstacle(x=1.6, y=0.3, vx=0.0, vy=0.0, radius_m=0.35)],
+                      [Obstacle(x=2.2, y=-1.6, vx=0.0, vy=1.1, radius_m=0.35)]):
+        planner = _planner()
+        command = planner.plan(ORIGIN, GOAL, CRUISING, obstacles)
+        if command.is_stop:
+            continue                    # a hold is not a sampled candidate
+        assert planner.is_feasible(ORIGIN, (command.vx, command.vy, command.wz),
+                                   obstacles), command
+
+
+def test_it_honours_the_per_obstacle_hard_gap():
+    """A landmark and a person do not want the same margin, which is the whole reason
+    Obstacle carries the override. A predicate that used the planner default would give a
+    bin a person's berth — and the docstring on soft_gap_m says that is actively harmful
+    in a corridor."""
+    at = {"x": 1.1, "y": 0.0, "vx": 0.0, "vy": 0.0, "radius_m": 0.25}
+    planner = _planner()
+    generous = Obstacle(**at, hard_gap_m=STATIC_HARD_GAP_M)
+    strict = Obstacle(**at, hard_gap_m=0.60)
+    command = (0.20, 0.20, 0.0)
+    assert planner.is_feasible(ORIGIN, command, [generous])
+    assert not planner.is_feasible(ORIGIN, command, [strict])
+
+
+def test_a_shorter_horizon_sees_less_of_the_future():
+    """The parameter exists so the "2.5 s is too strict for a command re-chosen at 10 Hz"
+    argument can be re-run with numbers. It has to actually do something."""
+    blocker = Obstacle(x=1.2, y=0.0, vx=0.0, vy=0.0, radius_m=0.35)
+    planner = _planner()
+    assert not planner.is_feasible(ORIGIN, (0.30, 0.0, 0.0), [blocker])
+    assert planner.is_feasible(ORIGIN, (0.30, 0.0, 0.0), [blocker], horizon_s=0.5)
+
+
+def test_a_moving_obstacle_is_advanced_over_the_horizon():
+    """Same as plan(): scored against where they WILL be. A crosser who is not in the way
+    now but will be must make a straight-ahead command infeasible."""
+    # Timed to arrive where the robot will be at about t = 1 s. A crosser further out in
+    # x passes ahead of it and is correctly feasible, which is a fine answer and a
+    # useless test.
+    crosser = Obstacle(x=0.8, y=-1.0, vx=0.0, vy=1.0, radius_m=0.35)
+    planner = _planner()
+    assert planner.is_feasible(ORIGIN, (0.30, 0.0, 0.0), [crosser], horizon_s=0.25), \
+        "they are still well clear over the next quarter second"
+    assert not planner.is_feasible(ORIGIN, (0.30, 0.0, 0.0), [crosser])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,12 @@
+{
+  "model_path": "models/mappo_actor_3agent_1910000.npz",
+  "meters_per_vmas_unit": 2.5,
+  "lidar_range_vmas": 0.35,
+  "velocity_frame": "body",
+  "max_vx_mps": 0.35,
+  "max_vy_mps": 0.2,
+  "command_scale": 0.6,
+  "goal_stop_distance_m": 0.2,
+  "stale_input_timeout_s": 0.75,
+  "static_obstacle_ttl_s": 120.0
+}

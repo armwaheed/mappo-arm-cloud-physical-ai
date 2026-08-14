@@ -1002,8 +1002,28 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main() -> None:
-    args = build_parser().parse_args()
+def main(argv: Sequence[str] | None = None,
+         planner_factory=DynamicWindowPlanner) -> None:
+    """Run one navigation session.
+
+    ``planner_factory`` is called as ``planner_factory(limits=..., config=...)`` and
+    exists so a consumer can substitute its own controller — an RL policy, say — WITHOUT
+    copying this function. Everything above and below that one line is what makes a run
+    safe: the arm-latch refusal, the health gate, the recorder's codec check, and a
+    ``finally`` whose ordering matters (stop the legs, then tear down what was feeding
+    them). A duplicated copy of that will drift, and the drift will be in the arm check.
+
+    A factory rather than a planner instance because ``limits`` and ``config`` are built
+    here from the parsed arguments, so a caller has nothing to construct one from yet.
+
+    A substituted controller usually needs the MEASURED velocity, which ``plan()`` does
+    not carry, and on this robot the commanded and achieved velocities differ by about a
+    factor of two — so a controller fed the command believes it is moving twice as fast
+    as it is. Take ``loco`` off the returned planner if it wants one: the object this
+    factory returns is handed to :class:`VisualNavigator` alongside ``loco``, and a
+    factory that closes over its own reference is the simplest way to get both.
+    """
+    args = build_parser().parse_args(argv)
 
     from locomotion.go2_locomotion import Go2Locomotion
 
@@ -1116,7 +1136,7 @@ def main() -> None:
               f"({planner_config.horizon_s * limits.max_vx:.2f} m of lookahead at "
               f"top speed), robot radius {planner_config.robot_radius_m:.2f} m, "
               f"mover radius {planner_config.obstacle_radius_m:.2f} m")
-        planner = DynamicWindowPlanner(limits=limits, config=planner_config)
+        planner = planner_factory(limits=limits, config=planner_config)
         tracker = ObstacleTracker(fov_rad=math.radians(camera_model.hfov_deg))
 
         perception = PerceptionWorker(camera, detector, camera_model, goal_source,

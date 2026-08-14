@@ -13,8 +13,8 @@ run through the real checkpoint does, because every gap shows up as either a cra
 
 It also answers the question that matters more than the format — whether the policy can
 see the obstacle before it hits it. The policy's world is scaled: ``meters_per_vmas_unit``
-maps a trained 0.35-unit lidar range onto 0.525 m of real floor, measured to the
-obstacle's SURFACE.
+maps the trained 0.35-unit lidar range onto real floor, measured to the obstacle's
+SURFACE. At the shipped 2.5 that is 0.875 m. ``--scale`` sweeps it.
 
 EVERY RUN IS PAIRED WITH ITS OWN CONTROL. The same ticks are replayed twice, through two
 independent controllers: once as recorded, and once with ``stationary_objects`` emptied.
@@ -23,29 +23,39 @@ anything — this checkpoint carries a systematic heading bias of 6-16 degrees w
 obstacle anywhere near it, so an absolute deflection number credits the bias to
 avoidance. The difference between the two runs is the part the obstacle actually caused.
 
-    python3 replay_mappo.py ../evidence/sample_telemetry.jsonl \\
-        --package ~/physicalai_mappo_go2
+    python3 replay_mappo.py ../evidence/sample_telemetry.jsonl
+    python3 replay_mappo.py ../evidence/sample_telemetry.jsonl --config sweep.json
 
-Needs the policy package (and its numpy) on the path; everything else here is stdlib.
+Needs the policy package's numpy; everything else here is stdlib.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import math
 import sys
+import tempfile
 from pathlib import Path
 
 from mappo_bridge import BridgeReport, audit, is_stationary, robot_input
 from observation import wrap_pi
 from telemetry_reader import read_run
 
+#: The vendored policy package. It used to be an unpacked zip somewhere in a home
+#: directory, which meant every replay in an issue or a PR quoted numbers nobody else
+#: could reproduce. ``--package`` still overrides it, which is how a newly delivered
+#: checkpoint gets compared against this one.
+DEFAULT_PACKAGE = Path(__file__).resolve().parent.parent / "policy"
+
 
 def _load_policy(package: Path):
     """Import the policy package from wherever it was unpacked.
 
-    It is not pip-installable and is not vendored here — it is a checkpoint plus an
-    adapter that the policy owner ships as a directory, so the path is an argument.
+    It is not pip-installable: it is a checkpoint plus an adapter that the policy owner
+    ships as a directory, so the path stays an argument even though the delivered one is
+    now in the tree.
     """
     sys.path.insert(0, str(package))
     try:
@@ -55,6 +65,30 @@ def _load_policy(package: Path):
             f"cannot import the policy package from {package}: {exc}\n"
             f"pass --package <dir containing physical_ai_mappo.py>") from exc
     return MappoController, RobotInput, StationaryObject
+
+
+@contextlib.contextmanager
+def derived_config(base: Path, **overrides):
+    """Yield a path to ``base`` with some fields replaced, for sweeping a constant.
+
+    Sweeping ``meters_per_vmas_unit`` is the first thing issue #4 asks for, and
+    ``command_scale`` turned out to matter as much, so this is a helper rather than
+    something each reader re-improvises with a temp file. The policy package takes a
+    config PATH, not a config object, which is why this writes a file at all.
+
+    ``model_path`` is made absolute on the way out. It is stored relative to the config
+    that names it, so a derived config written to a temp directory would otherwise look
+    for the checkpoint next to itself and fail with a confusing "no such file".
+    """
+    data = json.loads(base.read_text())
+    data.update(overrides)
+    model = Path(data.get("model_path", ""))
+    if not model.is_absolute():
+        data["model_path"] = str((base.parent / model).resolve())
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "config.json"
+        path.write_text(json.dumps(data))
+        yield path
 
 
 def _goal_bearing(tick: dict) -> float:
@@ -130,7 +164,10 @@ def replay(run, package: Path, config: Path | None = None,
                   f"nearest={surface:5.2f}m {'SEEN  ' if rows[-1]['visible'] else 'unseen'}"
                   f" effect={rows[-1]['obstacle_effect_deg']:+6.1f}deg")
 
-    return {"rows": rows, "report": report, "horizon_m": horizon_m, "config": live.cfg}
+    return {"rows": rows, "report": report, "horizon_m": horizon_m, "config": live.cfg,
+            # The TRAINED agent radius at this scale, read out of the checkpoint rather
+            # than written down here. It is the number the scale is calibrated against.
+            "agent_radius_m": live.agent_radius_m}
 
 
 def _tally(rows: list, key: str) -> str:
@@ -207,22 +244,66 @@ def summarise(result: dict) -> None:
         print(f"    - {line}")
 
 
+def sweep(run, package: Path, base_config: Path, scales: list) -> None:
+    """One row per scale: what the horizon buys and what it costs.
+
+    The whole point of the table is that the two columns move in opposite directions.
+    Raising the scale lets the policy see the obstacle sooner, and the response it then
+    makes is the SAME response — saturated at around 100 degrees at every scale measured —
+    so what is being bought is warning, not proportionality. Reversals are the price, and
+    they are the open-loop shadow of a chatter that only a closed-loop run can really
+    measure (issue #5).
+    """
+    print()
+    print(f"{'m/unit':>7}  {'horizon':>8}  {'agent r':>8}  {'seen':>10}  "
+          f"{'effect inside':>14}  {'reversals':>10}")
+    for scale in scales:
+        with derived_config(base_config, meters_per_vmas_unit=scale) as config:
+            result = replay(run, package, config=config)
+        rows = result["rows"]
+        mapped = [r for r in rows if math.isfinite(r["nearest_surface_m"])]
+        seen = [r for r in mapped if r["visible"]]
+        inside = [abs(r["obstacle_effect_deg"]) for r in seen]
+        swerves = [r["obstacle_effect_deg"] for r in rows
+                   if abs(r["obstacle_effect_deg"]) > 10.0]
+        reversals = sum(1 for a, b in zip(swerves, swerves[1:]) if a * b < 0.0)
+        share = f"{len(seen)}/{len(mapped)}" if mapped else "-"
+        mean_inside = f"{sum(inside) / len(inside):.1f} deg" if inside else "-"
+        radius = result["agent_radius_m"]
+        radius_text = "      ?" if radius is None else format(radius, ">7.3f")
+        print(f"{scale:>7.2f}  {result['horizon_m']:>7.3f}m  {radius_text}m  "
+              f"{share:>10}  {mean_inside:>14}  "
+              f"{reversals:>4} / {len(swerves):<3}")
+    print()
+    print("  agent r is the TRAINED 0.10 VMAS radius at that scale. Match it to the "
+          "radius the")
+    print("  planner is run with (--robot-radius, 0.25 m in the recorded runs) and the "
+          "policy's")
+    print("  idea of how much room it needs matches the robot's. See issue #4.")
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("telemetry", type=Path, help="a run's .jsonl")
-    parser.add_argument("--package", type=Path, required=True,
-                        help="directory holding physical_ai_mappo.py and config.json")
+    parser.add_argument("--package", type=Path, default=DEFAULT_PACKAGE,
+                        help="directory holding physical_ai_mappo.py and config.json "
+                             "(default: the vendored ../policy)")
     parser.add_argument("--config", type=Path,
-                        help="alternative config.json — for sweeping a constant such as "
-                             "meters_per_vmas_unit without editing the package")
+                        help="alternative config.json, in place of the package's own")
+    parser.add_argument("--scale", type=float, nargs="+", metavar="M_PER_UNIT",
+                        help="sweep meters_per_vmas_unit over these values and print a "
+                             "comparison table instead of one run's detail")
     parser.add_argument("--verbose", action="store_true", help="print every tick")
     args = parser.parse_args(argv)
 
+    package = args.package.expanduser().resolve()
     run = read_run(args.telemetry)
     print(f"{args.telemetry.name}: schema {run.schema}, {len(run.ticks)} ticks, "
           f"{'completed' if run.completed else 'TRUNCATED'}")
-    summarise(replay(run, args.package.expanduser().resolve(),
-                     config=args.config, verbose=args.verbose))
+    if args.scale:
+        sweep(run, package, args.config or package / "config.json", args.scale)
+    else:
+        summarise(replay(run, package, config=args.config, verbose=args.verbose))
     return 0
 
 
