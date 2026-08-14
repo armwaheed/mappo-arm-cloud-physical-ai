@@ -32,8 +32,13 @@ issue  ──▶  one-line prompt pointing at it  ──▶  agent works  ──
 A fresh agent, a different vendor's agent, or a colleague on the other side of the world
 picks up from step 2 with no handover call.
 
-Live exemplars — read one before you write your first issue. In this repo, **#3, #4 and #5**
-are written in this shape; **#4** is the one to copy. The upstream Go2 stack repository
+Live exemplars — read one before you write your first issue. In this repo,
+**[issue #3](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/3)**,
+**[issue #4](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/4)** and
+**[issue #5](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/5)** are written
+in this shape, and
+**[issue #4](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/4)** is the one
+to copy. The upstream Go2 stack repository
 (located in `PROVENANCE.md`) carries a matching pair — an issue written to be executed, and
 the continuation comment that handed off cleanly to the next one. Ask @armwaheed for access.
 
@@ -46,7 +51,7 @@ the continuation comment that handed off cleanly to the next one. Ask @armwaheed
 | **Point at the issue** | starting or resuming any real work | `Please continue from GitHub issue: <url>` — plus the state of the room (below) |
 | **Challenge me** | you have already formed a technical opinion | *"…the Go2 should lie down, recenter the arm, lock it, then resume. **Challenge me**"* |
 | **Ranked options** | you have *no* opinion and the decision is yours to own | `Give me a selection list of choices, cheapest first, with a recommendation` |
-| **Adversarial pass** | every single time code changes | the standing sentence below |
+| **Adversarial pass** | every single time code changes | the [standing suffix](#the-standing-suffix) below |
 
 **On "challenge me".** It is not politeness, and it is not "review my thinking". It is
 attached to a *specific, falsifiable proposal* so the agent has something to attack:
