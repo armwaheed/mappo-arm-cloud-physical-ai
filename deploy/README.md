@@ -41,7 +41,7 @@ telemetry or the recordings.
 | --- | --- |
 | **The robot delivers ~0.45 of the velocity it is commanded.** | Fitted against the pose over the recorded run: 2.09 m travelled against 4.32 m commanded. Tethered, with the D1 arm, on the derated envelope. |
 | **So `command_scale` is shipped at 0.6, not the delivered 0.3.** | At 0.3 the top speed on the floor is 0.047 m/s — 2.8 m in the entire 60 s run budget, so the robot cannot cross the arena and the simulation read that as a navigation failure. 0.6 is 0.095 m/s and 5.7 m. |
-| **`--robot-radius 0.25` is load-bearing.** | The vendored default is 0.40 m. The policy's `meters_per_vmas_unit` of 2.5 is calibrated as 0.25 ÷ the trained 0.10 VMAS radius, so running the planner at its default silently breaks the calibration. Pass the flag on every run. |
+| **`--robot-radius 0.25` is load-bearing.** | The vendored default is 0.40 m. The policy's `meters_per_vmas_unit` of 2.5 is calibrated as 0.25 ÷ the trained 0.10 VMAS radius. `mappo_drive` now **refuses to start** on a mismatch rather than running at a horizon the evidence does not cover — see below. |
 | **The policy commands no yaw.** | It is a holonomic 2-D force. Without the heading servo the robot crabs and its 85° forward camera never looks anywhere new. The servo is on by default; `--no-heading-servo` turns it off. |
 
 ## Rung 1 — clear the gate, off the robot
@@ -186,6 +186,7 @@ Between each, read the tail of the drive log: `N/M ticks driven by the policy`.
 | the robot crabs sideways and never turns | `--no-heading-servo` was passed, or the servo's deadband is swallowing the error. |
 | `cannot import the policy package` | run from `integration/`, or pass `--package ../policy`. |
 | a policy config is refused at load | it disagrees with the checkpoint's own recorded training constants. The message names the field; do not "fix" it by editing the checkpoint. |
+| `REFUSING TO RUN — the policy's scale was calibrated for a different robot size` | `--robot-radius` and `meters_per_vmas_unit` disagree. Pass `--robot-radius 0.25`, or pass `--policy-scale` to match the radius you meant and **re-run the simulation** — the numbers above do not transfer. Nothing moved; the robot is still prone. Every refusal is also appended to `~/.mappo-go2-refusals.jsonl` (`--refusal-log`), because a refused run writes no telemetry and would otherwise leave no trace of why the demo did not start. |
 | RPC segfault on any DDS call | `setup_env.sh` was not sourced. `LD_LIBRARY_PATH` is load-bearing — see `robot-stack/unitree/go2/install/setup_env.sh`. |
 
 ## What is still open

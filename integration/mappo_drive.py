@@ -56,6 +56,8 @@ Every ``visual_nav.py`` flag still applies. ``python3 test_mappo_drive.py``.
 from __future__ import annotations
 
 import argparse
+import json
+import math
 import sys
 import time
 from pathlib import Path
@@ -85,6 +87,34 @@ _STOP_REASONS = {
 }
 
 
+#: Where a refused run leaves its trace. A refusal happens BEFORE the telemetry writer
+#: exists, so without this a run that never started leaves nothing behind at all — and
+#: "why did the 14:32 run not happen" is then unanswerable an hour later, which on a demo
+#: day is exactly when it gets asked. One JSON object per line, not prose: this repository
+#: already learned that a console log is not an interface.
+DEFAULT_REFUSAL_LOG = Path.home() / ".mappo-go2-refusals.jsonl"
+
+
+def _record_refusal(path: Path | None, reason: str, detail: dict) -> None:
+    """Append one refusal record. Never raises — a failed log must not mask the refusal.
+
+    The refusal itself is the safety mechanism; this is the audit trail. If the disk is
+    full or the path is unwritable the run must still be refused, and loudly, so the
+    failure to record is reported and swallowed rather than propagated.
+    """
+    path = DEFAULT_REFUSAL_LOG if path is None else Path(path)
+    record = {"wall_time": time.time(), "reason": reason,
+              "argv": sys.argv[1:], **detail}
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a") as handle:
+            handle.write(json.dumps(record) + "\n")
+        print(f"[mappo_drive] refusal recorded in {path}", file=sys.stderr)
+    except OSError as exc:
+        print(f"[mappo_drive] could not record the refusal in {path}: {exc}",
+              file=sys.stderr)
+
+
 class MappoPlanner(DynamicWindowPlanner):
     """A planner-shaped object that asks the policy first.
 
@@ -93,7 +123,8 @@ class MappoPlanner(DynamicWindowPlanner):
     builds its obstacle list, and the veto needs the rollout.
     """
 
-    def __init__(self, limits, config, runner: PolicyRunner, supervised: bool = True):
+    def __init__(self, limits, config, runner: PolicyRunner, supervised: bool = True,
+                 refusal_log: Path | None = None):
         super().__init__(limits=limits, config=config)
         self._runner = runner
         self._supervised = supervised
@@ -103,6 +134,60 @@ class MappoPlanner(DynamicWindowPlanner):
         #: in a log of velocities.
         self.counts: dict = {"ticks": 0, "policy": 0, "vetoed": 0, "stopped": 0,
                              "velocity_unavailable": 0}
+        self._check_radius_calibration(refusal_log)
+
+    def _check_radius_calibration(self, refusal_log: Path | None) -> None:
+        """Refuse the run if the policy's scale was calibrated for a different robot size.
+
+        ``meters_per_vmas_unit`` is not a free parameter: it is the radius the PLANNER
+        plans with, divided by the radius the policy was TRAINED with. The trap is that
+        those two live in different places and only one of them is in the policy's config
+        — the vendored planner's default ``robot_radius_m`` is 0.40 m, every recorded run
+        passed ``--robot-radius 0.25``, and the shipped 2.5 is 0.25 / 0.10. Run at the
+        default and the policy's sensing horizon is 1.4 m rather than 0.875 m, every
+        closed-loop number stops applying, and **nothing anywhere says so**.
+
+        This runs in ``__init__``, which ``visual_nav.main()`` reaches after its own
+        pre-flight but before sport mode is selected and before the control loop starts —
+        so the robot is still lying down and nothing has moved. ``--policy-scale`` is the
+        escape hatch for a deliberate mismatch, and the message says so.
+        """
+        trained = self._runner.controller.actor.metadata.get("training_agent_radius_vmas")
+        if trained is None:
+            print("[mappo_drive] WARNING: this checkpoint does not record its trained "
+                  "agent radius, so the scale calibration cannot be checked. Confirm "
+                  "--robot-radius by hand against policy/PROVENANCE.md.")
+            return
+        implied = self.config.robot_radius_m / trained
+        configured = self._runner.config.meters_per_vmas_unit
+        if math.isclose(implied, configured, rel_tol=0.02):
+            return
+
+        detail = {
+            "planner_robot_radius_m": self.config.robot_radius_m,
+            "trained_agent_radius_vmas": trained,
+            "implied_scale": round(implied, 3),
+            "configured_scale": configured,
+        }
+        _record_refusal(refusal_log, "robot_radius_scale_mismatch", detail)
+        raise SystemExit(
+            "\n" + "!" * 78 + "\n"
+            "[mappo_drive] REFUSING TO RUN — the policy's scale was calibrated for a "
+            "different robot size\n" + "!" * 78 + "\n"
+            f"  planner robot radius   {self.config.robot_radius_m:.3f} m   "
+            f"(--robot-radius)\n"
+            f"  trained agent radius   {trained:.3f} VMAS   (from the checkpoint)\n"
+            f"  implied scale          {implied:.2f} m/unit\n"
+            f"  config says            {configured:.2f} m/unit   "
+            f"(horizon {self._runner.config.lidar_range_m:.3f} m)\n"
+            "\n"
+            f"  The closed-loop evidence in deploy/README.md is only valid at "
+            f"{configured:.2f}.\n"
+            f"  Either pass --robot-radius "
+            f"{configured * trained:.2f}, or pass --policy-scale {implied:.2f} and "
+            f"re-run\n"
+            f"  the simulation before trusting anything it does.\n"
+            + "!" * 78)
 
     def attach(self, loco) -> None:
         """Give the planner the locomotion client, for the MEASURED velocity.
@@ -183,6 +268,11 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                        help="override command_scale for this run. Shipped at 0.6; the "
                             "delivered 0.3 was 0.047 m/s on the floor once the robot's "
                             "measured 0.45 actuator gain is applied")
+    group.add_argument("--refusal-log", type=Path, default=DEFAULT_REFUSAL_LOG,
+                       metavar="PATH.jsonl",
+                       help="where a refused run records why. A refusal happens before "
+                            "the telemetry writer exists, so without this a run that "
+                            "never started leaves no trace at all")
     group.add_argument("--no-heading-servo", action="store_true",
                        help="do not turn the nose towards the direction of travel. The "
                             "policy commands no yaw at all, so without the servo the "
@@ -256,7 +346,8 @@ def main(argv=None) -> int:
 
         def factory(limits, config):
             planner = MappoPlanner(limits, config, runner,
-                                   supervised=args.policy_mode == "supervised")
+                                   supervised=args.policy_mode == "supervised",
+                                   refusal_log=args.refusal_log)
             planners.append(planner)
             return planner
 

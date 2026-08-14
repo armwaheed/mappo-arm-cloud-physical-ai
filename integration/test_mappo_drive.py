@@ -16,10 +16,14 @@ Run: ``python3 test_mappo_drive.py``
 """
 from __future__ import annotations
 
+import contextlib
+import json
 import math
 import os
 import sys
+import tempfile
 import types
+from pathlib import Path
 
 # BOTH paths go in before ANY sibling import. `ruff --fix` sorts imports into
 # contiguous blocks and will hoist `from avoidance import ...` above a sys.path line that
@@ -65,6 +69,12 @@ class _StubRunner:
 
     def __init__(self, command=(0.35, 0.0, 0.0), status: str = "COMMAND"):
         self._command, self._status = command, status
+        # Wraps a real runner rather than faking its whole surface: the planner reads
+        # `controller.actor.metadata` for the radius calibration check and `config` for
+        # the error message, and a stub that faked those would be asserting they exist
+        # rather than that they are right. Only `step` is substituted.
+        real = PolicyRunner(DEFAULT_PACKAGE)
+        self.controller, self.config = real.controller, real.config
 
     def step(self, tick, monotonic_s=None):
         from mappo_policy import PolicyStep
@@ -144,6 +154,74 @@ def test_the_real_checkpoint_needs_the_veto_at_the_shipped_command_scale():
         planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [BIN])
     assert planner.counts["vetoed"] == 5, planner.counts
     assert "5 vetoed" in planner.report()
+
+
+# ── The radius calibration, which is a trap rather than a bug ───────────────
+def test_the_planner_default_radius_is_refused_because_it_breaks_the_calibration():
+    """THE TRAP. ``meters_per_vmas_unit`` is the planner's robot radius divided by the
+    checkpoint's trained agent radius, but only one of those two lives in the policy's
+    config. The vendored planner's default is 0.40 m and every recorded run passed
+    ``--robot-radius 0.25``, so a run at the default gives the policy a 1.4 m sensing
+    horizon instead of 0.875 m — every closed-loop number stops applying and nothing
+    anywhere says so. Now it refuses, before a leg moves."""
+    log = Path(tempfile.mkdtemp()) / "refusals.jsonl"
+    try:
+        MappoPlanner(Limits(), PlannerConfig(robot_radius_m=0.40),
+                     PolicyRunner(DEFAULT_PACKAGE), refusal_log=log)
+    except SystemExit as exc:
+        message = str(exc)
+        assert "REFUSING TO RUN" in message
+        # The message has to carry BOTH numbers and BOTH escape hatches, or the operator
+        # is left guessing which of the two knobs is the wrong one.
+        assert "0.400" in message and "2.50" in message and "4.00" in message
+        assert "--robot-radius" in message and "--policy-scale" in message
+    else:
+        raise AssertionError("a mismatched robot radius was accepted")
+    finally:
+        record = json.loads(log.read_text().splitlines()[0])
+        log.unlink()
+        log.parent.rmdir()
+    assert record["reason"] == "robot_radius_scale_mismatch"
+    assert record["planner_robot_radius_m"] == 0.40
+    assert record["implied_scale"] == 4.0 and record["configured_scale"] == 2.5
+
+
+def test_the_radius_the_live_runs_used_is_accepted():
+    """A gate that refuses the correct configuration is a gate nobody leaves switched on."""
+    planner = MappoPlanner(Limits(), PlannerConfig(robot_radius_m=0.25),
+                           PolicyRunner(DEFAULT_PACKAGE))
+    assert planner.config.robot_radius_m == 0.25
+
+
+def test_a_refused_run_leaves_a_trace_because_it_writes_no_telemetry():
+    """The refusal happens before the telemetry writer exists, so without this a run that
+    never started leaves nothing at all behind — and "why did the 14:32 run not happen" is
+    asked an hour later, on a demo day, by someone who was not at the terminal."""
+    log = Path(tempfile.mkdtemp()) / "nested" / "refusals.jsonl"
+    for _ in range(2):
+        with contextlib.suppress(SystemExit):
+            MappoPlanner(Limits(), PlannerConfig(robot_radius_m=0.40),
+                         PolicyRunner(DEFAULT_PACKAGE), refusal_log=log)
+    lines = log.read_text().splitlines()
+    assert len(lines) == 2, "refusals append; a second one must not overwrite the first"
+    assert all(json.loads(line)["wall_time"] > 0 for line in lines)
+    log.unlink()
+    log.parent.rmdir()
+    log.parent.parent.rmdir()
+
+
+def test_a_refusal_survives_an_unwritable_log():
+    """The refusal is the safety mechanism and the log is the audit trail. A full disk
+    must not turn a refusal into a traceback that reads like a bug, or worse, into a
+    run."""
+    unwritable = Path("/proc/definitely-not-writable/refusals.jsonl")
+    try:
+        MappoPlanner(Limits(), PlannerConfig(robot_radius_m=0.40),
+                     PolicyRunner(DEFAULT_PACKAGE), refusal_log=unwritable)
+    except SystemExit as exc:
+        assert "REFUSING TO RUN" in str(exc)
+    else:
+        raise AssertionError("the run was accepted when the refusal log was unwritable")
 
 
 # ── The envelope ────────────────────────────────────────────────────────────
