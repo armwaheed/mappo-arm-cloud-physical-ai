@@ -33,14 +33,20 @@ current, and it documents three mappings that are *not* the obvious ones.
 ## Before you say you are done
 
 ```bash
-cd integration && for t in test_*.py; do python3 $t; done                          # 43
+cd policy      && python3 test_physical_ai_mappo.py                                #  30
+cd integration && for t in test_*.py; do python3 $t; done                          # 103
 cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 229
-ruff check .        # must be clean in integration/ and in visual_nav/ — each has a ruff.toml
+ruff check .        # must be clean in policy/, integration/ and visual_nav/ — each has a ruff.toml
 ```
 
-`integration/` needs no third-party packages. The `visual_nav` suite needs `numpy` and
+`policy/` and most of `integration/` need `numpy`. The `visual_nav` suite also needs
 `opencv-python`: without `cv2`, five of its twelve files fail at import and you see 164,
 not 229. That is a missing dependency, not a regression — install it or say so explicitly.
+
+**`ruff --fix` sorts imports and will hoist a `from avoidance import ...` above the
+`sys.path` line that makes it importable.** Two test files went from passing to
+`ModuleNotFoundError` that way, with nobody touching a test. Put every `sys.path.insert`
+in one block before any sibling import, and re-run the suites after a lint fix.
 
 Then do an adversarial pass over your own diff: software engineering best practices,
 mistakes, sloppy or brute force algorithms, inconsistent style, incorrect comments. Report

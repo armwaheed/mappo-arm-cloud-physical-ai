@@ -107,10 +107,15 @@ runs to see.
 
 ## Driving the MAPPO policy from a tick
 
-The delivered policy package does its own ray casting, so the integration is a *mapping*,
-not an adapter: `integration/mappo_bridge.py` turns one telemetry tick into one
-`RobotInput`. Three of the mappings are not the obvious ones, and each is pinned by a
-test that says why.
+**The policy package and its checkpoint are in the tree**, at [`policy/`](policy/) — 262
+KiB of weights, so the demo runs from a clean clone and every number quoted in an issue is
+one anyone can reproduce. [`policy/PROVENANCE.md`](policy/PROVENANCE.md) lists the five
+corrections applied to it on the way in; all five were silent failures, and the delivered
+smoke test passed with every one of them in place.
+
+The package does its own ray casting, so the integration is a *mapping*, not an adapter:
+`integration/mappo_bridge.py` turns one telemetry tick into one `RobotInput`. Three of the
+mappings are not the obvious ones, and each is pinned by a test that says why.
 
 ```python
 from mappo_bridge import robot_input
@@ -137,14 +142,31 @@ A field-by-field table cannot catch a frame, a unit, or a field that is present 
 something else. Replaying a recorded run through the real checkpoint can:
 
 ```bash
-cd integration && python3 replay_mappo.py ../evidence/sample_telemetry.jsonl \
-    --package <policy package>
+cd integration && python3 replay_mappo.py ../evidence/sample_telemetry.jsonl
 ```
 
 Every run is paired with its own control — the same ticks, through a second controller,
 with the obstacles removed. Without that, "the policy steered 36° off the goal bearing"
 is not evidence of anything: this checkpoint carries a 6–16° heading bias with no
 obstacle anywhere near it.
+
+### Closing the loop, before the policy drives anything
+
+`replay_mappo.py` is open-loop: the shipped planner drove the path, so the policy never
+met the states its own actions produce. `integration/closed_loop_sim.py` closes it —
+action → actuator → pose → what the camera can now see → the next observation, through
+the same bridge — and runs the policy against **the shipped planner on identical
+scenarios**, because "the policy arrived 18 times in 30" is not a result without knowing
+what the incumbent does on the same runs.
+
+```bash
+cd integration && python3 closed_loop_sim.py --seeds 30 --scale 1.5 2.5 \
+    --command-scale 0.3 0.6 1.0
+```
+
+Its verdict, and the configuration [`deploy/README.md`](deploy/README.md) recommends, is
+that the policy is safe to drive **only under the planner's veto**: raw, it collided in
+every configuration tested — 21 times in 30 at the scale the package shipped with.
 
 ### ⚠️ For this checkpoint the *horizon* binds, not the ray fan
 
@@ -156,13 +178,24 @@ checkpoint's 12-ray 360° fan is **not** what limits it:
 | limit on seeing the bin (r = 0.42 m as mapped live) | range |
 | --- | --- |
 | 12-ray 360° fan geometry | 1.62 m |
-| policy sensing horizon — 0.35 VMAS × 1.5 m/unit | **0.525 m** |
+| policy sensing horizon — 0.35 VMAS × 2.5 m/unit | **0.875 m** |
 
-The horizon binds first, by 3×. Measured over the recorded run, the obstacle is inside it
-on 59 of 121 ticks, and the response is a cliff rather than a ramp: **1.8° mean steering
-change when the bin is outside 0.525 m, 96.6° when it is inside**. The single most
-consequential number in the policy's config is therefore `meters_per_vmas_unit`, which
-sets that horizon — and `replay_mappo.py --config` exists to sweep it.
+The horizon binds first. `meters_per_vmas_unit` is what sets it and it is a **calibration
+parameter**, confirmed as such by @spsagar13: the delivered 1.5 matched the *room* to the
+trained spawn region, and 2.5 matches the *robot* to the trained agent (the live runs'
+0.25 m planner radius ÷ the trained 0.10 VMAS agent radius). Sweeping it with
+`replay_mappo.py --scale` shows what it buys and what it does not:
+
+| m/unit | horizon | obstacle seen on | mean steering response inside |
+| --- | --- | --- | --- |
+| 1.5 | 0.525 m | 59/121 ticks | 96.6° |
+| **2.5** | **0.875 m** | **77/121** | **103.4°** |
+| 4.0 | 1.400 m | 97/121 | 96.6° |
+
+**The response is a cliff, not a ramp, and no scale fixes that** — it is saturated at
+around 100° everywhere, against 0.1° outside the horizon. Raising the scale buys *warning*
+and never proportionality. Softening the cliff needs a retrain with a larger
+`lidar_range`; issue #4.
 
 ## What this cannot give the policy
 
@@ -188,10 +221,14 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Telemetry contract + observation adapter | 272 offline tests |
+| ✅ Telemetry contract + observation adapter | 362 offline tests |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
-| ⚠️ Policy sensing horizon | 0.525 m to the obstacle surface — it saw the bin on 59 of 121 ticks, and its steering response is a cliff at that range, not a ramp |
-| ⛔ Policy driving the legs | never run closed-loop, on hardware or in sim — the replay is open-loop against a path the shipped planner drove |
+| ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; five silent defects corrected, each pinned by a test |
+| ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
+| ⚠️ Policy sensing horizon | 0.875 m to the obstacle surface at the recalibrated scale — it sees the bin on 77 of 121 ticks, and the response is a cliff at that range rather than a ramp, at **every** scale |
+| ⚠️ Policy driving the legs, **supervised** | 18/30 arrivals and **0 collisions** in sim, against the incumbent planner's 14/30 and 2. Never yet run on hardware. |
+| ⛔ Policy driving the legs, **unsupervised** | collided in every simulated configuration — 21/30 at the scale the package shipped with. Not a candidate. |
+| ⛔ Policy on hardware at all | nothing has moved a leg under policy control. `deploy/README.md` is the ladder: sim, then shadow, then drive. |
 | ⚠️ Arriving at the chair past the bin | needs ~0.3 m more lane than this corridor has |
 | ⚠️ D1 arm latch | its servo bus does not energise (Go2 stack issue #12); runs use `--no-latch-arm`, and the arm creeps a few degrees off the dorsal line each run |
 | ⛔ Multiple quadrupeds | one robot; peers not detectable (above) |
@@ -234,20 +271,33 @@ and can use a faster envelope.
 
 ```
 robot-stack/     the Go2 control stack, vendored — see PROVENANCE.md
-integration/     telemetry reader, observation adapter, MAPPO bridge and replay harness
+policy/          the MAPPO adapter and checkpoint, vendored — see policy/PROVENANCE.md
+integration/     the bridge, the replay, the closed-loop sim, and the two live runners
+deploy/          install.sh, uninstall.sh, and the runbook for a day at the robot
 evidence/        the approved run, the static-obstacle dry run, a sample telemetry file
 ```
+
+| in `integration/` | |
+| --- | --- |
+| `mappo_bridge.py` | one telemetry tick → one `RobotInput`. The three non-obvious mappings. |
+| `mappo_policy.py` | the shared loop: bridge → policy → command, plus the heading servo |
+| `replay_mappo.py` | a recorded run through the checkpoint, against an ablated control |
+| `closed_loop_sim.py` | the policy's own actions moving a simulated robot — issue #5's gate |
+| `mappo_shadow.py` | a **live** run, policy logged beside the planner. Cannot move a leg. |
+| `mappo_drive.py` | a live run, the policy driving under the planner's veto |
 
 ## Running the tests
 
 ```bash
-cd integration && for t in test_*.py; do python3 $t; done                          # 43
+cd policy      && python3 test_physical_ai_mappo.py                                #  30
+cd integration && for t in test_*.py; do python3 $t; done                          # 103
 cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 229
 ```
 
-The robot-stack suite needs `numpy` and `opencv-python`; `integration/` needs neither —
-except `replay_mappo.py`, which is a tool rather than a test and needs the policy package.
-Both directories carry a `ruff.toml`; `ruff check .` is clean in each.
+`policy/` and the parts of `integration/` that touch the policy need `numpy`; the
+robot-stack suite also needs `opencv-python`. `deploy/install.sh` runs the first two
+suites as part of installing, because a truncated checkout should fail there rather than
+in the arena. All three directories carry a `ruff.toml`; `ruff check .` is clean in each.
 
 ## Safety
 
@@ -255,3 +305,9 @@ Both directories carry a `ruff.toml`; `ruff check .` is clean in each.
 short: `--live` is the only flag that moves the robot, an operator stays on the remote,
 the lane is kept clear of everything except the props, and the robot is tethered by
 Ethernet — check the slack before anything that turns.
+
+For a policy-driven run, [`deploy/README.md`](deploy/README.md) adds the ladder — simulate,
+then shadow, then drive — and the four measured numbers that decide whether the run does
+what it looks like it is doing. The first of them is that **this robot delivers about 0.45
+of the velocity it is commanded**, which is most of the difference between the demo
+working and the demo timing out.
