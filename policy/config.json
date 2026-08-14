@@ -5,7 +5,7 @@
   "velocity_frame": "body",
   "max_vx_mps": 0.35,
   "max_vy_mps": 0.2,
-  "command_scale": 0.3,
+  "command_scale": 0.6,
   "goal_stop_distance_m": 0.2,
   "stale_input_timeout_s": 0.75,
   "static_obstacle_ttl_s": 120.0

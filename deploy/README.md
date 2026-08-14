@@ -40,7 +40,7 @@ telemetry or the recordings.
 | | |
 | --- | --- |
 | **The robot delivers ~0.45 of the velocity it is commanded.** | Fitted against the pose over the recorded run: 2.09 m travelled against 4.32 m commanded. Tethered, with the D1 arm, on the derated envelope. |
-| **So `command_scale` 0.3 is 0.047 m/s on the floor.** | 2.8 m in the entire 60 s run budget. Most of the simulated "navigation failures" at that setting are the robot simply not getting there. **Use 0.6.** |
+| **So `command_scale` is shipped at 0.6, not the delivered 0.3.** | At 0.3 the top speed on the floor is 0.047 m/s — 2.8 m in the entire 60 s run budget, so the robot cannot cross the arena and the simulation read that as a navigation failure. 0.6 is 0.095 m/s and 5.7 m. |
 | **`--robot-radius 0.25` is load-bearing.** | The vendored default is 0.40 m. The policy's `meters_per_vmas_unit` of 2.5 is calibrated as 0.25 ÷ the trained 0.10 VMAS radius, so running the planner at its default silently breaks the calibration. Pass the flag on every run. |
 | **The policy commands no yaw.** | It is a holonomic 2-D force. Without the heading servo the robot crabs and its 85° forward camera never looks anywhere new. The servo is on by default; `--no-heading-servo` turns it off. |
 
@@ -77,7 +77,27 @@ with no collisions that also beats the incumbent on arrivals, and both of those 
 The raw policy is not a candidate — it collided in every configuration, and worst at the
 scale Sagar's package shipped with.
 
-Three honest caveats:
+### ⚠️ Near the bin, the planner is driving more often than the policy
+
+**The veto takes over on 61% of the ticks that have an obstacle in the scene.** That is
+not the veto being over-strict — shortening its horizon was tried and it costs collisions
+without even reducing the rate:
+
+| veto horizon | arrived | collided | vetoed |
+| --- | --- | --- | --- |
+| 0.3 s | 11/30 | 2 | 60% |
+| 0.5 s | 16/30 | 2 | 47% |
+| 1.0 s | 16/30 | 1 | 51% |
+| **2.5 s (the planner's own, and the default)** | **18/30** | **0** | 61% |
+
+It is the honest measurement: **near the obstacle, this checkpoint's proposal is
+infeasible more often than not.** So a supervised run is a genuine policy demo in open
+floor and substantially the incumbent planner's manoeuvre at the moment of avoidance.
+Know that before the footage is shown to anyone. `mappo_drive.py` prints the counts at
+the end of every run — `N/M ticks driven by the policy, K vetoed` — so it can be checked
+on the day rather than assumed.
+
+Three more honest caveats:
 
 - **60% is not a good arrival rate.** The other 12 are timeouts, not crashes. The
   incumbent's own rate on the same scenarios is 47%, so this is an improvement on a low
@@ -124,9 +144,12 @@ Only after rungs 1 and 2, with a cleared lane and an operator on the remote.
 cd integration
 python3 mappo_drive.py --live --telemetry ~/drive.jsonl --record ~/drive.mp4 \
     --static-prop bin --goal-class chair --goal-height 1.067 \
-    --robot-radius 0.25 --no-latch-arm \
-    --policy-mode supervised --policy-scale 2.5 --policy-command-scale 0.6
+    --robot-radius 0.25 --no-latch-arm --policy-mode supervised
 ```
+
+`--policy-scale` and `--policy-command-scale` override `policy/config.json`, which already
+carries the 2.5 and the 0.6 above. Pass them to try something else, not to restate the
+default — a runbook that repeats a config value is a second place for it to drift.
 
 Every `visual_nav.py` flag still applies — this substitutes the choice of velocity and
 nothing else. The camera, detector, tracker, odom map, health monitor, arm gate, telemetry
@@ -135,9 +158,11 @@ and teardown are all the shipped stack's.
 **The veto**: the policy proposes, and the planner's own rollout must agree the proposed
 velocity keeps every obstacle's hard gap over 2.5 s. If it does not, the planner's command
 goes out instead. At the end of the run the process prints how many ticks the policy
-actually drove, how many were vetoed and how many were stopped — if the veto fired on
-almost everything, the policy was not really driving and the footage does not show what it
-appears to.
+actually drove, how many were vetoed and how many were stopped. **Expect roughly 60% of
+the obstacle-present ticks to be vetoed** — that is what simulation measured, and it means
+the manoeuvre around the bin is substantially the planner's. If it comes back much higher
+than that, the policy was not driving at all and the footage does not show what it appears
+to.
 
 `--policy-mode raw` removes the veto. In simulation the raw policy collided in every
 configuration tested. Empty arena only, if at all.
@@ -156,7 +181,7 @@ Between each, read the tail of the drive log: `N/M ticks driven by the policy`.
 | --- | --- |
 | every tick `STOP_CLOCK_ERROR` | something is passing a wall clock as `timestamp_s`. The runners pass `time.monotonic()`; a hand-rolled loop is the usual culprit. |
 | every tick `STOP_EXTERNAL_HOLD` | a mover is in the lane, or the tracker has a ghost. Check the overlay — a coasting track inflates its radius and blocks from metres away. |
-| the robot barely moves | `command_scale`. At 0.3 the top speed is 0.047 m/s. |
+| the robot barely moves | `command_scale`, or `--derate`. At the delivered 0.3 the top speed was 0.047 m/s; the shipped value is 0.6. |
 | `veto` on nearly every tick | the policy and the planner disagree about the whole route. Drop to rung 2 and look at the shadow log before turning the veto off. |
 | the robot crabs sideways and never turns | `--no-heading-servo` was passed, or the servo's deadband is swallowing the error. |
 | `cannot import the policy package` | run from `integration/`, or pass `--package ../policy`. |

@@ -180,9 +180,9 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     group.add_argument("--policy-scale", type=float, metavar="M_PER_UNIT",
                        help="override meters_per_vmas_unit for this run")
     group.add_argument("--policy-command-scale", type=float, metavar="FRACTION",
-                       help="override command_scale for this run. The delivered 0.3 is "
-                            "0.047 m/s on the floor once the robot's measured 0.45 "
-                            "actuator gain is applied")
+                       help="override command_scale for this run. Shipped at 0.6; the "
+                            "delivered 0.3 was 0.047 m/s on the floor once the robot's "
+                            "measured 0.45 actuator gain is applied")
     group.add_argument("--no-heading-servo", action="store_true",
                        help="do not turn the nose towards the direction of travel. The "
                             "policy commands no yaw at all, so without the servo the "

@@ -46,6 +46,10 @@ from observation import wrap_pi
 #: The vendored policy package.
 DEFAULT_PACKAGE = Path(__file__).resolve().parent.parent / "policy"
 
+#: How far ahead :func:`rollout_is_feasible` checks a proposed command. ``None`` means the
+#: planner's own horizon, which the sweep says is the right answer — see that function.
+VETO_HORIZON_S: float | None = None
+
 
 def load_policy(package: Path = DEFAULT_PACKAGE):
     """``(MappoController, RobotInput, StationaryObject)`` from the policy package.
@@ -65,12 +69,38 @@ def load_policy(package: Path = DEFAULT_PACKAGE):
     return MappoController, RobotInput, StationaryObject
 
 
-def rollout_is_feasible(planner, pose: tuple, command: tuple, obstacles: list) -> bool:
-    """Whether holding ``command`` for the planner's horizon keeps every hard gap.
+def rollout_is_feasible(planner, pose: tuple, command: tuple, obstacles: list,
+                        horizon_s: float | None = None) -> bool:
+    """Whether holding ``command`` for ``horizon_s`` keeps every obstacle's hard gap.
 
     THE VETO, and it lives here because both the simulation and the drive path need it and
     a safety check with two implementations is a safety check that will disagree with
     itself. They were briefly separate; that is the mistake this function exists to undo.
+
+    ``horizon_s=None`` uses the planner's own 2.5 s, and **the sweep says keep it** — which
+    was not the expectation. The argument for shortening it is good: the planner uses that
+    horizon to choose among many sampled candidates that will all be re-chosen 100 ms
+    later, so applying it as a hard gate to ONE proposed command asks "what if the robot
+    held this exact velocity, blind, for two and a half seconds", and the robot does no
+    such thing. The measurement disagrees (30 seeds, scale 2.5, command scale 0.6):
+
+    | horizon | arrived | collided | vetoed |
+    | --- | --- | --- | --- |
+    | 0.3 s | 11/30 | 2 | 60% |
+    | 0.5 s | 16/30 | 2 | 47% |
+    | 1.0 s | 16/30 | 1 | 51% |
+    | **2.5 s** | **18/30** | **0** | 61% |
+
+    Shortening it buys nothing and costs collisions, and — the part that kills the
+    argument — it does not even reduce how often the veto fires. That is the feedback
+    loop: a veto that intervenes late lets the robot get closer to the obstacle, where it
+    then has to intervene more. Intervening early and decisively means less time spent
+    near the thing at all.
+
+    So the 61% is not the veto being over-strict. It is the honest measurement that
+    **near the obstacle, the policy's proposal is infeasible more often than not** — which
+    is a fact about this checkpoint, and it is why ``mappo_drive`` prints the counts at
+    the end of every run. The parameter stays so the sweep is repeatable.
 
     ⚠️ It reaches into ``DynamicWindowPlanner``'s rollout internals, because the public
     :meth:`plan` scores a whole sampled window and cannot be asked about one specific
@@ -86,6 +116,12 @@ def rollout_is_feasible(planner, pose: tuple, command: tuple, obstacles: list) -
     # control loop — never reaches this branch.
     import numpy as np
     xy, _ = planner._rollout(np.asarray([list(command)], dtype=float), pose)
+    if horizon_s is not None:
+        # Truncate rather than re-roll with a different config: `_gaps` derives its own
+        # per-step obstacle prediction times from `xy.shape[1]`, so slicing the path keeps
+        # the two consistent, and it costs nothing.
+        steps = max(1, round(horizon_s / planner.config.dt_s))
+        xy = xy[:, :steps, :]
     return bool(np.all(planner._gaps(xy, obstacles)[0] >= planner._hard_gaps(obstacles)))
 
 

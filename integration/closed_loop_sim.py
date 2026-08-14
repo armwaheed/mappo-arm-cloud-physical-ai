@@ -69,7 +69,7 @@ not fall over, and passing it is a licence to try on hardware, not a substitute 
 
     python3 closed_loop_sim.py                        # the full matrix
     python3 closed_loop_sim.py --seeds 30 --scale 2.5
-    python3 closed_loop_sim.py --command-scale 0.3 0.6 1.0
+    python3 closed_loop_sim.py --command-scale 0.3 0.6 1.0   # 0.3 was the delivered value
     python3 closed_loop_sim.py --controller policy --verbose
 
 Needs the policy package's numpy and the vendored planner. ``python3 test_closed_loop_sim.py``
@@ -78,6 +78,7 @@ Needs the policy package's numpy and the vendored planner. ``python3 test_closed
 from __future__ import annotations
 
 import argparse
+import itertools
 import math
 import random
 import sys
@@ -86,6 +87,7 @@ from pathlib import Path
 
 from mappo_policy import (
     DEFAULT_PACKAGE,
+    VETO_HORIZON_S,
     HeadingServo,
     PolicyRunner,
     rollout_is_feasible,
@@ -116,8 +118,10 @@ from avoidance import (  # noqa: E402
 #:
 #: One run, tethered, carrying the 3.15 kg D1 arm, on the derated envelope — so this is a
 #: property of that configuration rather than of a Go2. ``--gain 1.0`` is the limit case.
-#: The consequence is worth doing in your head before the demo: at the policy package's
-#: ``command_scale`` of 0.30, top speed on the floor is 0.35 x 0.30 x 0.45 = 0.047 m/s.
+#: The consequence is worth doing in your head before the demo: at the delivered
+#: ``command_scale`` of 0.30 the top speed on the floor was 0.35 x 0.30 x 0.45 =
+#: 0.047 m/s, i.e. 2.8 m in the whole run budget. That is why the shipped value is now
+#: 0.60 — see ``policy/config.json``.
 ACTUATOR_GAIN = 0.45
 
 #: Residual after the gain, per axis. The naive figure is 0.137 m/s, which is what you
@@ -272,9 +276,19 @@ class SupervisedController(PolicyController):
 
     name = "supervised"
 
-    def __init__(self, config: SimConfig, **kwargs):
+    def __init__(self, config: SimConfig, veto_horizon_s: float | None = VETO_HORIZON_S,
+                 **kwargs):
         super().__init__(config, **kwargs)
         self._fallback = PlannerController(config)
+        self._veto_horizon_s = veto_horizon_s
+        #: How often the veto actually took over, counted only over ticks where there was
+        #: something to veto. Reported, because "supervised did not collide" means nothing
+        #: if the answer is that the planner drove the whole run — the footage would look
+        #: like a policy demo and be one of the incumbent. Ticks with an empty scene are
+        #: excluded from the denominator: they are not the veto standing aside, they are
+        #: nothing to stand aside from, and counting them halves the rate for free.
+        self.vetoed = 0
+        self.driven = 0
 
     def reset(self) -> None:
         super().reset()
@@ -288,8 +302,11 @@ class SupervisedController(PolicyController):
         backup, backup_reason, _ = self._fallback.command(t, pose, goal, obstacles,
                                                           measured)
         if rollout_is_feasible(self._fallback.planner, pose, proposed,
-                               [_to_planner(o) for o in obstacles]):
+                               [_to_planner(o) for o in obstacles],
+                               horizon_s=self._veto_horizon_s):
+            self.driven += bool(obstacles)
             return proposed, reason, intent
+        self.vetoed += 1
         return backup, f"veto-{backup_reason}", intent
 
 
@@ -527,11 +544,18 @@ def main(argv=None) -> int:
                              f"(measured {ACTUATOR_GAIN}; 1.0 is the limit case)")
     parser.add_argument("--noise", type=float, default=VELOCITY_NOISE_MPS,
                         metavar="M_PER_S", help="per-axis actuation noise after the gain")
-    parser.add_argument("--command-scale", type=float, nargs="+", default=[0.3],
+    parser.add_argument("--command-scale", type=float, nargs="+", default=[0.6],
                         metavar="FRACTION",
-                        help="policy command_scale values to report. The delivered 0.3, "
-                             "against the measured actuator gain, is 0.047 m/s on the "
-                             "floor — under 3 m in the whole run budget")
+                        help="policy command_scale values to report. Defaults to the "
+                             "shipped 0.6; the delivered 0.3, against the measured "
+                             "actuator gain, was 0.047 m/s on the floor — under 3 m in "
+                             "the whole run budget")
+    parser.add_argument("--veto-horizon", type=float, nargs="+",
+                        default=[PlannerConfig().horizon_s], metavar="SECONDS",
+                        help="how far ahead the veto checks a proposed command. Defaults "
+                             "to the planner's own horizon, which the sweep says is the "
+                             "right answer — shorter costs collisions and does not even "
+                             "veto less often")
     parser.add_argument("--verbose", action="store_true", help="print every tick")
     args = parser.parse_args(argv)
 
@@ -542,38 +566,51 @@ def main(argv=None) -> int:
     scenes = scenarios(random.Random(20260813), args.seeds)
     reachable = (config.limits.max_vx * args.gain * config.max_run_s)
     failures = 0
-    for scale in args.scale:
-        for command_scale in args.command_scale:
-            print()
-            print("=" * 78)
-            print(f"meters_per_vmas_unit {scale}   horizon {0.35 * scale:.3f} m   "
-                  f"trained agent radius {0.10 * scale:.3f} m")
-            # Printed every time because it is the number that explained most of the
-            # timeouts: a run budget the robot cannot physically cross reads as a
-            # navigation failure, and there is nothing in a summary table to say so.
-            print(f"command_scale {command_scale}   top speed on the floor "
-                  f"{config.limits.max_vx * command_scale * args.gain:.3f} m/s   "
-                  f"reachable in {config.max_run_s:.0f} s: "
-                  f"{reachable * command_scale:.2f} m")
-            print("=" * 78)
-            with derived_config(args.package / "config.json",
-                                meters_per_vmas_unit=scale,
-                                command_scale=command_scale) as policy_config:
-                results = []
-                for name in args.controller:
-                    factory = CONTROLLERS[name]
-                    kwargs = ({} if factory is PlannerController else
-                              {"package": args.package, "policy_config": policy_config})
-                    controller = factory(config, **kwargs)
-                    for seed, scene in enumerate(scenes):
-                        for ablated in (False, True):
-                            show = args.verbose and not ablated
-                            if show:
-                                print(f"  {name} / {scene.name}")
-                            results.append(run_once(scene, controller, config, seed,
-                                                    ablated=ablated, verbose=show))
-                summarise(results)
-                failures += sum(1 for r in results if r.outcome == "collision")
+    for scale, command_scale, veto_horizon in itertools.product(
+            args.scale, args.command_scale, args.veto_horizon):
+        print()
+        print("=" * 78)
+        print(f"meters_per_vmas_unit {scale}   horizon {0.35 * scale:.3f} m   "
+              f"trained agent radius {0.10 * scale:.3f} m")
+        # Printed every time because it is the number that explained most of the
+        # timeouts: a run budget the robot cannot physically cross reads as a
+        # navigation failure, and there is nothing in a summary table to say so.
+        print(f"command_scale {command_scale}   veto horizon {veto_horizon} s   "
+              f"top speed on the floor "
+              f"{config.limits.max_vx * command_scale * args.gain:.3f} m/s   "
+              f"reachable in {config.max_run_s:.0f} s: "
+              f"{reachable * command_scale:.2f} m")
+        print("=" * 78)
+        with derived_config(args.package / "config.json",
+                            meters_per_vmas_unit=scale,
+                            command_scale=command_scale) as policy_config:
+            results = []
+            built: dict = {}
+            for name in args.controller:
+                factory = CONTROLLERS[name]
+                kwargs: dict = {}
+                if factory is not PlannerController:
+                    kwargs = {"package": args.package, "policy_config": policy_config}
+                if factory is SupervisedController:
+                    kwargs["veto_horizon_s"] = veto_horizon
+                controller = built[name] = factory(config, **kwargs)
+                for seed, scene in enumerate(scenes):
+                    for ablated in (False, True):
+                        show = args.verbose and not ablated
+                        if show:
+                            print(f"  {name} / {scene.name}")
+                        results.append(run_once(scene, controller, config, seed,
+                                                ablated=ablated, verbose=show))
+            summarise(results)
+            for name, controller in built.items():
+                if isinstance(controller, SupervisedController):
+                    total = controller.driven + controller.vetoed
+                    share = 100.0 * controller.vetoed / total if total else 0.0
+                    print(f"\n  {name}: the veto took over on {controller.vetoed} of "
+                          f"{total} ticks that had an obstacle ({share:.0f}%). A high "
+                          f"number means the PLANNER drove the part of the run the demo "
+                          f"exists to show.")
+            failures += sum(1 for r in results if r.outcome == "collision")
     print()
     print(f"{failures} collision(s) across the whole matrix.")
     return 0

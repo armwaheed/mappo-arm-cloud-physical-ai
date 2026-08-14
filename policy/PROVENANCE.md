@@ -68,6 +68,13 @@ Two further changes are calibration and packaging rather than corrections:
   parameter, not a model requirement. 1.5 matched the *room* to the trained spawn region;
   2.5 matches the *robot* to the trained agent (0.25 m planner radius ÷ 0.10 VMAS agent
   radius). See issue #4 and `integration/replay_mappo.py --scale`.
+- **`command_scale` 0.30 → 0.60.** Not a model property at all — it is how much of the
+  robot's envelope the policy is allowed to ask for. Raised because **this Go2 delivers
+  about 0.45 of the velocity it is commanded** (fitted against the pose over the recorded
+  run: 2.09 m travelled against 4.32 m commanded), so 0.30 is 0.047 m/s on the floor —
+  **2.8 m in the entire 60 s run budget**, less than the 3 m arena is wide. It is a speed
+  knob and not a safety one: `mappo_drive` clamps every command to the control stack's
+  own `Limits`, which is what `--derate` scales.
 - **`basic_test.py` kept, `test_physical_ai_mappo.py` added.** The delivered file is one
   inference and two range assertions; it is a fine *install* check and it is what
   `deploy/install.sh` runs on the target machine, so it keeps its name and its `PASS`.

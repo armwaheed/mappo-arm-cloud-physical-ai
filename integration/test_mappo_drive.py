@@ -53,11 +53,14 @@ class _Loco:
 class _StubRunner:
     """A policy that always proposes the same thing.
 
-    The veto tests use this rather than the real checkpoint, and the reason is a result in
-    itself: **the real policy will not drive into the bin in this scene, so a test built
-    on it can never exercise the veto.** It swerves, the swerve is feasible, nothing is
-    vetoed — which is correct behaviour and a useless test. Injecting the command puts the
-    branch under test back under the test's control.
+    The veto tests use this rather than the real checkpoint, because a test whose branch
+    coverage depends on what a set of weights happens to decide is not a test of the
+    branch. It has already flipped once: at the delivered ``command_scale`` of 0.3 the
+    real policy's rollout could not even reach a bin 1.0 m away, so nothing was ever
+    vetoed; at the shipped 0.6 it is vetoed every time. Injecting the command keeps the
+    branch under the test's control, and
+    ``test_the_real_checkpoint_needs_the_veto_at_the_shipped_command_scale`` records what
+    the weights actually do, separately and by name.
     """
 
     def __init__(self, command=(0.35, 0.0, 0.0), status: str = "COMMAND"):
@@ -123,14 +126,24 @@ def test_an_empty_scene_is_never_vetoed():
     assert planner.counts["vetoed"] == 0
 
 
-def test_the_real_checkpoint_steers_round_the_bin_rather_than_needing_the_veto():
-    """The counterpart to the stub tests, and the reason they exist. With the real
-    weights and the bin inside the 0.875 m horizon, the policy's own command already
-    clears it — so on this scene the veto is dormant, which is what it should be."""
+def test_the_real_checkpoint_needs_the_veto_at_the_shipped_command_scale():
+    """The counterpart to the stub tests, and it changed sign when `command_scale` went
+    from the delivered 0.3 to the shipped 0.6 — which is worth pinning rather than
+    forgetting.
+
+    At 0.3 the policy's command covers 0.35 x 0.3 x 2.5 = 0.26 m over the planner's
+    horizon, which cannot reach a bin 1.0 m away, so nothing was ever vetoed and the veto
+    looked dormant. At 0.6 the rollout reaches 0.52 m and the swerve no longer clears the
+    disc over the full horizon, so the veto fires. The closed-loop measurement agrees:
+    **near the obstacle the policy's proposal is infeasible more often than not** — 61%
+    of the ticks that have one. That is the number to check on the day, and
+    ``MappoPlanner.report()`` prints it.
+    """
     planner = _planner(supervised=True)
     for _ in range(5):
         planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [BIN])
-    assert planner.counts["policy"] == 5, planner.counts
+    assert planner.counts["vetoed"] == 5, planner.counts
+    assert "5 vetoed" in planner.report()
 
 
 # ── The envelope ────────────────────────────────────────────────────────────

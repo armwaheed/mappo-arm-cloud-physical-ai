@@ -226,7 +226,7 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; five silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
 | ⚠️ Policy sensing horizon | 0.875 m to the obstacle surface at the recalibrated scale — it sees the bin on 77 of 121 ticks, and the response is a cliff at that range rather than a ramp, at **every** scale |
-| ⚠️ Policy driving the legs, **supervised** | 18/30 arrivals and **0 collisions** in sim, against the incumbent planner's 14/30 and 2. Never yet run on hardware. |
+| ⚠️ Policy driving the legs, **supervised** | 18/30 arrivals and **0 collisions** in sim, against the incumbent planner's 14/30 and 2 — but the planner's veto takes over on **61%** of the ticks that have an obstacle, so the avoidance manoeuvre is substantially its. Never run on hardware. |
 | ⛔ Policy driving the legs, **unsupervised** | collided in every simulated configuration — 21/30 at the scale the package shipped with. Not a candidate. |
 | ⛔ Policy on hardware at all | nothing has moved a leg under policy control. `deploy/README.md` is the ladder: sim, then shadow, then drive. |
 | ⚠️ Arriving at the chair past the bin | needs ~0.3 m more lane than this corridor has |
