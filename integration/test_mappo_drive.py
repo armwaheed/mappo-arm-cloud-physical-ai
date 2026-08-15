@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
                                 "visual_nav"))
 from avoidance import Limits, Obstacle, PlannerConfig
 
-from mappo_drive import _STOP_REASONS, MappoPlanner, _add_arguments
+from mappo_drive import _STOP_REASONS, MappoPlanner, _add_arguments, split_argv
 from mappo_policy import DEFAULT_PACKAGE, HeadingServo, PolicyRunner
 
 BIN = Obstacle(x=1.0, y=0.0, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
@@ -332,6 +332,51 @@ def test_the_policy_flags_do_not_collide_with_the_stack_flags():
     args = parser.parse_args(["--policy-mode", "raw", "--policy-scale", "2.5"])
     assert args.policy_mode == "raw" and args.policy_scale == 2.5
     assert parser.parse_args([]).policy_mode == "supervised", "supervised is the default"
+
+
+def test_the_stack_path_does_not_shadow_the_d1_arm_package():
+    """`d1_arm` is a namespace package holding `d1_arm.py`. Put its own directory on
+    sys.path and `import d1_arm` binds the MODULE, so `d1_arm._arm_idl` is "not a
+    package" — which is how the arm-stow monitor died at import, before the pre-flight
+    that uses it could refuse anything. An import error reads as a missing dependency,
+    not as a disabled safety check, so nothing about it looked like a safety regression.
+    """
+    import importlib.util
+
+    from mappo_drive import _STACK
+
+    assert str(_STACK / "d1_arm") not in sys.path
+    assert str(_STACK) in sys.path, "go2/ is what makes d1_arm and locomotion packages"
+
+    spec = importlib.util.find_spec("d1_arm")
+    assert spec is not None and spec.submodule_search_locations is not None, \
+        "d1_arm resolved as a module, so safety.py's import of _arm_idl cannot work"
+    assert importlib.util.find_spec("d1_arm._arm_idl") is not None
+
+
+def test_the_policy_flags_are_stripped_before_the_vendored_parser_sees_them():
+    """The regression that ate a live run: `--policy-mode supervised` reached
+    `visual_nav.build_parser()`, which exits 2 on an option it does not know. The test
+    above passes a BARE parser and so never touched this — the stack's parser has to be
+    the one that reads the surviving argv, or the check is about nothing.
+    """
+    import visual_nav
+    argv = ["--live", "--goal-class", "chair", "--goal-height", "1.067",
+            "--robot-radius", "0.25", "--no-latch-arm", "--max-seconds", "45",
+            "--policy-mode", "raw", "--policy-command-scale", "0.8",
+            "--no-heading-servo"]
+    args, vendored = split_argv(argv, visual_nav.build_parser())
+
+    assert args.policy_mode == "raw" and args.policy_command_scale == 0.8
+    assert args.no_heading_servo is True
+    for flag in ("--policy-mode", "--policy-command-scale", "--no-heading-servo",
+                 "raw", "0.8"):
+        assert flag not in vendored, f"{flag} survived into the vendored argv"
+
+    # The vendored parser must accept what is left, and it must still be the whole run.
+    stack = visual_nav.build_parser().parse_args(vendored)
+    assert stack.live and stack.goal_class == "chair" and stack.no_latch_arm
+    assert stack.robot_radius == 0.25 and stack.max_seconds == 45.0
 
 
 if __name__ == "__main__":

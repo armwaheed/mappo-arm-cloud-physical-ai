@@ -195,6 +195,61 @@ def test_a_box_touching_the_crop_edge_is_refused():
     assert goal.goal_xy() is None
 
 
+class _WindowAwareDetector:
+    """A goal that is whole in the full frame and clipped by the 0.5 crop.
+
+    Not a contrivance — it is simply what a NEAR object does. The crop exists to give a
+    DISTANT goal more pixels, and the very same crop cuts the top off a close one.
+    """
+
+    def __init__(self, in_crop: Detection, in_full: Detection) -> None:
+        self._in_crop, self._in_full = in_crop, in_full
+        self.windows: list[tuple[int, int]] = []
+
+    def detect(self, image):
+        height, width = image.shape[:2]
+        self.windows.append((width, height))
+        return [self._in_full] if (width, height) == (WIDTH, HEIGHT) else [self._in_crop]
+
+
+def test_an_unlatched_goal_falls_back_to_the_full_frame_when_the_crop_clips_it():
+    """The bug that stopped a live run with the chair filling the frame: 0 sightings in
+    6 passes, the robot never stood up, and nothing said why.
+
+    The edge guard trades a skipped frame for a range it can trust. That bargain is
+    right once a goal is latched and there is something to fall back on. Before the
+    first fix there is nothing — ``_due()`` keeps returning True until acquisition — so
+    a "skipped" frame does not cost a frame, it costs the run.
+    """
+    clipped = Detection(x1=197.0, y1=0.0, x2=443.0, y2=460.0, score=0.98, label="chair")
+    whole = Detection(x1=677.0, y1=303.0, x2=923.0, y2=763.0, score=0.98, label="chair")
+    detector = _WindowAwareDetector(clipped, whole)
+    goal = _chair_goal(detector)
+
+    fix = goal.update(BLANK, ORIGIN)
+    assert fix is not None, "a goal in plain view must not be dropped before acquisition"
+    assert goal.goal_xy() is not None
+    assert detector.windows == [(WIDTH // 2, HEIGHT // 2), (WIDTH, HEIGHT)], \
+        "the crop is tried first and the FULL frame is the retry, in that order"
+
+
+def test_a_latched_goal_still_refuses_a_crop_clipped_box():
+    """The fallback must not weaken the guard once there IS something to protect. Here
+    a truncated box would read as far and walk the robot past its target, and the held
+    goal makes skipping the frame genuinely free — which is the case the guard is for.
+    """
+    clipped = Detection(x1=197.0, y1=0.0, x2=443.0, y2=460.0, score=0.98, label="chair")
+    whole = Detection(x1=677.0, y1=303.0, x2=923.0, y2=763.0, score=0.98, label="chair")
+    goal = _chair_goal(_ScriptedDetector([CHAIR_IN_CROP]))
+    assert goal.update(BLANK, ORIGIN) is not None, "latch a goal first"
+    latched = goal.goal_xy()
+
+    goal._detector = _WindowAwareDetector(clipped, whole)
+    goal._last_pass = None                      # let the throttle allow another pass
+    assert goal.update(BLANK, ORIGIN) is None, "a latched goal keeps the strict guard"
+    assert goal.goal_xy() == latched, "and keeps the fix it already had"
+
+
 def test_a_low_scoring_detection_is_refused():
     weak = Detection(x1=197.0, y1=33.0, x2=443.0, y2=460.0, score=0.2, label="chair")
     goal = _chair_goal(_ScriptedDetector([weak]), min_score=0.5)
@@ -214,12 +269,20 @@ def test_the_highest_scoring_candidate_wins():
 
 
 def test_an_unacquired_goal_is_searched_for_every_frame():
-    """The run is blocked until the goal is found, so that is where the budget goes."""
+    """The run is blocked until the goal is found, so that is where the budget goes.
+
+    TWO inferences per frame, not one: the crop, then the full-frame retry that keeps a
+    near goal from being dropped by the edge guard. That doubles the acquisition cost —
+    about 131 ms becomes 262 ms — and it is the right place to spend it, because until
+    a goal is latched the robot does not stand up at all. The moment one IS latched the
+    throttle takes over and the cost goes back to one inference every `refresh_s`.
+    """
     detector = _ScriptedDetector([])
     goal = _chair_goal(detector)
     for _ in range(5):
         goal.update(BLANK, ORIGIN)
-    assert detector.passes == 5
+    assert detector.passes == 10
+    assert "0 sightings in 5 passes" in goal.description, "5 passes, 10 inferences"
 
 
 def test_an_acquired_goal_is_refreshed_only_on_the_throttle():

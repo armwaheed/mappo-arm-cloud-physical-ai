@@ -128,6 +128,7 @@ import contextlib
 
 import overlay
 from avoidance import (
+    MIN_GAIT_COMMAND_M_S,
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
     DynamicWindowPlanner,
@@ -856,6 +857,33 @@ def build_goal_source(args, camera_model: FisheyeCamera, pose_fn) -> GoalSource:
                      marker_size_m=args.marker_size)
 
 
+def warn_if_below_gait_floor(max_vx: float) -> bool:
+    """Shout if the envelope's top speed cannot produce a gait. Returns whether it did.
+
+    A warning rather than a refusal: ``--derate`` is a legitimate flag, a spot turn
+    commands almost no translation, and the failure wastes a run rather than endangering
+    anything. But it has to be LOUD, because what it produces downstream is a robot
+    standing still and a stall message that confidently blames the tether.
+
+    Module-level and public so the MAPPO drive path can reuse it — its ``command_scale``
+    reaches the same floor by multiplying rather than by derating, and a second copy of
+    this text would drift from the constant it is explaining.
+    """
+    if max_vx >= MIN_GAIT_COMMAND_M_S:
+        return False
+    print("!" * 78)
+    print(f"[visual_nav] ⚠️  TOP SPEED {max_vx:.2f} m/s IS BELOW THE GAIT FLOOR OF "
+          f"{MIN_GAIT_COMMAND_M_S:.2f} m/s")
+    print("    The Go2 does not walk slowly — below this it stands up, shuffles a few")
+    print("    steps and then STANDS STILL while still being commanded forward. No")
+    print("    fault is reported. The stall gate will then say 'something is holding")
+    print("    the robot — check the tether'. It is not the tether. It is this number.")
+    print(f"    Measured: 0.21 m/s stalled 5 of 5 runs across two controllers; "
+          f"{MIN_GAIT_COMMAND_M_S:.2f} m/s walked 2.07 m in 9 s and arrived.")
+    print("!" * 78)
+    return True
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The CLI, separated from ``main`` so it can be exercised without a robot.
 
@@ -1129,6 +1157,7 @@ def main(argv: Sequence[str] | None = None,
                         max_wz=args.max_wz).scaled(args.derate)
         print(f"[visual_nav] envelope: vx<={limits.max_vx:.2f} vy<={limits.max_vy:.2f} "
               f"wz<={limits.max_wz:.2f}")
+        warn_if_below_gait_floor(limits.max_vx)
         planner_config = PlannerConfig(horizon_s=args.horizon,
                                        obstacle_radius_m=args.obstacle_radius,
                                        robot_radius_m=args.robot_radius)

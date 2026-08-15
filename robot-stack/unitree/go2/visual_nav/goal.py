@@ -361,21 +361,24 @@ class DetectedObjectGoal(GoalSource):
         height, width = image.shape[:2]
         crop_w, crop_h = int(width * self._crop), int(height * self._crop)
         x0, y0 = (width - crop_w) // 2, (height - crop_h) // 2
-        window = image[y0:y0 + crop_h, x0:x0 + crop_w]
 
-        best: Detection | None = None
-        for detection in self._detector.detect(window):
-            if detection.label != self._label or detection.score < self._min_score:
-                continue
-            # A box touching the crop's edge is cut off by the CROP, not by the frame,
-            # so `Detection.clipped` against the full image cannot see it — and a
-            # truncated box is short, which reads as FAR. Drop it and wait: the goal is
-            # latched, so one skipped frame costs nothing, while one over-long range
-            # walks the robot past its target.
-            if self._touches_edge(detection, crop_w, crop_h):
-                continue
-            if best is None or detection.score > best.score:
-                best = detection
+        best = self._best_in(image[y0:y0 + crop_h, x0:x0 + crop_w], crop_w, crop_h)
+        if best is None and self._goal is None and self._crop < 1.0:
+            # NOTHING IS LATCHED YET, so the edge guard's own bargain does not apply.
+            # It trades a skipped frame for a range it can trust, and that is right once
+            # a goal is held. Before the first fix there is nothing to fall back on:
+            # `_due()` returns True forever until acquisition, so a "skipped" frame does
+            # not cost a frame, it costs the RUN. Measured on the office chair at ~1.9 m:
+            # the crop clips the backrest, every pass is dropped, and the robot never
+            # stands up — a goal in plain view, 0 sightings in 6 passes, and no log line
+            # saying why.
+            #
+            # The full frame is the correct retry rather than a looser guard: a box
+            # against the REAL frame edge is what `Detection.clipped` is for, and
+            # `estimate_range` already falls back to the width prior for it. So the
+            # range stays honest; only the window changes.
+            x0 = y0 = 0
+            best = self._best_in(image, width, height)
         if best is None:
             return None
 
@@ -399,6 +402,26 @@ class DetectedObjectGoal(GoalSource):
         self._sightings += 1
         return GoalFix(bearing_rad=bearing, range_m=range_m,
                        x=self._goal[0], y=self._goal[1])
+
+    def _best_in(self, window: np.ndarray, width: int,
+                 height: int) -> Detection | None:
+        """Highest-scoring unclipped detection of the goal label inside ``window``.
+
+        ``width``/``height`` are the WINDOW's, not the frame's — the edge test has to be
+        against the boundary the box was actually cut by.
+        """
+        best: Detection | None = None
+        for detection in self._detector.detect(window):
+            if detection.label != self._label or detection.score < self._min_score:
+                continue
+            # A box touching the window's edge is cut off by it, and a truncated box is
+            # short, which reads as FAR. Prefer a whole box; see `update` for what
+            # happens when there isn't one.
+            if self._touches_edge(detection, width, height):
+                continue
+            if best is None or detection.score > best.score:
+                best = detection
+        return best
 
     @staticmethod
     def _touches_edge(detection: Detection, width: int, height: int,

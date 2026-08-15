@@ -31,6 +31,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 from physical_ai_mappo import (
+    CLOCK_TOLERANCE_S,
     COMMAND,
     N_RAYS,
     OBS_DIM,
@@ -131,7 +132,14 @@ def test_a_wall_clock_timestamp_stops_the_robot_instead_of_being_ignored():
     result = _controller().step(_input(timestamp_s=time.time()))
     assert result.status == STOP_CLOCK_ERROR, result.status
     assert (result.vx_mps, result.vy_mps, result.vyaw_radps) == (0.0, 0.0, 0.0)
-    assert result.age_s < -1e8, "an epoch stamp should read as a wildly negative age"
+    # Against the TOLERANCE, not a hard-coded -1e8. The magnitude of the age is a
+    # property of the machine's real-time clock, not of the guard: the Go2's Jetson has
+    # no battery-backed RTC and boots at the epoch, so `time.time()` there reads about
+    # 3e5 and the age comes out near -3e5 — negative, correctly caught, and nowhere near
+    # -1e8. The old bound turned a working guard into a red suite on the one machine
+    # this package ships to, which is the wrong way round for a test to fail.
+    assert result.age_s < -CLOCK_TOLERANCE_S, (
+        f"an epoch stamp must read as an age below the tolerance, got {result.age_s}")
 
 
 def test_the_clock_tolerance_cannot_swallow_the_failure_it_guards():

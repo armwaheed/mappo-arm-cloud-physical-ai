@@ -73,10 +73,22 @@ from mappo_policy import (
 )
 
 _STACK = Path(__file__).resolve().parent.parent / "robot-stack" / "unitree" / "go2"
-for _directory in ("visual_nav", "locomotion", "d1_arm"):
-    sys.path.insert(0, str(_STACK / _directory))
+# `go2/` so `locomotion.*` and `d1_arm.*` resolve as the packages the stack imports them
+# as, and `visual_nav/` for this file's own sibling-module imports. NOT the package
+# directories themselves: `go2/d1_arm` on the path makes `import d1_arm` find the MODULE
+# `d1_arm.py` sitting inside it and shadow the namespace package, so safety.py's
+# `from d1_arm._arm_idl import ArmString_` raises "not a package" — and that is the
+# ARM-STOW MONITOR, which exists to refuse a run whose arm has crept off the dorsal line.
+# It failed as an import error before the pre-flight, so it read as a missing dependency
+# rather than as a safety check that had been disabled.
+for _directory in (_STACK, _STACK / "visual_nav"):
+    sys.path.insert(0, str(_directory))
 
-from avoidance import Command, DynamicWindowPlanner  # noqa: E402
+from avoidance import (  # noqa: E402
+    MIN_GAIT_COMMAND_M_S,
+    Command,
+    DynamicWindowPlanner,
+)
 
 #: Statuses that mean "stop", mapped to the reason string the vendored loop understands.
 #: ``hold`` is not cosmetic there: it is what starts the rest-after-blocked timer that
@@ -283,13 +295,35 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     return parser
 
 
+def split_argv(argv, stack_parser) -> tuple:
+    """Return ``(policy args, the argv the vendored parser should see)``.
+
+    Two parsers read the same command line and only one of them is ours, so the policy
+    flags have to be consumed here and removed. ``visual_nav.build_parser()`` knows
+    nothing about ``--policy-mode``, and argparse does not ignore an option it does not
+    recognise — it prints a usage message and exits 2. Handing it the raw argv therefore
+    turned EVERY policy flag into a run that never started, ``--policy-command-scale``
+    included, which is the first thing the runbook reaches for when the robot barely
+    moves. Loud, but at the wrong altitude: it reads as a typo in the command line rather
+    than as a seam that does not compose.
+
+    The first parse is against the FULL parser so the policy flags are validated in the
+    presence of the stack's and ``--help`` still shows the whole set; the second is
+    against a policy-only parser purely to find what is left over.
+    """
+    args, _ = _add_arguments(stack_parser).parse_known_args(argv)
+    stripper = _add_arguments(argparse.ArgumentParser(add_help=False))
+    _, vendored_argv = stripper.parse_known_args(
+        sys.argv[1:] if argv is None else list(argv))
+    return args, vendored_argv
+
+
 def main(argv=None) -> int:
     # Parsed twice on purpose: once here to build the policy before the vendored main()
-    # runs, and once by that main() for everything else. `parse_known_args` on the real
-    # parser means the policy flags are validated and `--help` still shows the whole set.
+    # runs, and once by that main() for everything else.
     import visual_nav
 
-    args, _ = _add_arguments(visual_nav.build_parser()).parse_known_args(argv)
+    args, vendored_argv = split_argv(argv, visual_nav.build_parser())
 
     overrides = {}
     if args.policy_scale is not None:
@@ -308,9 +342,18 @@ def main(argv=None) -> int:
         print(f"[mappo_drive] policy {args.policy_mode}, scale "
               f"{cfg.meters_per_vmas_unit} m/unit, horizon {cfg.lidar_range_m:.3f} m, "
               f"command_scale {cfg.command_scale}")
-        print(f"[mappo_drive] top commanded speed "
-              f"{cfg.max_vx_mps * cfg.command_scale:.3f} m/s; this robot has measured "
-              f"about 0.45 of what it is commanded")
+        top_speed = cfg.max_vx_mps * cfg.command_scale
+        print(f"[mappo_drive] top commanded speed {top_speed:.3f} m/s; this robot has "
+              f"measured about 0.70 of that at full command, 0.45 derated")
+        # The gait floor is a property of the ROBOT, not of the policy, so the warning is
+        # the control stack's and is reused rather than restated — a second copy of that
+        # text would drift from the constant it explains. Only the sentence naming the
+        # knob that gets you here is ours, because `command_scale` reaches the floor by
+        # multiplying where `--derate` reaches it by scaling.
+        if visual_nav.warn_if_below_gait_floor(top_speed):
+            print(f"    Here that is command_scale {cfg.command_scale} x max_vx_mps "
+                  f"{cfg.max_vx_mps} = {top_speed:.3f}. Pass --policy-command-scale "
+                  f"{MIN_GAIT_COMMAND_M_S / cfg.max_vx_mps:.2f} or higher.")
         if args.policy_mode == "raw":
             print("[mappo_drive] ⚠️  NO VETO. In the closed-loop simulation the raw "
                   "policy collided and the supervised one did not. Empty arena only.")
@@ -345,7 +388,7 @@ def main(argv=None) -> int:
 
         visual_nav.VisualNavigator = navigator
         try:
-            visual_nav.main(argv=argv, planner_factory=planner_factory)
+            visual_nav.main(argv=vendored_argv, planner_factory=planner_factory)
         finally:
             visual_nav.VisualNavigator = real_navigator
             for planner in planners:

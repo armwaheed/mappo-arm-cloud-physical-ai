@@ -109,9 +109,22 @@ else
 fi
 
 step "3/6  the policy package"
-"$PYTHON" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
-"$PYTHON" -m pip install --quiet -r "$POLICY_DIR/requirements.txt"
-echo "    numpy $("$PYTHON" -c 'import numpy; print(numpy.__version__)')"
+# numpy is the policy's only dependency, and step 4 proves it by RUNNING an inference —
+# a stronger check than a version bound, and the only one that survives the robot this
+# script targets. The Go2 is not allowed on an internet-connected network, so an
+# unconditional `pip install` fails there even when the requirement is already met:
+# the Jetson's numpy is a distro package and no index is reachable to change it.
+#
+# So install only when numpy is MISSING, and let step 4 answer for whether the version
+# present is good enough. It is what "verified" means here.
+if "$PYTHON" -c 'import numpy' >/dev/null 2>&1; then
+    echo "    numpy $("$PYTHON" -c 'import numpy; print(numpy.__version__)') already \
+importable — left alone; step 4 is what judges it"
+else
+    "$PYTHON" -m pip install --quiet --upgrade pip >/dev/null 2>&1 || true
+    "$PYTHON" -m pip install --quiet -r "$POLICY_DIR/requirements.txt"
+    echo "    numpy $("$PYTHON" -c 'import numpy; print(numpy.__version__)')"
+fi
 
 if [ -n "$ROBOTKIT" ]; then
     step "3b/6  the shared core the stack imports"
