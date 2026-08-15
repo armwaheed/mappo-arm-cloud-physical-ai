@@ -149,6 +149,55 @@ One run, tethered, with the 3.15 kg D1 arm, on the derated envelope. It is a pro
 that configuration rather than of a Go2, and it is the first thing to re-measure on any
 other robot.
 
+**⚠️ 0.45 is the DERATED figure and does not hold at full speed.** On an arriving run at
+the shipped `0.35 m/s` (2026-08-14) the robot delivered a mean **0.240 m/s — a ratio of
+0.70**, with a 0.415 m/s peak. So the gain is strongly rate-dependent across the whole
+range, not just near the floor: roughly 0.45 derated, 0.70 at full command, and 0.0 below
+the gait floor documented in the next section. Use 0.70 when budgeting `--max-seconds`
+for a full-speed run and 0.45 for a derated one — and if the two matter to a decision,
+measure rather than interpolate, because the one thing this curve has proven is that it
+is not linear.
+
+### 🛑 THE ROBOT WILL NOT WALK BELOW ~0.35 m/s — IT STANDS STILL AND REPORTS NOTHING
+
+**This is the same rate-dependence as above, taken to its endpoint.** "Small commands
+achieve proportionally less" does not decay gracefully to zero: below roughly the shipped
+`0.35 m/s` the gait never engages at all. The robot stands up, takes a few asymmetric
+one-or-two-leg steps, and then stands **perfectly still** while it is still being
+commanded forward. It does not fall over. It raises no fault. `MIN_GAIT_COMMAND_M_S` in
+`avoidance.py` carries the number and `visual_nav.py` prints a loud warning below it.
+
+Measured 2026-08-14, on carpet, with the 3.15 kg D1 arm fitted:
+
+| commanded | what the legs did | outcome | runs |
+| --- | --- | --- | --- |
+| **0.21 m/s** | 10–23° of knee swing in bursts, one or two legs at a time, then **3 s at exactly 0.0°** | travelled 0.34–0.43 m and stopped | **5** |
+| **0.35 m/s** | 15–28°, continuous, all four | **2.07 m in 9 s, arrived** | 1 |
+
+**Why this costs hours rather than minutes.** The failure is indistinguishable from being
+physically stuck, and every instrument agrees with every other one:
+
+- the joint encoders read **0.0°** of swing — the legs really have stopped;
+- the state estimator correctly reports no motion, so odom and `measured` are *right*;
+- the stall gate then fires with *"something is holding the robot — check the tether"*.
+
+So the log names the tether, the odometry corroborates it, and the encoders confirm the
+robot is not moving. All true, all pointing away from the cause. Five runs went on
+tethers, walls and the Go2's built-in obstacle-avoidance setting before the speed itself
+was tested.
+
+**The traps that get you here without typing a slow number:**
+
+- `--derate 0.6` on the shipped envelope is **exactly 0.21 m/s**, the measured failure.
+- A "speed-matched" A/B control that caps `--max-vx` to match another controller puts
+  **both arms** below the floor, so the comparison looks environmental and exonerates
+  whatever you were testing. That is how these five runs happened.
+- The MAPPO package's `command_scale` ships at **0.6** and multiplies the same `0.35`.
+
+**0.35 is the lowest speed observed to work, not a measured threshold.** Anything between
+0.21 and 0.35 is untested. Treat it as a floor, and re-measure on any other robot — like
+the 0.45 figure above, it is a property of *this* robot, tethered, with the arm fitted.
+
 ### ⚠️ `hold` can be terminal — there is no recovery behaviour
 
 `hold` is a fallback taken when no sampled command clears the hard gap, and reverse is

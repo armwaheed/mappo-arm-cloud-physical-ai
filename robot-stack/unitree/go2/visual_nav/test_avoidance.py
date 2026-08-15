@@ -20,6 +20,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from avoidance import (
+    MIN_GAIT_COMMAND_M_S,
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
     DynamicWindowPlanner,
@@ -29,6 +30,25 @@ from avoidance import (
 )
 
 ORIGIN = (0.0, 0.0, 0.0)     # at the origin, facing +x
+
+
+def test_the_shipped_envelope_is_above_the_gait_floor():
+    """The default has to be walkable out of the box. Lower ``Limits.max_vx`` under the
+    floor and every shipped run becomes a robot standing still, reported as a tether."""
+    assert Limits().max_vx >= MIN_GAIT_COMMAND_M_S
+
+
+def test_a_plausible_derate_lands_exactly_on_the_measured_failure():
+    """``--derate`` scales the whole envelope, which is how a legitimate flag reaches an
+    unwalkable speed without anyone typing an unwalkable number.
+
+    0.6 of the shipped 0.35 is 0.21 m/s — the value measured to stall on five runs
+    across two different controllers. This is a real trap, not a hypothetical: the MAPPO
+    package's ``command_scale`` also ships at 0.6 and multiplies the same 0.35.
+    """
+    derated = Limits().scaled(0.6)
+    assert derated.max_vx < MIN_GAIT_COMMAND_M_S
+    assert abs(derated.max_vx - 0.21) < 0.005, derated.max_vx
 GOAL = (5.0, 0.0)
 STOPPED = (0.0, 0.0, 0.0)
 # Already walking. Several tests need this rather than STOPPED: the dynamic window

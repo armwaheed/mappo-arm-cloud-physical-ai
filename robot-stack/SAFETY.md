@@ -209,6 +209,13 @@ task furniture in front of it for a balance test, and clear space makes a fall c
 - [ ] Rung 2 only: robot on a **gantry** with slack; clear area; vendor-release verified.
 - [ ] You know the **panic-damp** command for a second shell.
 - [ ] Verify by **what you see**, not telemetry — but use telemetry to confirm *inert* before approaching.
+- [ ] **Commanded top speed is at or above the platform's gait floor.** On the Go2 that is
+      ~0.35 m/s (`MIN_GAIT_COMMAND_M_S`); below it the robot stands still while being
+      commanded forward and reports no fault. This is on the safety checklist rather than
+      only in the nav docs because of what it does to *diagnosis*: the encoders, the state
+      estimator and the stall gate all agree the robot is being physically held, so the
+      operator is sent to look for a tether or an obstruction that does not exist —
+      and time spent on a wrong physical cause is time spent near a live robot.
 
 > Premises are worth challenging everywhere in this project — **except physical safety.** There,
 > default to the most conservative stop and never improvise a "just kill it" shortcut mid-motion.

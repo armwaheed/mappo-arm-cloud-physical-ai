@@ -245,6 +245,18 @@ above — discharging a *raised* arm drops it.
 
 ## Gotchas
 
+- 🛑 **THE ROBOT WILL NOT WALK BELOW ~0.35 m/s.** Below roughly the shipped `--max-vx`
+  the gait never engages: it stands up, shuffles a few one-or-two-leg steps, then stands
+  **perfectly still** while still being commanded forward — no fall, no fault. Measured
+  0.21 m/s → stalled on **5 of 5 runs** across two controllers; 0.35 m/s → 2.07 m in 9 s,
+  arrived. It is a **floor, not a threshold**: 0.21–0.35 is untested.
+  **The reason this is expensive:** the encoders read 0.0° of swing and odom correctly
+  reports no motion, so the stall gate fires with *"something is holding the robot —
+  check the tether"* and every instrument corroborates a cause that isn't there.
+  Watch for the two ways to get here without typing a slow number: **`--derate 0.6` is
+  exactly 0.21 m/s**, and a "speed-matched" A/B control caps *both* arms below the floor,
+  which makes the result look environmental. See `MIN_GAIT_COMMAND_M_S` in `avoidance.py`
+  — `visual_nav.py` prints a loud warning below it.
 - **Un-calibrated by default.** Without `--calibration` the metric scale is a nominal
   120° FOV; the code says so every run. Ranges are proportional to this one number.
 - **A person closer than ~2.1 m has their head out of frame.** Handled (the ranger

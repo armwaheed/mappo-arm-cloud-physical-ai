@@ -75,9 +75,38 @@ STATIC_SOFT_GAP_M = 0.20
 STATIC_HARD_GAP_M = 0.12
 
 
+#: ⚠️ THE GO2 WILL NOT WALK BELOW THIS. Commanded forward speeds under about this value
+#: do not produce a gait: the robot stands up, takes a few asymmetric one-or-two-leg
+#: steps, and then stands perfectly still while still being commanded forward. It does
+#: not fall over and it reports no fault — it simply does not go.
+#:
+#: MEASURED 2026-08-14, on carpet, with the 3.15 kg D1 arm fitted:
+#:
+#:   | commanded | outcome                                              | runs |
+#:   | 0.21 m/s  | 0.04-0.08 m/s in bursts, then 3 s at 0.0 deg of knee | 5    |
+#:   |           | swing. Travelled 0.34-0.43 m and stopped.            |      |
+#:   | 0.35 m/s  | 0.23-0.25 m/s sustained, continuous stepping, 2.07 m | 1    |
+#:   |           | in 9 s, arrived at the goal.                         |      |
+#:
+#: Anything BETWEEN 0.21 and 0.35 is untested — this is the lowest speed observed to
+#: work, not a measured threshold, so treat it as the floor rather than as a boundary.
+#:
+#: Why this is worth a constant rather than a footnote: the failure is indistinguishable
+#: from being physically stuck. The joint encoders read 0.0 deg of swing, the state
+#: estimator correctly reports no motion, and :data:`PROGRESS_FRACTION` then fires with
+#: "something is holding the robot — check the tether". Five runs and two controllers
+#: were spent on tethers, walls and obstacle-avoidance settings before the speed was
+#: tested, because every instrument agreed and every one of them was pointing away from
+#: the cause. `--derate` reaches the same place by a different road.
+MIN_GAIT_COMMAND_M_S = 0.35
+
+
 @dataclass(frozen=True)
 class Limits:
     """Velocity and acceleration envelope the planner may command.
+
+    ⚠️ ``max_vx`` has a FLOOR as well as a ceiling — see :data:`MIN_GAIT_COMMAND_M_S`.
+    Derating below it (``--derate``, ``--max-vx``) produces a robot that stands still.
 
     Accelerations bound how far the command may move in ONE control period; that is
     what makes the sampled window "dynamic" and keeps the vendor gait controller from

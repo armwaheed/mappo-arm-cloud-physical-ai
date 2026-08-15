@@ -35,12 +35,38 @@ It removes **only** paths the manifest records as created by an install run — 
 SDK clone that was already there is left alone — and it never touches the repository, the
 telemetry or the recordings.
 
-## ⚠️ Four numbers to know before the robot moves
+## 🛑 THE FIRST NUMBER: the Go2 will not walk below ~0.35 m/s
+
+**Commanded top speed must be at or above `MIN_GAIT_COMMAND_M_S` (0.35 m/s), or the robot
+does not walk at all.** It stands up, takes a few asymmetric one-or-two-leg steps, and
+then stands **perfectly still** while the policy is still commanding it forward. No fall,
+no fault, no error code.
+
+| commanded | legs | outcome | runs |
+| --- | --- | --- | --- |
+| **0.21 m/s** (`command_scale` 0.6) | 10–23° of knee swing in bursts, then **3 s at exactly 0.0°** | travelled 0.34–0.43 m and stopped | **5** |
+| **0.35 m/s** (`command_scale` 1.0) | 15–28°, continuous, all four | **2.07 m in 9 s, arrived** | 1 |
+
+Measured 2026-08-14 on carpet with the D1 arm fitted, across BOTH the MAPPO policy and
+the incumbent planner — it is a property of the robot, below the controller entirely.
+
+**Why it costs hours.** Every instrument agrees, and all of them point away from the
+cause: the joint encoders read 0.0° (the legs really have stopped), the state estimator
+correctly reports no motion, and the stall gate then prints *"something is holding the
+robot — check the tether"*. Five runs went on tethers, walls and the Go2's built-in
+obstacle-avoidance switch before the speed itself was tested. `mappo_drive.py` now prints
+a loud warning below the floor; it does not refuse, because the flag is legitimate for a
+bench test with the legs off the ground.
+
+**0.35 is the lowest speed observed to work, not a measured threshold.** 0.21–0.35 is
+untested. Treat it as a floor and re-measure on any other robot.
+
+## ⚠️ Four more numbers to know before the robot moves
 
 | | |
 | --- | --- |
-| **The robot delivers ~0.45 of the velocity it is commanded.** | Fitted against the pose over the recorded run: 2.09 m travelled against 4.32 m commanded. Tethered, with the D1 arm, on the derated envelope. |
-| **So `command_scale` is shipped at 0.6, not the delivered 0.3.** | At 0.3 the top speed on the floor is 0.047 m/s — 2.8 m in the entire 60 s run budget, so the robot cannot cross the arena and the simulation read that as a navigation failure. 0.6 is 0.095 m/s and 5.7 m. |
+| **The robot delivers 0.45 of what it is commanded when DERATED, and 0.70 at full speed.** | 0.45 was fitted against the pose over the derated recorded run (2.09 m travelled against 4.32 m commanded). At the shipped 0.35 m/s an arriving run measured a mean **0.240 m/s, a ratio of 0.70**, peaking at 0.415. The gain is strongly rate-dependent — 0.70 at full command, 0.45 derated, and **zero** below the gait floor above. Budget `--max-seconds` with the figure for the speed you are actually running, and measure rather than interpolate: the one thing this curve has proven is that it is not linear. |
+| **`command_scale` is now shipped at 1.0, not 0.6.** | 0.6 × the 0.35 m/s envelope is exactly 0.21 m/s — the value measured above to stall five times out of five. The simulation's numbers were taken at 0.6 and that configuration **cannot walk on this robot**, so it is not a candidate whatever the sim says. At 1.0 the closed loop gave 21/30 arrived with **1 collision** against 0.6's 18/30 and 0. That extra collision is the honest cost of the change, and it is a cost paid against a baseline that does not move at all. |
 | **`--robot-radius 0.25` is load-bearing.** | The vendored default is 0.40 m. The policy's `meters_per_vmas_unit` of 2.5 is calibrated as 0.25 ÷ the trained 0.10 VMAS radius. `mappo_drive` now **refuses to start** on a mismatch rather than running at a horizon the evidence does not cover — see below. |
 | **The policy commands no yaw.** | It is a holonomic 2-D force. Without the heading servo the robot crabs and its 85° forward camera never looks anywhere new. The servo is on by default; `--no-heading-servo` turns it off. |
 
@@ -143,8 +169,10 @@ Only after rungs 1 and 2, with a cleared lane and an operator on the remote.
 ```bash
 cd integration
 python3 mappo_drive.py --live --telemetry ~/drive.jsonl --record ~/drive.mp4 \
+    --calibration ~/go2_front_camera.json \
     --static-prop bin --goal-class chair --goal-height 1.067 \
-    --robot-radius 0.25 --no-latch-arm --policy-mode supervised
+    --confidence 0.45 --robot-radius 0.25 --no-latch-arm \
+    --arrive 0.8 --max-seconds 45 --policy-mode supervised
 ```
 
 `--policy-scale` and `--policy-command-scale` override `policy/config.json`, which already
@@ -169,11 +197,35 @@ to.
 `--policy-mode raw` removes the veto. In simulation the raw policy collided in every
 configuration tested. Empty arena only, if at all.
 
+### Stage the scene before you change the software
+
+Two things that look like bugs and are staging, both hit on 2026-08-14. Fix them with
+your hands; the goal on the day may well be a potted plant, and code written against a
+chair's geometry would not survive that.
+
+- **Swivel the goal so its back faces the robot.** The range is measured to the feature
+  the height prior describes — a chair's backrest — and an office chair's five-star base
+  sticks out ~0.3 m in FRONT of that. So `--arrive 0.8` stopped 0.78 m from the backrest
+  and put the robot's nose in the wheels. Turning the chair round puts the base behind
+  the backrest and 0.78 m becomes real clearance. The alternative, a per-object footprint
+  model, is a lot of machinery for one prop.
+- **Aim the robot at the goal before starting.** The policy beelines at the goal bearing;
+  it has no concept of a corridor. Started 13.5° off-axis in a narrow hallway it turned
+  to face the chair and walked its shoulder into a cubicle panel — which no part of this
+  stack can see. Re-aimed to 4°, it went straight. `mappo_drive.py` with no `--live` is a
+  free way to read the bearing off the telemetry first.
+
 ### Start smaller than you want to
 
 1. `--max-seconds 20` and no obstacle at all. Does it walk to the goal in a straight line?
 2. Add the bin, well off the lane. Does it deviate at all?
 3. Bin on the lane. This is the demo.
+
+**Always pass `--calibration`.** Without it the camera model falls back to a nominal 120°
+FOV and f=916.7 px against the measured 85.27° and f=1290.2, and **every range reads 29%
+short** — a chair at 2.84 m is reported at 2.02 m. Nothing fails; the run simply arrives
+early against a goal that was never where it said. The console prints which model it
+loaded on every run, and it is worth reading.
 
 Between each, read the tail of the drive log: `N/M ticks driven by the policy`.
 
