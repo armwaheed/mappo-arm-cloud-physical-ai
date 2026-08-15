@@ -60,8 +60,8 @@ class _StubRunner:
     coverage depends on what a set of weights happens to decide is not a test of the
     branch. It has already flipped once: at the delivered ``command_scale`` of 0.3 the
     real policy's rollout could not even reach a bin 1.0 m away, so nothing was ever
-    vetoed; at the shipped 0.6 it is vetoed every time. Injecting the command keeps the
-    branch under the test's control, and
+    vetoed; at the later 0.6 experiment it was vetoed every time. Injecting the command
+    keeps the branch under the test's control, and
     ``test_the_real_checkpoint_needs_the_veto_at_the_shipped_command_scale`` records what
     the weights actually do, separately and by name.
     """
@@ -137,13 +137,14 @@ def test_an_empty_scene_is_never_vetoed():
 
 def test_the_real_checkpoint_needs_the_veto_at_the_shipped_command_scale():
     """The counterpart to the stub tests, and it changed sign when `command_scale` went
-    from the delivered 0.3 to the shipped 0.6 — which is worth pinning rather than
+    above the delivered 0.3 — which is worth pinning rather than
     forgetting.
 
     At 0.3 the policy's command covers 0.35 x 0.3 x 2.5 = 0.26 m over the planner's
     horizon, which cannot reach a bin 1.0 m away, so nothing was ever vetoed and the veto
-    looked dormant. At 0.6 the rollout reaches 0.52 m and the swerve no longer clears the
-    disc over the full horizon, so the veto fires. The closed-loop measurement agrees:
+    looked dormant. At the shipped 1.0 the rollout reaches 0.88 m and the swerve no
+    longer clears the disc over the full horizon, so the veto fires. The closed-loop
+    measurement agrees:
     **near the obstacle the policy's proposal is infeasible more often than not** — 61%
     of the ticks that have one. That is the number to check on the day, and
     ``MappoPlanner.report()`` prints it.

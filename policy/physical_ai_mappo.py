@@ -171,13 +171,11 @@ class Config:
     max_vy_mps: float = 0.20
     #: CALIBRATION, and it is a SPEED knob rather than a safety one — the safety envelope
     #: is the control stack's ``Limits``, which ``mappo_drive`` clamps to and which
-    #: ``--derate`` scales. Raised from the delivered 0.30 because **this robot delivers
-    #: about 0.45 of the velocity it is commanded** (fitted against the pose over the
-    #: recorded run: 2.09 m travelled against 4.32 m commanded). At 0.30 the top speed on
-    #: the floor is 0.35 x 0.30 x 0.45 = 0.047 m/s, which is 2.8 m in the whole 60 s run
-    #: budget — the robot cannot cross the arena, and in simulation that read as a
-    #: navigation failure rather than as the arithmetic it is.
-    command_scale: float = 0.60
+    #: ``--derate`` scales. It first moved from the delivered 0.30 to 0.60 for the run
+    #: budget, then to 1.0 after hardware showed that 0.60 commands only 0.21 m/s — below
+    #: this Go2's gait floor. At 1.0 the robot completed the first policy-driven walk;
+    #: the control stack's ``Limits`` remains the safety envelope.
+    command_scale: float = 1.0
     goal_stop_distance_m: float = 0.20
     stale_input_timeout_s: float = 0.75
     static_obstacle_ttl_s: float = 120.0

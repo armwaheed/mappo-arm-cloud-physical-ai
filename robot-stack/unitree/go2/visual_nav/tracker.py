@@ -85,7 +85,7 @@ class Observation:
                            robot_x: float, robot_y: float, robot_yaw: float,
                            label: str = "person",
                            range_sigma_scale: float = 1.0) -> Observation:
-        """Build from a body-frame measurement plus the robot pose AT CAPTURE TIME.
+        """Build from a body-frame measurement plus the frame-associated robot pose.
 
         ``bearing_rad`` is positive to the robot's left. ``range_sigma_scale``
         downweights a weaker range source (see :data:`WIDTH_SOURCE_SIGMA_SCALE`).
