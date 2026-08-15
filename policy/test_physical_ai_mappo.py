@@ -267,28 +267,27 @@ def test_the_shipped_scale_matches_the_robot_to_the_trained_agent():
 
 
 def test_the_shipped_command_scale_can_actually_cross_the_arena():
-    """0.6, raised from the delivered 0.3, and the arithmetic is the whole argument.
+    """The shipped 1.0 both clears the measured gait floor and crosses the arena.
 
-    **This robot delivers about 0.45 of the velocity it is commanded** — fitted against
-    the pose over the recorded run, 2.09 m travelled against 4.32 m commanded. At 0.3 the
-    top speed on the floor is 0.047 m/s, which is 2.8 m in the 60 s run budget: less than
-    the 3 m arena is wide. In the closed-loop simulation that showed up as a navigation
-    failure rather than as the arithmetic it is, which is exactly why it is asserted here
-    rather than left as a config value nobody re-derives.
+    This Go2 delivered 0.70 of command at full speed and only 0.45 when derated. More
+    importantly, its gait did not sustain at 0.6 x 0.35 = 0.21 m/s in five runs. A test
+    that checked distance alone used to approve that unwalkable setting, so both physical
+    constraints are explicit here.
     """
     controller = _controller()
-    measured_actuator_gain = 0.45
+    measured_actuator_gain = 0.70
     arena_m, budget_s = 3.0, 60.0
-    floor_speed = controller.cfg.max_vx_mps * controller.cfg.command_scale \
-        * measured_actuator_gain
-    assert controller.cfg.command_scale == 0.6
-    assert floor_speed * budget_s > arena_m, (
-        f"{floor_speed:.3f} m/s reaches only {floor_speed * budget_s:.1f} m in "
+    commanded_speed = controller.cfg.max_vx_mps * controller.cfg.command_scale
+    achieved_speed = commanded_speed * measured_actuator_gain
+    assert controller.cfg.command_scale == 1.0
+    assert commanded_speed >= 0.35, "the shipped policy command is below the gait floor"
+    assert achieved_speed * budget_s > arena_m, (
+        f"{achieved_speed:.3f} m/s reaches only {achieved_speed * budget_s:.1f} m in "
         f"{budget_s:.0f} s — the robot cannot cross a {arena_m} m arena")
     # It is a SPEED knob, not the safety envelope: `mappo_drive` clamps to the control
     # stack's Limits, which is what --derate scales. Pinned so raising this is never
     # mistaken for raising the ceiling.
-    assert controller.cfg.max_vx_mps * controller.cfg.command_scale < 0.35
+    assert controller.cfg.max_vx_mps * controller.cfg.command_scale <= 0.35
 
 
 # ── The conventions, verified against the weights before being written down ──

@@ -33,15 +33,17 @@ current, and it documents three mappings that are *not* the obvious ones.
 ## Before you say you are done
 
 ```bash
-cd policy      && python3 test_physical_ai_mappo.py                                #  30
-cd integration && for t in test_*.py; do python3 $t; done                          # 103
-cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 229
-ruff check .        # must be clean in policy/, integration/ and visual_nav/ — each has a ruff.toml
+cd policy      && python3 test_physical_ai_mappo.py                                #  31
+cd integration && for t in test_*.py; do python3 $t; done                          # 108
+cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 244
+cd robot-stack/deep_robotics/lite3/locomotion && python3 test_lite3_locomotion.py  #   6
+cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 24
+ruff check .        # must be clean in each code directory above; each has a ruff.toml
 ```
 
 `policy/` and most of `integration/` need `numpy`. The `visual_nav` suite also needs
-`opencv-python`: without `cv2`, five of its twelve files fail at import and you see 164,
-not 229. That is a missing dependency, not a regression — install it or say so explicitly.
+`opencv-python`: without `cv2`, several files fail at import and the suite is incomplete.
+That is a missing dependency, not a regression — install it or say so explicitly.
 
 **`ruff --fix` sorts imports and will hoist a `from avoidance import ...` above the
 `sys.path` line that makes it importable.** Two test files went from passing to

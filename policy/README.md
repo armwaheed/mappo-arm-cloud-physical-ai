@@ -28,7 +28,7 @@ hand, on a workstation:
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 python3 basic_test.py              # "PASS", plus the calibration it is running with
-python3 test_physical_ai_mappo.py  # 30/30
+python3 test_physical_ai_mappo.py  # 31/31
 ```
 
 `basic_test.py` is an **install** check: numpy is here, the npz loads, one forward pass

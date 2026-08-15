@@ -20,12 +20,14 @@ directly:
     control loop at 10 Hz; neither should be pinned to the camera's cadence, and
     neither should block on an RPC. The grabber runs in its own thread and
     :meth:`Go2Camera.latest` is a non-blocking read of the newest frame.
-  * **Frames carry a capture timestamp and a caller-supplied stamp.** Perception is
+  * **Frames carry a local-arrival timestamp and a caller-supplied stamp.** Perception is
     a few hundred milliseconds behind reality once decode and inference are paid for —
     measured over a live walking run on this unit, median **285 ms** and p90 388 ms,
     which is well above the ~150 ms a bench measurement suggests. Transforming a
     detection with the pose the robot has *now* smears every bearing while it is
-    turning, so the pose must be sampled when the shutter did — hence ``stamp_fn``.
+    turning, so the pose is sampled as soon as the newest JPEG arrives — hence
+    ``stamp_fn``. The RPC does not expose the sensor's shutter timestamp, so transport
+    latency remains part of the platform calibration.
 
 The ``VideoClient`` RPC segfaults unless ``LD_LIBRARY_PATH`` points at the CycloneDDS
 build its Python binding was compiled against; source
@@ -55,7 +57,7 @@ class Frame:
 
     @property
     def age(self) -> float:
-        """Seconds since this frame was captured."""
+        """Seconds since this frame was accepted locally."""
         return time.monotonic() - self.capture_time
 
 
@@ -65,7 +67,7 @@ class Go2Camera:
     Args:
         stamp_fn: called on the capture thread the instant a new frame arrives, with
             no arguments; the result rides along on :attr:`Frame.stamp`. Use it to
-            sample robot pose at shutter time. Must be cheap and non-blocking — it is
+            sample robot pose at frame arrival. Must be cheap and non-blocking — it is
             on the capture path. Exceptions from it are swallowed (a stamp failure
             must not kill the camera) and leave ``stamp`` as ``None``.
         poll_hz: how often to ask the RPC for a sample. Must exceed the sensor's

@@ -8,6 +8,11 @@ SPDX-License-Identifier: Apache-2.0
 Install, check, and then three rungs in order: simulate, shadow, drive. Each one is a
 precondition for the next, and the reason is written next to it rather than assumed.
 
+This installer and the measured numbers below are Go2-specific. For the Lite3 Venture,
+use the same simulation/shadow/drive ladder with the platform commissioning runbook in
+[`../robot-stack/deep_robotics/lite3/README.md`](../robot-stack/deep_robotics/lite3/README.md);
+do not run the Unitree SDK installer on a Lite3 host.
+
 **[`../robot-stack/SAFETY.md`](../robot-stack/SAFETY.md) governs anything that moves a
 leg and is not optional.** `--live` is still the only flag that moves the robot, an
 operator stays on the remote, and the Ethernet tether's slack is checked before anything
@@ -22,9 +27,9 @@ git clone <this repo> && cd mappo-arm-cloud-physical-ai
 ```
 
 It calls the control stack's own installer rather than reimplementing it, adds the policy
-package, checks the checkpoint's SHA-256, runs one inference, and runs all 133 offline
-tests. `--verify` then probes the robot's DDS read-only — no motion. Every path it creates
-goes in `~/.mappo-go2-deploy.manifest`.
+package, checks the checkpoint's SHA-256, runs one inference, and runs all 139 policy +
+integration tests. `--verify` then probes the robot's DDS read-only — no motion. Every
+path it creates goes in `~/.mappo-go2-deploy.manifest`.
 
 ```bash
 ./deploy/uninstall.sh                        # say what would go, remove nothing
@@ -95,13 +100,14 @@ today — on the identical scenarios.
 | 2.5 | 0.6 | **supervised** | **18/30** | **0** | +0.00 m |
 | 2.5 | 1.0 | supervised | 21/30 | 1 | −0.01 m |
 
-Ablated, every controller reaches the goal 30/30 at `command_scale` 0.6 — so the arrival
-rates above are about the obstacle, not about the policy failing to find the goal.
+Ablated, every controller reaches the goal 30/30 at the measured `command_scale` 0.6 —
+so those historical arrival rates are about the obstacle, not goal acquisition.
 
-**Read: supervised at scale 2.5 and `command_scale` 0.6.** It is the only configuration
-with no collisions that also beats the incumbent on arrivals, and both of those matter.
-The raw policy is not a candidate — it collided in every configuration, and worst at the
-scale Sagar's package shipped with.
+**Do not select the 0.6 row.** It is the only simulated configuration with no collisions
+that also beats the incumbent on arrivals, but it commands 0.21 m/s and failed to sustain
+a gait in five hardware runs. The shipped 1.0 setting reached 21/30 with one simulated
+collision; it therefore still requires the planner veto and the staged hardware ladder.
+The raw policy is not a candidate.
 
 ### ⚠️ Near the bin, the planner is driving more often than the policy
 
@@ -176,7 +182,7 @@ python3 mappo_drive.py --live --telemetry ~/drive.jsonl --record ~/drive.mp4 \
 ```
 
 `--policy-scale` and `--policy-command-scale` override `policy/config.json`, which already
-carries the 2.5 and the 0.6 above. Pass them to try something else, not to restate the
+carries the 2.5 and the 1.0 above. Pass them to try something else, not to restate the
 default — a runbook that repeats a config value is a second place for it to drift.
 
 Every `visual_nav.py` flag still applies — this substitutes the choice of velocity and
@@ -235,12 +241,12 @@ Between each, read the tail of the drive log: `N/M ticks driven by the policy`.
 | --- | --- |
 | every tick `STOP_CLOCK_ERROR` | something is passing a wall clock as `timestamp_s`. The runners pass `time.monotonic()`; a hand-rolled loop is the usual culprit. |
 | every tick `STOP_EXTERNAL_HOLD` | a mover is in the lane, or the tracker has a ghost. Check the overlay — a coasting track inflates its radius and blocks from metres away. |
-| the robot barely moves | `command_scale`, or `--derate`. At the delivered 0.3 the top speed was 0.047 m/s; the shipped value is 0.6. |
+| the robot barely moves | `command_scale`, or `--derate`. The shipped value is 1.0; 0.6 commands the 0.21 m/s setting measured to stall. |
 | `veto` on nearly every tick | the policy and the planner disagree about the whole route. Drop to rung 2 and look at the shadow log before turning the veto off. |
 | the robot crabs sideways and never turns | `--no-heading-servo` was passed, or the servo's deadband is swallowing the error. |
 | `cannot import the policy package` | run from `integration/`, or pass `--package ../policy`. |
 | a policy config is refused at load | it disagrees with the checkpoint's own recorded training constants. The message names the field; do not "fix" it by editing the checkpoint. |
-| `REFUSING TO RUN — the policy's scale was calibrated for a different robot size` | `--robot-radius` and `meters_per_vmas_unit` disagree. Pass `--robot-radius 0.25`, or pass `--policy-scale` to match the radius you meant and **re-run the simulation** — the numbers above do not transfer. Nothing moved; the robot is still prone. Every refusal is also appended to `~/.mappo-go2-refusals.jsonl` (`--refusal-log`), because a refused run writes no telemetry and would otherwise leave no trace of why the demo did not start. |
+| `REFUSING TO RUN — the policy's scale was calibrated for a different robot size` | `--robot-radius` and `meters_per_vmas_unit` disagree. Pass `--robot-radius 0.25`, or pass `--policy-scale` to match the radius you meant and **re-run the simulation** — the numbers above do not transfer. Nothing moved; the robot is still prone. Every refusal is also appended to `~/.mappo-refusals.jsonl` (`--refusal-log`), because a refused run writes no telemetry and would otherwise leave no trace of why the demo did not start. |
 | RPC segfault on any DDS call | `setup_env.sh` was not sourced. `LD_LIBRARY_PATH` is load-bearing — see `robot-stack/unitree/go2/install/setup_env.sh`. |
 
 ## What is still open

@@ -43,8 +43,8 @@ def test_a_plausible_derate_lands_exactly_on_the_measured_failure():
     unwalkable speed without anyone typing an unwalkable number.
 
     0.6 of the shipped 0.35 is 0.21 m/s — the value measured to stall on five runs
-    across two different controllers. This is a real trap, not a hypothetical: the MAPPO
-    package's ``command_scale`` also ships at 0.6 and multiplies the same 0.35.
+    across two different controllers. This was a real trap, not a hypothetical: the
+    MAPPO package previously shipped 0.6 and multiplied the same 0.35.
     """
     derated = Limits().scaled(0.6)
     assert derated.max_vx < MIN_GAIT_COMMAND_M_S

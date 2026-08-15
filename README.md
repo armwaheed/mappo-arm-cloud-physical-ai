@@ -18,7 +18,7 @@ describing and driving physical hardware from software
 | --- | --- |
 | **Waheed Brown** ([@armwaheed](https://github.com/armwaheed)) | robot stack — perception, planning, safety, telemetry |
 | **Sagar Surendran** ([@spsagar13](https://github.com/spsagar13)) | MAPPO policy, training environment, checkpoints |
-| **Deep Robotics** | porting the stack to the Lite3 Venture — see *Porting* below |
+| **Deep Robotics** | Lite3 Venture platform support — see *Porting* below |
 
 ## What actually works today
 
@@ -221,24 +221,26 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Telemetry contract + observation adapter | 362 offline tests |
+| ✅ Offline regression suite | 413 tests: policy 31, integration 108, Go2 visual navigation 244, Lite3 30 |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; five silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
 | ⚠️ Policy sensing horizon | 0.875 m to the obstacle surface at the recalibrated scale — it sees the bin on 77 of 121 ticks, and the response is a cliff at that range rather than a ramp, at **every** scale |
-| ⚠️ Policy driving the legs, **supervised** | 18/30 arrivals and **0 collisions** in sim, against the incumbent planner's 14/30 and 2 — but the planner's veto takes over on **61%** of the ticks that have an obstacle, so the avoidance manoeuvre is substantially its. Never run on hardware. |
+| ⚠️ Policy driving the legs, **supervised** | at the walkable 1.0 command scale: 21/30 arrivals and **1 collision** in sim; planner veto required for obstacles |
 | ⛔ Policy driving the legs, **unsupervised** | collided in every simulated configuration — 21/30 at the scale the package shipped with. Not a candidate. |
-| ⛔ Policy on hardware at all | nothing has moved a leg under policy control. `deploy/README.md` is the ladder: sim, then shadow, then drive. |
+| ✅ Policy on Go2 hardware, empty lane | arrived 0.77 m from the chair after 2.78 m; policy drove 53/53 ticks, 0 vetoed, 0 stopped; obstacle run remains open |
 | ⚠️ Arriving at the chair past the bin | needs ~0.3 m more lane than this corridor has |
-| ⚠️ D1 arm latch | its servo bus does not energise (Go2 stack issue #12); runs use `--no-latch-arm`, and the arm creeps a few degrees off the dorsal line each run |
+| ⚠️ D1 arm latch | its servo bus does not energise (tracked in the upstream Go2 stack); runs use `--no-latch-arm`, and the arm creeps a few degrees off the dorsal line each run |
 | ⛔ Multiple quadrupeds | one robot; peers not detectable (above) |
-| ⏳ Lite3 Venture port | three vendor seams + a recalibration — see *Porting* |
+| ✅ Lite3 Venture offline port | high-level ROS locomotion, RGB camera, fail-closed health gate, calibration and MAPPO entry points; 30 platform tests |
+| ⏳ Lite3 hardware commissioning | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): neither event robot has been run; gait floor, actuator gain, loaded radius, camera model/source and health publisher remain measured inputs |
 
-## Porting to the DeepRobotics Lite3 Venture
+## Porting to the Deep Robotics Lite3 Venture
 
-The Lite3 Venture has **an RGB camera and nothing else** — no LiDAR, no depth camera, no
-back-mounted arm. That is the configuration this stack was built for, so most of it moves
-across unchanged, and the parts that do not are small and known.
+The two event Lite3 Ventures have **an RGB camera and no LiDAR**. The offline port is in
+[`robot-stack/deep_robotics/lite3/`](robot-stack/deep_robotics/lite3/README.md). It has
+not moved either robot; its runbook names every measurement and vendor feed still needed
+at commissioning rather than filling them with Go2 values.
 
 **Moves as-is.** Everything that turns pixels into a plan is robot-agnostic numpy and
 OpenCV: `camera_model` (fisheye pixel ↔ bearing, angular-size ranging), `person_detector`,
@@ -246,31 +248,35 @@ OpenCV: `camera_model` (fisheye pixel ↔ bearing, angular-size ranging), `perso
 `replay`. None of them imports a robot. They are the majority of the module and the whole
 of the integration surface.
 
-**Needs a vendor implementation.** Three seams, all narrow:
+**The vendor seams are implemented.** Three narrow bindings surround the common loop:
 
-| seam | what the Go2 does | what the Lite3 needs |
+| seam | Go2 | Lite3 Venture |
 | --- | --- | --- |
-| `camera.py` | grabs JPEGs off the Go2's `VideoClient` RPC | any source of BGR frames with a capture timestamp and a pose stamp |
-| `locomotion` | `LocomotionController` — `set_velocity(vx, vy, wz)`, `pose()`, `stand`/`lie` | the same four calls against the Lite3 SDK |
-| `safety.py` | motor temperature, battery, and D1 arm stow checks | temperature and battery; **the arm half does not apply** |
+| RGB camera | JPEGs from `VideoClient` | explicit V4L2, RTSP, or GStreamer BGR source with local arrival time and pose stamp |
+| locomotion | `SportClient` over CycloneDDS | high-level `Lite3_ROS` `/cmd_vel` + `/leg_odom2`; the low-level MotionSDK is deliberately not used as a gait controller |
+| safety | motor temperature, battery, D1 arm stow | standard battery and motor-temperature ROS feeds; missing/stale data refuses a live run; **no arm flags exist** |
 
 **Recalibrate before trusting a single range.** `go2_front_camera.json` is *this unit's*
 lens — focal 1290.2 px, HFOV 85.27°. Every distance in the system is proportional to it.
-`calibrate_camera.py --spin` measures it with no tape measure and no fiducial: the robot
-turns on the spot and uses its own yaw odometry as the angular ruler. Run it on the Lite3
-and everything downstream is correct; skip it and every range is wrong by the ratio of the
-two lenses.
+The Lite3 wrapper uses the same spin fit against pose yaw and tags the resulting JSON with
+the platform name. A live Lite3 run refuses a Go2, missing, or malformed calibration file.
 
-**No arm is a simplification, not a gap.** The D1 costs this stack a great deal — it is
+**No arm is a simplification, not a bypass.** The D1 costs the Go2 stack a great deal — it is
 why the robot rests prone between moves, why the envelope is derated to 0.35 m/s, and why
 a run can be refused outright (the arm creeps a few degrees off the dorsal line each run
-and the gate is absolute). A Lite3 Venture runs with `--no-require-arm`, skips all of it,
-and can use a faster envelope.
+and the gate is absolute). The Lite3 parser has no `--no-require-arm` or
+`--no-latch-arm`: the arm subsystem is absent from that platform binding.
+
+**The unresolved item is hardware evidence.** A live run requires a measured gait floor,
+actuator gain, loaded radius and Lite3 camera JSON. It also requires battery and motor
+temperature topics that the public high-level vendor bridge does not publish. The
+binding fails closed until a supported companion feed supplies them. Peer detection is
+still the known two-robot gap.
 
 ## Layout
 
 ```
-robot-stack/     the Go2 control stack, vendored — see PROVENANCE.md
+robot-stack/     Go2 control stack plus Lite3 platform bindings — see PROVENANCE.md
 policy/          the MAPPO adapter and checkpoint, vendored — see policy/PROVENANCE.md
 integration/     the bridge, the replay, the closed-loop sim, and the two live runners
 deploy/          install.sh, uninstall.sh, and the runbook for a day at the robot
@@ -289,15 +295,18 @@ evidence/        the approved run, the static-obstacle dry run, a sample telemet
 ## Running the tests
 
 ```bash
-cd policy      && python3 test_physical_ai_mappo.py                                #  30
-cd integration && for t in test_*.py; do python3 $t; done                          # 103
-cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 229
+cd policy      && python3 test_physical_ai_mappo.py                                #  31
+cd integration && for t in test_*.py; do python3 $t; done                          # 108
+cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 244
+cd robot-stack/deep_robotics/lite3/locomotion && python3 test_lite3_locomotion.py  #   6
+cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 24
 ```
 
 `policy/` and the parts of `integration/` that touch the policy need `numpy`; the
-robot-stack suite also needs `opencv-python`. `deploy/install.sh` runs the first two
+robot-stack suites also need `opencv-python`. `deploy/install.sh` runs the first two
 suites as part of installing, because a truncated checkout should fail there rather than
-in the arena. All three directories carry a `ruff.toml`; `ruff check .` is clean in each.
+in the arena. Every listed code directory carries a `ruff.toml`; `ruff check .` is clean
+in each.
 
 ## Safety
 
@@ -307,7 +316,6 @@ the lane is kept clear of everything except the props, and the robot is tethered
 Ethernet — check the slack before anything that turns.
 
 For a policy-driven run, [`deploy/README.md`](deploy/README.md) adds the ladder — simulate,
-then shadow, then drive — and the four measured numbers that decide whether the run does
-what it looks like it is doing. The first of them is that **this robot delivers about 0.45
-of the velocity it is commanded**, which is most of the difference between the demo
-working and the demo timing out.
+then shadow, then drive — and the measured numbers that decide whether the run does what
+it looks like it is doing. Actuator gain is rate-dependent: this Go2 measured about 0.45
+when derated, 0.70 at full command, and zero below its gait floor.

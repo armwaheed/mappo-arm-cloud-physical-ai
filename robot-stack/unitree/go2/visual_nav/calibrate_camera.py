@@ -62,7 +62,6 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))       # sibling modules
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))   # locomotion/, d1_arm/
 
-from camera import Go2Camera
 from camera_model import DEFAULT_HFOV_DEG, FisheyeCamera, solve_focal_px
 from geometry import wrap_pi
 from goal import (
@@ -71,7 +70,8 @@ from goal import (
     DEFAULT_MARKER_SIZE_M,
     aruco_detector,
 )
-from safety import ArmStowMonitor, HealthMonitor, latch_arm, lie_down, stand_up
+from lifecycle import run_cleanup
+from robot_bindings import Go2Bindings
 
 MIN_STATIC_SAMPLES = 3
 MIN_SPIN_SAMPLES = 8
@@ -263,7 +263,7 @@ def spin_fit_quality(model: FisheyeCamera, samples: list) -> dict:
 
 
 # ── Capture ─────────────────────────────────────────────────────────────────
-def collect_static(camera: Go2Camera, locate, count: int, timeout_s: float) -> list:
+def collect_static(camera, locate, count: int, timeout_s: float) -> list:
     """Gather up to ``count`` sightings from a stationary robot."""
     samples: list = []
     seq = 0
@@ -279,7 +279,7 @@ def collect_static(camera: Go2Camera, locate, count: int, timeout_s: float) -> l
     return samples
 
 
-def collect_spin(camera: Go2Camera, loco, locate, pose_yaw, rate: float,
+def collect_spin(camera, loco, locate, pose_yaw, rate: float,
                  seconds: float, max_yaw_deg: float, recorder=None,
                  annotate=None) -> tuple[list, int]:
     """Sweep back and forth on the spot, gathering ``(centre_pixel, yaw)``.
@@ -318,8 +318,8 @@ def collect_spin(camera: Go2Camera, loco, locate, pose_yaw, rate: float,
                 continue
             seq = frame.seq
             frames_seen += 1
-            # Yaw AT SHUTTER TIME, carried on the frame by the camera's stamp_fn — not
-            # sampled here. This fit pairs an image bearing with a robot heading, so a
+            # Yaw at the camera adapter boundary, carried by stamp_fn and not sampled
+            # after detection. This fit pairs an image bearing with a robot heading, so a
             # stale heading is a direct error in the thing being measured: at the
             # ~27 deg/s this sweep actually achieves, even 60 ms of frame age is 1.6
             # deg, and it flips sign with sweep direction, which is exactly the shape
@@ -359,7 +359,7 @@ def _return_to_yaw(loco, pose_yaw, target_yaw: float, rate: float,
         loco.stop()
 
 
-def _target_in_view(camera: Go2Camera, locate, seconds: float = 2.0) -> bool:
+def _target_in_view(camera, locate, seconds: float = 2.0) -> bool:
     """Whether the locator finds the target in any frame within ``seconds``."""
     seq = 0
     deadline = time.monotonic() + seconds
@@ -373,16 +373,8 @@ def _target_in_view(camera: Go2Camera, locate, seconds: float = 2.0) -> bool:
     return False
 
 
-def _stand_up_in_sport_mode(loco) -> None:
-    """Select a sport mode, then stand. The mode switch must come first — the robot
-    idles in 'mcf', which silently ignores Move commands."""
-    print("[calibrate] standing up")
-    loco.ensure_sport_mode("normal")
-    stand_up(loco)
-
-
 # ── Modes ───────────────────────────────────────────────────────────────────
-def run_marker(camera: Go2Camera, args, width: int, height: int):
+def run_marker(camera, args, width: int, height: int):
     detect = aruco_detector(args.dictionary)
     print(f"[calibrate] hold marker {args.marker_id} square-on at {args.marker:.3f} m")
     samples = collect_static(
@@ -397,7 +389,7 @@ def run_marker(camera: Go2Camera, args, width: int, height: int):
                    "distance_m": args.marker, "marker_size_m": args.marker_size}
 
 
-def run_object(camera: Go2Camera, args, width: int, height: int):
+def run_object(camera, args, width: int, height: int):
     from person_detector import PersonDetector
 
     print(f"[calibrate] looking for a '{args.object_class}' "
@@ -420,7 +412,8 @@ def run_object(camera: Go2Camera, args, width: int, height: int):
                    "object_height_m": args.object_height, "distance_m": args.object}
 
 
-def run_spin(camera: Go2Camera, args, width: int, height: int, loco, pose_yaw):
+def run_spin(camera, args, width: int, height: int, loco, pose_yaw,
+             stand_up_fn, lie_down_fn):
     """Turn on the spot and fit bearing against odometry. Needs no measurements."""
     if args.spin_target == "marker":
         detect = aruco_detector(args.dictionary)
@@ -455,7 +448,8 @@ def run_spin(camera: Go2Camera, args, width: int, height: int, loco, pose_yaw):
                 print(f"  {remaining}…", flush=True)
             time.sleep(1.0)
 
-    _stand_up_in_sport_mode(loco)
+    print("[calibrate] standing up")
+    stand_up_fn(loco)
 
     # Confirm the target is visible FROM THE STANDING POSE before committing to the
     # sweep. Standing lifts this camera from ~0.10 m to ~0.32 m, which is enough to
@@ -463,7 +457,7 @@ def run_spin(camera: Go2Camera, args, width: int, height: int, loco, pose_yaw):
     # down — exactly what happened on this robot with a 0.25 m canister at 0.5 m.
     # Twenty seconds of motion to discover that is twenty seconds too many.
     if not _target_in_view(camera, locate, seconds=2.0):
-        lie_down(loco)
+        lie_down_fn(loco)
         # Two quite different causes, and naming the wrong one sends the operator off
         # to fix something that is not broken.
         hint = ("Is the person actually in position and facing the robot? Whoever runs "
@@ -539,11 +533,11 @@ def run_spin(camera: Go2Camera, args, width: int, height: int, loco, pose_yaw):
                    **{k: round(v, 4) for k, v in quality.items()}}
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(bindings=None) -> argparse.ArgumentParser:
+    bindings = bindings or Go2Bindings()
     ap = argparse.ArgumentParser(
-        description="Calibrate the Go2 front camera's focal length.")
-    ap.add_argument("--iface", default="eth0", help="DDS network interface")
-    ap.add_argument("--out", default="go2_front_camera.json",
+        description=f"Calibrate {bindings.platform_name}'s front-camera focal length.")
+    ap.add_argument("--out", default=bindings.default_calibration_output,
                     help="model JSON to write")
     ap.add_argument("--samples", type=int, default=20,
                     help="sightings to average over (static modes)")
@@ -577,16 +571,8 @@ def build_parser() -> argparse.ArgumentParser:
     spin.add_argument("--spin-target", choices=("object", "marker"), default="object",
                       help="what to track through the sweep")
     spin.add_argument("--spin-rate", type=float, default=SPIN_RATE_RAD_S,
-                      help="rad/s. Measured on this robot: 0.30 commanded achieves "
-                           "0.02-0.04 (7-14%%) and below ~0.4 it does not reliably "
-                           "initiate a turn at all; 0.80 achieves 0.45-0.49. See "
-                           "SKILL.md")
+                      help=bindings.spin_rate_help)
     spin.add_argument("--spin-seconds", type=float, default=12.0, help="sweep duration")
-    spin.add_argument("--latch-arm", action="store_true",
-                      help="freeze the D1 at its current (hand-posed) angles before "
-                           "standing. Its base yaw is free when unpowered and crept 13 "
-                           "deg during a turning test; latching cuts that to ~5 deg. "
-                           "Holds only — never commands a trajectory. See safety.py")
     spin.add_argument("--start-delay", type=float, default=0.0,
                       help="seconds to wait before standing, so the operator can walk "
                            "into position. Needed when the target is a PERSON: whoever "
@@ -598,76 +584,63 @@ def build_parser() -> argparse.ArgumentParser:
                       help="sweep this far either side of the start heading. Bounded "
                            "because the robot is tethered by Ethernet and because the "
                            "target must stay in frame")
+    bindings.add_calibration_arguments(ap, spin)
     return ap
 
 
-def main() -> None:
-    ap = build_parser()
-    args = ap.parse_args()
+def main(argv=None, bindings=None) -> None:
+    bindings = bindings or Go2Bindings()
+    ap = build_parser(bindings)
+    args = ap.parse_args(argv)
     if args.object is not None and args.object_height is None:
         ap.error("--object needs --object-height METRES (measure it; the whole metric "
                  "scale is proportional to this number)")
     if args.spin and not args.live:
         ap.error("--spin turns the robot; pass --live to authorise motion")
 
-    from locomotion.go2_locomotion import Go2Locomotion
-
-    loco = Go2Locomotion(iface=args.iface)
-    loco.connect()
-    health, arm = HealthMonitor(), ArmStowMonitor()
-    health.start()
-    arm.start()
-
+    loco = bindings.create_locomotion(args)
+    health = bindings.create_health_monitor(args, live=args.spin)
     camera = None
     standing = False
     try:
-        if args.spin:
-            for reason in (arm.blocking_reason(required=True), health.abort_reason()):
-                if reason is not None:
-                    raise SystemExit(f"[calibrate] REFUSING TO MOVE: {reason}")
-            if args.latch_arm:
-                latch = latch_arm(arm, iface=args.iface)
-                print(f"[calibrate] {latch}")
-                # A sweep turns the robot, which is exactly when an unlocked arm's free
-                # base yaw swings its mass off the centreline. If the operator asked for
-                # the latch and it did not take, spinning anyway is the hazard itself.
-                if not latch.held:
-                    raise SystemExit(
-                        f"[calibrate] REFUSING TO MOVE: the D1 latch did not take "
-                        f"(joints drifted {latch.drift_deg:.2f} deg after enable). "
-                        f"Hand-pose the arm flat along the spine and retry.")
+        loco.connect()
+        health.start()
+        bindings.start(args)
+        bindings.preflight_calibration(args, health)
 
-        # stamp each frame with the robot's yaw AT CAPTURE. The spin fit pairs
-        # image bearing with heading, so the heading must be the one that was
-        # true when the shutter fired (see collect_spin).
-        camera = Go2Camera(iface=args.iface, init_dds=False,
-                           stamp_fn=lambda: loco.pose().yaw)
+        # Stamp each frame with yaw at the camera adapter boundary. The spin fit pairs
+        # image bearing with heading, so sampling after detection would add avoidable
+        # latency. Camera transport latency is still platform-specific (see collect_spin).
+        camera = bindings.create_camera(args, lambda: loco.pose().yaw)
         camera.start()
         height, width = camera.latest().image.shape[:2]
         print(f"[calibrate] camera {width}x{height}, "
               f"nominal HFOV {DEFAULT_HFOV_DEG:.0f}deg")
 
         if args.spin:
+            bindings.prepare_motion(args, loco)
             standing = True
             model, provenance = run_spin(camera, args, width, height, loco,
-                                         lambda: loco.pose().yaw)
+                                         lambda: loco.pose().yaw,
+                                         bindings.stand_up, bindings.lie_down)
         elif args.object is not None:
             model, provenance = run_object(camera, args, width, height)
         else:
             model, provenance = run_marker(camera, args, width, height)
 
+        provenance.update(bindings.calibration_provenance(args))
         model.save(args.out, **provenance)
         print(f"[calibrate] focal={model.focal_px:.1f}px  HFOV={model.hfov_deg:.2f}deg "
               f"(nominal was {DEFAULT_HFOV_DEG:.1f}deg)")
         print(f"[calibrate] wrote {args.out} — pass it as --calibration")
     finally:
-        if standing:
-            lie_down(loco)
-        if camera is not None:
-            camera.stop()
-        arm.stop()
-        health.stop()
-        loco.shutdown()
+        run_cleanup("calibrate", [
+            ("platform rest", None if not standing else lambda: bindings.lie_down(loco)),
+            ("camera stop", None if camera is None else camera.stop),
+            ("platform shutdown", bindings.shutdown),
+            ("health stop", health.stop),
+            ("locomotion shutdown", loco.shutdown),
+        ])
 
 
 if __name__ == "__main__":

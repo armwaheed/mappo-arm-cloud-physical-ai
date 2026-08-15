@@ -39,8 +39,10 @@ so perception runs in its own thread and the controller consumes the newest resu
 has. That result is a few hundred milliseconds old by the time it is used (measured over
 a run with all three passes: median 309 ms, p90 436 ms), so tracks are extrapolated to
 the present before planning and their radii grow to cover the extrapolation — the robot
-plans against where people are NOW, with honest uncertainty, not where they were when
-the shutter opened. Landmarks need neither, because they do not move.
+plans against where people are NOW, with honest uncertainty, not where they were at
+the frame adapter's timestamp. Landmarks need neither, because they do not move. The
+Go2 adapter timestamps a new JPEG at local arrival; the Lite3 adapter timestamps a
+decoded OpenCV frame, so platform-specific transport latency still needs calibration.
 
 The margin here is thinner than it looks: ``perception_timeout_s`` is 0.6 s and the
 worst observed cycle was 0.598 s. Running the goal pass every cycle rather than on its
@@ -128,7 +130,6 @@ import contextlib
 
 import overlay
 from avoidance import (
-    MIN_GAIT_COMMAND_M_S,
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
     DynamicWindowPlanner,
@@ -136,7 +137,6 @@ from avoidance import (
     Obstacle,
     PlannerConfig,
 )
-from camera import Go2Camera
 from camera_model import FisheyeCamera
 from colour_detector import PROFILES, ColourBlobDetector, ColourProfile
 from goal import (
@@ -150,6 +150,7 @@ from goal import (
     GoalSource,
     OdomWaypoint,
 )
+from lifecycle import run_cleanup
 from person_detector import (
     DEFAULT_CONFIDENCE,
     DYNAMIC_CLASSES,
@@ -158,15 +159,7 @@ from person_detector import (
     SizePrior,
     range_detections,
 )
-from safety import (
-    LATCH_DRIFT_TOLERANCE_DEG,
-    STOWED_YAW_DEG,
-    ArmStowMonitor,
-    HealthMonitor,
-    latch_arm,
-    lie_down,
-    stand_up,
-)
+from robot_bindings import Go2Bindings, warn_if_below_go2_gait_floor
 from static_map import StaticObstacleMap
 from telemetry import TelemetryWriter
 from tracker import PROCESS_ACCEL_SIGMA, ObstacleTracker, observation_from
@@ -210,6 +203,8 @@ class NavConfig:
     require_arm: bool = True
     latch_arm: bool = True              # hard requirement — see main()
     motion_mode: str = "normal"
+    rest_when_blocked: bool = True      # false when posture is operator-controlled
+    initially_standing: bool = False
 
 
 @dataclass(frozen=True)
@@ -234,7 +229,7 @@ class PerceptionWorker:
     #: throws on every frame would otherwise bury the console it is trying to warn.
     _ERROR_LOG_LIMIT = 5
 
-    def __init__(self, camera: Go2Camera, detector: PersonDetector,
+    def __init__(self, camera, detector: PersonDetector,
                  camera_model: FisheyeCamera, goal_source: GoalSource,
                  pose_fn, prior: SizePrior = PERSON_PRIOR,
                  colour_detector: ColourBlobDetector | None = None) -> None:
@@ -254,7 +249,7 @@ class PerceptionWorker:
 
     def start(self) -> None:
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="go2-perception",
+        self._thread = threading.Thread(target=self._run, name="visual-perception",
                                         daemon=True)
         self._thread.start()
 
@@ -314,7 +309,8 @@ class PerceptionWorker:
         if frame is None:
             return last_seq
         last_seq = frame.seq
-        # Pose sampled when the shutter fired, not now — see the module docstring.
+        # Pose sampled at the camera adapter boundary, not after inference — see the
+        # module docstring. The adapters do not claim a sensor shutter timestamp.
         pose = frame.stamp if frame.stamp is not None else self._pose_fn()
 
         started = time.monotonic()
@@ -356,14 +352,15 @@ class PerceptionWorker:
 
 
 class VisualNavigator:
-    """Drives the Go2 to a goal on camera alone, resting prone whenever it can."""
+    """Drives a quadruped to a goal on camera alone through injected robot bindings."""
 
     def __init__(self, loco, perception: PerceptionWorker,
                  planner: DynamicWindowPlanner, tracker: ObstacleTracker,
-                 goal_source: GoalSource, health: HealthMonitor, config: NavConfig,
+                 goal_source: GoalSource, health, config: NavConfig,
                  recorder: cv2.VideoWriter | None = None,
                  static_map: StaticObstacleMap | None = None,
-                 telemetry: TelemetryWriter | None = None) -> None:
+                 telemetry: TelemetryWriter | None = None,
+                 stand_up_fn=None, lie_down_fn=None) -> None:
         self._loco = loco
         self._perception = perception
         self._planner = planner
@@ -374,8 +371,10 @@ class VisualNavigator:
         self._recorder = recorder
         self._static_map = static_map
         self._telemetry = telemetry
+        self._stand_up_fn = stand_up_fn or self._default_stand_up
+        self._lie_down_fn = lie_down_fn or self._default_lie_down
 
-        self._standing = False
+        self._standing = config.initially_standing and config.live
         self._frames_written = 0
         #: (time, x, y) over the last PROGRESS_WINDOW_S, for the stall gate.
         self._progress: deque = deque()
@@ -386,26 +385,38 @@ class VisualNavigator:
         self._recorded_seq = 0
 
     # ── Posture ─────────────────────────────────────────────────────────────
+    @staticmethod
+    def _default_stand_up(loco) -> None:
+        from safety import stand_up
+
+        stand_up(loco)
+
+    @staticmethod
+    def _default_lie_down(loco) -> None:
+        from safety import lie_down
+
+        lie_down(loco)
+
     def _stand_up(self) -> None:
         """Stand, tracking the posture. Blocks ~3 s — callers must re-plan afterwards."""
         if self._standing or not self._config.live:
             self._standing = True
             return
         print("[visual_nav] standing up")
-        stand_up(self._loco)
+        self._stand_up_fn(self._loco)
         self._standing = True
 
     def _lie_down(self) -> None:
         if not self._config.live:
             self._standing = False
             return
-        lie_down(self._loco)
+        self._lie_down_fn(self._loco)
         self._standing = False
 
     def park(self) -> None:
         """Stop and lie down. Idempotent; safe from any exit path."""
         if self._standing:
-            print("[visual_nav] parking: stop + lie down")
+            print("[visual_nav] parking: stop + platform safe-rest action")
             self._lie_down()
         elif self._config.live:
             with contextlib.suppress(Exception):
@@ -581,7 +592,8 @@ class VisualNavigator:
                 # happened to read 0.0. Vanishingly unlikely, but the explicit test is
                 # the same length and says what it means.
                 hold_since = now if hold_since is None else hold_since
-                if self._standing and now - hold_since >= config.rest_after_s:
+                if (config.rest_when_blocked and self._standing
+                        and now - hold_since >= config.rest_after_s):
                     print(f"[visual_nav] blocked {now - hold_since:.0f}s — resting prone")
                     self._lie_down()
             else:
@@ -858,48 +870,26 @@ def build_goal_source(args, camera_model: FisheyeCamera, pose_fn) -> GoalSource:
 
 
 def warn_if_below_gait_floor(max_vx: float) -> bool:
-    """Shout if the envelope's top speed cannot produce a gait. Returns whether it did.
-
-    A warning rather than a refusal: ``--derate`` is a legitimate flag, a spot turn
-    commands almost no translation, and the failure wastes a run rather than endangering
-    anything. But it has to be LOUD, because what it produces downstream is a robot
-    standing still and a stall message that confidently blames the tether.
-
-    Module-level and public so the MAPPO drive path can reuse it — its ``command_scale``
-    reaches the same floor by multiplying rather than by derating, and a second copy of
-    this text would drift from the constant it is explaining.
-    """
-    if max_vx >= MIN_GAIT_COMMAND_M_S:
-        return False
-    print("!" * 78)
-    print(f"[visual_nav] ⚠️  TOP SPEED {max_vx:.2f} m/s IS BELOW THE GAIT FLOOR OF "
-          f"{MIN_GAIT_COMMAND_M_S:.2f} m/s")
-    print("    The Go2 does not walk slowly — below this it stands up, shuffles a few")
-    print("    steps and then STANDS STILL while still being commanded forward. No")
-    print("    fault is reported. The stall gate will then say 'something is holding")
-    print("    the robot — check the tether'. It is not the tether. It is this number.")
-    print(f"    Measured: 0.21 m/s stalled 5 of 5 runs across two controllers; "
-          f"{MIN_GAIT_COMMAND_M_S:.2f} m/s walked 2.07 m in 9 s and arrived.")
-    print("!" * 78)
-    return True
+    """Backward-compatible public entry point for the measured Go2 gait warning."""
+    return warn_if_below_go2_gait_floor(max_vx)
 
 
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(bindings=None) -> argparse.ArgumentParser:
     """The CLI, separated from ``main`` so it can be exercised without a robot.
 
     Same split as ``calibrate_camera.build_parser``. It is what lets a test assert
     that the D1 latch is on by default, which is a safety property rather than a
     preference.
     """
+    bindings = bindings or Go2Bindings()
     ap = argparse.ArgumentParser(
-        description="Walk the Go2 to a goal on RGB alone, avoiding moving people.")
+        description=f"Walk {bindings.platform_name} to a goal on RGB alone, avoiding people.")
     # Defaults are read from the dataclasses rather than repeated here as literals,
     # which would be two places to change and one to forget: the dataclass is what a
     # caller constructing this in-process gets, so the CLI agrees with it by
     # construction rather than by inspection.
     limits, nav, planner = Limits(), NavConfig(), PlannerConfig()
 
-    ap.add_argument("--iface", default="eth0", help="DDS network interface")
     ap.add_argument("--live", action="store_true",
                     help="DANGER: actually move the legs. Without this the robot "
                          "perceives and plans but never leaves the floor.")
@@ -922,14 +912,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="true height of the tracked object in metres, when --classes "
                          "is something other than person")
     ap.add_argument("--robot-radius", type=float, default=planner.robot_radius_m,
-                    help="the robot's own plan-view radius in metres. The default 0.40 "
-                         "is the half-DIAGONAL of the 0.70x0.31 m body — correct if it "
-                         "might be at any yaw relative to an obstacle. Crabbing past "
-                         "something on its flank it stays aligned with its path, where "
-                         "the half-WIDTH 0.155 is what matters, so 0.40 asks for 2.6x "
-                         "the room it needs and a narrow lane will not give it. Lower "
-                         "this deliberately: it is the margin against clipping an "
-                         "obstacle with a leg")
+                    help="the loaded robot's measured plan-view planning radius in "
+                         "metres. It sets both obstacle clearance and MAPPO scale; do "
+                         "not copy the value from another platform")
     ap.add_argument("--obstacle-radius", type=float, default=planner.obstacle_radius_m,
                     help="plan-view footprint of a TRACKED MOVER in metres. The default "
                          "is a person's; anything smaller wants its own number, because "
@@ -992,14 +977,11 @@ def build_parser() -> argparse.ArgumentParser:
     envelope.add_argument("--max-wz", type=float, default=limits.max_wz,
                           help="rad/s yaw cap")
     envelope.add_argument("--derate", type=float, default=1.0,
-                          help="scale the whole envelope. NOTE this scales yaw too, and "
-                               "below ~0.4 rad/s this robot does not reliably turn at "
-                               "all — so 0.6 puts max yaw at 0.42, right on the "
-                               "deadband, and costs the authority avoidance needs")
+                          help="scale the whole envelope, including yaw authority")
     envelope.add_argument("--max-seconds", type=float, default=nav.max_run_s,
                           help="hard run-time budget")
     envelope.add_argument("--rest-after", type=float, default=nav.rest_after_s,
-                          help="seconds held before lying down to rest the legs")
+                          help="seconds held before the platform's supported rest action")
     envelope.add_argument("--arrive", type=float, default=nav.arrive_tolerance_m,
                           help="stop this far short of the goal. Check it against the "
                                "staging: an arrival circle that encloses a mapped "
@@ -1009,17 +991,7 @@ def build_parser() -> argparse.ArgumentParser:
                                "the default speed 2.5 s sees 0.88 m ahead, which is "
                                "about one blocking radius — raise it if the robot "
                                "reacts to a static obstacle too late to swerve")
-    envelope.add_argument("--no-require-arm", action="store_true",
-                          help="proceed without D1 feedback (arm physically removed)")
-    envelope.add_argument("--no-latch-arm", action="store_true",
-                          help="do NOT lock the D1 before walking. The arm is latched "
-                               "by default because an unpowered one back-drives and "
-                               "3.15 kg off the dorsal centreline unbalances the "
-                               "vendor gait controller. Use only if it is already "
-                               "locked by other means")
-
-    envelope.add_argument("--motion-mode", default="normal", choices=("normal", "ai"),
-                          help="Go2 sport mode to select before walking")
+    bindings.add_navigation_arguments(ap, envelope)
     ap.add_argument("--record", default=None, help="write an annotated MP4 here")
     ap.add_argument("--telemetry", default=None, metavar="PATH.jsonl",
                     help="write a machine-readable record of every control tick here: "
@@ -1030,8 +1002,8 @@ def build_parser() -> argparse.ArgumentParser:
     return ap
 
 
-def main(argv: Sequence[str] | None = None,
-         planner_factory=DynamicWindowPlanner) -> None:
+def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner,
+         navigator_factory=VisualNavigator, bindings=None) -> None:
     """Run one navigation session.
 
     ``planner_factory`` is called as ``planner_factory(limits=..., config=...)`` and
@@ -1051,81 +1023,43 @@ def main(argv: Sequence[str] | None = None,
     factory returns is handed to :class:`VisualNavigator` alongside ``loco``, and a
     factory that closes over its own reference is the simplest way to get both.
     """
-    args = build_parser().parse_args(argv)
+    bindings = bindings or Go2Bindings()
+    args = build_parser(bindings).parse_args(argv)
+    config = NavConfig(
+        live=args.live,
+        max_run_s=args.max_seconds,
+        arrive_tolerance_m=args.arrive,
+        rest_after_s=args.rest_after,
+        require_arm=not getattr(args, "no_require_arm", True),
+        latch_arm=not getattr(args, "no_latch_arm", True),
+        motion_mode=getattr(args, "motion_mode", "manual"),
+        rest_when_blocked=bindings.rest_when_blocked,
+        initially_standing=bindings.initially_standing,
+    )
 
-    from locomotion.go2_locomotion import Go2Locomotion
-
-    config = NavConfig(live=args.live, max_run_s=args.max_seconds,
-                       arrive_tolerance_m=args.arrive, rest_after_s=args.rest_after,
-                       require_arm=not args.no_require_arm,
-                       latch_arm=not args.no_latch_arm,
-                       motion_mode=args.motion_mode)
-
-    loco = Go2Locomotion(iface=args.iface)
-    loco.connect()
-
-    health = HealthMonitor()
-    health.start()
-    arm = ArmStowMonitor()
-    arm.start()
-
+    loco = bindings.create_locomotion(args)
+    health = bindings.create_health_monitor(args, live=config.live)
     camera = perception = recorder = telemetry = None
     navigator = None
     try:
-        # ── Pre-flight, all of it with the robot still lying down ───────────
-        blocking = arm.blocking_reason(required=config.require_arm)
-        if blocking is not None:
-            raise SystemExit(f"[visual_nav] REFUSING TO WALK: {blocking}")
-        reach = arm.reach_m()
-        if reach is not None:
-            jaw = arm.jaw_xyz()
-            sway = arm.sway_deg()
-            # Sway is printed against its limit because it is the one pre-flight number
-            # that CREEPS ACROSS RUNS — the operator needs to see how much budget is
-            # left, not just that this run passed.
-            print(f"[visual_nav] D1 arm stowed (jaw {reach:.3f} m from base, sway "
-                  f"{sway:.1f} deg of {STOWED_YAW_DEG:.1f} deg allowed, "
-                  f"{abs(jaw[1]) * 1000:.0f} mm off the dorsal centreline)")
-            # LATCHING IS A HARD REQUIREMENT, not a nicety. An unpowered D1 back-drives
-            # — its base yaw crept 13.4 deg during a turning test — and 3.15 kg
-            # swinging off the centreline throws the vendor locomotion controller off
-            # balance. So this is on by default and a latch that did not take refuses
-            # the run, rather than being an opt-in flag the operator can forget.
-            # It happens here, with the robot still prone and before sport mode is
-            # selected, because latch_arm() only ever holds joints where they already
-            # are and standing is what puts load on them.
-            if config.latch_arm:
-                latch = latch_arm(arm, iface=args.iface)
-                print(f"[visual_nav] {latch}")
-                if not latch.held:
-                    raise SystemExit(
-                        f"[visual_nav] REFUSING TO WALK: the D1 latch did not take "
-                        f"(joints drifted {latch.drift_deg:.2f} deg after enable, "
-                        f"tolerance {LATCH_DRIFT_TOLERANCE_DEG:.1f} deg). Hand-pose "
-                        f"the arm flat along the spine and retry. Pass --no-latch-arm "
-                        f"only if it is already locked by other means.")
-        unhealthy = health.abort_reason()
-        if unhealthy is not None:
-            raise SystemExit(f"[visual_nav] REFUSING TO WALK: {unhealthy}")
-        sample = health.latest()
-        print(f"[visual_nav] motors {sample.max_motor_temp_c:.0f}C, "
-              f"battery {sample.battery_soc_pct:.0f}%")
-        # The checklist asks an operator to eyeball "motors < 55 C" by hand against a
-        # threshold this module already holds. Say it instead of expecting them to.
-        warning = health.warning_reason()
-        if warning is not None:
-            print(f"[visual_nav] WARNING: {warning}")
+        # Enter the cleanup scope before the first external connection. A health or arm
+        # startup failure must not leak the already-connected locomotion transport.
+        loco.connect()
+        health.start()
+        bindings.start(args)
+        bindings.preflight_navigation(args, config, health)
 
         def pose_tuple() -> tuple[float, float, float]:
             pose = loco.pose()
             return (pose.x, pose.y, pose.yaw)
 
-        camera = Go2Camera(iface=args.iface, init_dds=False, stamp_fn=pose_tuple)
+        camera = bindings.create_camera(args, pose_tuple)
         camera.start()
         first = camera.latest()
         height, width = first.image.shape[:2]
         print(f"[visual_nav] camera live: {width}x{height}")
 
+        bindings.validate_camera_calibration(args)
         camera_model = build_camera_model(width, height, args.calibration)
         detector = PersonDetector(args.model_dir, input_size=args.input_size,
                                   confidence=args.confidence,
@@ -1157,10 +1091,11 @@ def main(argv: Sequence[str] | None = None,
                         max_wz=args.max_wz).scaled(args.derate)
         print(f"[visual_nav] envelope: vx<={limits.max_vx:.2f} vy<={limits.max_vy:.2f} "
               f"wz<={limits.max_wz:.2f}")
-        warn_if_below_gait_floor(limits.max_vx)
+        bindings.warn_if_below_gait_floor(limits.max_vx, args)
+        robot_radius = bindings.robot_radius(args, PlannerConfig().robot_radius_m)
         planner_config = PlannerConfig(horizon_s=args.horizon,
                                        obstacle_radius_m=args.obstacle_radius,
-                                       robot_radius_m=args.robot_radius)
+                                       robot_radius_m=robot_radius)
         print(f"[visual_nav] planner: horizon {planner_config.horizon_s:.1f}s "
               f"({planner_config.horizon_s * limits.max_vx:.2f} m of lookahead at "
               f"top speed), robot radius {planner_config.robot_radius_m:.2f} m, "
@@ -1186,51 +1121,63 @@ def main(argv: Sequence[str] | None = None,
                     f"Check the path is writable and that this OpenCV has FFMPEG.")
 
         if config.live:
-            loco.ensure_sport_mode(config.motion_mode)
+            bindings.prepare_motion(args, loco)
 
         if args.telemetry:
             telemetry = TelemetryWriter(args.telemetry)
-            telemetry.write_header(
-                live=config.live, goal=goal_source.description,
-                classes=list(args.classes), confidence=args.confidence,
-                static_prop=args.static_prop,
-                arrive_tolerance_m=config.arrive_tolerance_m,
-                control_hz=config.control_hz,
-                camera={"width": width, "height": height,
-                        "focal_px": camera_model.focal_px,
-                        "hfov_deg": camera_model.hfov_deg,
-                        "height_m": camera_model.height_m},
-                envelope={"max_vx": limits.max_vx, "max_vy": limits.max_vy,
-                          "max_wz": limits.max_wz},
-                planner={"horizon_s": planner_config.horizon_s,
-                         "robot_radius_m": planner_config.robot_radius_m,
-                         "hard_gap_m": planner_config.hard_gap_m,
-                         "soft_gap_m": planner_config.soft_gap_m,
-                         "static_soft_gap_m": STATIC_SOFT_GAP_M},
-                video=args.record)
+            header = {
+                "live": config.live,
+                "goal": goal_source.description,
+                "classes": list(args.classes),
+                "confidence": args.confidence,
+                "static_prop": args.static_prop,
+                "arrive_tolerance_m": config.arrive_tolerance_m,
+                "control_hz": config.control_hz,
+                "camera": {"width": width, "height": height,
+                           "focal_px": camera_model.focal_px,
+                           "hfov_deg": camera_model.hfov_deg,
+                           "height_m": camera_model.height_m},
+                "envelope": {"max_vx": limits.max_vx, "max_vy": limits.max_vy,
+                             "max_wz": limits.max_wz},
+                "planner": {"horizon_s": planner_config.horizon_s,
+                            "robot_radius_m": planner_config.robot_radius_m,
+                            "hard_gap_m": planner_config.hard_gap_m,
+                            "soft_gap_m": planner_config.soft_gap_m,
+                            "static_soft_gap_m": STATIC_SOFT_GAP_M},
+                "video": args.record,
+            }
+            header.update(bindings.telemetry_config(args))
+            telemetry.write_header(**header)
 
-        navigator = VisualNavigator(loco, perception, planner, tracker,
-                                    goal_source, health, config, recorder, static_map,
-                                    telemetry)
+        navigator = navigator_factory(
+            loco, perception, planner, tracker, goal_source, health, config, recorder,
+            static_map, telemetry, stand_up_fn=bindings.stand_up,
+            lie_down_fn=bindings.lie_down,
+        )
         navigator.run()
     finally:
         # Order matters: stop the legs first, then tear down what was feeding them.
-        if navigator is not None:
-            navigator.park()
-        if perception is not None:
-            perception.stop()
-        if camera is not None:
-            camera.stop()
-        if recorder is not None:
-            recorder.release()
-            print(f"[visual_nav] wrote {args.record}")
-        if telemetry is not None:
-            telemetry.close()
-            print(f"[visual_nav] wrote {args.telemetry} "
-                  f"({telemetry.records} records)")
-        arm.stop()
-        health.stop()
-        loco.shutdown()
+        def release_recorder() -> None:
+            if recorder is not None:
+                recorder.release()
+                print(f"[visual_nav] wrote {args.record}")
+
+        def close_telemetry() -> None:
+            if telemetry is not None:
+                telemetry.close()
+                print(f"[visual_nav] wrote {args.telemetry} "
+                      f"({telemetry.records} records)")
+
+        run_cleanup("visual_nav", [
+            ("navigator park", None if navigator is None else navigator.park),
+            ("perception stop", None if perception is None else perception.stop),
+            ("camera stop", None if camera is None else camera.stop),
+            ("recorder release", release_recorder),
+            ("telemetry close", close_telemetry),
+            ("platform shutdown", bindings.shutdown),
+            ("health stop", health.stop),
+            ("locomotion shutdown", loco.shutdown),
+        ])
 
 
 if __name__ == "__main__":

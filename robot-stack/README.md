@@ -1,7 +1,8 @@
-# arm-dc-unitree-go2
+# Robot control stack
 
-The **Arm Device Connect driver and on-robot control stack for the
-Unitree Go2 EDU quadruped and its Unitree D1 servo arm.** It makes a physical
+The vendored **Arm Device Connect driver and on-robot control stack for the
+Unitree Go2 EDU quadruped and its Unitree D1 servo arm**, plus the event-demo binding for
+the Deep Robotics Lite3 Venture. The Go2 stack makes a physical
 12-DOF Go2 (carrying the detachable 6-DOF + jaw D1 arm) a first-class DC device —
 reachable on the fabric next to a human partner or a G1 — and ships the
 locomotion, arm, perception, and motor-deploy modules that run on the robot itself.
@@ -24,6 +25,10 @@ locomotion, arm, perception, and motor-deploy modules that run on the robot itse
   low-level `rt/lowcmd` policy-deploy `RobotIO` (with the SDK↔Isaac joint-order
   remap), and the depth-camera module. Start at
   [`unitree/go2/README.md`](unitree/go2/README.md).
+- **`deep_robotics/lite3/`** — the RGB-only Lite3 Venture binding: high-level
+  `Lite3_ROS` locomotion, explicit OpenCV camera source, fail-closed ROS health feeds,
+  and thin entry points into the same navigator/calibration/MAPPO loops. Start at
+  [`deep_robotics/lite3/README.md`](deep_robotics/lite3/README.md).
 
 Read [`SAFETY.md`](SAFETY.md) before running any on-hardware motor control: the
 Go2's high-level `SportClient.Move` commands a **persistent** velocity with no

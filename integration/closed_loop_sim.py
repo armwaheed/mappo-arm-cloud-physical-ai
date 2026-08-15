@@ -119,8 +119,10 @@ from avoidance import (  # noqa: E402
 #: property of that configuration rather than of a Go2. ``--gain 1.0`` is the limit case.
 #: The consequence is worth doing in your head before the demo: at the delivered
 #: ``command_scale`` of 0.30 the top speed on the floor was 0.35 x 0.30 x 0.45 =
-#: 0.047 m/s, i.e. 2.8 m in the whole run budget. That is why the shipped value is now
-#: 0.60 — see ``policy/config.json``.
+#: 0.047 m/s, i.e. 2.8 m in the whole run budget. A later hardware sweep also showed
+#: 0.60 is below the Go2 gait floor, so the shipped value is now 1.0. This fitted 0.45
+#: gain remains the conservative recorded-run model; ``--gain 0.70`` covers the measured
+#: full-command run.
 ACTUATOR_GAIN = 0.45
 
 #: Residual after the gain, per axis. The naive figure is 0.137 m/s, which is what you
@@ -543,12 +545,11 @@ def main(argv=None) -> int:
                              f"(measured {ACTUATOR_GAIN}; 1.0 is the limit case)")
     parser.add_argument("--noise", type=float, default=VELOCITY_NOISE_MPS,
                         metavar="M_PER_S", help="per-axis actuation noise after the gain")
-    parser.add_argument("--command-scale", type=float, nargs="+", default=[0.6],
+    parser.add_argument("--command-scale", type=float, nargs="+", default=[1.0],
                         metavar="FRACTION",
                         help="policy command_scale values to report. Defaults to the "
-                             "shipped 0.6; the delivered 0.3, against the measured "
-                             "actuator gain, was 0.047 m/s on the floor — under 3 m in "
-                             "the whole run budget")
+                             "shipped 1.0; 0.6 commands 0.21 m/s, which failed to "
+                             "sustain this Go2's gait in five hardware runs")
     parser.add_argument("--veto-horizon", type=float, nargs="+",
                         default=[PlannerConfig().horizon_s], metavar="SECONDS",
                         help="how far ahead the veto checks a proposed command. Defaults "

@@ -192,7 +192,8 @@ was tested.
 - A "speed-matched" A/B control that caps `--max-vx` to match another controller puts
   **both arms** below the floor, so the comparison looks environmental and exonerates
   whatever you were testing. That is how these five runs happened.
-- The MAPPO package's `command_scale` ships at **0.6** and multiplies the same `0.35`.
+- The MAPPO package previously shipped `command_scale` **0.6**, which multiplies the
+  same `0.35`; it now ships 1.0 because the 0.21 m/s result did not sustain a gait.
 
 **0.35 is the lowest speed observed to work, not a measured threshold.** Anything between
 0.21 and 0.35 is untested. Treat it as a floor, and re-measure on any other robot — like
@@ -244,7 +245,9 @@ not ~0.5 m) but that error makes them seem *nearer*, which is safe.
 motion.** Differencing body-frame positions while the robot turns at 0.6 rad/s gives
 every stationary person ~1.8 m/s of phantom sideways velocity — exactly the signal the
 planner would swerve on. Each measurement is converted to the estimator's fixed odom
-frame first, using the pose sampled at **shutter time**, not at processing time.
+frame first, using the pose sampled at **local frame arrival**, not after inference.
+The Go2 RPC does not expose a sensor shutter timestamp, so transport latency remains
+part of the measured calibration and safety margin.
 `test_tracker.py::test_ego_rotation_does_not_create_phantom_velocity` pins it.
 
 **4. People are planned against where they will BE.** `lib/navigation.py` (A\* over an
@@ -406,7 +409,7 @@ Other limits worth stating plainly:
 | `calibrate_camera.py` | focal-length measurement, three methods (spin / marker / object) |
 | `replay.py` | run the detector + tracker over any video, no robot needed |
 | `telemetry.py` | machine-readable JSONL record of every control tick — the downstream interface |
-| `test_*.py` | **203 offline tests**, no robot: `for t in test_*.py; do python3 $t; done` |
+| `test_*.py` | **244 offline tests**, no robot: `for t in test_*.py; do python3 $t; done` |
 | `ruff.toml` | this directory's lint contract (line length, py38 target) |
 | `go2_front_camera.json` | the measured camera model for THIS unit |
 | `images/` | live-run and calibration GIFs, measured-data charts, setup photo |

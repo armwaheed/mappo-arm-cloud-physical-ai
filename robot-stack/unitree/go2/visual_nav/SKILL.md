@@ -124,9 +124,9 @@ https://github.com/user-attachments/assets/12ace366-d2d8-4dc9-81ae-f6997fb6eece
 
 **Two spin runs, and what changed between them.** The only difference is *when the
 robot's heading was sampled*. Run A read it after the detector returned; run B reads
-it at shutter time, off `Frame.stamp`:
+it when the newest JPEG arrives locally, off `Frame.stamp`:
 
-| | run A — yaw sampled late | run B — yaw at shutter |
+| | run A — yaw sampled late | run B — yaw at frame arrival |
 | --- | --- | --- |
 | sightings / yaw span | 40 / 70.5° | **53 / 80.1°** |
 | focal length | 1349.7 px | **1290.2 px** |
@@ -135,7 +135,8 @@ it at shutter time, off `Frame.stamp`:
 
 At the ~27 °/s the sweep achieves, frame age turns straight into heading error, and it
 **flips sign with sweep direction** — which inflates the residual without moving the
-fitted value much. Hence `Go2Camera(stamp_fn=...)`.
+fitted value much. Hence `Go2Camera(stamp_fn=...)`. The RPC does not expose a sensor
+shutter timestamp, so transport latency is still included in the fit and safety margin.
 
 **The residual is the target, not the lens.** 3.13° sounds like a bad fit until you
 measure the target's own noise: a person's bounding-box centre wobbles **70 px = 3.12°**
@@ -223,7 +224,7 @@ above — discharging a *raised* arm drops it.
 - Envelope defaults are the arm-fitted conservative profile: 0.35 m/s forward,
   0.20 m/s strafe, 0.70 rad/s yaw. `--derate` scales the lot. **Those are the numbers
   COMMANDED, not the numbers achieved — see below.**
-- ⚠️ **The robot delivers about 0.45 of the velocity it is commanded.** Over the 116
+- ⚠️ **The derated robot delivered about 0.45 of the velocity it was commanded.** Over the 116
   standing ticks of the approved run it travelled **2.09 m against 4.32 m commanded**;
   a least-squares fit of pose-derived body velocity against the command gives **0.45**
   for translation and **0.44** for yaw, with 0.07 m/s of residual. The POSE is what
@@ -233,7 +234,9 @@ above — discharging a *raised* arm drops it.
   in time must halve its speed assumption**: "2 m at 0.35 m/s = 6 s" is out by a factor
   of two, and `--max-seconds` set from it is a budget the robot cannot meet. One run,
   tethered, with the 3.15 kg arm, on the derated envelope — a property of that
-  configuration rather than of a Go2.
+  configuration rather than of a Go2. A later full-command run measured 0.70, so budget
+  with the gain measured at the envelope actually being used; do not interpolate through
+  the gait floor below.
 - **`--robot-radius` defaults to 0.40 m and every recorded run used 0.25.** The default
   is the half-diagonal of the whole body, which is a defensible worst case and is not
   what anybody has flown: the GIF at the top of this file, the approved run and every

@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Let the MAPPO policy drive the Go2, with the shipped planner keeping a veto.
+"""Let the MAPPO policy drive a supported quadruped, with the planner keeping a veto.
 
 ⛔ **READ `robot-stack/SAFETY.md` AND `deploy/README.md` FIRST.** This is the only file in
 the repository that can put the policy in charge of the legs, and it inherits every gate
@@ -85,7 +85,6 @@ for _directory in (_STACK, _STACK / "visual_nav"):
     sys.path.insert(0, str(_directory))
 
 from avoidance import (  # noqa: E402
-    MIN_GAIT_COMMAND_M_S,
     Command,
     DynamicWindowPlanner,
 )
@@ -106,7 +105,7 @@ _STOP_REASONS = {
 #: "why did the 14:32 run not happen" is then unanswerable an hour later, which on a demo
 #: day is exactly when it gets asked. One JSON object per line, not prose: this repository
 #: already learned that a console log is not an interface.
-DEFAULT_REFUSAL_LOG = Path.home() / ".mappo-go2-refusals.jsonl"
+DEFAULT_REFUSAL_LOG = Path.home() / ".mappo-refusals.jsonl"
 
 
 def _record_refusal(path: Path | None, reason: str, detail: dict) -> None:
@@ -279,9 +278,7 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     group.add_argument("--policy-scale", type=float, metavar="M_PER_UNIT",
                        help="override meters_per_vmas_unit for this run")
     group.add_argument("--policy-command-scale", type=float, metavar="FRACTION",
-                       help="override command_scale for this run. Shipped at 0.6; the "
-                            "delivered 0.3 was 0.047 m/s on the floor once the robot's "
-                            "measured 0.45 actuator gain is applied")
+                       help="override command_scale for this run")
     group.add_argument("--refusal-log", type=Path, default=DEFAULT_REFUSAL_LOG,
                        metavar="PATH.jsonl",
                        help="where a refused run records why. A refusal happens before "
@@ -318,12 +315,13 @@ def split_argv(argv, stack_parser) -> tuple:
     return args, vendored_argv
 
 
-def main(argv=None) -> int:
+def main(argv=None, bindings=None) -> int:
     # Parsed twice on purpose: once here to build the policy before the vendored main()
     # runs, and once by that main() for everything else.
     import visual_nav
 
-    args, vendored_argv = split_argv(argv, visual_nav.build_parser())
+    bindings = bindings or visual_nav.Go2Bindings()
+    args, vendored_argv = split_argv(argv, visual_nav.build_parser(bindings))
 
     overrides = {}
     if args.policy_scale is not None:
@@ -343,17 +341,17 @@ def main(argv=None) -> int:
               f"{cfg.meters_per_vmas_unit} m/unit, horizon {cfg.lidar_range_m:.3f} m, "
               f"command_scale {cfg.command_scale}")
         top_speed = cfg.max_vx_mps * cfg.command_scale
-        print(f"[mappo_drive] top commanded speed {top_speed:.3f} m/s; this robot has "
-              f"measured about 0.70 of that at full command, 0.45 derated")
+        print(f"[mappo_drive] {bindings.actuation_summary(top_speed, args)}")
         # The gait floor is a property of the ROBOT, not of the policy, so the warning is
         # the control stack's and is reused rather than restated — a second copy of that
         # text would drift from the constant it explains. Only the sentence naming the
         # knob that gets you here is ours, because `command_scale` reaches the floor by
         # multiplying where `--derate` reaches it by scaling.
-        if visual_nav.warn_if_below_gait_floor(top_speed):
+        if bindings.warn_if_below_gait_floor(top_speed, args):
+            floor = bindings.gait_floor(args)
             print(f"    Here that is command_scale {cfg.command_scale} x max_vx_mps "
                   f"{cfg.max_vx_mps} = {top_speed:.3f}. Pass --policy-command-scale "
-                  f"{MIN_GAIT_COMMAND_M_S / cfg.max_vx_mps:.2f} or higher.")
+                  f"{floor / cfg.max_vx_mps:.2f} or higher.")
         if args.policy_mode == "raw":
             print("[mappo_drive] ⚠️  NO VETO. In the closed-loop simulation the raw "
                   "policy collided and the supervised one did not. Empty arena only.")
@@ -364,11 +362,7 @@ def main(argv=None) -> int:
         planners: list = []
 
         def planner_factory(limits, config):
-            """Called by the vendored ``main()`` in place of ``DynamicWindowPlanner``.
-
-            ``loco`` is reached through ``visual_nav``'s module-level locomotion client
-            after construction, via :meth:`MappoPlanner.attach` — see the call below.
-            """
+            """Called by the shared run loop in place of ``DynamicWindowPlanner``."""
             planner = MappoPlanner(limits, config, runner,
                                    supervised=args.policy_mode == "supervised",
                                    refusal_log=args.refusal_log)
@@ -386,11 +380,14 @@ def main(argv=None) -> int:
                 planner.attach(loco)
             return real_navigator(loco, perception, planner, *rest, **kwargs)
 
-        visual_nav.VisualNavigator = navigator
         try:
-            visual_nav.main(argv=vendored_argv, planner_factory=planner_factory)
+            visual_nav.main(
+                argv=vendored_argv,
+                planner_factory=planner_factory,
+                navigator_factory=navigator,
+                bindings=bindings,
+            )
         finally:
-            visual_nav.VisualNavigator = real_navigator
             for planner in planners:
                 print(planner.report())
     return 0
