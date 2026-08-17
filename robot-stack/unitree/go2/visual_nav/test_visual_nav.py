@@ -678,6 +678,32 @@ def test_lying_down_clears_the_history():
     assert navigator._blocked_reason(CRUISE, 99.0, (0.0, 0.0, 0.0)) is None
 
 
+def test_the_dynamic_window_is_sized_by_the_interval_that_actually_elapsed():
+    """The bug this pins cost three hardware runs. The loop passed the NOMINAL period
+    while running at 2.8 Hz, so the planner allowed 0.05 m/s of change per tick where
+    the robot could deliver 0.18. The ramp from a standstill never reached the gait
+    floor before the next stale hold reset it, and the robot stood still under a full
+    forward command while the stall gate blamed the tether."""
+    period = 0.1
+    # A loop keeping up: unchanged from the behaviour before the fix.
+    assert visual_nav.control_interval_s(10.0, 10.1, period) == period
+    # A loop running slow: the window must open to match real elapsed time.
+    assert math.isclose(visual_nav.control_interval_s(10.0, 10.36, period), 0.36,
+                        abs_tol=1e-9)
+    # A loop running FAST must not shrink its own window below the nominal period.
+    assert visual_nav.control_interval_s(10.0, 10.02, period) == period
+    # The first tick has no predecessor and falls back to the nominal period.
+    assert visual_nav.control_interval_s(None, 10.0, period) == period
+
+
+def test_one_very_long_tick_cannot_authorise_the_whole_envelope():
+    """Capped, so a run that hung for ten seconds does not come back with a dynamic
+    window wide enough to jump straight to any velocity the robot can reach."""
+    assert visual_nav.control_interval_s(0.0, 10.0, 0.1) == visual_nav.MAX_CONTROL_DT_S
+    assert visual_nav.MAX_CONTROL_DT_S * 0.50 < 0.35, (
+        "the cap must stay under a full-envelope jump in forward speed")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

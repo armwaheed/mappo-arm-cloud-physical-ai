@@ -351,6 +351,36 @@ class PerceptionWorker:
         return last_seq
 
 
+#: Ceiling on the measured tick interval handed to the planner's dynamic window. Bounds
+#: how far that window may open after one slow tick: 0.5 s against the 0.50 m/s^2 forward
+#: limit is 0.25 m/s of allowed change — enough to clear the Go2's gait floor from a
+#: standstill, without letting a single long tick authorise the whole envelope at once.
+MAX_CONTROL_DT_S = 0.5
+
+
+def control_interval_s(previous_tick_s: float | None, now_s: float,
+                       period_s: float) -> float:
+    """Seconds the planner should size its dynamic window with.
+
+    The window is ``accel * control_dt``, so this number decides how much the commanded
+    velocity may change on this tick. Passing the NOMINAL period is only correct while
+    the loop actually keeps up with it, and it does not always: measured on hardware at
+    2.8 Hz against a nominal 10 Hz, the planner budgeted 0.05 m/s of change for an
+    interval in which the robot could deliver 0.18. The ramp from a standstill then took
+    2.5 s instead of 0.7 s, never reached the 0.35 m/s gait floor before the next
+    stale-perception hold zeroed it, and the robot stood still while being commanded
+    forward at full speed. The stall gate blamed the tether, which is the wrong place to
+    look — see ``MIN_GAIT_COMMAND_M_S`` in ``avoidance``.
+
+    Floored at ``period_s`` so a loop running FASTER than nominal keeps the behaviour it
+    has today rather than shrinking its own window, and capped at
+    :data:`MAX_CONTROL_DT_S` so a long stall does not hand the planner the whole envelope.
+    """
+    if previous_tick_s is None:
+        return period_s
+    return min(MAX_CONTROL_DT_S, max(period_s, now_s - previous_tick_s))
+
+
 class VisualNavigator:
     """Drives a quadruped to a goal on camera alone through injected robot bindings."""
 
@@ -479,6 +509,7 @@ class VisualNavigator:
         config = self._config
         period = 1.0 / config.control_hz
         started = time.monotonic()
+        last_tick: float | None = None
         hold_since: float | None = None
         outcome = "unknown"
 
@@ -489,6 +520,8 @@ class VisualNavigator:
             tick_start = time.monotonic()
             now = tick_start
             elapsed = now - started
+            control_dt = control_interval_s(last_tick, now, period)
+            last_tick = now
 
             if elapsed > config.max_run_s:
                 outcome = f"timeout after {elapsed:.0f}s"
@@ -581,7 +614,7 @@ class VisualNavigator:
                 break
 
             command = self._planner.plan(pose, goal_xy, self._last_command,
-                                         obstacles, control_dt=period,
+                                         obstacles, control_dt=control_dt,
                                          last_reason=self._last_reason)
             self._last_reason = command.reason
 
