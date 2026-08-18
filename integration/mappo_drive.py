@@ -146,10 +146,23 @@ class MappoPlanner(DynamicWindowPlanner):
     """
 
     def __init__(self, limits, config, runner: PolicyRunner, supervised: bool = True,
-                 refusal_log: Path | None = None):
+                 refusal_log: Path | None = None, scale_override: bool = False,
+                 veto_horizon_s: float | None = VETO_HORIZON_S):
         super().__init__(limits=limits, config=config)
         self._runner = runner
         self._supervised = supervised
+        #: How far ahead the veto rolls a proposed command. ``None`` is the planner's own
+        #: horizon (2.5 s). This is the parameter that decides WHERE the planner takes the
+        #: avoidance off the policy, and it is not the policy's sensing horizon: measured
+        #: live on 2026-08-18, the veto fired at 0.900 m from the bin's surface while the
+        #: policy's horizon was 0.700 m, so the planner had committed the escape three
+        #: ticks before the policy could see anything. Shortening the policy's horizon
+        #: alone cannot narrow the pass — it only hands the planner more of the job.
+        self._veto_horizon_s = veto_horizon_s
+        #: True when the operator set the scale by hand with ``--policy-scale``, which
+        #: turns the calibration refusal below into a warning. See
+        #: :meth:`_check_radius_calibration`.
+        self._scale_override = scale_override
         self._loco = None
         #: Counted and printed at the end of a run. A veto that never fires and a veto
         #: that fires on every tick are both worth knowing about, and neither is visible
@@ -171,8 +184,18 @@ class MappoPlanner(DynamicWindowPlanner):
 
         This runs in ``__init__``, which ``visual_nav.main()`` reaches after its own
         pre-flight but before sport mode is selected and before the control loop starts —
-        so the robot is still lying down and nothing has moved. ``--policy-scale`` is the
-        escape hatch for a deliberate mismatch, and the message says so.
+        so the robot is still lying down and nothing has moved.
+
+        ``--policy-scale`` is the escape hatch, and it has to be checked separately rather
+        than by comparing the two numbers: the override is applied to the config BEFORE
+        this runs, so it moves ``configured`` and the mismatch it creates is exactly the
+        one this guard fires on. Refusing then makes the documented escape hatch trip the
+        gate it is supposed to open, and the refusal's own advice — "pass --policy-scale
+        2.50" — asks the operator to undo the change they deliberately made. The trap
+        being guarded against is a SILENT mismatch, i.e. forgetting ``--robot-radius`` and
+        getting the vendored 0.40 default; an operator who typed the scale by hand has
+        already made the choice this gate exists to force. So a deliberate override warns
+        with the same numbers and runs.
         """
         trained = self._runner.controller.actor.metadata.get("training_agent_radius_vmas")
         if trained is None:
@@ -191,6 +214,31 @@ class MappoPlanner(DynamicWindowPlanner):
             "implied_scale": round(implied, 3),
             "configured_scale": configured,
         }
+        if self._scale_override:
+            print(
+                "\n" + "!" * 78 + "\n"
+                "[mappo_drive] ⚠️  DELIBERATE SCALE OVERRIDE — the policy is being told "
+                "the robot is\n"
+                "              a different size from the one the planner plans with.\n"
+                + "!" * 78 + "\n"
+                f"  planner robot radius   {self.config.robot_radius_m:.3f} m   "
+                f"(--robot-radius)\n"
+                f"  trained agent radius   {trained:.3f} VMAS   (from the checkpoint)\n"
+                f"  calibrated scale       {implied:.2f} m/unit   "
+                f"(horizon {implied * self._runner.config.lidar_range_vmas:.3f} m)\n"
+                f"  running at             {configured:.2f} m/unit   "
+                f"(horizon {self._runner.config.lidar_range_m:.3f} m)\n"
+                "\n"
+                f"  A SMALLER scale makes the policy react LATER and pass CLOSER; the "
+                f"planner's\n"
+                f"  veto is then the only thing holding the gap. The closed-loop "
+                f"evidence in\n"
+                f"  deploy/README.md was measured at {implied:.2f} and does not "
+                f"describe this run.\n"
+                + "!" * 78, file=sys.stderr)
+            _record_refusal(refusal_log, "robot_radius_scale_override", detail)
+            return
+
         _record_refusal(refusal_log, "robot_radius_scale_mismatch", detail)
         raise SystemExit(
             "\n" + "!" * 78 + "\n"
@@ -258,7 +306,7 @@ class MappoPlanner(DynamicWindowPlanner):
             max(-self.limits.max_wz, min(self.limits.max_wz, step.wz_radps)))
 
         if self._supervised and not self.is_feasible(pose, proposed, obstacles,
-                                                     horizon_s=VETO_HORIZON_S):
+                                                     horizon_s=self._veto_horizon_s):
             self.counts["vetoed"] += 1
             return Command(planned.vx, planned.vy, planned.wz,
                            reason=f"veto-{planned.reason}", gap_m=planned.gap_m,
@@ -302,6 +350,14 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                        help="where a refused run records why. A refusal happens before "
                             "the telemetry writer exists, so without this a run that "
                             "never started leaves no trace at all")
+    group.add_argument("--veto-horizon", type=float, metavar="SECONDS",
+                       help="how far ahead the planner's veto rolls the policy's "
+                            "proposed command. Default is the planner's own 2.5 s, which "
+                            "fires the veto about 0.9 m from a bin's surface — outside "
+                            "the policy's sensing horizon, so the planner commits the "
+                            "escape before the policy has seen the obstacle. Lower this "
+                            "to let the policy own the avoidance and pass closer; it is "
+                            "also the safety margin, so it trades directly against it")
     group.add_argument("--no-heading-servo", action="store_true",
                        help="do not turn the nose towards the direction of travel. The "
                             "policy commands no yaw at all, so without the servo the "
@@ -383,7 +439,11 @@ def main(argv=None, bindings=None) -> int:
             """Called by the shared run loop in place of ``DynamicWindowPlanner``."""
             planner = MappoPlanner(limits, config, runner,
                                    supervised=args.policy_mode == "supervised",
-                                   refusal_log=args.refusal_log)
+                                   refusal_log=args.refusal_log,
+                                   scale_override=args.policy_scale is not None,
+                                   veto_horizon_s=(VETO_HORIZON_S
+                                                   if args.veto_horizon is None
+                                                   else args.veto_horizon))
             planners.append(planner)
             return planner
 
