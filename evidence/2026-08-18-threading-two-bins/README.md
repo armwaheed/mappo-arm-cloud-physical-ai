@@ -126,3 +126,85 @@ Three separate failures presented as "it avoids too widely". None of them were.
   ticks below it and walked 3 m. The constant is a guess the data contradicts. Issue #26.
 * `--policy-scale 2.0` remains unjustified — it never measurably changed anything. The
   calibrated 2.5 should be restored once someone has a run to spare.
+
+---
+
+# Addendum — why run 11 was the outlier, and what a retrain needs
+
+Four further runs after the fixes above merged. Run 11 did **not** repeat, and finding out
+why produced the clearest result of the day.
+
+## The discriminator is a single ray
+
+Replaying every run through the real checkpoint and reading the observation it was handed:
+
+| | ray 0 (the START HEADING) blocked | commanded vx | outcome |
+| --- | --- | --- | --- |
+| run 11 | **0 / 49 ticks** | mean **+0.220** | threaded the gap |
+| run 14 | **29 / 29 ticks** | mean **−0.097** | stalled, retreating |
+
+Run 11's hot-ray pattern sweeps `(1,) → (1,2) → (1,2,3) → (2,3,4,10,11) → (5,8) → (8,)` —
+the two bins rotating from ahead-left round to behind as the robot passed between them.
+Run 14 only ever saw `(0,)` and `(0,1)`.
+
+At the stall, run 14's observation was:
+
+```
+ray  0 (  0°)  0.1933      raw action: ax=-0.685 ay=-0.727  (back and right)
+ray  1 ( 30°)  0.2010
+ray  2-11      0.0000
+```
+
+**The policy did not see a gap. It saw a wall, and backing away was the correct response
+to that observation.** Both bins landed on adjacent rays and the aperture between them fell
+in the unsampled space between them. With 30° spacing there is no ray at 15° to report
+clear.
+
+## Two different tolerances, and the tighter one is not the sensor
+
+The fan is anchored in the **run-local frame fixed at reset**, so the robot's yaw on the
+first tick decides where every ray points for the whole run. That gives two separate
+constraints, and they were conflated in the session that found this:
+
+* **Ray latitude, ±15°** — beyond this the gap centre slides off ray 0 onto a bin and the
+  policy stops being able to see the aperture at all.
+* **Path corridor, ±5.2°** — `atan(0.173 / 1.9)` for a ±0.173 m corridor at 1.9 m. Beyond
+  this the robot is inside the aperture's angular window but outside its lateral one.
+
+Run 15 was aimed **8.4° off the gap centre**: inside the ray latitude, so the policy could
+see the gap, and outside the path corridor, so driving along ray 0 walked it into the near
+bin's flank. It stopped 0.446 m from landmark-1 having never reached landmark-2 (1.405 m).
+
+## What this means for the checkpoint
+
+Threading this aperture currently requires hand-aligning a **30°-resolution sensor** with a
+**0.83–0.99 m gap** to within **5°**. That is achievable — run 11 did it — but it is not
+robust, and one success in roughly six attempts is the honest hit rate.
+
+The concrete ask for a retrain, with the numbers that justify it:
+
+| fan | spacing | path corridor it can resolve |
+| --- | --- | --- |
+| 12 rays / 360° (**delivered**) | 30° | aperture invisible when it straddles two rays |
+| 16 rays / 360° | 22.5° | ~1.3× better angular resolution |
+| 24 rays / 360° | 15° | a ray lands in a 0.9 m gap at 1.9 m from any approach angle |
+
+A finer fan is the only fix that removes the hand-alignment. Everything else in this
+directory is a workaround for a sensor that cannot resolve the hole it is being asked to
+drive through.
+
+## Also observed
+
+* **A `person`-labelled track inflated to a 1.67 m radius whose disc covered the goal**
+  (run 13, 24 of 212 ticks, velocity ~0). It did not cause the stall — the bridge filters
+  to `kind == "static"` before the policy sees anything, and the planner issued zero holds
+  — but during a demo a person standing near the goal puts the goal inside an obstacle
+  from the planner's point of view. The humanoid in that bay is a likely source.
+* **The goal pass runs at `--goal-input-size 224`, not 300.** At 224 every crop fraction
+  scored **below** the default 0.5 `min_score` (best 0.428), which is why the chair went
+  unsighted repeatedly. `--goal-crop 0.8 --goal-input-size 300` scores 0.622 with a single
+  candidate; the same crop at 224 scores 0.279. Any detector measurement taken at a
+  different `input_size` from production describes nothing.
+* **`--goal-crop 0.7` shows two chair candidates (0.428, 0.285)**, which is the documented
+  goal-hopping condition. Measured live: the goal estimate jumped 0.84 m mid-run and the
+  robot drove to the new one.
