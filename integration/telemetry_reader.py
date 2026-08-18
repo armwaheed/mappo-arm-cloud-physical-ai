@@ -62,10 +62,18 @@ class Run:
         return self.outcome is not None
 
     def moving_ticks(self) -> list:
-        """Ticks that commanded a non-zero velocity."""
+        """Ticks that commanded a non-zero velocity.
+
+        Each component is read with a default because a ``command`` block can be present
+        and PARTIAL: ``mappo_policy.tick_from_state`` builds ``{"reason": ...}`` with no
+        velocity in it, and indexing that raised ``KeyError`` from a public method of the
+        reader. A tick that records only a reason commanded no velocity this reader can
+        see, which is "not moving" — the same answer as an absent block.
+        """
         return [t for t in self.ticks
                 if t.get("command")
-                and any(abs(t["command"][k]) > 0.0 for k in ("vx", "vy", "wz"))]
+                and any(abs(t["command"].get(k) or 0.0) > 0.0
+                        for k in ("vx", "vy", "wz"))]
 
 
 def _schema_major(schema: str) -> int:

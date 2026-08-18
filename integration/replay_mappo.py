@@ -110,6 +110,40 @@ def _nearest_surface_m(tick: dict) -> float:
                default=float("inf"))
 
 
+#: Where the range fan starts in the observation vector. The checkpoint records its layout
+#: as ``[x, y, vx, vy, x-gx, y-gy, *lidar]``, so the first six entries are state and
+#: everything after them is the fan. Named rather than inlined because slicing at the wrong
+#: offset yields a plausible number instead of an error.
+OBSERVATION_STATE_WIDTH = 6
+
+
+def policy_sight(controller) -> tuple:
+    """``(visible, nearest_surface_m)`` as the POLICY saw it on the step just taken.
+
+    THE OBSERVATION IS THE POLICY'S PERCEPTION, so it is the only honest source for
+    "could the policy see an obstacle". :class:`MappoController` steers on its own
+    retained obstacle map, not on the telemetry's per-tick list, and the two diverge
+    whenever a landmark leaves the telemetry while the controller still remembers it —
+    ``static_obstacle_ttl_s`` is 120 s against runs that last 20.
+
+    This tool used to answer the question from the tick instead. Over the 70-tick run of
+    2026-08-17 that under-reported visibility on **16 ticks**, every one in the same
+    direction: it called the policy blind while an obstacle sat inside its fan, and then
+    attributed the resulting deflection to ticks it had labelled unseeing. Issue #17.
+
+    ``lidar`` is PROXIMITY — ``lidar_range_vmas - range_vmas`` — so a positive entry means
+    something is inside the horizon and the LARGEST entry is the nearest thing.
+    """
+    obs = controller.last_observation
+    if obs is None:
+        return False, float("inf")          # stepped zero times, or no goal yet
+    cfg = controller.cfg
+    peak = float(max(obs[OBSERVATION_STATE_WIDTH:]))
+    if peak <= 0.0:
+        return False, float("inf")
+    return True, (cfg.lidar_range_vmas - peak) * cfg.meters_per_vmas_unit
+
+
 def replay(run, package: Path, config: Path | None = None,
            verbose: bool = False) -> dict:
     """Step two controllers once per tick: as recorded, and with obstacles ablated."""
@@ -146,12 +180,21 @@ def replay(run, package: Path, config: Path | None = None,
         blind_intent = wrap_pi(math.atan2(blind.action_y, blind.action_x) - turned)
 
         surface = _nearest_surface_m(tick)
+        visible, policy_surface = policy_sight(live)
         rows.append({
             "t": tick["t"],
             "status": out.status,
             "stack_reason": (tick.get("command") or {}).get("reason"),
+            #: What the TELEMETRY reported this tick. Kept alongside the policy's own view
+            #: rather than replaced by it, because the DIFFERENCE between the two is the
+            #: only offline detector for the controller retaining obstacles perception no
+            #: longer reports (issue #19). Collapsing them would hide that.
             "nearest_surface_m": surface,
-            "visible": surface <= horizon_m,
+            "policy_surface_m": policy_surface,
+            "visible": visible,
+            #: Inside the policy's fan while the telemetry had nothing there. A ghost.
+            "remembered_only": visible and not (math.isfinite(surface)
+                                                and surface <= horizon_m),
             "intent_deflection_deg": math.degrees(wrap_pi(intent - _goal_bearing(tick))),
             # How far the obstacle moved the policy. This, not the absolute deflection,
             # is the avoidance signal.
@@ -195,15 +238,26 @@ def summarise(result: dict) -> None:
     print(f"  shipped planner meanwhile    {_tally(rows, 'stack_reason')}")
 
     mapped = [r for r in rows if math.isfinite(r["nearest_surface_m"])]
-    seen = [r for r in mapped if r["visible"]]
+    # Visibility is the POLICY's, read out of its own observation — not the telemetry's
+    # view of the same tick. See policy_sight() and issue #17.
+    seen = [r for r in rows if r["visible"]]
+    ghosts = [r for r in rows if r["remembered_only"]]
     print()
     print(f"  policy sensing horizon       {horizon:.3f} m to the obstacle SURFACE")
+    print(f"  ticks the POLICY could see one {len(seen)}/{len(rows)} "
+          f"({100.0 * len(seen) / len(rows):.0f}%)")
     if mapped:
-        print(f"  ticks with a static obstacle {len(mapped)}")
-        print(f"  ... inside that horizon      {len(seen)} "
-              f"({100.0 * len(seen) / len(mapped):.0f}%)")
+        print(f"  ticks the TELEMETRY mapped one {len(mapped)}")
         print(f"  closest surface all run      "
               f"{min(r['nearest_surface_m'] for r in mapped):.3f} m")
+    if ghosts:
+        print()
+        print(f"  ⚠️  {len(ghosts)}/{len(rows)} ticks had an obstacle inside the policy's "
+              f"fan that the")
+        print("      telemetry did not report — the controller is steering on objects it "
+              "remembers")
+        print(f"      but perception no longer sees. Closest such ghost: "
+              f"{min(r['policy_surface_m'] for r in ghosts):.3f} m. Issue #19.")
 
     effects = [abs(r["obstacle_effect_deg"]) for r in rows]
     intents = [abs(r["intent_deflection_deg"]) for r in rows]
@@ -218,10 +272,15 @@ def summarise(result: dict) -> None:
         inside = [abs(r["obstacle_effect_deg"]) for r in seen]
         print(f"    ... on the {len(seen)} ticks it could see one: "
               f"max {max(inside):5.1f}, mean {sum(inside) / len(inside):5.1f}")
-    unseen = [abs(r["obstacle_effect_deg"]) for r in mapped if not r["visible"]]
+    unseen = [abs(r["obstacle_effect_deg"]) for r in rows if not r["visible"]]
     if unseen:
         print(f"    ... on the {len(unseen)} ticks it could not: "
               f"max {max(unseen):5.1f}, mean {sum(unseen) / len(unseen):5.1f}")
+        print("        (this row should be near zero. A large one means the policy "
+              "steered for")
+        print("         something absent from its own observation, which is a defect "
+              "in THIS tool")
+        print("         or in the controller, not a property of the checkpoint.)")
 
     # A response that is near-zero outside the horizon and near-saturated inside it is a
     # THRESHOLD, and a threshold with no hysteresis chatters. The shipped planner carries
@@ -261,13 +320,13 @@ def sweep(run, package: Path, base_config: Path, scales: list) -> None:
         with derived_config(base_config, meters_per_vmas_unit=scale) as config:
             result = replay(run, package, config=config)
         rows = result["rows"]
-        mapped = [r for r in rows if math.isfinite(r["nearest_surface_m"])]
-        seen = [r for r in mapped if r["visible"]]
+        # The policy's own view, not the telemetry's — see policy_sight() and issue #17.
+        seen = [r for r in rows if r["visible"]]
         inside = [abs(r["obstacle_effect_deg"]) for r in seen]
         swerves = [r["obstacle_effect_deg"] for r in rows
                    if abs(r["obstacle_effect_deg"]) > 10.0]
         reversals = sum(1 for a, b in zip(swerves, swerves[1:]) if a * b < 0.0)
-        share = f"{len(seen)}/{len(mapped)}" if mapped else "-"
+        share = f"{len(seen)}/{len(rows)}" if rows else "-"
         mean_inside = f"{sum(inside) / len(inside):.1f} deg" if inside else "-"
         radius = result["agent_radius_m"]
         radius_text = "      ?" if radius is None else format(radius, ">7.3f")

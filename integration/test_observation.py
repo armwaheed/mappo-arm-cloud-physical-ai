@@ -27,7 +27,7 @@ from observation import (
     to_body_frame,
     wrap_pi,
 )
-from telemetry_reader import SchemaError, read_run
+from telemetry_reader import Run, SchemaError, read_run
 
 SAMPLE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                       "..", "evidence", "sample_telemetry.jsonl")
@@ -270,6 +270,38 @@ def test_a_truncated_last_line_is_tolerated():
         run = read_run(path)
     assert len(run.ticks) == 1
     assert not run.completed
+
+
+# ── A command block can be PRESENT AND PARTIAL ──────────────────────────────
+def test_a_command_carrying_only_a_reason_does_not_raise():
+    """``mappo_policy.tick_from_state`` builds ``{"reason": ...}`` with no velocity in it,
+    so this shape is produced by this repository, not hypothesised.
+
+    The old guard was ``tick.get("command") or {"vx": 0.0, ...}``, which reads as though
+    it handles a missing velocity and does not: the fallback only fires when the block is
+    absent or empty, never when it is present and short, which is the case that occurs.
+    It raised ``KeyError: 'vx'`` from two public entry points."""
+    observation = observation_from_tick(_tick(command={"reason": "goal"}))
+    assert observation is not None
+    assert observation.speed == (0.0, 0.0, 0.0), observation.speed
+
+
+def test_a_partial_command_is_not_counted_as_movement():
+    """Same shape, through the reader's public ``moving_ticks``. A tick recording only a
+    reason commanded no velocity this reader can see, which is the same answer as an
+    absent block — but it used to be a ``KeyError`` instead of an answer."""
+    run = Run(header={"schema": "go2.visual_nav.telemetry/1"},
+              ticks=[_tick(command={"reason": "goal"}),
+                     _tick(command={"vx": 0.35, "vy": 0.0, "wz": 0.0})])
+    assert len(run.moving_ticks()) == 1
+
+
+def test_a_null_velocity_component_is_not_movement_either():
+    """JSON has no infinity, so the writer emits null for a non-finite value. ``abs(None)``
+    is a ``TypeError``, and the reader must not fall over on its own format."""
+    run = Run(header={"schema": "go2.visual_nav.telemetry/1"},
+              ticks=[_tick(command={"vx": None, "vy": None, "wz": None})])
+    assert run.moving_ticks() == []
 
 
 if __name__ == "__main__":

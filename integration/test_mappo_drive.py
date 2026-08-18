@@ -34,7 +34,13 @@ sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
                                 "visual_nav"))
 from avoidance import Limits, Obstacle, PlannerConfig
 
-from mappo_drive import _STOP_REASONS, MappoPlanner, _add_arguments, split_argv
+from mappo_drive import (
+    _STOP_REASONS,
+    MappoPlanner,
+    _add_arguments,
+    _record_refusal,
+    split_argv,
+)
 from mappo_policy import DEFAULT_PACKAGE, HeadingServo, PolicyRunner
 
 BIN = Obstacle(x=1.0, y=0.0, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
@@ -378,6 +384,48 @@ def test_the_policy_flags_are_stripped_before_the_vendored_parser_sees_them():
     stack = visual_nav.build_parser().parse_args(vendored)
     assert stack.live and stack.goal_class == "chair" and stack.no_latch_arm
     assert stack.robot_radius == 0.25 and stack.max_seconds == 45.0
+
+
+# ── The planner's search counts reach the telemetry (issue #20) ─────────────
+def test_the_planners_search_counts_survive_a_policy_driven_tick():
+    """``feasible=0 evaluated=0`` is not an absent value.
+
+    It reads as "the planner sampled nothing and found nothing feasible" — the robot was
+    boxed in. The recorded runs of 2026-08-17 say exactly that on all 58 policy-driven
+    ticks of the successful one, while the vetoed ticks beside them record 330 of 330.
+    The incumbent is computed on every tick regardless of which branch is taken, so the
+    numbers exist and were simply being dropped.
+    """
+    planner = _planner(supervised=True, runner=_StubRunner((0.05, 0.0, 0.0)))
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [BIN])
+    assert command.reason == "policy", command.reason
+    assert command.evaluated > 0, "the planner ran a search; its size must survive"
+    assert command.feasible > 0, "candidates cleared; that must not read as zero"
+
+
+def test_the_search_counts_survive_a_stopped_tick_too():
+    """The third branch. A stop is where an operator is most likely to ask what the
+    planner thought, so it is the worst branch to zero the counters on."""
+    planner = _planner(supervised=True,
+                       runner=_StubRunner(status="STOP_EXTERNAL_HOLD"))
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [BIN])
+    assert command.reason == _STOP_REASONS["STOP_EXTERNAL_HOLD"]
+    assert command.evaluated > 0, planner.counts
+
+
+# ── The refusal log really cannot raise ─────────────────────────────────────
+def test_a_refusal_is_recorded_even_when_the_detail_is_not_serialisable():
+    """``_record_refusal`` promises it never raises, and used to catch only ``OSError``
+    while ``json.dumps`` raises ``TypeError`` on anything unserialisable. The promise
+    held by luck of the current call site passing floats. If it ever broke, a traceback
+    would replace the refusal message that exists so a demo-day operator can see why the
+    run did not start."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "refusals.jsonl"
+        _record_refusal(path, "unserialisable_detail", {"where": Path("/tmp/x")})
+        record = json.loads(path.read_text().strip())
+    assert record["reason"] == "unserialisable_detail"
+    assert record["where"] == "/tmp/x", "recorded approximately, not lost"
 
 
 if __name__ == "__main__":
