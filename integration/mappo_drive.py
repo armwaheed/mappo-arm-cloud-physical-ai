@@ -147,7 +147,8 @@ class MappoPlanner(DynamicWindowPlanner):
 
     def __init__(self, limits, config, runner: PolicyRunner, supervised: bool = True,
                  refusal_log: Path | None = None, scale_override: bool = False,
-                 veto_horizon_s: float | None = VETO_HORIZON_S):
+                 veto_horizon_s: float | None = VETO_HORIZON_S,
+                 gait_floor_m_s: float = 0.0):
         super().__init__(limits=limits, config=config)
         self._runner = runner
         self._supervised = supervised
@@ -168,7 +169,10 @@ class MappoPlanner(DynamicWindowPlanner):
         #: that fires on every tick are both worth knowing about, and neither is visible
         #: in a log of velocities.
         self.counts: dict = {"ticks": 0, "policy": 0, "vetoed": 0, "stopped": 0,
-                             "velocity_unavailable": 0}
+                             "velocity_unavailable": 0, "speed_raised": 0}
+        #: Commanded speeds below this are scaled up, direction preserved — see
+        #: :meth:`_at_least_walking_pace`. Zero disables it.
+        self._gait_floor_m_s = gait_floor_m_s
         self._check_radius_calibration(refusal_log)
 
     def _check_radius_calibration(self, refusal_log: Path | None) -> None:
@@ -300,10 +304,22 @@ class MappoPlanner(DynamicWindowPlanner):
         # Clamp to the STACK's envelope, which may be derated below the policy config's
         # own ceilings by --derate or --max-vx. The policy does not know about those and
         # must not be able to out-run them.
+        # FORWARD ONLY, matching the rule the vendored planner states for itself:
+        # "Reverse is deliberately not sampled. The Go2 has no rear-facing sensing on
+        # this unit, so backing away from a person means moving blind into space this
+        # pipeline has never observed." That rule was applied to the planner's sampling
+        # and NOT to this path, so the policy — a holonomic agent with no notion of which
+        # way the sensors point — was free to command up to -0.35 m/s. Measured live on
+        # 2026-08-18: approaching two bins the policy commanded v=(-0.35, -0.03) and the
+        # goal distance grew from 2.64 m to 2.73 m while the robot reversed toward
+        # unobserved floor. The camera is an 85-degree forward cone; there is nothing
+        # behind it but the optimistic default that unseen bearings read as clear.
         proposed = (
-            max(-self.limits.max_vx, min(self.limits.max_vx, step.vx_mps)),
+            max(0.0, min(self.limits.max_vx, step.vx_mps)),
             max(-self.limits.max_vy, min(self.limits.max_vy, step.vy_mps)),
             max(-self.limits.max_wz, min(self.limits.max_wz, step.wz_radps)))
+
+        proposed = self._at_least_walking_pace(proposed)
 
         if self._supervised and not self.is_feasible(pose, proposed, obstacles,
                                                      horizon_s=self._veto_horizon_s):
@@ -324,10 +340,67 @@ class MappoPlanner(DynamicWindowPlanner):
                        gap_m=planned.gap_m,
                        feasible=planned.feasible, evaluated=planned.evaluated)
 
+    def _at_least_walking_pace(self, proposed: tuple) -> tuple:
+        """Scale a policy command up to the gait floor, KEEPING ITS DIRECTION.
+
+        The delivered checkpoint is a holonomic VMAS agent: it can move at any speed in
+        any direction, and it never saw a robot with a minimum speed. The Go2 has one —
+        below roughly :data:`MIN_GAIT_COMMAND_M_S` it produces no gait at all, stands
+        still, and reports no fault. Threading a 0.93 m gap between two bins on
+        2026-08-18 the policy went strongly lateral, its forward component collapsed to
+        ``0.40 * 0.35 = 0.14 m/s``, and the robot stood there for 4 s moving 0.09 m of an
+        expected 0.68 m while the stall gate blamed the tether.
+
+        Why scaling is right HERE and was wrong for the planner. When the planner slows
+        near an obstacle that is a deliberate safety decision, and overriding it was
+        measured to cost clearance — the lateral offset around a bin fell from the
+        required 0.88 m to 0.55 m and it clipped the bin (issue #26). The policy's
+        magnitude is not a decision of that kind: the network's output is a DIRECTION,
+        and the speed is whatever the envelope mapping happens to make of it. Scaling the
+        vector preserves every bit of intent the policy actually expressed.
+
+        Direction is preserved by scaling ``vx`` and ``vy`` together — scaling only the
+        forward axis would rotate the command toward straight ahead, which near an
+        obstacle is the one direction the policy was steering away from.
+
+        Applied BEFORE the veto on purpose. A command clamped on the way OUT would mean
+        ``is_feasible`` validated a velocity different from the one the legs receive, and
+        a safety check that no longer describes the robot is the failure mode this
+        repository keeps finding. Here the veto sees exactly what gets sent.
+
+        ``wz`` is untouched: yaw has no gait floor, and the servo (when on) derives it
+        from the direction, which this does not change.
+        """
+        floor = self._gait_floor_m_s
+        if floor <= 0.0:
+            return proposed
+        vx, vy, wz = proposed
+        speed = math.hypot(vx, vy)
+        # A genuine stop stays a stop. Only a command the policy meant as MOTION is
+        # scaled, or a zeroed status tick would be turned into a walk.
+        if speed <= 0.0 or speed >= floor:
+            return proposed
+        # Never scale a command that is not going forwards. Scaling multiplies the whole
+        # vector, so without this a timid sideways or backward twitch becomes a committed
+        # one at full speed — and the only direction this robot senses is ahead. Observed
+        # live before the forward-only clamp above existed: a -0.03 m/s drift was scaled
+        # into a 0.35 m/s reverse. The clamp makes vx >= 0, so what is left to refuse is
+        # the pure strafe, which cannot reach the floor anyway (max_vy 0.20 < 0.35) and
+        # would only be scaled into the fastest sideways crab the envelope allows.
+        if vx <= 0.0:
+            return proposed
+        scale = floor / speed
+        scaled_vx = max(-self.limits.max_vx, min(self.limits.max_vx, vx * scale))
+        scaled_vy = max(-self.limits.max_vy, min(self.limits.max_vy, vy * scale))
+        self.counts["speed_raised"] += 1
+        return (scaled_vx, scaled_vy, wz)
+
     def report(self) -> str:
         counts = self.counts
         return (f"[mappo_drive] {counts['policy']}/{counts['ticks']} ticks driven by the "
                 f"policy, {counts['vetoed']} vetoed, {counts['stopped']} stopped"
+                + (f", {counts['speed_raised']} scaled up to the gait floor"
+                   if counts["speed_raised"] else "")
                 + (f", {counts['velocity_unavailable']} with no measured velocity"
                    if counts["velocity_unavailable"] else ""))
 
@@ -358,6 +431,14 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                             "escape before the policy has seen the obstacle. Lower this "
                             "to let the policy own the avoidance and pass closer; it is "
                             "also the safety margin, so it trades directly against it")
+    group.add_argument("--policy-gait-floor", type=float, default=0.0,
+                       metavar="M_PER_S",
+                       help="scale a policy command slower than this UP to it, keeping "
+                            "its direction. The checkpoint is a holonomic agent that "
+                            "never saw a minimum speed, so a slow sideways manoeuvre — "
+                            "exactly what threading a gap needs — comes out below the "
+                            "Go2's gait floor and the robot stands still reporting no "
+                            "fault. 0 (the default) leaves the command alone")
     group.add_argument("--no-heading-servo", action="store_true",
                        help="do not turn the nose towards the direction of travel. The "
                             "policy commands no yaw at all, so without the servo the "
@@ -443,7 +524,8 @@ def main(argv=None, bindings=None) -> int:
                                    scale_override=args.policy_scale is not None,
                                    veto_horizon_s=(VETO_HORIZON_S
                                                    if args.veto_horizon is None
-                                                   else args.veto_horizon))
+                                                   else args.veto_horizon),
+                                   gait_floor_m_s=args.policy_gait_floor)
             planners.append(planner)
             return planner
 

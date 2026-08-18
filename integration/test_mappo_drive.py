@@ -91,10 +91,11 @@ class _StubRunner:
 
 
 def _planner(supervised: bool = True, limits: Limits | None = None,
-             servo: HeadingServo | None = None, runner=None) -> MappoPlanner:
+             servo: HeadingServo | None = None, runner=None,
+             gait_floor_m_s: float = 0.0) -> MappoPlanner:
     planner = MappoPlanner(limits or Limits(), PlannerConfig(robot_radius_m=0.25),
                            runner or PolicyRunner(DEFAULT_PACKAGE, servo=servo),
-                           supervised=supervised)
+                           supervised=supervised, gait_floor_m_s=gait_floor_m_s)
     planner.attach(_Loco())
     return planner
 
@@ -231,6 +232,68 @@ def test_a_scale_override_still_shortens_the_horizon_it_was_asked_for():
                         meters_per_vmas_unit=2.0) as config:
         assert PolicyRunner(DEFAULT_PACKAGE, config).config.lidar_range_m == 0.7
     assert PolicyRunner(DEFAULT_PACKAGE).config.lidar_range_m == 0.875
+
+
+def test_a_slow_policy_command_is_scaled_up_to_the_gait_floor_keeping_direction():
+    """The Go2 has a minimum speed and the checkpoint has never heard of it.
+
+    Threading a 0.93 m gap on 2026-08-18 the policy went strongly lateral, its forward
+    component collapsed to 0.14 m/s, and the robot stood still for 4 s reporting no
+    fault. The policy's magnitude is not a safety decision the way the planner's is — the
+    network outputs a DIRECTION — so the vector is scaled, not the forward axis alone.
+    Scaling vx only would rotate the command toward straight ahead, which near an
+    obstacle is the one direction it was steering away from."""
+    planner = _planner(gait_floor_m_s=0.35)
+    vx, vy, wz = planner._at_least_walking_pace((0.14, -0.09, 0.2))
+    assert math.isclose(math.hypot(vx, vy), 0.35, rel_tol=1e-6), "scaled to the floor"
+    assert math.isclose(math.atan2(vy, vx), math.atan2(-0.09, 0.14), rel_tol=1e-6), \
+        "direction must survive the scaling"
+    assert wz == 0.2, "yaw has no gait floor and must not be touched"
+    assert planner.counts["speed_raised"] == 1
+
+
+def test_a_commanded_stop_is_never_turned_into_a_walk():
+    """A zeroed status tick — hold, stale input, goal reached — must stay stopped. The
+    floor scales a command the policy meant as MOTION, and nothing else."""
+    planner = _planner(gait_floor_m_s=0.35)
+    assert planner._at_least_walking_pace((0.0, 0.0, 0.0)) == (0.0, 0.0, 0.0)
+    assert planner.counts["speed_raised"] == 0
+
+
+def test_the_gait_floor_scaling_is_off_unless_asked_for():
+    """Default off: it is a deliberate override of what the policy asked for, and the
+    runs that arrived on 2026-08-18 did not need it."""
+    planner = _planner()
+    assert planner._at_least_walking_pace((0.14, -0.09, 0.0)) == (0.14, -0.09, 0.0)
+
+
+def test_the_scaled_command_still_respects_the_envelope():
+    """The floor may not become a way to out-run --derate. A command scaled up is still
+    clamped to the stack's limits, which are the safety envelope."""
+    planner = _planner(limits=Limits(max_vx=0.20, max_vy=0.05), gait_floor_m_s=0.35)
+    vx, vy, _ = planner._at_least_walking_pace((0.10, -0.04, 0.0))
+    assert abs(vx) <= 0.20 and abs(vy) <= 0.05
+
+
+def test_the_policy_can_never_command_reverse():
+    """THE HAZARD. The vendored planner refuses to sample reverse because this Go2 has no
+    rear-facing sensing — backing up means moving blind into space the pipeline has never
+    observed. That rule lived in the planner's sampling and NOT on this path, so the
+    policy, a holonomic agent with no notion of where the sensors point, could command up
+    to -0.35 m/s. Measured live 2026-08-18: v=(-0.35, -0.03) with the goal distance
+    growing 2.64 -> 2.73 m."""
+    planner = _planner(runner=_StubRunner(command=(-0.30, -0.05, 0.0)))
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [BIN])
+    assert command.vx >= 0.0, f"reverse reached the legs: {command.vx}"
+
+
+def test_a_reverse_command_is_never_scaled_up_to_the_gait_floor():
+    """The scaling multiplies the whole vector, so without a sign guard a timid backward
+    drift becomes a committed full-speed reverse. Belt and braces behind the clamp above:
+    if a future change lets a negative vx through, it must not also be amplified."""
+    planner = _planner(gait_floor_m_s=0.35)
+    assert planner._at_least_walking_pace((-0.03, -0.02, 0.0)) == (-0.03, -0.02, 0.0)
+    assert planner.counts["speed_raised"] == 0
 
 
 def test_the_radius_the_live_runs_used_is_accepted():
