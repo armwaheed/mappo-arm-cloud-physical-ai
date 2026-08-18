@@ -73,6 +73,15 @@ the observation:
 0.875 m sensing horizon, and zero chatter. This is the claim the demo needs, and it is
 measured rather than asserted.
 
+> **CORRECTED 2026-08-18.** The block above is what the tool printed on the day, and its
+> seen/unseen split was measured from the wrong object — see `CODE-REVIEW.md` A3 and
+> issue #17. With `policy_sight()` reading visibility out of the policy's own observation,
+> the same telemetry gives **35.9° mean over 31 ticks**, not 34.8° over 15, and the
+> "could not see one" row falls from 13.8° to **exactly 0.0°**, which is what it must be.
+> The headline conclusion is unchanged and slightly stronger; only the breakdown moved.
+> The tool now also reports the 16 ticks where the policy steered on a remembered
+> obstacle the telemetry no longer carried (issue #19).
+
 Two qualifications before anyone quotes it. Eleven of seventy ticks were
 `STOP_EXTERNAL_HOLD` — the policy stopping itself on stale perception. And the replay
 notes that *"command mapping caps vy at 0.1 m/s against vx's 0.35, so a 45-degree intent
@@ -240,9 +249,12 @@ the bin started 1.14 m away against a 0.875 m horizon — just outside it — wh
 
 - The Jetson's RTC read **January 1970** all day, so `wall_time` in these files is
   meaningless. The policy is immune — it uses `time.monotonic()`.
-- `deploy/README.md`'s rung-2 line says `source ~/robotics-connect-go2/bin/activate`; that
-  path does not exist. The venv the installer creates is
-  `~/robotics-connect-envs/armwaheed`.
+- `~/robotics-connect-go2` is `install.sh`'s **default** venv and is what the runbook
+  correctly documents. This particular robot was installed with `--env-dir` pointed at a
+  pre-existing `~/robotics-connect-envs/armwaheed`, so the documented `source` line fails
+  *here* and nowhere else. Read `~/.mappo-go2-deploy.manifest` rather than assuming either.
+  (An earlier revision of this file called the runbook wrong. It was not; I inferred a
+  documentation bug from one non-default deployment without reading the installer.)
 - The D1 arm was checked after the third stall and exonerated: sway **1.8° of 3.0°
   allowed**, 0.6 mm off the dorsal centreline, `blocking: None`. Joint temperatures peaked
   at 39 °C. Neither was ever the cause.

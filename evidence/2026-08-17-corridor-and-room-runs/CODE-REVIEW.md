@@ -134,6 +134,33 @@ odometry-induced landmark duplication.
 Run 5's headline number is unaffected — `obstacle_effect_deg` compares two controllers with
 identical histories, so ghosts cancel — but the seen/unseen split must not be quoted.
 
+**FIXED.** `policy_sight()` now reads visibility out of `controller.last_observation`,
+which is public, is already consumed by `mappo_policy`, and *is* the policy's perception by
+definition. The corrected run-5 numbers, and the reason to believe them:
+
+```
+ticks the POLICY could see one 31/70 (44%)     <- was 15, measured from the telemetry
+  ... on the 31 ticks it could see one: max  67.7, mean  35.9
+  ... on the 39 ticks it could not:     max   0.0, mean   0.0     <- was 67.7 / 13.8
+```
+
+**The unseen row is now exactly zero, which is the proof.** An obstacle absent from the
+observation cannot change the action, so the live and ablated controllers must agree
+bit-for-bit there. Any non-zero value in that row is a defect in the tool or the
+controller, and the summary now says so in place. The 13.8° that used to sit there was the
+symptom this finding is about.
+
+The tool also gained the ghost detector as a by-product — the gap between the two
+visibility measures is the #19 signal, so it is reported rather than collapsed:
+
+```
+⚠️  16/70 ticks had an obstacle inside the policy's fan that the telemetry did not
+    report ... Closest such ghost: 0.484 m. Issue #19.
+```
+
+`replay_mappo.py` also had **no tests at all** despite producing the numbers this project
+quotes as evidence. It now has six.
+
 ### A4. `_record_refusal` promises "never raises" and can
 
 ```python
@@ -182,16 +209,21 @@ adapter lives in the policy package, or move `wrap_pi`/`to_body_frame` into a sm
 `geometry` module and let the rest be an explicitly-named analysis tool. The ray-fan
 analysis is worth keeping — it just is not on the path it claims to be on.
 
-### B2. The runbook's rung-2 command names a venv that does not exist
+### B2. ~~The runbook's rung-2 command names a venv that does not exist~~ — WITHDRAWN, I was wrong
 
-`deploy/README.md`:
+**This finding was incorrect and is retracted.** `deploy/install.sh:33` reads
+`ENV_DIR="${ENV_DIR:-$HOME/robotics-connect-go2}"`, so `~/robotics-connect-go2` is exactly
+what a default install creates and exactly what the runbook documents. The docs are right.
 
-```bash
-source ~/robotics-connect-go2/bin/activate
-```
+What I actually observed was the lab Go2's deploy manifest recording
+`env_dir /home/unitree/robotics-connect-envs/armwaheed` with `created_env 0` — that
+machine was installed with `--env-dir` pointed at a pre-existing per-researcher venv. I
+inferred a documentation defect from a single non-default deployment without reading the
+installer, and asserted it in four places before checking.
 
-`deploy/install.sh` creates `~/robotics-connect-envs/<user>`, and that is what the
-robot's deploy manifest records. The documented command fails at the first line.
+There is a real, smaller improvement underneath it, and it has been made: the runbook now
+says the path is the installer's *default* rather than a guarantee, and points at
+`~/.mappo-go2-deploy.manifest`, which records the `env_dir` an install actually used.
 
 ---
 

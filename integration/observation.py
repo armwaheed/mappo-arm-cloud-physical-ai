@@ -2,7 +2,25 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Turn one telemetry tick into the observation a MAPPO policy expects.
+"""Ray-fan geometry for reasoning about what a range-sensing policy can and cannot see.
+
+⚠️ **THIS IS ANALYSIS MACHINERY, NOT THE SHIPPED ADAPTER.** The delivered checkpoint
+builds its own observation inside ``policy/physical_ai_mappo.py``, from its own retained
+obstacle map, with **12** rays over a full circle — not the :data:`DEFAULT_RAYS` 16 over a
+camera field of view modelled here, and not the layout :class:`Observation` describes.
+Nothing on the live path calls :func:`observation_from_tick`, :func:`range_vector` or
+:class:`Observation`; the drive, shadow and simulation paths import exactly two helpers
+from this module, :func:`wrap_pi` and :func:`to_body_frame`.
+
+What the rest is for, and why it is kept: :func:`reliable_range_m` answers *"beyond what
+range can an object of radius r slip between two rays"*, which is the question to ask of
+any checkpoint's fan before trusting it, and the answer is not intuitive. That analysis is
+the reason the shipped 12-ray/360° fan's blind spot is a known quantity rather than a
+surprise. Treat this file as the instrument, not the implementation, and do not "fix" a
+mismatch between its defaults and the checkpoint's by changing the checkpoint.
+
+The rest of this docstring describes the model this file implements, which is a
+camera-field-of-view fan and is deliberately NOT what the checkpoint uses.
 
 The policy was trained in a simulator whose agents see a **range vector** — N rays cast
 out from the robot, each reporting the distance to the first thing it hits. The control
@@ -188,7 +206,11 @@ def observation_from_tick(tick: dict, rays: int = DEFAULT_RAYS,
         return None
     pose = tick["pose"]
     goal_x, goal_y = to_body_frame(pose, tick["goal"]["x"], tick["goal"]["y"])
-    command = tick.get("command") or {"vx": 0.0, "vy": 0.0, "wz": 0.0}
+    # Read each component with a default rather than substituting a whole default dict.
+    # A `command` block can be PRESENT AND PARTIAL — `mappo_policy.tick_from_state` builds
+    # `{"reason": ...}` with no velocity at all — and an `or {...}` fallback only fires
+    # when the block is absent or empty, so it cannot catch the case that actually occurs.
+    command = tick.get("command") or {}
     ranges, bearings = range_vector(tick, rays=rays, max_range_m=max_range_m,
                                     fov_rad=fov_rad)
     return Observation(
@@ -196,4 +218,5 @@ def observation_from_tick(tick: dict, rays: int = DEFAULT_RAYS,
         goal_bearing_rad=math.atan2(goal_y, goal_x),
         ranges_m=ranges,
         ray_bearings_rad=bearings,
-        speed=(command["vx"], command["vy"], command["wz"]))
+        speed=(command.get("vx", 0.0), command.get("vy", 0.0),
+               command.get("wz", 0.0)))

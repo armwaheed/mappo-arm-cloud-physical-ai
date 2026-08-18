@@ -157,6 +157,17 @@ cd integration
 python3 mappo_shadow.py ~/run.jsonl --follow --out ~/shadow.jsonl
 ```
 
+`~/robotics-connect-go2` is `install.sh`'s **default** `ENV_DIR`, not a guarantee. An
+install run with `--env-dir` (or `ENV_DIR=…`) puts the virtualenv somewhere else, and then
+this line fails with `No such file or directory` on a machine that is otherwise correctly
+set up. The Go2 in the lab is one of these — it was installed against a pre-existing
+per-researcher venv. **The manifest records which was used**, so read it rather than
+guessing:
+
+```bash
+grep '^env_dir' ~/.mappo-go2-deploy.manifest | tail -1
+```
+
 `mappo_shadow.py` holds no locomotion client and opens no DDS channel. It reads a file.
 That is the whole safety argument and it is why this rung exists: it puts the policy in
 front of real perception, at the real rate, with the real latency, in the actual room,

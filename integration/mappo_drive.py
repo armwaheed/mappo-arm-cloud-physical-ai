@@ -114,6 +114,15 @@ def _record_refusal(path: Path | None, reason: str, detail: dict) -> None:
     The refusal itself is the safety mechanism; this is the audit trail. If the disk is
     full or the path is unwritable the run must still be refused, and loudly, so the
     failure to record is reported and swallowed rather than propagated.
+
+    ``TypeError`` and ``ValueError`` are caught alongside ``OSError`` because the failure
+    here is not only the filesystem: ``json.dumps`` raises ``TypeError`` on anything
+    unserialisable, and ``detail`` is built by the caller. Catching only ``OSError`` made
+    the docstring's promise true by luck of the current call site rather than by
+    construction — and the cost of being wrong is that a traceback replaces the refusal
+    message written specifically so a demo-day operator knows why the run did not start.
+    ``default=str`` means an unexpected value is recorded approximately rather than
+    losing the whole record.
     """
     path = DEFAULT_REFUSAL_LOG if path is None else Path(path)
     record = {"wall_time": time.time(), "reason": reason,
@@ -121,9 +130,9 @@ def _record_refusal(path: Path | None, reason: str, detail: dict) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         with path.open("a") as handle:
-            handle.write(json.dumps(record) + "\n")
+            handle.write(json.dumps(record, default=str) + "\n")
         print(f"[mappo_drive] refusal recorded in {path}", file=sys.stderr)
-    except OSError as exc:
+    except (OSError, TypeError, ValueError) as exc:
         print(f"[mappo_drive] could not record the refusal in {path}: {exc}",
               file=sys.stderr)
 
@@ -237,7 +246,8 @@ class MappoPlanner(DynamicWindowPlanner):
         if step.status != "COMMAND":
             self.counts["stopped"] += 1
             return Command(0.0, 0.0, 0.0, reason=_STOP_REASONS.get(step.status, "hold"),
-                           gap_m=planned.gap_m)
+                           gap_m=planned.gap_m,
+                           feasible=planned.feasible, evaluated=planned.evaluated)
 
         # Clamp to the STACK's envelope, which may be derated below the policy config's
         # own ceilings by --derate or --max-vx. The policy does not know about those and
@@ -255,8 +265,16 @@ class MappoPlanner(DynamicWindowPlanner):
                            feasible=planned.feasible, evaluated=planned.evaluated)
 
         self.counts["policy"] += 1
+        # `feasible`/`evaluated` describe the PLANNER's search, which ran on this tick
+        # whatever the outcome, so they are forwarded on every branch. Letting them fall
+        # back to Command's defaults writes `0 of 0` into the telemetry, and that is not
+        # an absent value — it reads as "the planner sampled nothing and found nothing
+        # feasible", i.e. the robot was boxed in. The recorded runs of 2026-08-17 say
+        # exactly that on all 58 policy-driven ticks of the successful one, while the
+        # vetoed ticks beside them record 330 of 330. See issue #20.
         return Command(proposed[0], proposed[1], proposed[2], reason="policy",
-                       gap_m=planned.gap_m)
+                       gap_m=planned.gap_m,
+                       feasible=planned.feasible, evaluated=planned.evaluated)
 
     def report(self) -> str:
         counts = self.counts

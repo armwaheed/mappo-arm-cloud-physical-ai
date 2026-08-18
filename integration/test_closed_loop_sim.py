@@ -257,6 +257,34 @@ def test_the_scenario_set_puts_the_obstacle_where_it_has_to_be_dealt_with():
         assert 0.5 < math.hypot(obstacle.x, obstacle.y) < goal_distance
 
 
+def test_the_planner_reports_an_intent_so_its_chatter_is_measured_too():
+    """It used to return ``None``, so ``run_once`` recorded no deflection for it and its
+    ``reversals`` column was structurally ``0 / 0`` — printed beside the policy's measured
+    counts, where it reads as "the planner never chatters" instead of "never measured".
+
+    Correcting it inverted the comparison on a 3-seed run: the planner went from 0/0 to
+    4/400 reversals per swerving tick, which is a HIGHER rate than the policy's 1/542.
+    A substituted zero that cannot be told from a measurement is the defect this project
+    keeps re-finding, so this pins the fix rather than trusting the comment.
+    """
+    controller = PlannerController(QUIET)
+    _, _, intent = controller.command(
+        0.0, (0.0, 0.0, 0.0), (3.0, 0.0), [], (0.0, 0.0, 0.0))
+    assert intent is not None, "a moving planner must report where it is going"
+    assert abs(intent) < math.radians(5.0), intent   # goal is dead ahead
+
+
+def test_a_stationary_planner_reports_no_intent():
+    """Zero velocity has no direction, and ``atan2(0, 0)`` is 0.0 rather than an error —
+    which would silently log 'straight ahead' for a robot that is not moving and count it
+    towards the swerve statistics."""
+    controller = PlannerController(QUIET)
+    controller._last = (0.0, 0.0, 0.0)
+    _, _, intent = controller.command(
+        0.0, (0.0, 0.0, 0.0), (0.0, 0.0), [], (0.0, 0.0, 0.0))
+    assert intent is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

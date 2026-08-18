@@ -140,6 +140,11 @@ PERCEPTION_LATENCY_S = 0.31
 #: ``replay_mappo.py`` so the closed-loop and open-loop numbers are comparable.
 SWERVE_DEG = 10.0
 
+#: Below this commanded speed a velocity has no meaningful direction, so no intent is
+#: reported and the tick does not count towards a swerve or a reversal. Matches
+#: :attr:`HeadingServo.min_speed_mps`, which makes the same judgement for the same reason.
+INTENT_MIN_SPEED_MPS = 0.02
+
 
 @dataclass(frozen=True)
 class SimObstacle:
@@ -230,7 +235,19 @@ class PlannerController:
                                     control_dt=self._dt, last_reason=self._reason)
         self._reason = planned.reason
         self._last = (planned.vx, planned.vy, planned.wz)
-        return self._last, planned.reason, None
+        # This used to return None, which meant `run_once` recorded no deflection for the
+        # incumbent and its `reversals` column was structurally `0 / 0` — printed in the
+        # same table as the policy's measured counts, where it reads as "the planner never
+        # chatters" rather than "the planner was never measured". A substituted zero that
+        # is indistinguishable from a real measurement is the defect this project keeps
+        # hitting; the comparison only means something if both rows are measured.
+        #
+        # The planner has no separate "intent": unlike the policy it is not put through a
+        # command mapping that distorts direction, so the command IS the intent.
+        speed = math.hypot(planned.vx, planned.vy)
+        intent = (None if speed < INTENT_MIN_SPEED_MPS
+                  else math.atan2(planned.vy, planned.vx))
+        return self._last, planned.reason, intent
 
 
 class PolicyController:
@@ -307,7 +324,13 @@ class SupervisedController(PolicyController):
                                               horizon_s=self._veto_horizon_s):
             self.driven += bool(obstacles)
             return proposed, reason, intent
-        self.vetoed += 1
+        # `bool(obstacles)` on BOTH counters, not just `driven`. The rate is documented as
+        # being over ticks that had something to veto, and today an empty scene cannot
+        # reach this branch — but only because `is_feasible` early-returns True when the
+        # obstacle list is empty, which is an invariant in a different module. Making the
+        # exclusion explicit here keeps the denominator right by construction rather than
+        # by a guard someone could reasonably change.
+        self.vetoed += bool(obstacles)
         return backup, f"veto-{backup_reason}", intent
 
 
