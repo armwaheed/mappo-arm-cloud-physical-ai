@@ -109,6 +109,31 @@ identical histories) remains sound. The success claim survives; the breakdown do
 rename the field to say it is the telemetry's view and stop drawing conclusions from the
 split.
 
+**Confirmed by measurement, and it turned out to be two problems.** Replaying run 5 back
+through the controller and inspecting `_obstacles` per tick:
+
+```
+ticks the replay labels UNSEEN : 43
+  ... of those, with something INSIDE the policy's own fan:   16
+      their policy-fan nearest range:  0.484 m to 0.864 m
+
+map size vs tick obstacle count:
+      tick objects:  min 0, max 2
+      policy map  :  min 0, max 4
+```
+
+So the label is wrong (this finding, issue #17) **and** the policy is genuinely carrying
+twice as many objects as perception ever reported and steering on them at 0.484 m — which
+is a robot-behaviour defect belonging to the policy package, filed separately as issue #19.
+`static_obstacle_ttl_s` is 120 s against 20 s runs, so `_expire()` never fires and the map
+is append-mostly for the whole episode; there is no disagreement-based expiry to catch a
+ghost, and the map is in an odometry-derived frame so stale entries wander rather than
+merely persist. 4-for-2 is the same shape and the same count as the control stack's own
+odometry-induced landmark duplication.
+
+Run 5's headline number is unaffected — `obstacle_effect_deg` compares two controllers with
+identical histories, so ghosts cancel — but the seen/unseen split must not be quoted.
+
 ### A4. `_record_refusal` promises "never raises" and can
 
 ```python
