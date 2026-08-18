@@ -43,13 +43,17 @@ Three things were changed on the way in, and all of them matter if you re-vendor
 > deliberately-different list — they are supposed to track upstream, and a `.py`-only sync
 > silently leaves them behind. They are copied explicitly now.
 
-> **2026-08-18 — the tree no longer corresponds to a single upstream ref, and the table
-> above cannot express that.** It is `3f11b53` plus two later, independent things: the
-> platform-bindings refactor, which was authored here and is **not upstream at all**, and
-> the `control_dt` fix, which was authored here during a live session, upstreamed the same
-> day, and merged there. The vendored `control_interval_s` is byte-identical to upstream's.
-> So one half of the divergence is resolved and the other is not — see the AHEAD table
-> under *Re-vendoring*. Do not re-vendor until it is empty.
+> **2026-08-18 — divergence resolved; the tree corresponds to a single upstream ref again.**
+> For part of the day it did not: it was `3f11b53` plus the platform-bindings refactor,
+> which had been authored here and was not upstream at all, plus the `control_dt` fix,
+> which was authored here during a live session and upstreamed the same day. Both are now
+> merged upstream, `visual_nav/` here is byte-identical to it, and the AHEAD table under
+> *Re-vendoring* is empty.
+>
+> The lesson worth keeping: the bindings refactor sat here for days without anyone
+> noticing, because nothing detects a vendored copy being AHEAD — every check in this file
+> was built to detect it being BEHIND or contaminated. The preflight added that day is the
+> one that would have caught it, and it runs before the destructive step rather than after.
 
 > The previous entry recorded `4ceda53` on `feat/static-obstacle-nav`. That was wrong:
 > the tree actually held `95550b8`, one commit later, which is a whole live-run fix pass
@@ -79,26 +83,33 @@ undone all three of the changes listed above in one command: restoring `driver/`
 `pyproject.toml`, and putting the upstream product name back into ten files. None of that
 fails a test, so it would have shipped.
 
-### 🛑 This repository is currently AHEAD of upstream. Read this before syncing anything.
+### Is this repository AHEAD of upstream? Check before syncing anything.
 
-The `.py`-only rsync below is still destructive, in a second way that the previous
-correction did not cover. `robot-stack/` no longer only *differs* from upstream by
-renaming — since the platform-bindings work it contains code that **exists nowhere else**:
+**AHEAD table — currently EMPTY, resolved 2026-08-18.** A re-vendor is safe again.
 
 | | files | what `rsync -a --delete` does |
 | --- | --- | --- |
-| **Added here, absent upstream** | `visual_nav/{robot_bindings.py, lifecycle.py, test_lifecycle.py}` | **deletes them** — they are `.py`, so they are inside the transfer set, and `--delete` removes receiver files the sender does not have |
-| **Ahead here, older upstream** | `visual_nav/{visual_nav.py, camera.py, calibrate_camera.py, tracker.py, test_avoidance.py}` | **overwrites them**, reverting the bindings refactor |
+| **Added here, absent upstream** | *(none)* | — |
+| **Ahead here, older upstream** | *(none)* | — |
 
-**The verification step below cannot catch this, and that is the important part.** It
-asserts that the only remaining differences are the deliberate thirteen. After a re-vendor
-has reverted the refactor, that assertion is *true* — the tree matches upstream because the
-divergence was destroyed. The check passes because the damage succeeded. `test_lifecycle.py`
-is deleted by the same command, so the suite that would have failed is gone too.
+Keep the preflight and the `P` rules below anyway. This was not hypothetical: between the
+platform-bindings work and 2026-08-18 the table held **eight files** — `visual_nav/`'s
+`robot_bindings.py`, `lifecycle.py` and `test_lifecycle.py` existed nowhere else, and
+`visual_nav.py`, `camera.py`, `calibrate_camera.py`, `tracker.py` and `test_avoidance.py`
+were ahead of upstream's copies. The documented rsync would have **deleted the first three
+and reverted the other five**, and:
 
-**The real fix is to upstream the bindings refactor**, which is what "Read this before
-editing `robot-stack/`" already asks for. Until that lands, the table above must be
-non-empty and the preflight below must be run.
+**The verification step below could not have caught it, and that is the part worth
+remembering.** It asserts that the only remaining differences are the deliberate thirteen.
+After a re-vendor had reverted the refactor that assertion would be *true* — the tree
+matches upstream precisely because the divergence was destroyed. The check passes because
+the damage succeeded. `test_lifecycle.py` is deleted by the same command, so the suite that
+would have failed is gone too. A verification that runs after the destructive step cannot
+see a destruction.
+
+It was resolved the way `PROVENANCE.md` asks for rather than by working around it: the
+seam was upstreamed, and `visual_nav/` here is now byte-identical to upstream. **If this
+table is ever non-empty again, upstream it — do not add another exception.**
 
 ```bash
 # PREFLIGHT — run BEFORE the rsync. Anything it prints is code the sync would destroy.
