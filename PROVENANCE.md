@@ -43,6 +43,14 @@ Three things were changed on the way in, and all of them matter if you re-vendor
 > deliberately-different list — they are supposed to track upstream, and a `.py`-only sync
 > silently leaves them behind. They are copied explicitly now.
 
+> **2026-08-18 — the tree no longer corresponds to a single upstream ref, and the table
+> above cannot express that.** It is `3f11b53` plus two later, independent things: the
+> platform-bindings refactor, which was authored here and is **not upstream at all**, and
+> the `control_dt` fix, which was authored here during a live session, upstreamed the same
+> day, and merged there. The vendored `control_interval_s` is byte-identical to upstream's.
+> So one half of the divergence is resolved and the other is not — see the AHEAD table
+> under *Re-vendoring*. Do not re-vendor until it is empty.
+
 > The previous entry recorded `4ceda53` on `feat/static-obstacle-nav`. That was wrong:
 > the tree actually held `95550b8`, one commit later, which is a whole live-run fix pass
 > — and the branch has since merged, so `main` is the ref to track. Verified by
@@ -71,11 +79,63 @@ undone all three of the changes listed above in one command: restoring `driver/`
 `pyproject.toml`, and putting the upstream product name back into ten files. None of that
 fails a test, so it would have shipped.
 
+### 🛑 This repository is currently AHEAD of upstream. Read this before syncing anything.
+
+The `.py`-only rsync below is still destructive, in a second way that the previous
+correction did not cover. `robot-stack/` no longer only *differs* from upstream by
+renaming — since the platform-bindings work it contains code that **exists nowhere else**:
+
+| | files | what `rsync -a --delete` does |
+| --- | --- | --- |
+| **Added here, absent upstream** | `visual_nav/{robot_bindings.py, lifecycle.py, test_lifecycle.py}` | **deletes them** — they are `.py`, so they are inside the transfer set, and `--delete` removes receiver files the sender does not have |
+| **Ahead here, older upstream** | `visual_nav/{visual_nav.py, camera.py, calibrate_camera.py, tracker.py, test_avoidance.py}` | **overwrites them**, reverting the bindings refactor |
+
+**The verification step below cannot catch this, and that is the important part.** It
+asserts that the only remaining differences are the deliberate thirteen. After a re-vendor
+has reverted the refactor, that assertion is *true* — the tree matches upstream because the
+divergence was destroyed. The check passes because the damage succeeded. `test_lifecycle.py`
+is deleted by the same command, so the suite that would have failed is gone too.
+
+**The real fix is to upstream the bindings refactor**, which is what "Read this before
+editing `robot-stack/`" already asks for. Until that lands, the table above must be
+non-empty and the preflight below must be run.
+
+```bash
+# PREFLIGHT — run BEFORE the rsync. Anything it prints is code the sync would destroy.
+UPSTREAM=../arm-dc-unitree-go2
+diff -rq --exclude=__pycache__ --exclude=.ruff_cache \
+     robot-stack/unitree "$UPSTREAM/unitree" \
+  | grep -E '^Only in robot-stack' \
+  && echo "STOP: files exist only here — rsync --delete will remove them"
+
+# And the ones that would be silently reverted rather than removed:
+git -C "$UPSTREAM" log --oneline -1 -- unitree/go2/visual_nav/visual_nav.py
+git log --oneline -1 -- robot-stack/unitree/go2/visual_nav/visual_nav.py
+# If this repository's commit is newer work that is NOT in the upstream one, stop and
+# upstream it first. A newer timestamp here is the signal; there is no ref to diff against
+# because a vendored copy has no remote.
+```
+
 Sync only the source, then put back the one rename that lives inside it:
 
 ```bash
 git -C ../arm-dc-unitree-go2 fetch origin && git -C ../arm-dc-unitree-go2 checkout <ref>
-rsync -a --delete --include '*/' --include '*.py' --exclude '*' \
+
+# `P` (protect) rules keep --delete away from the files that exist only here. They do NOT
+# block a transfer, so once these land upstream the rules become inert rather than wrong,
+# and the sync starts tracking them automatically. Protect is the right verb; --exclude
+# would also stop them ever arriving from upstream.
+#
+# ⚠️ THE P RULES MUST COME BEFORE --include '*.py'. rsync takes the FIRST matching rule,
+# so with the includes first, `*.py` matches robot_bindings.py and the protect rule is
+# never consulted — the files are deleted and the command looks correct while doing it.
+# Verified with `--dry-run --itemize-changes | grep '^\*deleting'`: three deletions with
+# the rules last, none with them first. Re-check that way after editing this command.
+rsync -a --delete \
+      --filter='P /go2/visual_nav/robot_bindings.py' \
+      --filter='P /go2/visual_nav/lifecycle.py' \
+      --filter='P /go2/visual_nav/test_lifecycle.py' \
+      --include '*/' --include '*.py' --exclude '*' \
       ../arm-dc-unitree-go2/unitree/ robot-stack/unitree/
 
 # visual_nav's docs are NOT in the deliberately-different list, so they track upstream —
@@ -100,7 +160,9 @@ diff -rq --exclude=.git --exclude=__pycache__ --exclude=.ruff_cache \
      ../arm-dc-unitree-go2/ robot-stack/
 ```
 
-Expect exactly these thirteen, and nothing else — anything more is unintended drift:
+Expect these thirteen **plus the eight in the AHEAD table above** — twenty-one in total —
+and nothing else. Anything more is unintended drift; anything **fewer** means the sync
+destroyed something, which is the failure this check historically could not see.
 
 | Deliberately different (13) | Deliberately absent |
 | --- | --- |
