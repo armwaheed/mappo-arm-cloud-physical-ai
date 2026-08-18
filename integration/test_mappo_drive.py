@@ -42,6 +42,7 @@ from mappo_drive import (
     split_argv,
 )
 from mappo_policy import DEFAULT_PACKAGE, HeadingServo, PolicyRunner
+from replay_mappo import derived_config
 
 BIN = Obstacle(x=1.0, y=0.0, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
                object_id="landmark-1")
@@ -190,6 +191,46 @@ def test_the_planner_default_radius_is_refused_because_it_breaks_the_calibration
     assert record["reason"] == "robot_radius_scale_mismatch"
     assert record["planner_robot_radius_m"] == 0.40
     assert record["implied_scale"] == 4.0 and record["configured_scale"] == 2.5
+
+
+def test_a_deliberate_policy_scale_override_runs_instead_of_being_refused():
+    """The escape hatch has to open the gate it is documented to open.
+
+    ``--policy-scale`` is applied to the config BEFORE the calibration check runs, so it
+    moves ``configured`` and creates exactly the mismatch the guard fires on: using the
+    documented escape hatch tripped the guard, and the refusal then advised passing
+    ``--policy-scale 2.50``, i.e. undoing the change the operator had deliberately made.
+    Narrowing the pass distance is done with this knob, so a gate that blocks it blocks
+    the one tuning job the flag exists for. The refusal is for a SILENT mismatch — the
+    test above — not for a number the operator typed."""
+    log = Path(tempfile.mkdtemp()) / "refusals.jsonl"
+    try:
+        with derived_config(DEFAULT_PACKAGE / "config.json",
+                            meters_per_vmas_unit=2.0) as config:
+            runner = PolicyRunner(DEFAULT_PACKAGE, config)
+            planner = MappoPlanner(Limits(), PlannerConfig(robot_radius_m=0.25), runner,
+                                   refusal_log=log, scale_override=True)
+        assert planner.config.robot_radius_m == 0.25
+        # The override still leaves a trace: a run that passed closer than the evidence
+        # base describes must be identifiable afterwards from the log alone.
+        record = json.loads(log.read_text().splitlines()[0])
+        assert record["reason"] == "robot_radius_scale_override"
+        assert record["implied_scale"] == 2.5 and record["configured_scale"] == 2.0
+    finally:
+        log.unlink()
+        log.parent.rmdir()
+
+
+def test_a_scale_override_still_shortens_the_horizon_it_was_asked_for():
+    """The knob has to move the thing the operator is aiming at.
+
+    The pass distance is set by where the policy first sees the obstacle, which is
+    ``lidar_range_vmas * meters_per_vmas_unit`` — and ``lidar_range_vmas`` is pinned to
+    the checkpoint, so the scale is the only half that can move."""
+    with derived_config(DEFAULT_PACKAGE / "config.json",
+                        meters_per_vmas_unit=2.0) as config:
+        assert PolicyRunner(DEFAULT_PACKAGE, config).config.lidar_range_m == 0.7
+    assert PolicyRunner(DEFAULT_PACKAGE).config.lidar_range_m == 0.875
 
 
 def test_the_radius_the_live_runs_used_is_accepted():
