@@ -41,8 +41,10 @@ a run with all three passes: median 309 ms, p90 436 ms), so tracks are extrapola
 the present before planning and their radii grow to cover the extrapolation — the robot
 plans against where people are NOW, with honest uncertainty, not where they were at
 the frame adapter's timestamp. Landmarks need neither, because they do not move. The
-Go2 adapter timestamps a new JPEG at local arrival; the Lite3 adapter timestamps a
-decoded OpenCV frame, so platform-specific transport latency still needs calibration.
+Go2 adapter timestamps a new JPEG at local ARRIVAL rather than at shutter — the RPC
+exposes no sensor timestamp — so transport latency stays inside the measured calibration
+and the safety margin. Any other camera binding must state which of the two it reports,
+because the difference is invisible until the robot is moving.
 
 The margin here is thinner than it looks: ``perception_timeout_s`` is 0.6 s and the
 worst observed cycle was 0.598 s. Running the goal pass every cycle rather than on its

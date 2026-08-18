@@ -409,7 +409,7 @@ Other limits worth stating plainly:
 | `calibrate_camera.py` | focal-length measurement, three methods (spin / marker / object) |
 | `replay.py` | run the detector + tracker over any video, no robot needed |
 | `telemetry.py` | machine-readable JSONL record of every control tick — the downstream interface |
-| `test_*.py` | **244 offline tests**, no robot: `for t in test_*.py; do python3 $t; done` |
+| `test_*.py` | **246 offline tests**, no robot: `for t in test_*.py; do python3 $t; done` |
 | `ruff.toml` | this directory's lint contract (line length, py38 target) |
 | `go2_front_camera.json` | the measured camera model for THIS unit |
 | `images/` | live-run and calibration GIFs, measured-data charts, setup photo |
