@@ -111,6 +111,51 @@ def test_a_live_run_requires_every_robot_specific_measurement_and_operator_gate(
     raise AssertionError("an uncalibrated live Lite3 run was accepted")
 
 
+def _live_args(*extra):
+    return _args("--live", "--calibration", "x.json", "--gait-floor", "0.3",
+                 "--actuator-gain", "0.7", "--robot-radius", "0.25",
+                 "--operator-ready", *extra)
+
+
+def test_running_without_temperature_monitoring_must_be_time_bounded():
+    binding = Lite3Bindings()
+    args = _live_args("--accept-no-motor-temperatures", "--max-seconds", "600")
+    try:
+        binding.preflight_navigation(args, None, _Health())
+    except SystemExit as exc:
+        assert "--accept-no-motor-temperatures" in str(exc)
+        assert "120s or less" in str(exc)
+    else:
+        raise AssertionError("a ten-minute run with no thermal feed was accepted")
+
+
+def test_a_bounded_unmonitored_run_is_allowed():
+    binding = Lite3Bindings()
+    args = _live_args("--accept-no-motor-temperatures", "--max-seconds", "60")
+    binding.preflight_navigation(args, None, _Health())  # must not raise
+
+
+def test_the_override_is_not_needed_when_temperatures_are_monitored():
+    binding = Lite3Bindings()
+    args = _live_args("--max-seconds", "600")
+    binding.preflight_navigation(args, None, _Health())  # must not raise
+
+
+def test_telemetry_records_the_real_transport_and_whether_motors_were_watched():
+    """A recording that does not say the temperatures were off cannot be reviewed later."""
+    binding = Lite3Bindings()
+    platform = binding.telemetry_config(_args())["platform"]
+    assert platform["transport"] == "udp"
+    assert platform["motion_host"] == "192.168.1.120"
+    assert platform["motor_temperatures_monitored"] is True
+
+    platform = binding.telemetry_config(
+        _args("--accept-no-motor-temperatures", "--locomotion-transport", "ros2")
+    )["platform"]
+    assert platform["transport"] == "ros2"
+    assert platform["motor_temperatures_monitored"] is False
+
+
 def test_non_finite_measurements_cannot_even_poison_a_dry_run():
     binding = Lite3Bindings()
     args = _args(

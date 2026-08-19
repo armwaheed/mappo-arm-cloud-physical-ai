@@ -24,6 +24,12 @@ from deep_robotics.lite3.visual_nav.camera import (
 )
 from deep_robotics.lite3.visual_nav.safety import Lite3HealthMonitor
 
+#: Ceiling on a single run whose motor temperatures are unmonitored. A 3x3 m booth run is
+#: about twenty seconds; two minutes is generous for one. This bounds one run and nothing
+#: more -- the real thermal hazard is repeated runs, which no flag here can see, so the
+#: pre-flight says so out loud rather than implying the ceiling is protection.
+MAX_UNMONITORED_RUN_S = 120.0
+
 
 class Lite3Bindings:
     """Construct the Lite3 seams without copying the navigator's safety/run loop."""
@@ -34,6 +40,11 @@ class Lite3Bindings:
     default_calibration_output = "lite3_front_camera.json"
     spin_rate_help = ("commanded yaw rate in rad/s; required for a Lite3 spin because "
                       "the Go2 default is not a measurement of this platform")
+
+    def __init__(self) -> None:
+        # create_health_monitor reads battery through whatever create_locomotion built,
+        # because only one process can hold the robot's single state port.
+        self._locomotion = None
 
     def add_navigation_arguments(self, parser, envelope) -> None:
         parser.add_argument(
@@ -63,6 +74,13 @@ class Lite3Bindings:
         health.add_argument("--motor-temp-warn", type=float, default=55.0)
         health.add_argument("--motor-temp-abort", type=float, default=70.0)
         health.add_argument("--battery-abort", type=float, default=20.0)
+        health.add_argument(
+            "--accept-no-motor-temperatures", action="store_true",
+            help="run without motor-temperature monitoring. The high-level interface does "
+                 "not carry temperatures, so this is an explicit operator decision: it is "
+                 "recorded in telemetry, warned about every tick, and caps --max-seconds "
+                 f"at {MAX_UNMONITORED_RUN_S:.0f}s. Battery and staleness stay enforced.",
+        )
         # No Lite3 radius is defensible before measuring the loaded body. ``None`` lets
         # the live pre-flight distinguish an omitted value from a deliberate 0.40 m.
         parser.set_defaults(robot_radius=None)
@@ -80,6 +98,7 @@ class Lite3Bindings:
         parser.add_argument("--motor-temp-warn", type=float, default=55.0)
         parser.add_argument("--motor-temp-abort", type=float, default=70.0)
         parser.add_argument("--battery-abort", type=float, default=20.0)
+        parser.add_argument("--accept-no-motor-temperatures", action="store_true")
         # The Go2's measured 0.8 rad/s default is not a Lite3 calibration. Make the
         # operator supply a rate already shown to clear this robot's yaw deadband.
         parser.set_defaults(spin_rate=None)
@@ -124,9 +143,20 @@ class Lite3Bindings:
                 command_port=args.command_port,
                 state_port=args.state_port,
             )
-        return Lite3Locomotion(**arguments)
+        self._locomotion = Lite3Locomotion(**arguments)
+        return self._locomotion
 
     def create_health_monitor(self, args, *, live: bool):
+        battery_source = None
+        if getattr(args, "locomotion_transport", "udp") == "udp":
+            # Late-bound: the navigator may build the monitor before the locomotion, and
+            # the link is not up until connect(). The poller treats a raise as "no
+            # sample", so the staleness gate covers the gap rather than a fabricated one.
+            def battery_source():
+                if self._locomotion is None:
+                    return None
+                return self._locomotion.battery_level()
+
         return Lite3HealthMonitor(
             battery_topic=args.battery_topic,
             temperature_topic=args.temperature_topic,
@@ -134,6 +164,8 @@ class Lite3Bindings:
             motor_temp_warn_c=args.motor_temp_warn,
             motor_temp_abort_c=args.motor_temp_abort,
             battery_abort_pct=args.battery_abort,
+            battery_source=battery_source,
+            accept_missing_temperatures=args.accept_no_motor_temperatures,
         )
 
     def start(self, _args) -> None:
@@ -173,6 +205,21 @@ class Lite3Bindings:
                 missing.append("--operator-ready after STANDING + navigation mode")
             if missing:
                 raise SystemExit("[lite3] REFUSING TO WALK: missing " + ", ".join(missing))
+            if args.accept_no_motor_temperatures:
+                if not self._positive_finite(args.max_seconds) \
+                        or args.max_seconds > MAX_UNMONITORED_RUN_S:
+                    raise SystemExit(
+                        "[lite3] REFUSING TO WALK: --accept-no-motor-temperatures needs "
+                        f"--max-seconds set to {MAX_UNMONITORED_RUN_S:.0f}s or less; an "
+                        "unbounded run with no thermal feed is not an informed decision"
+                    )
+                print("[lite3] MOTOR TEMPERATURES ARE NOT MONITORED on this run.")
+                print(f"[lite3]   this run is bounded to {args.max_seconds:.0f}s, but "
+                      "nothing bounds the NEXT one: heat builds across back-to-back")
+                print("[lite3]   runs and no software here can see it. Let the robot "
+                      "cool between runs, keep the")
+                print("[lite3]   emergency stop in hand, and stop if a motor smells hot "
+                      "or the gait changes.")
         self._report_health(health, live=args.live, prefix="visual_nav")
 
     def preflight_calibration(self, args, health) -> None:
@@ -267,9 +314,11 @@ class Lite3Bindings:
         return {
             "platform": {
                 "name": self.platform_name,
-                "transport": "Lite3_ROS",
+                "transport": getattr(args, "locomotion_transport", "udp"),
+                "motion_host": getattr(args, "motion_host", None),
                 "cmd_vel_topic": args.cmd_vel_topic,
                 "odom_topic": args.odom_topic,
+                "motor_temperatures_monitored": not args.accept_no_motor_temperatures,
                 "camera_source_kind": camera_source_kind(
                     parse_camera_source(args.camera_source),
                     gstreamer=args.camera_gstreamer,
