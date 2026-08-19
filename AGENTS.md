@@ -33,8 +33,8 @@ current, and it documents three mappings that are *not* the obvious ones.
 ## Before you say you are done
 
 ```bash
-cd policy      && python3 test_physical_ai_mappo.py                                #  31
-cd integration && for t in test_*.py; do python3 $t; done                          # 130
+cd policy      && python3 test_physical_ai_mappo.py                                #  33
+cd integration && for t in test_*.py; do python3 $t; done                          # 142
 cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 246
 cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
 cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 39

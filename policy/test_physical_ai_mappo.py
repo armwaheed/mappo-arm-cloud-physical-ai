@@ -405,6 +405,56 @@ def test_an_identified_detection_still_adopts_an_anonymous_obstacle_it_matches()
     assert controller._obstacles[0].object_id == "landmark-1"
 
 
+def test_a_named_obstacle_takes_the_radius_the_producer_reports_now():
+    """CORRECTION 6. The delivered ``max`` made the mapped radius a high-water mark.
+
+    The control stack's radius is ``radius_m + position_sigma`` — an estimate that starts
+    large and CONVERGES as sightings accumulate, which is the whole reason a long approach
+    was prescribed as the fix for a gap that looked too narrow. Taking ``max`` meant none
+    of that convergence ever reached the policy: it planned for the rest of the run
+    against the map's least certain moment. Measured on the 2026-08-18 two-bin runs, every
+    landmark converged to 0.230 m while the controller held 0.379-0.472 m.
+
+    Revert to ``max(match.radius, radius)`` and the radius reads 0.40.
+    """
+    controller = _controller()
+    controller.step(_input(stationary_objects=[
+        StationaryObject(distance_m=0.50, bearing_rad=0.0, radius_m=0.40,
+                         object_id="landmark-1")]))
+    assert math.isclose(controller._obstacles[0].radius, 0.40)
+    controller.step(_input(reset_run=False, stationary_objects=[
+        StationaryObject(distance_m=0.50, bearing_rad=0.0, radius_m=0.15,
+                         object_id="landmark-1")]))
+    assert len(controller._obstacles) == 1
+    assert math.isclose(controller._obstacles[0].radius, 0.15)
+
+
+def test_a_shrinking_radius_reopens_a_gap_the_fan_can_see():
+    """The behavioural half of CORRECTION 6, and the reason it is not cosmetic.
+
+    Two discs at +/-15 deg and 1.00 m, straddling the ray at 0 rad. Mapped at 0.40 m each
+    subtends 23.6 deg, the two shadows overlap across the gap, and the ray reads blocked;
+    at the converged 0.23 m each subtends 13.3 deg, the shadows part, and the same ray
+    reads clear. Same objects, same ray count, same pose — only the map's certainty
+    changed. Under ``max`` the first reading is latched and the second never happens.
+    """
+    controller = _controller()
+    far = [StationaryObject(distance_m=1.00, bearing_rad=math.radians(+15),
+                            radius_m=0.40, object_id="a"),
+           StationaryObject(distance_m=1.00, bearing_rad=math.radians(-15),
+                            radius_m=0.40, object_id="b")]
+    near = [StationaryObject(distance_m=1.00, bearing_rad=math.radians(+15),
+                             radius_m=0.23, object_id="a"),
+            StationaryObject(distance_m=1.00, bearing_rad=math.radians(-15),
+                             radius_m=0.23, object_id="b")]
+    controller.step(_input(stationary_objects=far))
+    blocked = controller.last_observation[OBS_DIM - N_RAYS]
+    controller.step(_input(reset_run=False, stationary_objects=near))
+    clear = controller.last_observation[OBS_DIM - N_RAYS]
+    assert blocked > 0.0, "the inflated discs should close the ray at 0 rad"
+    assert clear == 0.0, "the converged discs should leave it open"
+
+
 def test_an_obstacle_is_forgotten_once_its_ttl_expires():
     controller = _controller(static_obstacle_ttl_s=1.0)
     base = time.monotonic()

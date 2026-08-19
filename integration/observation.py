@@ -220,3 +220,145 @@ def observation_from_tick(tick: dict, rays: int = DEFAULT_RAYS,
         ray_bearings_rad=bearings,
         speed=(command.get("vx", 0.0), command.get("vy", 0.0),
                command.get("wz", 0.0)))
+
+
+# ---------------------------------------------------------------------------
+# Aperture analysis: what a fan can resolve, as opposed to how far it can see.
+#
+# :func:`reliable_range_m` above answers "can this fan see an OBJECT". These answer the
+# question the two-bin runs of 2026-08-18 actually turned on, which is the complement:
+# "can this fan see the HOLE between two objects". They are not the same question and
+# they do not have the same answer — a fan that resolves both bins comfortably can still
+# be blind to the gap between them, because the gap is what is left over after each
+# disc's angular shadow is subtracted, and shadows grow as the robot closes in.
+#
+# These work in whatever frame the caller's points are in, and take the observer position
+# explicitly, because the checkpoint's fan is anchored in a RUN-LOCAL frame fixed at
+# reset rather than in the body frame the rest of this module uses.
+# ---------------------------------------------------------------------------
+
+def angular_shadow(px: float, py: float, cx: float, cy: float,
+                   radius_m: float) -> tuple | None:
+    """``(centre_bearing_rad, half_angle_rad)`` a disc hides from ``(px, py)``.
+
+    ``None`` when the observer is inside the disc, where every bearing is blocked and a
+    half-angle is not defined. Callers must handle that case rather than treating it as
+    "nothing blocked" — it is the most blocked a disc can be, not the least.
+    """
+    dx, dy = cx - px, cy - py
+    distance = math.hypot(dx, dy)
+    if distance <= radius_m:
+        return None
+    return math.atan2(dy, dx), math.asin(radius_m / distance)
+
+
+def unshadowed_windows(px: float, py: float, discs) -> list:
+    """Bearing intervals from ``(px, py)`` that no disc blocks, as ``(lo, hi)`` pairs.
+
+    ``discs`` is an iterable of ``(cx, cy, radius_m)``. The result is sorted, in
+    ``[-pi, pi)``, and may be empty (everything blocked) or a single full-circle window
+    ``(-pi, pi)`` (nothing blocked). An interval that straddles the wrap is returned as
+    two, which is correct for asking "is there a ray in here" and wrong for measuring the
+    widest window — so :func:`widest_window` exists rather than callers doing ``max``.
+
+    Deliberately NOT the complement of the range vector. A ray reports the nearest hit
+    within a horizon, so a fan cannot distinguish "clear" from "blocked further away than
+    I can see"; this is pure geometry with no horizon in it, which is what makes it usable
+    to ask what a DIFFERENT fan, or a longer-range one, would have been able to resolve.
+    """
+    blocked = []
+    for cx, cy, radius in discs:
+        shadow = angular_shadow(px, py, cx, cy, radius)
+        if shadow is None:
+            return []
+        centre, half = shadow
+        blocked.append((centre - half, centre + half))
+    if not blocked:
+        return [(-math.pi, math.pi)]
+
+    # Work on the unrolled circle: split every interval at the wrap, merge, invert.
+    spans: list = []
+    for lo, hi in blocked:
+        lo, hi = wrap_pi(lo), wrap_pi(hi)
+        spans.extend([(lo, math.pi), (-math.pi, hi)] if hi < lo else [(lo, hi)])
+    spans.sort()
+    merged = [spans[0]]
+    for lo, hi in spans[1:]:
+        if lo <= merged[-1][1]:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+
+    gaps = []
+    edge = -math.pi
+    for lo, hi in merged:
+        if lo > edge:
+            gaps.append((edge, lo))
+        edge = max(edge, hi)
+    if edge < math.pi:
+        gaps.append((edge, math.pi))
+    return gaps
+
+
+def window_containing(px: float, py: float, discs, bearing_rad: float) -> tuple | None:
+    """The unshadowed interval spanning ``bearing_rad``, or ``None`` if that way is blocked.
+
+    The window that matters is the one you are trying to drive through, which is not
+    reliably the widest one — with two bins ahead the widest window is the whole empty
+    half-circle BEHIND the robot, and reporting that as "the aperture" would score every
+    approach as comfortably resolvable. Pass the goal bearing.
+    """
+    target = wrap_pi(bearing_rad)
+    gaps = unshadowed_windows(px, py, discs)
+    if len(gaps) > 1 and math.isclose(gaps[0][0], -math.pi) and \
+            math.isclose(gaps[-1][1], math.pi):
+        # Join the pair the wrap split, so a window straddling +/-pi is measured once.
+        gaps = [*gaps[1:-1], (gaps[-1][0] - 2.0 * math.pi, gaps[0][1])]
+    for lo, hi in gaps:
+        if lo <= target <= hi or lo <= target - 2.0 * math.pi <= hi:
+            return (lo, hi)
+    return None
+
+
+def fan_bearings(rays: int) -> tuple:
+    """The checkpoint's ray angles: ``2*pi*i/rays``, fixed in the run-local frame.
+
+    Not centred on the nose and not spread over a field of view — the trained VMAS agent
+    is holonomic and never rotates, so ray 0 points along the heading the run RESET into
+    and stays there. That is why the robot's yaw on tick 1 decides what the fan can see
+    for the whole run.
+    """
+    if rays <= 0:
+        raise ValueError("rays must be positive")
+    return tuple(2.0 * math.pi * i / rays for i in range(rays))
+
+
+def window_is_sampled(window: tuple, rays: int) -> bool:
+    """Whether any ray of a ``rays``-ray fan falls strictly inside ``window``.
+
+    This is the resolution test that matters for driving through a gap: an aperture the
+    fan does not sample is an aperture the policy cannot know about, however wide it is.
+    """
+    lo, hi = window
+    if hi <= lo:
+        return False
+    spacing = 2.0 * math.pi / rays
+    # The first ray STRICTLY past `lo`, on the unrolled circle the fan repeats over.
+    # Strictly, because a ray landing exactly on the window's edge is grazing the disc
+    # that forms it, not passing through the gap — and that edge case is the one the
+    # guarantee in `rays_to_sample` is quoted against, so the two have to agree.
+    first = math.floor(lo / spacing + 1.0) * spacing
+    return first < hi
+
+
+def rays_to_sample(width_rad: float) -> int:
+    """Smallest full-circle fan guaranteed to put a ray in ANY window of this width.
+
+    A window of width w is guaranteed to contain a ray exactly when the spacing is below
+    w, whatever the phase — so this is the ray count to quote when the approach heading is
+    not something the operator gets to choose. Quoting one that merely works for the
+    heading you happened to measure is how a 12-ray fan looks adequate.
+    """
+    if width_rad <= 0.0:
+        raise ValueError("width_rad must be positive")
+    return max(1, math.floor(2.0 * math.pi / width_rad) + 1)
