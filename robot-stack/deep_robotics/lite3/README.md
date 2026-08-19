@@ -22,7 +22,8 @@ topics; live mode fails closed when any of them is absent.
 | actuator gain | required as `--actuator-gain` | not measured |
 | loaded planning radius | required as `--robot-radius` | not measured |
 | focal length / HFOV | Lite3-tagged calibration JSON required live | not measured |
-| battery + motor temperatures | standard ROS topics, stale after 2 s | vendor high-level bridge does not publish them |
+| battery | read from the UDP state stream | not yet read on either Venture |
+| motor temperatures | absent from the high-level interface | vendor question, still open |
 
 ## Which of the three vendor interfaces this uses, and why
 
@@ -105,22 +106,43 @@ for V4L2, `--camera-source rtsp://HOST/PATH` for RTSP, or a pipeline plus
 shutter fired. Measure end-to-end frame age on the installed endpoint; an RTSP decoder
 queue can otherwise make fresh-looking frames old.
 
-## The health feed is a hard dependency for motion
+## The health feed
 
-The public high-level UDP state contains battery percentage, but Lite3_ROS does not
-publish it. It exposes no motor temperature at all. A live run therefore requires a
-small platform-side bridge to publish:
+**Battery needs nothing extra any more.** `RobotState.battery_level` is in the high-level
+UDP stream. The `Lite3_ROS` bridge drops that field, which is why the ROS path needed a
+companion publisher for something the robot was already reporting; on the default UDP
+transport the health monitor reads it from the same link locomotion uses. That path
+imports no ROS at all.
 
-- `sensor_msgs/msg/BatteryState` on `/battery_state`, with `percentage` in the ROS
-  standard 0..1 range; and
-- `std_msgs/msg/Float64MultiArray` on `/motor_temperatures`, with exactly 12 Celsius
-  values in the publisher's documented motor order.
+**Motor temperatures are genuinely absent.** The high-level interface does not carry them
+in any form. The low-level `Lite3_MotionSDK` reports them, but taking low-level control
+merely to read a temperature would remove the vendor controller that keeps the robot
+upright, so this port does not do that. The supported publisher is a vendor question and
+is still open.
 
-Both names are configurable. Missing, invalid, or more than two-second-old data refuses
-motion; dry navigation can run without it. Do not replace this with constants to get
-past the gate. The low-level MotionSDK reports motor temperatures, but taking low-level
-control merely to read them is not a safe substitute for a vendor-supported high-level
-health feed.
+Until it is answered there are two ways to run:
+
+| | motor temperatures | what runs |
+| --- | --- | --- |
+| default | required | dry navigation only; `--live` refuses |
+| `--accept-no-motor-temperatures` | unmonitored | `--live` runs, bounded and recorded |
+
+The override is an explicit operator decision, not a way to make the gate pass:
+
+- battery and the two-second staleness gate stay enforced;
+- `--max-seconds` is capped at 120 s;
+- the pre-flight prints a banner and `warning_reason()` repeats it every tick;
+- telemetry records `motor_temperatures_monitored: false`, so a recording cannot later be
+  mistaken for a monitored run.
+
+**It bounds one run and nothing more.** Heat builds across back-to-back runs and no
+software here can see that. Let the robot cool between runs. Do not replace any of this
+with constants.
+
+For `--locomotion-transport ros2`, the two companion topics are still the path:
+`sensor_msgs/msg/BatteryState` on `/battery_state` with `percentage` in the ROS standard
+0..1 range, and `std_msgs/msg/Float64MultiArray` on `/motor_temperatures` with exactly 12
+Celsius values. Both names are configurable.
 
 ## Measure and calibrate this robot
 

@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import math
 import sys
+import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -99,6 +101,123 @@ def test_an_incomplete_motor_array_is_not_treated_as_complete_health():
     monitor.update_battery(80.0)
     monitor.update_temperatures([32.0] * 11)
     assert "motor temperatures" in monitor.abort_reason()
+
+
+def _override_monitor(required=True, battery_source=None):
+    clock = _Clock()
+    monitor = Lite3HealthMonitor(required=required, accept_missing_temperatures=True,
+                                 battery_source=battery_source, clock=clock)
+    return monitor, clock
+
+
+def test_a_percent_scaled_one_percent_battery_is_not_read_as_a_full_one():
+    """The auto guess fails open at exactly the reading that matters most.
+
+    ROS publishes 0..1 or 0..100 depending on the driver, so "auto" has to guess, and a
+    genuine 1% becomes 100%. The UDP stream's unit is known, so it says so.
+    """
+    monitor, _clock = _monitor()
+    monitor.update_temperatures([30.0] * 12)
+    monitor.update_battery(1.0)  # auto: indistinguishable from a full battery
+    assert monitor.latest().battery_soc_pct == 100.0
+    assert monitor.abort_reason() is None
+    monitor.update_battery(1.0, scale="percent")
+    assert monitor.latest().battery_soc_pct == 1.0
+    assert "battery 1%" in monitor.abort_reason()
+
+
+def test_an_unknown_battery_scale_is_refused_rather_than_guessed():
+    monitor, _clock = _monitor()
+    try:
+        monitor.update_battery(50.0, scale="per-cent")
+    except ValueError as error:
+        assert "per-cent" in str(error)
+    else:
+        raise AssertionError("a misspelled scale silently fell back to guessing")
+
+
+def test_accepting_missing_temperatures_still_enforces_battery_and_staleness():
+    """The override removes one check, not the gate."""
+    monitor, clock = _override_monitor()
+    monitor.update_battery(80.0, scale="percent")
+    assert monitor.abort_reason() is None
+    health = monitor.latest()
+    assert not math.isfinite(health.max_motor_temp_c)
+    assert health.hottest_motor == -1
+
+    monitor.update_battery(15.0, scale="percent")
+    assert "battery 15%" in monitor.abort_reason()
+
+    monitor.update_battery(80.0, scale="percent")
+    clock.now += 10.0
+    assert "stale" in monitor.abort_reason()
+
+
+def test_an_unmonitored_run_says_so_on_every_tick():
+    """An override that stops being visible stops being a decision."""
+    monitor, _clock = _override_monitor()
+    monitor.update_battery(80.0, scale="percent")
+    for _ in range(3):
+        warning = monitor.warning_reason()
+        assert warning is not None
+        assert "NOT monitored" in warning
+
+
+def test_a_hot_motor_still_aborts_when_temperatures_are_present_under_the_override():
+    monitor, _clock = _override_monitor()
+    monitor.update_battery(80.0, scale="percent")
+    monitor.update_temperatures([30.0] * 11 + [95.0])
+    assert "95C" in monitor.abort_reason()
+
+
+def test_without_the_override_missing_temperatures_still_refuse_a_live_run():
+    monitor, _clock = _monitor()
+    monitor.update_battery(80.0, scale="percent")
+    assert "motor temperatures" in monitor.abort_reason()
+
+
+def test_the_battery_poller_reads_the_udp_link_and_survives_it_being_down():
+    """A link that is not up yet must read as no sample, not as a fabricated one."""
+    state = {"up": False}
+
+    def source():
+        if not state["up"]:
+            raise RuntimeError("no Lite3 state frame has arrived yet")
+        return 73.0
+
+    monitor = Lite3HealthMonitor(required=False, accept_missing_temperatures=True,
+                                 battery_source=source)
+    monitor.start(wait_s=0.0)
+    try:
+        time.sleep(0.25)
+        assert monitor.latest() is None  # the link was down; nothing was invented
+        state["up"] = True
+        deadline = time.monotonic() + 2.0
+        while monitor.latest() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        health = monitor.latest()
+        assert health is not None
+        assert abs(health.battery_soc_pct - 73.0) < 1e-9
+    finally:
+        monitor.stop()
+
+
+def test_the_poller_path_imports_no_ros():
+    """The whole point of the UDP source is that a live Lite3 run needs no ROS runtime."""
+    import sys as _sys
+
+    assert "rclpy" not in _sys.modules
+    monitor = Lite3HealthMonitor(required=False, accept_missing_temperatures=True,
+                                 battery_source=lambda: 55.0)
+    monitor.start(wait_s=0.0)
+    try:
+        deadline = time.monotonic() + 2.0
+        while monitor.latest() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert monitor.latest() is not None
+    finally:
+        monitor.stop()
+    assert "rclpy" not in _sys.modules
 
 
 if __name__ == "__main__":
