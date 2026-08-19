@@ -16,7 +16,7 @@ topics; live mode fails closed when any of them is absent.
 
 | platform item | implementation | hardware evidence |
 | --- | --- | --- |
-| high-level locomotion | `Lite3_ROS`: `/cmd_vel` + `/leg_odom2` | not yet run on either Venture |
+| high-level locomotion | vendor high-level UDP (default), or `Lite3_ROS` `/cmd_vel` + `/leg_odom2` | not yet run on either Venture |
 | RGB capture | explicit V4L2 index, RTSP URI, or GStreamer pipeline | endpoint not yet supplied |
 | gait floor | required as `--gait-floor` | not measured |
 | actuator gain | required as `--actuator-gain` | not measured |
@@ -24,13 +24,28 @@ topics; live mode fails closed when any of them is absent.
 | focal length / HFOV | Lite3-tagged calibration JSON required live | not measured |
 | battery + motor temperatures | standard ROS topics, stale after 2 s | vendor high-level bridge does not publish them |
 
-## Why this uses Lite3_ROS, not Lite3_MotionSDK
+## Which of the three vendor interfaces this uses, and why
 
-The official [Lite3_ROS](https://github.com/DeepRoboticsLab/Lite3_ROS) bridge exposes
-the manufacturer's high-level gait controller through a normal
-`geometry_msgs/msg/Twist` command and publishes pose plus measured body velocity as
-`nav_msgs/msg/Odometry`. Its documented convention matches this stack: +x forward, +y
-left, and +yaw left.
+Deep Robotics expose the same high-level gait controller two ways, and a third,
+lower-level interface that this repository does not use.
+
+**The high-level UDP interface — the default here.** The motion host accepts a 20-byte
+`{int32 cmd_code, int32 size, int32 type, double data}` frame on port 43893, with code
+`320` carrying forward velocity, `325` lateral and `321` yaw. It streams pose, body
+velocity, IMU, joints, handle state and battery back to the single address configured in
+`~/jy_exe/conf/network.toml`, on port 43897. `robot-stack/deep_robotics/lite3/locomotion/
+lite3_udp_locomotion.py` speaks exactly that, and `--locomotion-transport udp` selects it.
+
+**The `Lite3_ROS` bridge — the same thing, wrapped.** The official
+[Lite3_ROS](https://github.com/DeepRoboticsLab/Lite3_ROS) `transfer` package exposes that
+controller through a `geometry_msgs/msg/Twist` command and publishes pose plus measured
+body velocity as `nav_msgs/msg/Odometry`. Its documented convention matches this stack:
++x forward, +y left, and +yaw left. Reading `Jetson2Motion.cpp`, its whole command path is
+the three `sendto` calls above; it adds no heartbeat, no timer and no periodic
+transmission. It runs on a *perception* host — the executable is named `jetson2motion` and
+its `target_ip` defaults to the motion host — so it needs a ROS 2 Foxy runtime on a
+computer these two Ventures may not have. `--locomotion-transport ros2` selects it where
+a unit does ship it.
 
 The official [Lite3_MotionSDK](https://github.com/DeepRoboticsLab/Lite3_MotionSDK) is a
 different layer. Its example resets all 12 joints and gains low-level control; a caller
@@ -49,15 +64,26 @@ does not send them. Commissioning must get the approved sequence for each event 
 documented high-level stand-down verb, so cleanup publishes repeated zero velocities and
 the operator returns the robot to manual/prone through the approved vendor interface.
 
+## Read the robot before installing anything on it
+
+`192.168.1.120` is the **motion host**, and it is not supposed to have ROS 2, a
+`Lite3_ROS` checkout or outbound DNS. Start with
+[`commissioning/`](commissioning/README.md): it decodes the state the robot already
+transmits, in stdlib Python, and cannot command a leg. One capture with the operator
+driving on the vendor remote supplies the gait floor, the actuator gain, the mode
+transitions and the angular-velocity unit.
+
 ## Bring up the read-only side first
 
 Read [`../../SAFETY.md`](../../SAFETY.md) before any hardware session. The commands in
 this section inspect topics or CLI wiring and do not move a leg.
 
-Use the official `ros2-foxy` Lite3_ROS branch on the perception computer, connected to
-the motion host as its README specifies. Deploy the shared Device Connect robot core so
-`arm_dc_robotkit.ros2_twist_locomotion` is importable, or put its `lib/` directory on
-`PYTHONPATH`. Then confirm the documented topics:
+On the default UDP transport there are no topics to confirm and no robot core to
+deploy — the commissioning probe is the read-only check, and it reports the frame rates
+this stack depends on. For `--locomotion-transport ros2`, use the official `ros2-foxy`
+Lite3_ROS branch on the perception computer, deploy the shared Device Connect robot core
+so `arm_dc_robotkit.ros2_twist_locomotion` is importable, and confirm the documented
+topics:
 
 ```bash
 ros2 topic info /cmd_vel
@@ -174,8 +200,12 @@ invisible unless each robot is given an explicit visual marker or colour profile
 ## Offline checks
 
 ```bash
-cd robot-stack/deep_robotics/lite3/locomotion
-python3 test_lite3_locomotion.py && ruff check .
+cd robot-stack/deep_robotics/lite3/commissioning
+python3 test_lite3_state_probe.py && ruff check .
+
+cd ../locomotion
+for test in test_*.py; do python3 "$test"; done
+ruff check .
 
 cd ../visual_nav
 for test in test_*.py; do python3 "$test"; done

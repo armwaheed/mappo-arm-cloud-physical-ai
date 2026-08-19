@@ -36,8 +36,8 @@ current, and it documents three mappings that are *not* the obvious ones.
 cd policy      && python3 test_physical_ai_mappo.py                                #  31
 cd integration && for t in test_*.py; do python3 $t; done                          # 130
 cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 246
-cd robot-stack/deep_robotics/lite3/locomotion && python3 test_lite3_locomotion.py  #   6
-cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 24
+cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
+cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 27
 cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py # 16
 ruff check .        # must be clean in each code directory above; each has a ruff.toml
 ```
