@@ -54,6 +54,41 @@ def test_the_public_lite3_ros_topics_are_defaults_and_radius_is_not_guessed():
     assert args.robot_radius is None
 
 
+def test_the_default_transport_is_udp_and_it_reaches_the_motion_host():
+    """The demo path must not require a ROS 2 runtime the Venture may not have."""
+    from deep_robotics.lite3.locomotion.lite3_udp_locomotion import Lite3UdpLocomotion
+
+    args = _args()
+    assert args.locomotion_transport == "udp"
+    assert args.motion_host == "192.168.1.120"
+    assert args.command_port == 43893
+    assert args.state_port == 43897
+
+    loco = Lite3Bindings().create_locomotion(args)
+    implementation = loco._implementation_factory(
+        cmd_vel_topic=args.cmd_vel_topic, odom_topic=args.odom_topic,
+        stamped=False, node_name="test")
+    assert isinstance(implementation, Lite3UdpLocomotion)
+    assert implementation._motion_host == "192.168.1.120"
+
+
+def test_selecting_ros2_keeps_the_bridge_factory_rather_than_the_udp_one():
+    args = _args("--locomotion-transport", "ros2")
+    loco = Lite3Bindings().create_locomotion(args)
+    # The ROS factory is the module default; selecting ros2 must not inject a UDP one.
+    from deep_robotics.lite3.locomotion.lite3_locomotion import _ros2_locomotion
+    assert loco._implementation_factory is _ros2_locomotion
+
+
+def test_the_udp_transport_can_be_pointed_at_a_second_robot():
+    args = _args("--motion-host", "192.168.2.1", "--state-port", "43898")
+    loco = Lite3Bindings().create_locomotion(args)
+    implementation = loco._implementation_factory(
+        cmd_vel_topic=None, odom_topic=None, stamped=False, node_name="test")
+    assert implementation._motion_host == "192.168.2.1"
+    assert implementation._state_port == 43898
+
+
 def test_telemetry_does_not_persist_camera_source_credentials():
     binding = Lite3Bindings()
     args = _args("--camera-source", "rtsp://operator:secret@camera/live?token=private")

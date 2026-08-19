@@ -11,6 +11,12 @@ import math
 from pathlib import Path
 
 from deep_robotics.lite3.locomotion.lite3_locomotion import Lite3Locomotion
+from deep_robotics.lite3.locomotion.lite3_udp_locomotion import (
+    DEFAULT_COMMAND_PORT,
+    DEFAULT_MOTION_HOST,
+    DEFAULT_STATE_PORT,
+    udp_locomotion_factory,
+)
 from deep_robotics.lite3.visual_nav.camera import (
     Lite3Camera,
     camera_source_kind,
@@ -80,17 +86,45 @@ class Lite3Bindings:
 
     @staticmethod
     def _add_ros_arguments(parser) -> None:
-        parser.add_argument("--cmd-vel-topic", default="/cmd_vel",
-                            help="Lite3_ROS geometry_msgs/Twist command topic")
-        parser.add_argument("--odom-topic", default="/leg_odom2",
-                            help="Lite3_ROS nav_msgs/Odometry topic")
+        """Locomotion transport selection.
+
+        ``udp`` is the default because it is the shorter path to the same vendor
+        interface: it sends the frames ``Lite3_ROS``'s ``jetson2motion`` sends, to the same
+        motion host, and needs no ROS 2 runtime on a Venture that may not have a
+        provisioned perception host to put one on. ``ros2`` remains available for a unit
+        that does ship the vendor bridge.
+        """
+        transport = parser.add_argument_group("Lite3 locomotion transport")
+        transport.add_argument(
+            "--locomotion-transport", choices=("udp", "ros2"), default="udp",
+            help="udp: the vendor high-level UDP interface directly, no ROS 2 (default); "
+                 "ros2: the Lite3_ROS bridge topics",
+        )
+        transport.add_argument("--motion-host", default=DEFAULT_MOTION_HOST,
+                               help="Lite3 motion host address, for --locomotion-transport udp")
+        transport.add_argument("--command-port", type=int, default=DEFAULT_COMMAND_PORT,
+                               help="motion host command port")
+        transport.add_argument("--state-port", type=int, default=DEFAULT_STATE_PORT,
+                               help="local port the motion host streams state to; it must "
+                                    "match 'ip'/'target_port' in ~/jy_exe/conf/network.toml")
+        transport.add_argument("--cmd-vel-topic", default="/cmd_vel",
+                               help="Lite3_ROS geometry_msgs/Twist command topic (ros2 only)")
+        transport.add_argument("--odom-topic", default="/leg_odom2",
+                               help="Lite3_ROS nav_msgs/Odometry topic (ros2 only)")
 
     def create_locomotion(self, args):
-        return Lite3Locomotion(
-            cmd_vel_topic=args.cmd_vel_topic,
-            odom_topic=args.odom_topic,
-            operator_ready=args.operator_ready,
-        )
+        arguments = {
+            "cmd_vel_topic": args.cmd_vel_topic,
+            "odom_topic": args.odom_topic,
+            "operator_ready": args.operator_ready,
+        }
+        if getattr(args, "locomotion_transport", "udp") == "udp":
+            arguments["implementation_factory"] = udp_locomotion_factory(
+                motion_host=args.motion_host,
+                command_port=args.command_port,
+                state_port=args.state_port,
+            )
+        return Lite3Locomotion(**arguments)
 
     def create_health_monitor(self, args, *, live: bool):
         return Lite3HealthMonitor(
