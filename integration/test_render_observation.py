@@ -102,6 +102,17 @@ def test_ray_zero_is_read_in_the_run_local_frame_not_the_body_frame():
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    if not STALL.exists():
+        # EVERY assertion here is about one recorded run, and `deploy/` does not put
+        # `evidence/` on the robot — so on a deployed tree this suite has nothing to test.
+        # It exits 0, because a missing recording is not a broken install and
+        # `install.sh` reads only the exit status. It says so at maximum volume, because
+        # a suite that reports "passed" while running nothing is exactly the vacuous
+        # green this repository keeps finding.
+        print(f"  SKIPPED — no recorded run at {STALL}")
+        print(f"render_observation: 0/{len(tests)} passed, {len(tests)} SKIPPED "
+              f"(needs evidence/, which is not deployed)")
+        raise SystemExit(0)
     for t in tests:
         t()
         print(f"  ok  {t.__name__}")
