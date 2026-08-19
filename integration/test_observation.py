@@ -21,10 +21,16 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from observation import (
+    angular_shadow,
+    fan_bearings,
     observation_from_tick,
     range_vector,
+    rays_to_sample,
     reliable_range_m,
     to_body_frame,
+    unshadowed_windows,
+    window_containing,
+    window_is_sampled,
     wrap_pi,
 )
 from telemetry_reader import Run, SchemaError, read_run
@@ -302,6 +308,81 @@ def test_a_null_velocity_component_is_not_movement_either():
     run = Run(header={"schema": "go2.visual_nav.telemetry/1"},
               ticks=[_tick(command={"vx": None, "vy": None, "wz": None})])
     assert run.moving_ticks() == []
+
+
+# --- aperture analysis: can the fan see the HOLE, not just the objects -------------
+
+def test_a_disc_hides_a_wider_arc_the_closer_it_gets():
+    """The half-angle is ``asin(r/d)``, so approaching an obstacle grows its shadow. This
+    is the half of the geometry that is intuitive; the aperture tests below are the half
+    that is not."""
+    far = angular_shadow(0.0, 0.0, 2.0, 0.0, 0.23)
+    near = angular_shadow(0.0, 0.0, 0.7, 0.0, 0.23)
+    assert math.isclose(math.degrees(far[1]), 6.60, abs_tol=0.05)
+    assert math.isclose(math.degrees(near[1]), 19.18, abs_tol=0.05)
+
+
+def test_standing_inside_a_disc_is_not_reported_as_unblocked():
+    """Every bearing is blocked there, which is the most blocked a disc can be. Returning
+    a half-angle would be a lie and returning ``None`` for "no shadow" would be the
+    opposite one, so the windows collapse to nothing instead."""
+    assert angular_shadow(0.0, 0.0, 0.1, 0.0, 0.5) is None
+    assert unshadowed_windows(0.0, 0.0, [(0.1, 0.0, 0.5)]) == []
+
+
+def test_two_discs_leave_an_aperture_between_them():
+    """Centres 1.40 m apart, seen from 1.22 m — the two-bin scene. At the map's converged
+    0.23 m the aperture is 48.3 deg; at the young map's 0.40 m the same two objects, never
+    moved, leave 31.7 deg. A third of the hole is the map's uncertainty, not the room."""
+    converged = window_containing(0.0, 0.0, [(1.0, +0.70, 0.23), (1.0, -0.70, 0.23)], 0.0)
+    assert math.isclose(math.degrees(converged[1] - converged[0]), 48.26, abs_tol=0.05)
+    young = window_containing(0.0, 0.0, [(1.0, +0.70, 0.40), (1.0, -0.70, 0.40)], 0.0)
+    assert math.isclose(math.degrees(young[1] - young[0]), 31.73, abs_tol=0.05)
+
+
+def test_the_window_reported_is_the_one_the_goal_is_in_not_the_widest():
+    """THE TRAP. With both obstacles ahead, the widest clear window is the entire empty
+    half-circle BEHIND the robot — so a "widest window" reading scores every approach as
+    trivially resolvable, including the ones that stalled. Ask for the goal's bearing.
+    """
+    discs = [(1.0, +0.70, 0.23), (1.0, -0.70, 0.23)]
+    ahead = window_containing(0.0, 0.0, discs, 0.0)
+    behind = window_containing(0.0, 0.0, discs, math.pi)
+    assert math.isclose(math.degrees(ahead[1] - ahead[0]), 48.26, abs_tol=0.05)
+    assert math.isclose(math.degrees(behind[1] - behind[0]), 268.29, abs_tol=0.05)
+
+
+def test_a_bearing_the_discs_cover_has_no_window_at_all():
+    assert window_containing(0.0, 0.0, [(1.0, 0.0, 0.5)], 0.0) is None
+
+
+def test_ray_zero_is_the_start_heading():
+    """Not the nose, and not the middle of a field of view. The trained agent is
+    holonomic and never rotates, so the fan is anchored where the run reset."""
+    assert fan_bearings(12)[0] == 0.0
+    assert math.isclose(math.degrees(fan_bearings(12)[1]), 30.0, abs_tol=1e-6)
+    assert len(fan_bearings(24)) == 24
+
+
+def test_a_window_can_be_wide_enough_to_drive_through_and_still_be_unsampled():
+    """The whole finding of 2026-08-18 in one assertion: a 28 deg aperture, which is
+    comfortably wider than the robot needs, that a 12-ray fan misses entirely because it
+    sits between two rays. Resolution is about PHASE as well as width."""
+    window = (math.radians(1.0), math.radians(29.0))
+    assert not window_is_sampled(window, 12)
+    assert window_is_sampled(window, 24)
+
+
+def test_the_quoted_ray_count_holds_at_every_phase_and_one_fewer_does_not():
+    """``rays_to_sample`` is a guarantee, so it has to survive a sweep of the approach
+    heading rather than the one that was measured. The count below it must fail somewhere
+    — otherwise the function is just quoting a number that happened to work."""
+    width = math.radians(20.0)
+    required = rays_to_sample(width)
+    phases = [i * math.pi / 180.0 for i in range(-180, 180)]
+    assert all(window_is_sampled((p, p + width), required) for p in phases)
+    assert not all(window_is_sampled((p, p + width), required - 1) for p in phases)
+
 
 
 if __name__ == "__main__":

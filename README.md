@@ -221,11 +221,12 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Offline regression suite | 413 tests: policy 31, integration 108, Go2 visual navigation 244, Lite3 30 |
+| ✅ Offline regression suite | 493 tests: policy 33, integration 142, Go2 visual navigation 246, Lite3 72 |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
-| ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; five silent defects corrected, each pinned by a test |
+| ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; six silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
 | ⚠️ Policy sensing horizon | 0.875 m to the obstacle surface at the recalibrated scale — it sees the bin on 77 of 121 ticks, and the response is a cliff at that range rather than a ramp, at **every** scale |
+| ⛔ Policy driving **between** two obstacles | the horizon is shorter than the aperture is wide: both bins were in range on **0** of 137 ticks across three failing runs, and 33 of 79 on the one that worked. Needs a retrain — issue #29, evidence dated 2026-08-19 |
 | ⚠️ Policy driving the legs, **supervised** | at the walkable 1.0 command scale: 21/30 arrivals and **1 collision** in sim; planner veto required for obstacles |
 | ⛔ Policy driving the legs, **unsupervised** | collided in every simulated configuration — 21/30 at the scale the package shipped with. Not a candidate. |
 | ✅ Policy on Go2 hardware, empty lane | arrived 0.77 m from the chair after 2.78 m; policy drove 53/53 ticks, 0 vetoed, 0 stopped; obstacle run remains open |
@@ -288,6 +289,7 @@ evidence/        the approved run, the static-obstacle dry run, a sample telemet
 | `mappo_bridge.py` | one telemetry tick → one `RobotInput`. The three non-obvious mappings. |
 | `mappo_policy.py` | the shared loop: bridge → policy → command, plus the heading servo |
 | `replay_mappo.py` | a recorded run through the checkpoint, against an ablated control |
+| `render_observation.py` | the camera frame, the ray fan and the observation vector, drawn side by side per tick — what the policy saw and why |
 | `closed_loop_sim.py` | the policy's own actions moving a simulated robot — issue #5's gate |
 | `mappo_shadow.py` | a **live** run, policy logged beside the planner. Cannot move a leg. |
 | `mappo_drive.py` | a live run, the policy driving under the planner's veto, through a supported upstream seam |
@@ -295,11 +297,12 @@ evidence/        the approved run, the static-obstacle dry run, a sample telemet
 ## Running the tests
 
 ```bash
-cd policy      && python3 test_physical_ai_mappo.py                                #  31
-cd integration && for t in test_*.py; do python3 $t; done                          # 108
-cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 244
-cd robot-stack/deep_robotics/lite3/locomotion && python3 test_lite3_locomotion.py  #   6
-cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 24
+cd policy      && python3 test_physical_ai_mappo.py                                #  33
+cd integration && for t in test_*.py; do python3 $t; done                          # 142
+cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 246
+cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
+cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done #  39
+cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py #  16
 ```
 
 `policy/` and the parts of `integration/` that touch the policy need `numpy`; the

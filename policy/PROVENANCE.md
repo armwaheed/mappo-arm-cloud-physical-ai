@@ -50,9 +50,9 @@ otherwise written down anywhere.
 
 Every change to the delivered files is listed here and marked `CORRECTION` in the source.
 The first three were agreed with @spsagar13 in AIDP-567; the fourth and fifth were found
-while writing tests for the first three. **All five were silent failures** — nothing
-raised, nothing logged, and the delivered `basic_test.py` passed with every one of them
-in place.
+while writing tests for the first three; the sixth was found by drawing the observation
+instead of reading it. **All six were silent failures** — nothing raised, nothing logged,
+and the delivered `basic_test.py` passed with every one of them in place.
 
 | # | file | delivered | vendored | why it was invisible |
 | --- | --- | --- | --- | --- |
@@ -61,6 +61,7 @@ in place.
 | 3 | `physical_ai_mappo.py` | config is trusted | config validated against `metadata_json` | `lidar_range_vmas` is the range the proximity convention is measured against. Disagree with training and every value stays finite and in range; the robot just steers wrongly. |
 | 4 | `physical_ai_mappo.py` | positional association ran on **every** obstacle | only on ones that are anonymous or already this id | Two objects 0.2 m apart merged even when the producer had told them apart — which is exactly what `id` was added to the telemetry to prevent. The merged disc takes the larger radius, so the range vector still looks plausible. |
 | 5 | `physical_ai_mappo.py` | `Config.load` is `cls(**json.load(...))` | unknown keys named, values range-checked | A **misspelled** key is worse than an unknown one: the field it was meant to set keeps its default and the file reads as though it took effect. |
+| 6 | `physical_ai_mappo.py` | `match.radius = max(match.radius, radius)` on every re-observation | a **named** re-observation takes the reported radius; only an anonymous merge still takes `max` | The control stack's radius is `radius_m + position_sigma`, an estimate that starts large and CONVERGES — so `max` froze every obstacle at the map's least certain moment for the whole run. Over the four two-bin runs of 2026-08-18 the telemetry converged to 0.230 m while the controller held 0.379–0.472 m, which shrank the aperture between two bins by 3.4x in angular terms and turned three runs' mean commanded `vx` negative. Invisible because an over-large disc yields a perfectly well-formed range vector; it just reports a gap the robot cannot fit through. |
 
 Two further changes are calibration and packaging rather than corrections:
 

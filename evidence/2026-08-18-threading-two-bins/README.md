@@ -156,9 +156,16 @@ ray  2-11      0.0000
 ```
 
 **The policy did not see a gap. It saw a wall, and backing away was the correct response
-to that observation.** Both bins landed on adjacent rays and the aperture between them fell
-in the unsampled space between them. With 30° spacing there is no ray at 15° to report
-clear.
+to that observation.**
+
+> ⚠️ **CORRECTED 2026-08-19 — the mechanism below was wrong.** "Both bins landed on
+> adjacent rays" is not what happened: at the stall **landmark-2 was not in the
+> observation at all**, its surface 1.22 m away against a 0.875 m horizon. Rays 0 and 1
+> were both blocked by **landmark-1 alone**, which subtended 69° because the controller
+> had latched its opening 0.402 m radius while the map had converged to 0.230 m. The
+> conclusion — a fan that cannot resolve the aperture — survives, but the aperture was a
+> third as wide as it should have been and the radius was most of the reason. Full
+> re-derivation, and the fix, in `../2026-08-19-what-the-policy-sees/`.
 
 ## Two different tolerances, and the tighter one is not the sensor
 
@@ -192,6 +199,13 @@ The concrete ask for a retrain, with the numbers that justify it:
 A finer fan is the only fix that removes the hand-alignment. Everything else in this
 directory is a workaround for a sensor that cannot resolve the hole it is being asked to
 drive through.
+
+> ⚠️ **REVISED 2026-08-19.** Two things rank above the fan, both measured in
+> `../2026-08-19-what-the-policy-sees/`: the **0.875 m horizon**, which put both bins in
+> range on 0 of 137 ticks across the three failing runs and 33 of 79 on the one that
+> worked; and the **latched radius**, now fixed. With the radii corrected a 24-ray fan
+> samples run 14's clear window on 48 of 50 ticks and **a 16-ray fan is no better than 12
+> without the fix** — so the "16 as a fallback" line above should not be taken up.
 
 ## Also observed
 

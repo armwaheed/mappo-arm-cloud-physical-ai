@@ -395,9 +395,15 @@ class MappoController:
             radius = max(0.0, float(d.radius_m))
 
             match = None
+            #: Whether this detection was matched to a mapped obstacle by IDENTITY. It
+            #: decides how the radius combines below, and the two cases are genuinely
+            #: different: one is the producer re-measuring an object it has named, the
+            #: other is two unnamed detections being declared the same thing.
+            matched_by_id = False
             if d.object_id is not None:
                 match = next((o for o in self._obstacles if o.object_id == d.object_id),
                              None)
+                matched_by_id = match is not None
             if match is None:
                 # CORRECTION: the positional fallback used to consider EVERY mapped
                 # obstacle, including ones already carrying a different identity — so two
@@ -420,7 +426,21 @@ class MappoController:
             else:
                 match.x = (1 - POSITION_SMOOTHING) * match.x + POSITION_SMOOTHING * wx
                 match.y = (1 - POSITION_SMOOTHING) * match.y + POSITION_SMOOTHING * wy
-                match.radius = max(match.radius, radius)
+                # CORRECTION (new). A re-observation of an object the producer has
+                # NAMED takes the radius it reports now; only an anonymous merge keeps
+                # the larger of the two. The delivered code took `max` unconditionally,
+                # which turns the mapped radius into a high-water mark that can never
+                # come down — and the control stack's radius is
+                # `radius_m + position_sigma`, an estimate that STARTS large and
+                # converges. So the policy was permanently planning against the map's
+                # least certain moment. Measured over the four two-bin runs of
+                # 2026-08-18: every landmark converged to 0.230 m in telemetry while the
+                # controller held 0.379-0.472 m for the whole run, which shrank the
+                # aperture between two bins from 0.91-0.97 m to 0.45-0.60 m and its
+                # angular width, which is what the ray fan has to resolve, by 3.4x.
+                # Invisible because an over-large disc produces a completely plausible
+                # range vector; it just reports a gap the robot cannot fit through.
+                match.radius = radius if matched_by_id else max(match.radius, radius)
                 match.last_seen = now
                 if match.object_id is None:
                     match.object_id = d.object_id
