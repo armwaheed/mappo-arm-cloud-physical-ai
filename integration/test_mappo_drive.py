@@ -296,6 +296,42 @@ def test_a_reverse_command_is_never_scaled_up_to_the_gait_floor():
     assert planner.counts["speed_raised"] == 0
 
 
+def test_a_pure_strafe_is_scaled_because_the_lateral_floor_is_lower():
+    """The guard used to read ``vx <= 0.0``, which refused a PURE STRAFE as well as a
+    reverse, on the stated grounds that a strafe "cannot reach the floor anyway
+    (max_vy 0.20 < 0.35)". That compares max_vy against the FORWARD gait floor.
+
+    The lateral floor is a different number and had never been measured. Measured
+    2026-08-19 in open floor against a forward control in the same session: 0.15 m/s does
+    not walk this robot; 0.20 m/s does, three repeats of three, 0.076-0.087 m of travel
+    each. So the shipped envelope can strafe, and the guard was refusing the one command
+    that would have helped.
+
+    Three live runs stalled on exactly this. Every escape was v=(+0.000,-0.150) — vx
+    EXACTLY zero, so ``vx <= 0.0`` held, nothing was scaled, 0.150 m/s went out, and
+    0.150 is below the lateral floor. The robot stood inside its own hard gap with an
+    escape available and no way to walk it.
+
+    Revert to ``<=`` and this reads unscaled.
+    """
+    planner = _planner(gait_floor_m_s=0.35)
+    vx, vy, _wz = planner._at_least_walking_pace((0.0, -0.150, 0.0))
+    assert planner.counts["speed_raised"] == 1, "a sideways step is not a reverse"
+    assert vx == 0.0, "scaling must not invent a forward component"
+    assert abs(vy) > 0.150, "the whole point is that it leaves faster than it arrived"
+    # Clamped by the envelope to max_vy, which is the value measured to walk.
+    assert math.isclose(abs(vy), planner.limits.max_vy, rel_tol=1e-6)
+
+
+def test_a_reverse_is_still_refused_after_the_strafe_correction():
+    """The correction is `< 0.0`, not the removal of the guard. A backward drift must
+    still never be amplified — that one was observed live as a -0.03 m/s twitch scaled
+    into a committed 0.35 m/s reverse into space this robot cannot sense."""
+    planner = _planner(gait_floor_m_s=0.35)
+    assert planner._at_least_walking_pace((-0.001, -0.150, 0.0)) == (-0.001, -0.150, 0.0)
+    assert planner.counts["speed_raised"] == 0
+
+
 def test_the_radius_the_live_runs_used_is_accepted():
     """A gate that refuses the correct configuration is a gate nobody leaves switched on."""
     planner = MappoPlanner(Limits(), PlannerConfig(robot_radius_m=0.25),

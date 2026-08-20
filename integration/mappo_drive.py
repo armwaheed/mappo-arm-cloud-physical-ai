@@ -380,14 +380,28 @@ class MappoPlanner(DynamicWindowPlanner):
         # scaled, or a zeroed status tick would be turned into a walk.
         if speed <= 0.0 or speed >= floor:
             return proposed
-        # Never scale a command that is not going forwards. Scaling multiplies the whole
-        # vector, so without this a timid sideways or backward twitch becomes a committed
-        # one at full speed — and the only direction this robot senses is ahead. Observed
-        # live before the forward-only clamp above existed: a -0.03 m/s drift was scaled
-        # into a 0.35 m/s reverse. The clamp makes vx >= 0, so what is left to refuse is
-        # the pure strafe, which cannot reach the floor anyway (max_vy 0.20 < 0.35) and
-        # would only be scaled into the fastest sideways crab the envelope allows.
-        if vx <= 0.0:
+        # Never scale a command that is going BACKWARDS. Scaling multiplies the whole
+        # vector, so without this a timid backward twitch becomes a committed one at full
+        # speed — and the only direction this robot senses is ahead. Observed live before
+        # the forward-only clamp above existed: a -0.03 m/s drift was scaled into a
+        # 0.35 m/s reverse.
+        #
+        # CORRECTED 2026-08-19: this read `vx <= 0.0`, which also refused a PURE STRAFE,
+        # on the stated grounds that a strafe "cannot reach the floor anyway (max_vy 0.20
+        # < 0.35)". That compares max_vy against the FORWARD gait floor. The lateral floor
+        # is not the same number and had never been measured. It is now: 0.15 m/s does not
+        # walk this robot, 0.20 does — three repeats out of three, 0.076-0.087 m of travel
+        # each, against a forward control in the same session. So the shipped envelope can
+        # strafe, and this guard was refusing the one command that would have helped.
+        #
+        # Three live runs stalled on exactly that. Each escape was v=(+0.000,-0.150) with
+        # vx EXACTLY zero, so `vx <= 0.0` held, no scaling happened, 0.150 m/s went out,
+        # and 0.150 is below the lateral floor. The robot stood still inside its own hard
+        # gap with an escape available and no way to execute it. Scaled, the same command
+        # leaves as 0.20 m/s of strafe, which is measured to walk.
+        #
+        # `< 0.0` not `<= 0.0`: a sideways step is not a reverse.
+        if vx < 0.0:
             return proposed
         scale = floor / speed
         scaled_vx = max(-self.limits.max_vx, min(self.limits.max_vx, vx * scale))
