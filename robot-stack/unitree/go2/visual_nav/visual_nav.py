@@ -762,7 +762,20 @@ class VisualNavigator:
             frame_age_s=frame_age, perception_seq=result.seq,
             detect_ms=result.detect_ms, standing=self._standing,
             live=self._config.live, video_frame=video_frame, stale=stale,
-            measured=self._measured_velocity(), health=self._health.latest())
+            measured=self._measured_velocity(), health=self._health.latest(),
+            sightings=result.ranged, goal_crop=self._goal_crop())
+
+    def _goal_crop(self) -> float | None:
+        """The crop the goal source used last, or ``None`` if it does not have one.
+
+        Guarded the same way as :meth:`_measured_velocity`, and for the same reason: not
+        every goal source crops — an ArUco marker or a fixed waypoint has no such notion
+        — and a telemetry field must never be the thing that ends a run.
+        """
+        try:
+            return float(self._goal.last_crop)
+        except Exception:
+            return None
 
     def _measured_velocity(self):
         """What the odometry says the body is doing, or ``None`` if it cannot say.

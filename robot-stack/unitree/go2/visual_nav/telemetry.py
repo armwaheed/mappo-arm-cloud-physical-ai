@@ -129,7 +129,8 @@ class TelemetryWriter:
                    command, obstacles, frame_age_s: float, perception_seq: int,
                    detect_ms: float, standing: bool, live: bool,
                    video_frame: int | None = None, stale: bool = False,
-                   measured=None, health=None) -> None:
+                   measured=None, health=None, sightings=(),
+                   goal_crop: float | None = None) -> None:
         """One control tick, whether or not it commanded motion.
 
         EVERY tick is written, including holds, stale-perception skips and the
@@ -163,7 +164,29 @@ class TelemetryWriter:
                            "vx": _finite(o.vx), "vy": _finite(o.vy),
                            "radius_m": _finite(o.radius_m)}
                           for o in obstacles],
+            # THE RAW MEASUREMENT, before the map fuses it. Everything in `obstacles`
+            # above is a Kalman estimate in odom, so a range recomputed from it is just
+            # the map re-derived and cannot audit the map. Two open questions needed this
+            # and could not be answered without it: whether the size-prior range scale is
+            # right (compare `range_m` against odometry over an approach), and how a
+            # detection ranged at 0.8 m became a landmark 0.18 m from the robot. `source`
+            # is which prior produced it — "height", "width" or "frame-fill" — because a
+            # frame-fill reading is a constant, not a measurement, and a consumer must be
+            # able to tell those apart.
+            "sightings": [{"label": item.detection.label, "range_m": _finite(item.range_m),
+                           "bearing_rad": _finite(item.bearing_rad), "source": item.source,
+                           "score": _finite(item.detection.score),
+                           "box": [_finite(item.detection.x1), _finite(item.detection.y1),
+                                   _finite(item.detection.x2), _finite(item.detection.y2)]}
+                          for item in sightings],
             "perception": {"seq": int(perception_seq),
+                           # The crop the goal pass ACTUALLY used this tick, which is no
+                           # longer the flag the operator passed: it widens as the goal
+                           # nears so the target stops being clipped. A goal that jumps
+                           # is the first thing anyone suspects, and without this there
+                           # is no way to tell a moving crop from a hopping detection.
+                           "goal_crop": _finite(goal_crop) if goal_crop is not None
+                           else None,
                            "frame_age_s": round(float(frame_age_s), 4),
                            "detect_ms": round(float(detect_ms), 2),
                            "video_frame": video_frame,
