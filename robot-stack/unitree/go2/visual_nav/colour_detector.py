@@ -81,7 +81,35 @@ class ColourProfile:
     width_m: float
     radius_m: float
     min_area_px: int = 400
-    min_fill: float = 0.55
+    #: Contour area over bounding-box area. LOWERED 0.55 -> 0.35 on 2026-08-19, measured
+    #: rather than felt. 0.55 came from this unit's own footage at 2.15 m, square-on and
+    #: well lit, where a bin fills 0.85 of its box. Live runs are not that: a bin at an
+    #: angle, in the shadow of a cabinet, clipped by the frame edge, or with the recycling
+    #: logo breaking the mask comes in at 0.36-0.48.
+    #:
+    #: Swept over the 63 recorded frames of the run that ended by driving over a bin, with
+    #: two bins staged throughout:
+    #:
+    #:   ==========  ==================  ===================
+    #:   min_fill    frames w/ >=1 bin   frames w/ BOTH bins
+    #:   ==========  ==================  ===================
+    #:   0.55            19 of 63             2 of 63
+    #:   0.45            25                   8
+    #:   0.35            28                  19
+    #:   0.30            29                  21
+    #:   0.25            29                  22
+    #:   ==========  ==================  ===================
+    #:
+    #: At the shipped gate the stack saw both bins on 3% of frames, which is why landmarks
+    #: went unobserved, accrued misses and were pruned mid-approach while the robot was
+    #: still walking toward them. 0.35 is the knee: below it the curve is flat and only
+    #: admits more irregular blue.
+    #:
+    #: This gate is what separates a bin from a same-coloured wall, so loosening it is not
+    #: free — spurious blue on a humanoid's panels was observed passing at low fill during
+    #: the same session. ``score`` IS this fill, so a marginal blob arrives labelled as
+    #: marginal and a consumer can weight it.
+    min_fill: float = 0.35
     min_aspect: float = 0.35
     max_aspect: float = 2.60
 
