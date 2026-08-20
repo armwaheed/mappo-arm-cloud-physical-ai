@@ -221,7 +221,7 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Offline regression suite | 500 tests: policy 33, integration 142, Go2 visual navigation 253, Lite3 72 |
+| ✅ Offline regression suite | 504 tests: policy 33, integration 142, Go2 visual navigation 257, Lite3 72 |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; six silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
@@ -299,7 +299,7 @@ evidence/        the approved run, the static-obstacle dry run, a sample telemet
 ```bash
 cd policy      && python3 test_physical_ai_mappo.py                                #  33
 cd integration && for t in test_*.py; do python3 $t; done                          # 142
-cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 253
+cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 257
 cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
 cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done #  39
 cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py #  16

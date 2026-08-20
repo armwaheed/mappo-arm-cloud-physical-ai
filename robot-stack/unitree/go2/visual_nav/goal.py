@@ -341,6 +341,10 @@ class DetectedObjectGoal(GoalSource):
         self._sightings = 0
         self._passes = 0
         self._last_pass: float | None = None
+        #: The crop the last pass actually used. Recorded because it is no longer the
+        #: value the caller passed — it widens with range — and a goal that jumps is
+        #: otherwise impossible to tell from a crop that moved under it.
+        self.last_crop = crop
 
     @property
     def description(self) -> str:
@@ -401,6 +405,7 @@ class DetectedObjectGoal(GoalSource):
 
         height, width = image.shape[:2]
         crop = self._crop_for(pose, height)
+        self.last_crop = crop
         crop_w, crop_h = int(width * crop), int(height * crop)
         x0, y0 = (width - crop_w) // 2, (height - crop_h) // 2
 

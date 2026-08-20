@@ -307,6 +307,78 @@ def test_records_counts_what_was_written():
         assert writer.records == 3
 
 
+# --- the raw measurement, and the crop that produced it ---------------------------
+
+class _Sighting:
+    """A RangedDetection's shape, minus the import: what perception measured."""
+
+    class _Box:
+        def __init__(self, label, score):
+            self.label, self.score = label, score
+            self.x1, self.y1, self.x2, self.y2 = 0.0, 746.0, 648.0, 1079.0
+
+    def __init__(self, range_m, bearing_rad, source, label="bin", score=0.77):
+        self.range_m, self.bearing_rad, self.source = range_m, bearing_rad, source
+        self.detection = self._Box(label, score)
+
+
+def test_the_raw_sighting_is_recorded_beside_the_fused_estimate():
+    """`obstacles` is the MAP's answer, in odom, after fusion. A range recomputed from it
+    is the map re-derived, so it cannot audit the map — which is why two open questions
+    stalled for want of this field: whether the size-prior range scale is right, and how
+    a detection ranged at 0.8 m became a landmark 0.18 m from the robot."""
+    with tempfile.TemporaryDirectory() as directory:
+        writer = _writer(directory)
+        writer.write_header(live=False)
+        _tick(writer, sightings=[_Sighting(0.8, 0.457, "frame-fill")])
+        tick = _read(directory)[1]
+
+    assert len(tick["sightings"]) == 1
+    sighting = tick["sightings"][0]
+    assert sighting["range_m"] == 0.8
+    assert sighting["source"] == "frame-fill"
+    assert sighting["box"] == [0.0, 746.0, 648.0, 1079.0]
+    # And the fused estimate is still there, separately. Both, or neither is useful.
+    assert tick["obstacles"][0]["id"] == "landmark-1"
+
+
+def test_a_fabricated_range_is_distinguishable_from_a_measured_one():
+    """`source` is the point of the field. A frame-fill reading is a CONSTANT returned
+    when the box is clipped on both axes, not a measurement, and a consumer that cannot
+    tell it apart from a height-prior range will average the two and believe the
+    result."""
+    with tempfile.TemporaryDirectory() as directory:
+        writer = _writer(directory)
+        writer.write_header(live=False)
+        _tick(writer, sightings=[_Sighting(2.34, -0.27, "height"),
+                                 _Sighting(0.8, 0.457, "frame-fill")])
+        sightings = _read(directory)[1]["sightings"]
+
+    assert [s["source"] for s in sightings] == ["height", "frame-fill"]
+
+
+def test_the_crop_the_goal_pass_actually_used_is_recorded():
+    """It is no longer the flag the operator passed — it widens as the goal nears. A
+    goal that jumps is the first thing anyone suspects; without this there is no way to
+    separate a moving crop from a hopping detection."""
+    with tempfile.TemporaryDirectory() as directory:
+        writer = _writer(directory)
+        writer.write_header(live=False)
+        _tick(writer, goal_crop=0.89)
+        assert _read(directory)[1]["perception"]["goal_crop"] == 0.89
+
+
+def test_a_goal_source_without_a_crop_records_null_rather_than_failing():
+    """An ArUco marker or a fixed waypoint has no crop. A telemetry field must never be
+    the thing that ends a run."""
+    with tempfile.TemporaryDirectory() as directory:
+        writer = _writer(directory)
+        writer.write_header(live=False)
+        _tick(writer)
+        assert _read(directory)[1]["perception"]["goal_crop"] is None
+        assert _read(directory)[1]["sightings"] == []
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
