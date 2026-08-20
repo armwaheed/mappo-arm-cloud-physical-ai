@@ -57,6 +57,23 @@ BEARING_SIGMA_RAD = math.radians(1.5)
 # leans on the good measurements.
 WIDTH_SOURCE_SIGMA_SCALE = 2.5
 
+# A CONSTANT is not a weak measurement, and the difference is not a matter of degree.
+# `frame-fill` returns a fixed 0.8 m whenever a box is clipped on both axes, and
+# `width-capped` returns the fit range whenever the width span exceeds it — neither moves
+# when the robot does, so neither carries information about range at all. Inflating the
+# sigma this far leaves the filter using the part that IS good (the bearing, on the cross
+# axis, which stayed accurate through both failures) while the along-range term barely
+# moves the estimate: against a converged landmark's ~0.08 m the Kalman gain is ~8e-4, so
+# thirty frames of a bad reading shift it by millimetres.
+#
+# It must still be an OBSERVATION rather than a discarded one, or the landmark goes
+# unmatched, misses accrue, and it is deleted and respawned — which is the bug fixed in
+# static_map's MAX_MISSES. Distrusting a measurement and ignoring it are different things.
+UNMEASURED_SOURCE_SIGMA_SCALE = 10.0
+
+#: Sources that report a constant rather than a measurement.
+UNMEASURED_SOURCES = ("frame-fill", "width-capped")
+
 # Pedestrian acceleration driving the constant-velocity process noise. A person can
 # change direction hard; this is what lets the filter follow it instead of lagging.
 PROCESS_ACCEL_SIGMA = 1.0      # m/s^2
@@ -113,6 +130,19 @@ class Observation:
         return rot @ np.diag([self.sigma_along ** 2, self.sigma_cross ** 2]) @ rot.T
 
 
+def _range_sigma_scale(source: str) -> float:
+    """How far to inflate the range sigma for a given ranging source.
+
+    Three tiers, not two: a height-prior range is the good measurement, a width-prior one
+    is weak because body yaw swings apparent width nearly 2:1, and a constant is not a
+    measurement at all. Collapsing the last two into one tier is what let a fixed 0.719 m
+    reading hold a landmark still for five seconds.
+    """
+    if source in UNMEASURED_SOURCES:
+        return UNMEASURED_SOURCE_SIGMA_SCALE
+    return 1.0 if source == "height" else WIDTH_SOURCE_SIGMA_SCALE
+
+
 def observation_from(bearing_rad: float, range_m: float, source: str, label: str,
                      pose: tuple[float, float, float]) -> Observation:
     """Build an :class:`Observation` from a ranged detection and the robot's pose.
@@ -125,7 +155,7 @@ def observation_from(bearing_rad: float, range_m: float, source: str, label: str
     return Observation.from_bearing_range(
         bearing_rad=bearing_rad, range_m=range_m,
         robot_x=pose[0], robot_y=pose[1], robot_yaw=pose[2], label=label,
-        range_sigma_scale=1.0 if source == "height" else WIDTH_SOURCE_SIGMA_SCALE)
+        range_sigma_scale=_range_sigma_scale(source))
 
 
 @dataclass

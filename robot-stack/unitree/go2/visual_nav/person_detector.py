@@ -193,7 +193,21 @@ def estimate_range(detection: Detection, camera: FisheyeCamera,
         # A clipped-height box cannot belong to something far away, whatever the width
         # says — cap it at the fit distance so a narrow (profile) reading cannot be
         # inflated into a false "they're 6 m off".
-        return min(span, object_fit_range(camera, prior)), "width"
+        fit = object_fit_range(camera, prior)
+        if span > fit:
+            # THE CAP BOUND, so what comes back is the cap, not the measurement, and the
+            # caller has to be able to tell. Reported as its own source because the two
+            # deserve different trust: a width-prior range is a weak measurement, a
+            # capped one is a CONSTANT that cannot move however the robot does.
+            #
+            # Live run of 2026-08-19: approaching a bin, the width span read 0.748-0.907 m
+            # across thirteen frames while the fit range is 0.719 m, so every single one
+            # was capped and the reported range was 0.719 m to three decimals for five
+            # seconds — while the bearing tracked correctly from +13 to +25 deg. The
+            # planner's gap sat at 0.20-0.24 m against a 0.25 m hard gap, vetoed every
+            # tick, and the robot deadlocked against a number that could not move.
+            return fit, "width-capped"
+        return span, "width"
 
     return FILLS_FRAME_RANGE_M, "frame-fill"
 
