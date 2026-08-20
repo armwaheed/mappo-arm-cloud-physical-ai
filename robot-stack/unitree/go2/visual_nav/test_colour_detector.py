@@ -175,6 +175,32 @@ def test_a_nonsense_detector_is_rejected_at_construction():
         raise AssertionError(f"accepted {bad}")
 
 
+def test_a_bin_at_a_live_runs_fill_is_detected_not_rejected():
+    """The gate that ran the robot over a bin on 2026-08-19.
+
+    0.55 was measured square-on and well lit, where a bin fills 0.85 of its box. A live
+    run is not that. Over the 63 recorded frames of that run, with two bins staged the
+    whole time, the shipped gate saw BOTH bins on 2 frames — 3%. Landmarks therefore went
+    unobserved, accrued misses, and were pruned while the robot was still walking toward
+    them; the map then reported clear space and it drove through.
+
+    0.36-0.48 is the band those bins actually presented at. This asserts the gate admits
+    it. Put min_fill back to 0.55 and the blob below is rejected.
+    """
+    profile = BLUE_BIN
+    # 0.42 fill: mid-band for a bin seen at an angle with its logo breaking the mask.
+    assert profile.min_fill <= 0.42, "a bin at a live run's fill must pass"
+    # And the gate is not switched off — a smear of wall colour still fails.
+    assert profile.min_fill > 0.10
+
+
+def test_the_shipped_profile_carries_the_measured_gate():
+    """A regression pin on the value itself, since it was chosen from a sweep and a
+    later edit that 'tidies' it back to a rounder number would silently restore the
+    3%-detection behaviour without failing anything else."""
+    assert BLUE_BIN.min_fill == 0.35
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
