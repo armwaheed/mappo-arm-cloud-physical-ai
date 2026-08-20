@@ -85,11 +85,26 @@ fails a test, so it would have shipped.
 
 ### Is this repository AHEAD of upstream? Check before syncing anything.
 
-**AHEAD table — currently EMPTY, resolved 2026-08-18.** A re-vendor is safe again.
+**AHEAD table — NOT empty. Re-opened 2026-08-19.** A re-vendor would revert six source
+files and five test suites. The upstream PR is open (`#37` there); once it merges, re-vendor
+and empty this table again.
 
 | | files | what `rsync -a --delete` does |
 | --- | --- | --- |
+| **Edited here, fixed upstream in PR #37** | `visual_nav/`: `static_map.py`, `tracker.py`, `person_detector.py`, `goal.py`, `telemetry.py`, `visual_nav.py`, and the five matching `test_*.py` | **Silently reverts three live-run fixes and the instrumentation that found them.** No test fails: the tests are in the same files and go back with them. |
 | **Added here, absent upstream** | *(none)* | — |
+
+What is at stake if that happens, in one line each: the landmark lifetime that stops a
+converged landmark being deleted mid-approach (`MAX_MISSES` 8 → 25); the third trust tier
+that stops the filter fusing a *constant* as if it were a measurement; the goal crop that
+opens as the target nears instead of clipping it; and the `sightings` telemetry, without
+which none of the above was diagnosable. Three live stalls of 2026-08-19, evidence in
+`evidence/2026-08-19-what-the-policy-sees/` and the issues it links.
+
+This entry exists because the rule at the top of this section — *fix upstream and
+re-vendor* — was broken four times in one session before anyone noticed. The fixes were
+written here first, under time pressure with the robot in the room, and the upstream PR was
+opened afterwards rather than alongside.
 | **Ahead here, older upstream** | *(none)* | — |
 
 Keep the preflight and the `P` rules below anyway. This was not hypothetical: between the
