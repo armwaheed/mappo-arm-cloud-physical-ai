@@ -27,8 +27,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from tracker import (
     COAST_TIMEOUT_S,
     MAX_MISSES,
+    UNMEASURED_SOURCE_SIGMA_SCALE,
+    WIDTH_SOURCE_SIGMA_SCALE,
     Observation,
     ObstacleTracker,
+    _range_sigma_scale,
+    observation_from,
 )
 
 DT = 0.15  # a realistic perception period
@@ -292,6 +296,40 @@ def test_the_coast_timeout_still_bounds_an_occluded_track():
     now += COAST_TIMEOUT_S + 0.5
     _miss(tracker, ORIGIN, now, occluders=BIN_SHADOW)
     assert not tracker.tracks
+
+
+def test_a_constant_is_trusted_less_than_a_weak_measurement():
+    """Three tiers, not two. A height-prior range is the good measurement; a width-prior
+    one is weak because body yaw swings apparent width nearly 2:1; a constant is not a
+    measurement at all and cannot move when the robot does. Collapsing the last two into
+    one tier is what let a fixed 0.719 m reading hold a landmark still for five seconds
+    on 2026-08-19."""
+    assert _range_sigma_scale("height") == 1.0
+    assert _range_sigma_scale("width") == WIDTH_SOURCE_SIGMA_SCALE
+    for constant in ("frame-fill", "width-capped"):
+        assert _range_sigma_scale(constant) == UNMEASURED_SOURCE_SIGMA_SCALE
+        assert _range_sigma_scale(constant) > WIDTH_SOURCE_SIGMA_SCALE * 2
+
+
+def test_a_constant_observation_keeps_its_bearing_and_gives_up_its_range():
+    """The point of the inflation. The bearing stayed accurate through both hardware
+    failures — it tracked +13 to +25 deg while the range was frozen — so the filter must
+    keep using the cross axis and stop leaning on the along axis."""
+    good = observation_from(0.3, 2.0, "height", "bin", (0.0, 0.0, 0.0))
+    constant = observation_from(0.3, 2.0, "width-capped", "bin", (0.0, 0.0, 0.0))
+    assert constant.sigma_cross == good.sigma_cross, "the bearing is still good"
+    assert constant.sigma_along > good.sigma_along * 5, "the range is not"
+
+
+def test_a_constant_is_still_an_observation():
+    """Distrusting a measurement and discarding it are different things. Discarded, the
+    landmark goes unmatched, misses accrue and it is deleted and respawned with an
+    unconverged radius — the failure fixed in static_map's MAX_MISSES. It has to keep
+    associating."""
+    constant = observation_from(0.0, 0.719, "width-capped", "bin", (0.0, 0.0, 0.0))
+    assert math.isfinite(constant.x) and math.isfinite(constant.y)
+    assert math.isfinite(constant.sigma_along)
+    assert math.isclose(constant.x, 0.719), "it still reports where it thinks the bin is"
 
 
 if __name__ == "__main__":

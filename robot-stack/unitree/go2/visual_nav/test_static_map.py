@@ -30,7 +30,7 @@ from static_map import (
     POSITION_SIGMA_FLOOR_M,
     StaticObstacleMap,
 )
-from tracker import Observation
+from tracker import Observation, observation_from
 
 ORIGIN = (0.0, 0.0, 0.0)
 
@@ -404,6 +404,50 @@ def test_the_re_sighting_after_a_dropout_does_not_spawn_a_duplicate():
     assert settled - radius < 0.05, "the survivor stays near its converged radius"
     assert settled < 0.5 * (radius + fresh), \
         f"a survivor at {settled:.3f} m must not look like a fresh spawn at {fresh:.3f} m"
+
+
+def test_a_stream_of_constants_cannot_drag_a_converged_landmark():
+    """The end-to-end property, and the reason the sigma tiers exist.
+
+    A bin at 2.0 m, converged over 30 sightings. The robot then walks to within 1.0 m
+    while every sighting reports the SAME constant range — which is what a capped or
+    frame-filling reading does, by construction. Those constants place the bin at 1.719 m
+    in odom, 0.28 m short of where it is. The landmark must not follow them, because the
+    robot's own odometry is the better estimate of a thing that has not moved.
+
+    Give the constants a measurement's trust and the landmark walks toward the robot,
+    which is how a run ends up planning against an obstacle that is not there.
+    """
+    mapping = _map()
+    _see(mapping, 30, bearing_deg=0.0, range_m=2.0)
+    settled = mapping.landmarks[0].x
+
+    for index in range(30):
+        pose = (1.0, 0.0, 0.0)
+        mapping.observe([observation_from(0.0, 0.719, "width-capped", "bin", pose)],
+                        10.0 + index * 0.14, *pose)
+
+    assert len(mapping.landmarks) == 1, "the constant must still ASSOCIATE, or #36 returns"
+    moved = abs(mapping.landmarks[0].x - settled)
+    assert moved < 0.05, f"a converged landmark moved {moved:.3f} m on constants alone"
+
+
+def test_the_constant_still_counts_as_seeing_the_landmark():
+    """Distrust is not the same as discarding. A discarded sighting leaves the landmark
+    unmatched, misses accrue, and at MAX_MISSES it is deleted and respawned with an
+    unconverged radius — the exact failure this suite already pins above."""
+    mapping = _map()
+    _see(mapping, 30, bearing_deg=0.0, range_m=2.0)
+    identity = mapping.landmarks[0].landmark_id
+
+    for index in range(MAX_MISSES + 10):
+        pose = (1.0, 0.0, 0.0)
+        mapping.observe([observation_from(0.0, 0.719, "width-capped", "bin", pose)],
+                        10.0 + index * 0.14, *pose)
+
+    assert len(mapping.landmarks) == 1
+    assert mapping.landmarks[0].landmark_id == identity, \
+        "a distrusted sighting must still reset the miss counter"
 
 
 if __name__ == "__main__":

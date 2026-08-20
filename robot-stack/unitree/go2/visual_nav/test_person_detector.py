@@ -81,7 +81,10 @@ def test_clipped_box_is_never_reported_as_far_away():
     detection = Detection(x1=940.0, y1=0.0, x2=980.0, y2=900.0, score=0.9,
                           label="person")
     estimate, source = estimate_range(detection, MODEL)
-    assert source == "width"
+    # "width-capped", not "width": the cap BOUND here, so what comes back is the cap and
+    # not the width span, and a consumer has to be able to tell. That is the whole point
+    # of the separate name — see UNMEASURED_SOURCES in tracker.
+    assert source == "width-capped", source
     assert estimate <= object_fit_range(MODEL) + 1e-9, estimate
 
 
@@ -163,7 +166,7 @@ def test_a_clipped_short_object_is_not_reported_at_zero_range():
     bin_prior = SizePrior(height_m=0.3048, width_m=0.27)
     clipped = Detection(x1=800.0, y1=700.0, x2=1100.0, y2=1079.0, score=0.9, label="bin")
     range_m, source = estimate_range(clipped, camera, bin_prior)
-    assert source == "width"
+    assert source == "width-capped", source
     assert range_m > 0.05, f"a bin reported at {range_m:.3f} m is inside the robot"
 
 
@@ -174,6 +177,29 @@ def test_a_person_still_switches_estimator_where_they_always_did():
     fit = object_fit_range(camera, PERSON_PRIOR)
     assert abs(fit - (PERSON_HEIGHT_M - 0.32) / math.tan((1080 / 2.0) / 1290.2)) < 1e-6
     assert 2.5 < fit < 3.5, fit
+
+
+def test_the_cap_is_reported_as_its_own_source_only_when_it_binds():
+    """Tonight's numbers. Approaching a bin, the width span read 0.748-0.907 m across
+    thirteen frames against a 0.719 m fit range, so every one was capped and the reported
+    range was 0.719 m to three decimals for five seconds. A span BELOW the fit range is a
+    real measurement and keeps the plain name."""
+    camera = FisheyeCamera(width=1920, height=1080, focal_px=1290.2, cx=960.0, cy=540.0,
+                           height_m=0.32)
+    bin_prior = SizePrior(height_m=0.3048, width_m=0.27)
+    fit = object_fit_range(camera, bin_prior)
+
+    # 438 px wide, bottom-clipped: the box measured on hardware at t=7.9.
+    capped = Detection(x1=340.0, y1=624.0, x2=778.0, y2=1079.0, score=0.77, label="bin")
+    range_m, source = estimate_range(capped, camera, bin_prior)
+    assert source == "width-capped"
+    assert math.isclose(range_m, fit)
+
+    # Twice as wide in frame, so the span is well inside the cap and it does not bind.
+    near = Detection(x1=100.0, y1=624.0, x2=1000.0, y2=1079.0, score=0.77, label="bin")
+    range_m, source = estimate_range(near, camera, bin_prior)
+    assert source == "width", source
+    assert range_m < fit
 
 
 if __name__ == "__main__":
