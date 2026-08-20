@@ -341,6 +341,71 @@ def test_confirmed_preserves_map_order():
     assert positions == sorted(positions), positions
 
 
+def test_a_landmark_survives_the_dropout_that_deleted_one_on_hardware():
+    """The live stall of 2026-08-19, as a regression test.
+
+    The colour detector loses a bin as the robot closes on it — at 0.71 m a 0.3 m bin
+    fills 51% of the frame, is clipped by its bottom edge, and falls outside `min_fill`
+    and the aspect band. ``is_visible`` still calls it visible, correctly, so a miss is
+    scored on every one of those cycles. At the old MAX_MISSES of 8 that deleted a
+    landmark with 32 sightings of converged evidence after about 1.2 s, and the next
+    detection spawned a fresh one 0.216 m away carrying an unconverged 0.518 m radius.
+    The gap between two bins collapsed from 0.23 m to 0.06 m and the run stalled.
+
+    Twelve blind cycles is ~1.7 s at the measured 5-7 Hz, longer than any dropout seen
+    before this one and comfortably past the old limit. Set MAX_MISSES back to 8 and the
+    landmark is gone and the identity with it.
+    """
+    mapping = _map()
+    _see(mapping, 30)
+    landmark = mapping.landmarks[0]
+    identity, radius = landmark.landmark_id, landmark.planning_radius_m
+
+    for index in range(12):
+        mapping.observe([], 10.0 + index * 0.14, *ORIGIN)
+
+    assert len(mapping.landmarks) == 1, "a converged landmark must outlive the dropout"
+    assert mapping.landmarks[0].landmark_id == identity, "and keep its identity"
+    assert math.isclose(mapping.landmarks[0].planning_radius_m, radius), \
+        "and its converged radius, which is what the identity was protecting"
+
+
+def test_the_re_sighting_after_a_dropout_does_not_spawn_a_duplicate():
+    """The consequence, stated the way the hardware showed it: one bin, two landmarks.
+
+    Association is on plain euclidean distance within ASSOCIATION_GATE_M, so a
+    re-sighting fuses — but only into a landmark that still EXISTS. Deletion is what
+    turned a fusable observation into a second bin.
+    """
+    mapping = _map()
+    _see(mapping, 30)
+    identity = mapping.landmarks[0].landmark_id
+    radius = mapping.landmarks[0].planning_radius_m
+    for index in range(12):
+        mapping.observe([], 10.0 + index * 0.14, *ORIGIN)
+    _see(mapping, 4, start=12.0)
+
+    # COUNTING LANDMARKS CANNOT SEE THIS BUG. Delete the landmark and the re-sighting
+    # spawns exactly one replacement, so the count reads 1 either way and the test passes
+    # while the failure is fully present. The identity is what changes, and the radius
+    # that came back with it is what stalled the robot.
+    assert len(mapping.landmarks) == 1, "the same bin must not become two"
+    assert mapping.landmarks[0].landmark_id == identity, \
+        "a re-sighting must fuse into the landmark, not replace it"
+    # Compared against what a REPLACEMENT would actually have carried, not a tolerance
+    # picked to pass. The surviving landmark's radius does grow across the blind period
+    # — uncertainty should grow while nothing is observed — but it stays near its
+    # converged value instead of reopening to a fresh prior. On hardware the replacement
+    # arrived at 0.518 m and collapsed a 0.23 m gap to 0.06 m.
+    replacement = _map()
+    _see(replacement, 2)
+    fresh = replacement.landmarks[0].planning_radius_m
+    settled = mapping.landmarks[0].planning_radius_m
+    assert settled - radius < 0.05, "the survivor stays near its converged radius"
+    assert settled < 0.5 * (radius + fresh), \
+        f"a survivor at {settled:.3f} m must not look like a fresh spawn at {fresh:.3f} m"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

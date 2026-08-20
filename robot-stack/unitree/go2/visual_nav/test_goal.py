@@ -27,7 +27,7 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from camera_model import FisheyeCamera
-from goal import ArucoGoal, DetectedObjectGoal, OdomWaypoint
+from goal import MAX_GOAL_CROP, ArucoGoal, DetectedObjectGoal, OdomWaypoint
 from person_detector import Detection
 
 WIDTH, HEIGHT = 1920, 1080
@@ -324,6 +324,56 @@ def test_a_nonsense_goal_is_rejected_at_construction():
 def test_no_image_is_not_a_sighting():
     goal = _chair_goal()
     assert goal.update(None, ORIGIN) is None
+
+
+# --- the crop widens as the goal is approached ------------------------------------
+
+def test_the_crop_stays_where_the_caller_put_it_while_the_goal_is_far():
+    """A crop is what makes a distant goal detectable at all — 0.82 cropped against
+    NOTHING on the full frame. Widening it early would give that up for nothing."""
+    goal = _chair_goal(crop=0.8)
+    goal._goal = (4.0, 0.0)
+    assert goal._crop_for((0.0, 0.0, 0.0), HEIGHT) == 0.8
+
+
+def test_the_crop_opens_before_it_can_cut_the_goal_in_half():
+    """The failure this exists to stop, measured on the office chair at ~1.9 m: the crop
+    clips the backrest, every pass is dropped, the robot never stands up, and no log line
+    says why. At 2.0 m a 1.067 m chair is 64% of the frame; 0.8 of the frame with 1.4x
+    headroom no longer contains it, so the window has to open."""
+    goal = _chair_goal(crop=0.8)
+    goal._goal = (2.0, 0.0)
+    wide = goal._crop_for((0.0, 0.0, 0.0), HEIGHT)
+    assert wide > 0.8
+    target_px = CHAIR_HEIGHT_M * CAMERA.focal_px / 2.0
+    assert wide * HEIGHT >= target_px, "the crop must contain the target it is cropping to"
+
+
+def test_the_crop_never_opens_all_the_way_to_the_full_frame():
+    """MAX_GOAL_CROP is not 1.0 on purpose. Uncropped, this chair scored NOTHING AT ALL,
+    so a crop that opens the whole way does not degrade the goal pass, it removes it.
+    Standing almost on top of the goal must not be the case that blinds it."""
+    goal = _chair_goal(crop=0.8)
+    goal._goal = (0.4, 0.0)
+    assert goal._crop_for((0.0, 0.0, 0.0), HEIGHT) == MAX_GOAL_CROP
+    assert MAX_GOAL_CROP < 1.0
+
+
+def test_an_unlatched_goal_keeps_the_callers_crop():
+    """Nothing is latched, so there is no range to reason from. Acquisition is the only
+    job, and the full-frame retry already covers a crop that is hiding the target."""
+    goal = _chair_goal(crop=0.6)
+    assert goal.goal_xy() is None
+    assert goal._crop_for((0.0, 0.0, 0.0), HEIGHT) == 0.6
+
+
+def test_the_crop_only_ever_widens_never_narrows():
+    """It is a floor, not a value. A caller who asked for a wide window because their
+    goal is wide must not have it quietly tightened when the robot gets close."""
+    goal = _chair_goal(crop=0.85)
+    for distance in (6.0, 4.0, 2.0, 1.0, 0.5):
+        goal._goal = (distance, 0.0)
+        assert goal._crop_for((0.0, 0.0, 0.0), HEIGHT) >= 0.85
 
 
 if __name__ == "__main__":

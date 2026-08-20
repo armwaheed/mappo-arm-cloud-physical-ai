@@ -68,7 +68,23 @@ CONFIRM_SIGHTINGS = 2
 #: larger than the tracker's MAX_MISSES: a bin that is briefly mis-segmented (someone
 #: steps half in front of it) should not be forgotten, because unlike a person it
 #: cannot have walked away.
-MAX_MISSES = 8
+#:
+#: RAISED 8 -> 25 after a live run of 2026-08-19 stalled on the consequence. At 5-7 Hz
+#: perception, 8 misses is a 1.1-1.6 s dropout, and the colour detector loses a bin for
+#: longer than that as the robot closes on it: at 0.71 m a 0.3 m bin fills 51% of the
+#: frame and is clipped by its bottom edge, which puts the blob under `min_fill` and
+#: outside the aspect band. :meth:`is_visible` still calls it visible — it is, it just
+#: cannot be segmented — so misses accrue on a landmark the detector was never going to
+#: match. The landmark is then deleted after 32 sightings of converged evidence, the very
+#: next detection spawns a fresh one 0.216 m away with an unconverged 0.518 m radius, the
+#: gap between the two bins collapses from 0.23 m to 0.06 m, and the run holds and stalls.
+#: 25 covers a ~4 s dropout, which is longer than any observed close-range loss.
+#:
+#: This is the blunt half of the fix. The precise half is not to score a miss the
+#: detector could not have won — see :meth:`is_visible` — and is tracked separately.
+#: What is bought here is that a landmark's *identity*, and therefore its converged
+#: covariance, survives the approach.
+MAX_MISSES = 25
 
 #: Association distance, metres, on top of the landmark's own radius. Euclidean and
 #: FIXED, deliberately unlike the tracker's Mahalanobis gate: a landmark's covariance

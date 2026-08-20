@@ -249,6 +249,18 @@ DEFAULT_GOAL_REFRESH_S = 3.0
 #: both far above the 0.5 latch threshold, and NOTHING AT ALL on the uncropped frame.
 DEFAULT_GOAL_INPUT_SIZE = 224
 
+#: Widest the goal crop is ever allowed to open to. NOT 1.0, and the difference is the
+#: whole reason a ceiling exists: on the staged chair the uncropped frame scored **nothing
+#: at all** where a crop scored 0.82-0.93, so "no crop" is not a degraded goal pass, it is
+#: no goal pass. The crop widens toward this and stops.
+MAX_GOAL_CROP = 0.9
+
+#: How much taller than the target the crop must be. The crop's job at range is effective
+#: resolution; its job up close is simply not to cut the target in half. 1.4 leaves 40%
+#: headroom for the box, the height prior being a few per cent off, and the goal sitting
+#: off-centre.
+GOAL_CROP_HEADROOM = 1.4
+
 
 class DetectedObjectGoal(GoalSource):
     """Drive at the best-scoring instance of a detector class — a chair, say — via a crop.
@@ -342,6 +354,35 @@ class DetectedObjectGoal(GoalSource):
     def goal_xy(self) -> tuple[float, float] | None:
         return self._goal
 
+    def _crop_for(self, pose: tuple, frame_height: int) -> float:
+        """The crop to use this pass, widened if the goal has grown too big for it.
+
+        A FIXED crop is wrong at both ends of an approach and only one end is obvious.
+        Far away the target is a handful of pixels and the crop is what makes it
+        detectable at all. Up close the target outgrows the window and the crop CUTS IT
+        IN HALF — measured on the office chair at ~1.9 m with the 0.5 default: the crop
+        clips the backrest, every pass is dropped, and the robot never stands up, with a
+        goal in plain view and no log line saying why.
+
+        So the crop is a floor, not a value. It stays at whatever the caller asked for
+        while the goal is small, and opens only as far as it must to keep the target
+        inside it with :data:`GOAL_CROP_HEADROOM` to spare, never past
+        :data:`MAX_GOAL_CROP`.
+
+        Returns the caller's crop unchanged until a goal is latched, because the range
+        this reasons about is the latched goal's own. Before that, acquisition is the
+        only job and the full-frame retry in :meth:`update` already covers the case where
+        the crop is what is hiding the target.
+        """
+        if self._goal is None:
+            return self._crop
+        range_m = math.hypot(self._goal[0] - pose[0], self._goal[1] - pose[1])
+        if not math.isfinite(range_m) or range_m <= 0.0:
+            return self._crop
+        target_px = self._prior.height_m * self._camera.focal_px / range_m
+        needed = target_px * GOAL_CROP_HEADROOM / frame_height
+        return min(MAX_GOAL_CROP, max(self._crop, needed))
+
     def _due(self, now: float) -> bool:
         """Whether to spend an inference this frame."""
         if self._goal is None or self._last_pass is None:
@@ -359,7 +400,8 @@ class DetectedObjectGoal(GoalSource):
         self._passes += 1
 
         height, width = image.shape[:2]
-        crop_w, crop_h = int(width * self._crop), int(height * self._crop)
+        crop = self._crop_for(pose, height)
+        crop_w, crop_h = int(width * crop), int(height * crop)
         x0, y0 = (width - crop_w) // 2, (height - crop_h) // 2
 
         best = self._best_in(image[y0:y0 + crop_h, x0:x0 + crop_w], crop_w, crop_h)
