@@ -113,6 +113,11 @@ STOP_TIMEOUT_S = 12.0
 #: queueing; the cap exists because each wedged call holds its thread forever.
 MESH_WORKERS = 8
 
+#: Camera frames are drained on their own subscription and their own thread. A burst of
+#: image data must never delay a motion_refused reaching the operator's screen — the same
+#: lane argument as the stop pool, applied to the event side.
+CAMERA_POLL_S = 0.05
+
 #: How long a device stays listed after it stops announcing itself. D2D presence is
 #: ephemeral, so a robot that dies simply vanishes from discovery — and a robot dropping off
 #: the mesh mid-walk is the single event an operator must not have hidden from them. It is
@@ -128,7 +133,7 @@ ALLOWED_FUNCTIONS = frozenset({
     "walk_forward", "walk_back", "strafe_left", "strafe_right",
     "turn_left", "turn_right", "lie_down", "stand", "stop",
     "list_models", "select_model", "download_model", "delete_model",
-    "list_cloud_models",
+    "list_cloud_models", "watch_camera", "stop_camera",
 })
 
 
@@ -159,6 +164,12 @@ class Mesh:
         #: Populated by discovery AND by the event stream, so a fleet of N robots costs N
         #: capability lookups once rather than N status polls per refresh.
         self._fleet: dict = {}
+        self._camera_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mesh-camera")
+        self._camera_sub = None
+        #: Latest JPEG per device. One frame deep on purpose: a viewport wants the newest
+        #: frame, and a queue of stale ones is latency with extra steps.
+        self._frames: dict = {}
 
     async def _call(self, fn, *args, _pool=None, _timeout=INVOKE_TIMEOUT_S, **kwargs):
         """Hand one synchronous mesh call to a worker thread.
@@ -181,6 +192,8 @@ class Mesh:
         # an operator watching two robots wants both, and a dashboard that subscribed per
         # device would have to re-subscribe every time one joined.
         self._subscription = await self._call(subscribe, "event(*)", _pool=self._event_pool)
+        self._camera_sub = await self._call(subscribe, "event(camera_frame)",
+                                            _pool=self._camera_pool)
         log.info("connected to the mesh; streaming events")
 
     async def close(self) -> None:
@@ -194,7 +207,7 @@ class Mesh:
             await self._call(disconnect)
         except Exception as exc:
             log.warning("disconnect failed: %r", exc)
-        for pool in (self._pool, self._stop_pool, self._event_pool):
+        for pool in (self._pool, self._stop_pool, self._event_pool, self._camera_pool):
             pool.shutdown(wait=False)
 
     async def devices(self) -> list:
@@ -256,6 +269,45 @@ class Mesh:
             # robots confirmed, some not — comes back and is shown, instead of this layer
             # timing out first and reporting nothing about any of them.
             _timeout=STOP_TIMEOUT_S + 3.0)
+
+    # ── camera ───────────────────────────────────────────────────────────────
+    async def camera_pump(self) -> None:
+        """Drain camera frames into a one-deep buffer per device.
+
+        Its own subscription and its own thread. Sharing the control drain would mean a
+        burst of image data delaying the event an operator is actually waiting for.
+        """
+        import base64
+        while True:
+            try:
+                messages = await self._call(self._camera_sub.read, _pool=self._camera_pool,
+                                            _timeout=10.0)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("camera read failed: %r", exc)
+                await asyncio.sleep(2.0)
+                continue
+            for message in messages:
+                params = message.get("params") or {}
+                encoded = params.get("jpeg_b64")
+                if not encoded:
+                    continue
+                subject = message.get("_subject", "")
+                parts = subject.replace("/", ".").split(".")
+                device_id = parts[2] if len(parts) > 4 else ""
+                try:
+                    self._frames[device_id] = base64.b64decode(encoded)
+                except (ValueError, TypeError):
+                    continue                     # a malformed frame costs that frame only
+            await asyncio.sleep(CAMERA_POLL_S)
+
+    def latest_frame(self, device_id: str):
+        return self._frames.get(device_id)
+
+    async def keep_camera_alive(self, device_id: str, fps: float) -> dict:
+        """Re-assert a viewer's interest. The driver stops streaming when it lapses."""
+        return await self.invoke(device_id, "watch_camera", {"fps": fps})
 
     # ── the fleet ────────────────────────────────────────────────────────────
     async def fleet(self) -> list:
@@ -366,6 +418,8 @@ class Mesh:
                 await asyncio.sleep(2.0)
                 continue
             for message in _in_time_order(messages):
+                if message.get("method") == "camera_frame":
+                    continue        # drained separately; a frame is not a log line
                 self._seq += 1
                 record = _shape_event(message, self._seq)
                 self.note_state_event(record)
@@ -496,6 +550,66 @@ async def api_stop_all(request: web.Request) -> web.Response:
                               "matched": result.get("matched", 0)})
 
 
+async def api_camera(request: web.Request) -> web.StreamResponse:
+    """An MJPEG stream of one robot's front camera.
+
+    ``multipart/x-mixed-replace`` because a browser renders it natively in a plain ``<img>``:
+    no canvas, no per-frame JavaScript, and the decode happens off the main thread. It also
+    means the viewport degrades to a broken-image icon rather than to a silently frozen last
+    frame, which is the failure mode that matters for something an operator uses to decide
+    where a robot is pointing.
+
+    Requesting the stream IS the statement of interest — the driver stops emitting when it
+    lapses — so simply closing the tab stops the robot streaming.
+    """
+    mesh: Mesh = request.app["mesh"]
+    device_id = request.match_info["device_id"]
+    fps = _clamp_query_fps(request.query.get("fps"))
+
+    boundary = "mappoframe"
+    response = web.StreamResponse(headers={
+        "Content-Type": f"multipart/x-mixed-replace; boundary={boundary}",
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "X-Accel-Buffering": "no",
+    })
+    await response.prepare(request)
+
+    last_keepalive = 0.0
+    last_sent = None
+    try:
+        while True:
+            now = time.monotonic()
+            # Re-assert interest well inside the driver's expiry rather than at the edge of
+            # it, or the feed stutters every time a keepalive lands late.
+            if now - last_keepalive > 4.0:
+                last_keepalive = now
+                try:
+                    await mesh.keep_camera_alive(device_id, fps)
+                except Exception as exc:
+                    log.warning("camera keepalive for %s failed: %r", device_id, exc)
+
+            frame = mesh.latest_frame(device_id)
+            if frame is not None and frame is not last_sent:
+                last_sent = frame
+                await response.write(
+                    f"--{boundary}\r\nContent-Type: image/jpeg\r\n"
+                    f"Content-Length: {len(frame)}\r\n\r\n".encode() + frame + b"\r\n")
+            await asyncio.sleep(1.0 / max(fps, 1.0))
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass
+    except Exception as exc:
+        log.warning("camera stream for %s ended: %r", device_id, exc)
+    return response
+
+
+def _clamp_query_fps(value) -> float:
+    try:
+        fps = float(value)
+    except (TypeError, ValueError):
+        return 6.0
+    return max(1.0, min(fps, 15.0))
+
+
 async def api_invoke(request: web.Request) -> web.Response:
     mesh: Mesh = request.app["mesh"]
     try:
@@ -573,6 +687,7 @@ def create_app(allow_insecure: bool = True) -> web.Application:
     app.router.add_get("/api/devices", api_devices)
     app.router.add_get("/api/fleet", api_fleet)
     app.router.add_post("/api/stop-all", api_stop_all)
+    app.router.add_get("/api/camera/{device_id}", api_camera)
     app.router.add_post("/api/invoke", api_invoke)
     app.router.add_get("/api/events", api_events)
     app.router.add_static("/static", STATIC_DIR, name="static")
@@ -585,14 +700,16 @@ async def _on_startup(app: web.Application) -> None:
     mesh: Mesh = app["mesh"]
     await mesh.start()
     app["pump"] = asyncio.create_task(mesh.pump())
+    app["camera_pump"] = asyncio.create_task(mesh.camera_pump())
 
 
 async def _on_cleanup(app: web.Application) -> None:
-    task = app.get("pump")
-    if task is not None:
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+    for name in ("pump", "camera_pump"):
+        task = app.get(name)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
     await app["mesh"].close()
 
 

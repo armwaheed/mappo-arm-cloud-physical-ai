@@ -298,6 +298,55 @@ def test_a_malformed_stop_scope_stops_everything_rather_than_nothing():
     _serve(check, mesh=_FakeMesh(stop_all={"matched": 0, "results": []}))
 
 
+# ── camera ───────────────────────────────────────────────────────────────────
+def test_camera_frames_never_enter_the_event_log():
+    """A frame is not a log line, and 6 fps of them would bury every event that matters.
+
+    Made to fail by removing the camera_frame skip in ``Mesh.pump``.
+    """
+    import inspect
+    source = inspect.getsource(Mesh.pump)
+    assert 'camera_frame' in source and 'continue' in source, (
+        "Mesh.pump no longer excludes camera frames from the event ring")
+
+
+def test_the_camera_has_its_own_drain_lane():
+    """Sharing the control drain would let a burst of image data delay a motion_refused.
+
+    Same lane argument as the stop pool, applied to the event side.
+    """
+    mesh = Mesh(allow_insecure=True)
+    try:
+        assert mesh._camera_pool is not mesh._event_pool
+        assert mesh._camera_pool is not mesh._pool
+    finally:
+        for pool in (mesh._pool, mesh._stop_pool, mesh._event_pool, mesh._camera_pool):
+            pool.shutdown(wait=False)
+
+
+def test_a_camera_stream_request_is_the_statement_of_interest():
+    """Opening the stream keeps the feed alive; closing the tab lets it lapse.
+
+    Verified by asserting the endpoint calls keep_camera_alive rather than relying on a
+    separate 'I am watching' message nobody sends.
+    """
+    import inspect
+    source = inspect.getsource(dashboard.api_camera)
+    assert "keep_camera_alive" in source
+    assert "multipart/x-mixed-replace" in source
+
+
+def test_the_stream_fps_from_a_query_string_is_clamped():
+    """It comes off a URL, so it arrives as anything."""
+    clamp = dashboard._clamp_query_fps
+    assert clamp("6") == 6.0
+    assert clamp("999") == 15.0
+    assert clamp("0") == 1.0
+    assert clamp("-3") == 1.0
+    assert clamp(None) == 6.0
+    assert clamp("banana") == 6.0
+
+
 # ── the fleet ────────────────────────────────────────────────────────────────
 def test_a_departed_robot_is_tombstoned_rather_than_dropped():
     """D2D presence is ephemeral, so a robot that dies simply vanishes from discovery.

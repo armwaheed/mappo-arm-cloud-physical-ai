@@ -298,3 +298,93 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 .group-name { font: 700 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
 .group-count { margin-left: 10px; font: 11px/1 var(--mono); color: var(--ink-dim); }
 .group-note { margin-left: 12px; font-size: 11.5px; color: var(--warn); }
+
+
+/* ── dismissible safety banner ────────────────────────────────────────────
+   The banner is dismissible; the MOTION ENABLED badge in the bar is not. The badge
+   is the state and the banner is the explanation, and only the explanation gets to
+   be dismissed. Dismissal is not persisted, so a reload restores it. */
+.safety { display: flex; align-items: flex-start; gap: 12px; }
+.safety .dismiss {
+  margin-left: auto; flex: 0 0 auto;
+  background: none; border: 1px solid transparent; border-radius: 4px;
+  color: var(--ink-dim); cursor: pointer; font-size: 13px; line-height: 1; padding: 4px 7px;
+}
+.safety .dismiss:hover { color: var(--ink); border-color: var(--line); }
+
+/* ── alerts ───────────────────────────────────────────────────────────────
+   THINGS THAT HAPPENED. Standing capability caveats are deliberately not in here —
+   a caveat that is true on every press must not be dismissible once, and it belongs
+   on the control it qualifies. See .key[data-caveat]. */
+.bell {
+  position: relative; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 999px; padding: 5px 10px; cursor: pointer; font-size: 13px; line-height: 1;
+}
+.bell:hover { border-color: var(--accent); }
+.bell.active { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, var(--panel-2)); }
+.bell-count {
+  margin-left: 5px; font: 700 10px/1 var(--mono); color: var(--warn);
+}
+.alerts {
+  position: fixed; right: 16px; top: 58px; z-index: 30; width: min(460px, calc(100vw - 32px));
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: 0 12px 32px rgba(0,0,0,0.45); max-height: 60vh; display: flex; flex-direction: column;
+}
+.alerts.hidden { display: none; }
+.alerts-head { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px 8px; }
+.alerts-head h2 { margin: 0; }
+.alerts ol { list-style: none; margin: 0; padding: 0 8px 10px; overflow-y: auto; }
+.alerts li { display: flex; gap: 10px; align-items: flex-start; padding: 9px 8px; border-top: 1px solid var(--panel-2); font-size: 12.5px; }
+.alerts li .who { font: 600 11px/1.4 var(--mono); color: var(--accent); flex: 0 0 auto; }
+.alerts li .what { flex: 1 1 auto; color: var(--ink-dim); word-break: break-word; }
+.alerts li .what b { color: var(--ink); font-weight: 600; }
+.alerts li .acts { display: flex; gap: 5px; flex: 0 0 auto; }
+
+/* ── camera viewport ──────────────────────────────────────────────────────── */
+.motion-row { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; margin-bottom: 16px; }
+.motion-row .pad { margin-bottom: 0; }
+.viewport {
+  flex: 1 1 260px; min-width: 240px; margin: 0;
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  background: var(--bg); display: flex; flex-direction: column;
+}
+.viewport img {
+  width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: #0a0d10;
+}
+.viewport img:not([src]) { visibility: hidden; }
+.viewport figcaption {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 8px 10px; border-top: 1px solid var(--line);
+  font: 11px/1 var(--mono); color: var(--ink-dim);
+}
+.viewport figcaption #camera-label { flex: 1 1 auto; }
+.viewport figcaption input { width: 56px; padding: 4px 6px; }
+.viewport.synthetic img { outline: 2px dashed color-mix(in srgb, var(--warn) 60%, transparent); outline-offset: -6px; }
+
+/* ── fleet density ────────────────────────────────────────────────────────
+   Scrolls rather than hides. Collapsed it is capped near three robot rows; the rest
+   are a scroll away and the toggle says how many there are. Nothing is removed from
+   the DOM, so a robot is always one scroll from its stop button. */
+.fleet-scroll { transition: max-height 0.15s ease; }
+.fleet-scroll.collapsed { max-height: 208px; overflow-y: auto; }
+.fleet-scroll:not(.collapsed) { max-height: 52vh; overflow-y: auto; }
+.fleet-scroll thead th, .grid tr.group td { position: sticky; z-index: 1; background: var(--panel); }
+.fleet-scroll thead th { top: 0; }
+.grid tr.group td { top: 26px; background: var(--panel-2); }
+.fleet-more {
+  display: flex; align-items: center; gap: 8px; width: 100%;
+  margin-top: 8px; padding: 7px 10px; cursor: pointer;
+  background: var(--panel-2); color: var(--ink-dim);
+  border: 1px solid var(--line); border-radius: 6px;
+  font: 600 11px/1 var(--mono); letter-spacing: 0.05em; text-transform: uppercase;
+}
+.fleet-more:hover { color: var(--ink); border-color: var(--accent); }
+.fleet-more .chev { transition: transform 0.15s; }
+.fleet-more[aria-expanded="true"] .chev { transform: rotate(180deg); }
+
+/* A standing caveat rides the control it qualifies, not a dismissible list. */
+.key[data-caveat] { position: relative; }
+.key[data-caveat]::after {
+  content: "⚠"; position: absolute; top: 4px; right: 6px;
+  font-size: 10px; color: var(--warn); line-height: 1;
+}

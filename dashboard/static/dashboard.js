@@ -17,6 +17,10 @@ const state = {
   paused: false,
   drawerOpen: false,
   unread: 0,
+  fleetExpanded: false,
+  alerts: [],
+  cameraOn: false,
+  safetyDismissedFor: null,
 };
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -95,6 +99,12 @@ async function refreshFleet() {
   // filtered list reads "stop all" as "stop these", and is wrong in whichever direction the
   // implementation chose. Naming the count removes the ambiguity instead of resolving it.
   $("stop-all").textContent = `■ STOP ALL (${rows.filter((r) => r.present).length})`;
+  // Says how many, not just "more". "Show all robots" on a fleet of four is a different
+  // decision from the same words on a fleet of forty.
+  $("fleet-more-label").textContent = state.fleetExpanded
+    ? `Collapse to a shorter list (${rows.length} robots)`
+    : `Show all ${rows.length} robots`;
+  $("fleet-more").hidden = rows.length <= 3;
   syncFocusOptions(rows);
 }
 
@@ -268,8 +278,13 @@ function renderCapabilities(caps) {
   setBadge($("motion-badge"),
     caps.motion_enabled ? "motion enabled" : "motion disabled",
     caps.motion_enabled ? "hot" : "off");
-  $("safety").classList.toggle("hidden", !caps.motion_enabled);
+  // The banner returns when motion goes off->on or the focused robot changes: "I read it"
+  // is true of a sentence, not of a different robot.
+  const showSafety = !!caps.motion_enabled && state.safetyDismissedFor !== state.deviceId;
+  $("safety").classList.toggle("hidden", !showSafety);
   setPadEnabled(!!caps.motion_enabled);
+  applyCaveats(caps);
+  if (state.cameraOn) setCamera(true);
 
   if (!caps.motion_enabled) {
     addNote(notes, "warn",
@@ -278,20 +293,17 @@ function renderCapabilities(caps) {
       "with the flag, with an operator on the abort, to enable them.");
   }
 
-  // An axis with no measured gait floor is the honest version of a greyed-out button: the
-  // control works, and pressing it may do nothing at all for a reason that is not a fault.
-  for (const axis of caps.unmeasured_axes || []) {
+  // The per-axis and per-posture caveats moved onto the keys themselves (applyCaveats): a
+  // caveat that is true on every press belongs where the press happens, not in a list that
+  // pushes the controls off screen. What is left here is the one that is about the DEVICE
+  // rather than about a control.
+  const unmeasured = caps.unmeasured_axes || [];
+  if (unmeasured.length) {
     addNote(notes, "warn",
-      `<strong>No ${axis} gait floor has been measured on the ${caps.platform}.</strong> ` +
-      `A command on this axis may produce no movement at all, and that would not be a ` +
-      `fault — see issue #42. The result panel reports what actually moved.`);
+      `<strong>⚠ marked keys carry a caveat.</strong> No measured ` +
+      `${unmeasured.join(" or ")} gait floor on the ${caps.platform} — hover a marked key. ` +
+      `The result panel always reports what actually moved.`);
   }
-
-  if (caps.lie_down_changes_posture === false) {
-    addNote(notes, "warn", `<strong>Lie down does not lie this robot down.</strong> ${caps.posture_note}`);
-  }
-  addNote(notes, "warn",
-    `<strong>Reverse is open-loop into unobserved space.</strong> ${caps.reverse_note}.`);
 }
 
 function addNote(parent, kind, html) {
@@ -473,6 +485,122 @@ async function browseBucket() {
   }
 }
 
+// ── alerts ──────────────────────────────────────────────────────────────────
+// A notification centre carries things that HAPPENED — a refusal, a robot gone, a stop that
+// was not confirmed. It deliberately does NOT carry the standing capability caveats ("no
+// measured lateral gait floor"). Those are not events: they are true on every press, and a
+// caveat you can dismiss once and then never see again while you press the control fifty
+// more times is worse than no caveat at all. Those ride the key itself — see applyCaveats.
+const ALERT_EVENTS = {
+  motion_refused: "refused",
+  motion_interrupted: "interrupted",
+  model_downloaded: "checkpoint loaded",
+  model_armed: "checkpoint armed",
+  model_deleted: "checkpoint removed",
+};
+
+function noteAlert(record) {
+  const kind = ALERT_EVENTS[record.event];
+  if (!kind) return;
+  state.alerts.unshift({
+    id: `${record.seq}`,
+    device_id: record.device_id,
+    kind,
+    detail: record.payload.reason || summarisePayload(record.payload),
+    at: record.received,
+    severe: record.event === "motion_refused",
+  });
+  state.alerts = state.alerts.slice(0, 50);
+  renderAlerts();
+}
+
+function renderAlerts() {
+  const count = state.alerts.length;
+  const badge = $("bell-count");
+  badge.textContent = String(count);
+  badge.hidden = count === 0;
+  $("bell").classList.toggle("active", state.alerts.some((a) => a.severe));
+
+  const list = $("alerts-list");
+  if (!count) {
+    list.innerHTML = '<li class="empty">nothing to report</li>';
+    return;
+  }
+  list.innerHTML = "";
+  for (const alert of state.alerts) {
+    const li = document.createElement("li");
+    li.innerHTML =
+      `<span class="who">${escapeHtml(alert.device_id)}</span>` +
+      `<span class="what"><b>${escapeHtml(alert.kind)}</b> — ${escapeHtml(alert.detail || "")}</span>` +
+      `<span class="acts"></span>`;
+    const acts = li.querySelector(".acts");
+    // Drilling in focuses the robot that raised it — the point of an alert is to get you to
+    // the thing that raised it, not to tell you about it.
+    acts.appendChild(button("Focus", "btn ghost tiny", () => {
+      state.deviceId = alert.device_id;
+      $("device-select").value = alert.device_id;
+      onDeviceChanged();
+      refreshFleet();
+      setAlerts(false);
+    }));
+    acts.appendChild(button("✕", "btn ghost tiny", () => {
+      state.alerts = state.alerts.filter((a) => a.id !== alert.id);
+      renderAlerts();
+    }));
+    list.appendChild(li);
+  }
+}
+
+function setAlerts(open) {
+  $("alerts").classList.toggle("hidden", !open);
+  $("bell").setAttribute("aria-expanded", String(open));
+}
+
+// ── standing caveats ride the control, not the alert list ───────────────────
+function applyCaveats(caps) {
+  const axisFor = { strafe_left: "lateral", strafe_right: "lateral",
+                    turn_left: "yaw", turn_right: "yaw", walk_forward: "forward" };
+  const unmeasured = new Set(caps ? caps.unmeasured_axes || [] : []);
+  for (const key of document.querySelectorAll(".key")) {
+    const fn = key.dataset.fn;
+    let caveat = null;
+    if (unmeasured.has(axisFor[fn])) {
+      caveat = `No measured ${axisFor[fn]} gait floor on the ${caps.platform}. This may ` +
+               `produce no movement at all, and that would not be a fault (issue #42).`;
+    } else if (fn === "walk_back") {
+      caveat = caps ? `Reverse: ${caps.reverse_note}.` : null;
+    } else if (fn === "lie_down" && caps && caps.lie_down_changes_posture === false) {
+      caveat = caps.posture_note;
+    }
+    if (caveat) { key.dataset.caveat = "1"; key.title = caveat; }
+    else { delete key.dataset.caveat; key.title = key.dataset.plainTitle || key.title; }
+  }
+}
+
+// ── camera ──────────────────────────────────────────────────────────────────
+// An <img> pointed at an MJPEG endpoint. No canvas and no per-frame JavaScript: the browser
+// decodes off the main thread, and a dead feed shows as a broken image rather than as a
+// frozen last frame that looks live.
+function setCamera(on) {
+  state.cameraOn = on;
+  const img = $("camera");
+  const caps = state.capabilities || {};
+  if (!on || !state.deviceId) {
+    img.removeAttribute("src");
+    $("camera-toggle").textContent = "Start";
+    $("camera-label").textContent = "camera idle";
+    return;
+  }
+  const fps = Math.max(1, Math.min(15, parseInt($("camera-fps").value, 10) || 6));
+  // A cache-buster: without it a browser may reuse a completed stream response.
+  img.src = `/api/camera/${encodeURIComponent(state.deviceId)}?fps=${fps}&t=${Date.now()}`;
+  $("camera-toggle").textContent = "Stop";
+  const cam = caps.camera || {};
+  $("camera-label").textContent = cam.synthetic ? `SYNTHETIC · ${fps} fps` : `live · ${fps} fps`;
+  $("viewport").classList.toggle("synthetic", !!cam.synthetic);
+  img.onerror = () => { $("camera-label").textContent = "camera unavailable"; };
+}
+
 // ── the event drawer ────────────────────────────────────────────────────────
 // Docked rather than in the page flow, because the previous layout put the stream at the
 // foot of a scrolling page where it was missed entirely. Collapsed by default: a live feed
@@ -518,6 +646,7 @@ function startEventStream() {
     let record;
     try { record = JSON.parse(message.data); } catch { return; }
     noteUnread(record);
+    noteAlert(record);
     if (!passesFilter(record)) return;
     if (list.querySelector(".empty")) list.innerHTML = "";
     // Newest first. An operator watching a robot reads the top of the list, and a stream
@@ -582,6 +711,10 @@ function formatBytes(bytes) {
 // ── wiring ──────────────────────────────────────────────────────────────────
 function init() {
   for (const key of document.querySelectorAll(".key")) {
+    // Capture the markup's own title once, so switching to a robot WITHOUT a caveat
+    // restores the plain tooltip instead of leaving the previous robot's warning on a key
+    // it does not apply to.
+    key.dataset.plainTitle = key.title;
     key.addEventListener("click", () => sendMotion(key));
   }
   $("device-select").addEventListener("change", (event) => {
@@ -618,6 +751,20 @@ function init() {
   $("clear").addEventListener("click", () => { $("events").innerHTML = ""; });
 
   $("stop-all").addEventListener("click", stopAll);
+  $("safety-dismiss").addEventListener("click", () => {
+    state.safetyDismissedFor = state.deviceId;
+    $("safety").classList.add("hidden");
+  });
+  $("bell").addEventListener("click", () => setAlerts($("alerts").classList.contains("hidden")));
+  $("alerts-clear").addEventListener("click", () => { state.alerts = []; renderAlerts(); });
+  $("camera-toggle").addEventListener("click", () => setCamera(!state.cameraOn));
+  $("camera-fps").addEventListener("change", () => { if (state.cameraOn) setCamera(true); });
+  $("fleet-more").addEventListener("click", () => {
+    state.fleetExpanded = !state.fleetExpanded;
+    $("fleet-scroll").classList.toggle("collapsed", !state.fleetExpanded);
+    $("fleet-more").setAttribute("aria-expanded", String(state.fleetExpanded));
+    refreshFleet();
+  });
 
   startEventStream();
   refreshFleet();

@@ -25,16 +25,35 @@ SPDX-License-Identifier: Apache-2.0
     <span id="platform-badge" class="badge muted">—</span>
     <span id="motion-badge" class="badge muted">motion —</span>
     <span id="mesh-badge" class="badge muted">mesh —</span>
+    <!-- Notifications are things that HAPPENED. Standing capability caveats are not in
+         here; they live on the control they qualify. See dashboard/README.md. -->
+    <button class="bell" id="bell" aria-label="Alerts" aria-expanded="false">
+      <span aria-hidden="true">🔔</span>
+      <span class="bell-count" id="bell-count" hidden>0</span>
+    </button>
   </div>
 </header>
 
 <!-- The safety statement is not a footnote. Anyone who can see the buttons can walk a
      robot, so the conditions under which that is legitimate are on screen next to them. -->
+<!-- Dismissible, but the MOTION ENABLED badge in the bar above is NOT. This banner is the
+     explanation; the badge is the state, and the state does not get to be dismissed. The
+     banner also returns whenever motion transitions off->on or the focused robot changes,
+     because "I already read it" is true of a sentence and not of a different robot. -->
 <div id="safety" class="safety hidden">
   <strong>Motion is enabled on this device.</strong>
   <code>robot-stack/SAFETY.md</code> applies: a clear area, an operator on the controller
   abort with the e-stop in hand, tether slack checked, and adequate battery. Every command
   here is bounded in time and stops itself.
+  <button class="dismiss" id="safety-dismiss" aria-label="Dismiss this explanation">✕</button>
+</div>
+
+<div id="alerts" class="alerts hidden" role="region" aria-label="Alerts">
+  <div class="alerts-head">
+    <h2>Alerts</h2>
+    <button class="btn ghost tiny" id="alerts-clear">Dismiss all</button>
+  </div>
+  <ol id="alerts-list"><li class="empty">nothing to report</li></ol>
 </div>
 
 <main>
@@ -50,7 +69,7 @@ SPDX-License-Identifier: Apache-2.0
         ■ STOP ALL
       </button>
     </div>
-    <div class="grid-scroll">
+    <div class="grid-scroll fleet-scroll collapsed" id="fleet-scroll">
       <table class="grid" id="fleet-table">
         <thead>
           <tr><th>Robot</th><th>Platform</th><th>Motion</th><th>Pose</th>
@@ -59,6 +78,10 @@ SPDX-License-Identifier: Apache-2.0
         <tbody><tr><td colspan="7" class="empty">discovering…</td></tr></tbody>
       </table>
     </div>
+    <button class="fleet-more" id="fleet-more" aria-expanded="false" aria-controls="fleet-scroll">
+      <span class="chev" aria-hidden="true">▼</span>
+      <span id="fleet-more-label">Show all robots</span>
+    </button>
     <pre id="fleet-result" class="result" aria-live="assertive"></pre>
   </section>
 
@@ -71,6 +94,7 @@ SPDX-License-Identifier: Apache-2.0
       that explains a robot that looks like it is not moving.
     </p>
 
+    <div class="motion-row">
     <div class="pad">
       <button class="key" data-fn="turn_left"    title="Turn counter-clockwise">↺<span>turn L</span></button>
       <button class="key" data-fn="walk_forward" title="Walk forward">↑<span>forward</span></button>
@@ -83,6 +107,23 @@ SPDX-License-Identifier: Apache-2.0
       <button class="key" data-fn="stand"        title="Balanced stand">⬔<span>stand</span></button>
       <button class="key warn" data-fn="walk_back" title="Reverse — nothing is watching behind">↓<span>back</span></button>
       <button class="key" data-fn="lie_down"     title="Lie down">⌄<span>lie down</span></button>
+    </div>
+
+    <!-- Frames arrive as EVENTS and are served on as an MJPEG stream, so the browser decodes
+         them off the main thread and a dead feed shows as a broken image rather than as a
+         silently frozen last frame. Never polled over RPC: that channel is serialised per
+         device and carries the stop. -->
+    <figure class="viewport" id="viewport">
+      <img id="camera" alt="Front RGB camera">
+      <figcaption>
+        <span id="camera-label">camera idle</span>
+        <label class="field inline">
+          <span>fps</span>
+          <input id="camera-fps" type="number" min="1" max="15" step="1" value="6">
+        </label>
+        <button class="btn ghost tiny" id="camera-toggle">Start</button>
+      </figcaption>
+    </figure>
     </div>
 
     <div class="row">
