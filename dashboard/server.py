@@ -212,8 +212,12 @@ class Mesh:
                                     _pool=self._stop_pool, _timeout=STOP_TIMEOUT_S)
         return await self._call(invoke_device, device_id, function, params)
 
-    async def stop_all(self) -> dict:
-        """Stop every robot on the mesh, and report what each one actually said.
+    async def stop_all(self, device_ids=None) -> dict:
+        """Stop robots and report what each one actually said.
+
+        ``device_ids`` narrows it to a named set — a platform group, say. ``None`` means the
+        whole mesh. One implementation for both so a group stop and a fleet stop can never
+        report in different shapes.
 
         ``invoke_many`` rather than ``broadcast``. Broadcast returns immediately with a
         correlation id and the replies arrive separately, which is the right shape for a
@@ -223,7 +227,27 @@ class Mesh:
         blocks on the slowest device and hands back per-device results, with its own
         concurrency internally so the robots are not stopped one after another.
         """
-        from device_connect_agent_tools.tools import invoke_many
+        from device_connect_agent_tools.tools import invoke_device, invoke_many
+
+        if device_ids:
+            # A named set. Fired concurrently on the stop lane rather than through a
+            # selector, because the selector language matches on device id patterns and a
+            # platform group is not a naming convention — inferring one would break the
+            # first time somebody named a robot after the room it is in.
+            results = await asyncio.gather(*(
+                self._call(invoke_device, device_id, "stop", {},
+                           _pool=self._stop_pool, _timeout=STOP_TIMEOUT_S)
+                for device_id in device_ids), return_exceptions=True)
+            rows = []
+            for device_id, outcome in zip(device_ids, results):
+                if isinstance(outcome, Exception):
+                    rows.append({"device_id": device_id,
+                                 "result": {"ok": False, "error": repr(outcome)}})
+                else:
+                    rows.append({"device_id": device_id,
+                                 "result": (outcome or {}).get("result", outcome)})
+            return {"matched": len(device_ids), "results": rows}
+
         return await self._call(
             invoke_many, "device(*).function(stop)", {},
             timeout=STOP_TIMEOUT_S,          # invoke_many's own per-device ceiling
@@ -434,8 +458,17 @@ async def api_stop_all(request: web.Request) -> web.Response:
     acknowledged, because the ones that did not are the ones they now have to walk over to.
     """
     mesh: Mesh = request.app["mesh"]
+    device_ids = None
+    if request.can_read_body:
+        try:
+            body = await request.json()
+            requested = (body or {}).get("device_ids")
+            if isinstance(requested, list) and requested:
+                device_ids = [str(d) for d in requested]
+        except ValueError:
+            pass                            # no body, or not JSON: stop everything
     try:
-        result = await mesh.stop_all()
+        result = await mesh.stop_all(device_ids)
     except asyncio.TimeoutError:
         return web.json_response(
             {"ok": False, "error": "STOP ALL did not complete in time. Assume one or more "

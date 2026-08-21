@@ -62,6 +62,7 @@ SPDX-License-Identifier: Apache-2.0
     <pre id="fleet-result" class="result" aria-live="assertive"></pre>
   </section>
 
+  <div class="col" id="col-left">
   <section class="panel" id="motion-panel">
     <h2>Motion</h2>
     <p class="hint">
@@ -107,6 +108,9 @@ SPDX-License-Identifier: Apache-2.0
     <pre id="motion-result" class="result" aria-live="polite"></pre>
   </section>
 
+  </div>
+
+  <div class="col" id="col-right">
   <section class="panel" id="model-panel">
     <h2>Checkpoints on the robot</h2>
     <p class="hint">
@@ -157,27 +161,45 @@ SPDX-License-Identifier: Apache-2.0
     <div id="cloud-list" class="notes"></div>
     <pre id="model-result" class="result" aria-live="polite"></pre>
   </section>
-
-  <section class="panel" id="event-panel">
-    <div class="panel-head">
-      <h2>Events</h2>
-      <div class="row tight">
-        <label class="field inline">
-          <span>Filter</span>
-          <input id="event-filter" type="text" placeholder="motion, model, state…">
-        </label>
-        <label class="field check">
-          <input id="only-selected" type="checkbox">
-          <span>selected robot only</span>
-        </label>
-        <button class="btn ghost" id="pause">Pause</button>
-        <button class="btn ghost" id="clear">Clear</button>
-      </div>
-    </div>
-    <ol id="events" class="events"><li class="empty">waiting for the mesh…</li></ol>
-  </section>
+  </div>
 
 </main>
+
+<!-- Docked, not in the page flow. The event stream was previously a panel at the foot of a
+     scrolling page and was missed entirely: an operator had to know it was there and scroll
+     to find it. A drawer is the console pattern DevTools, VS Code and PatternFly all settle
+     on — always present, on the same surface as the content, and collapsible so a live feed
+     does not dominate a page whose primary job is control. Collapsed it is one bar carrying
+     the newest line, so it is still telling you something while taking 44px. -->
+<section id="event-drawer" class="drawer collapsed" aria-label="Robot events">
+  <div class="drawer-bar" id="drawer-bar" role="button" tabindex="0"
+       aria-expanded="false" aria-controls="drawer-body">
+    <span class="chev" aria-hidden="true">▲</span>
+    <h2>Events</h2>
+    <span class="badge" id="event-count">0</span>
+    <span class="latest" id="event-latest">waiting for the mesh…</span>
+    <span class="drawer-hint">click, or press <kbd>E</kbd></span>
+  </div>
+  <div class="drawer-body" id="drawer-body">
+    <div class="row tight drawer-controls">
+      <label class="field inline">
+        <span>Filter</span>
+        <input id="event-filter" type="text" placeholder="motion, model, state…">
+      </label>
+      <label class="field check">
+        <input id="only-selected" type="checkbox">
+        <span>focused robot only</span>
+      </label>
+      <label class="field check">
+        <input id="hide-state" type="checkbox" checked>
+        <span>hide routine state</span>
+      </label>
+      <button class="btn ghost" id="pause">Pause</button>
+      <button class="btn ghost" id="clear">Clear</button>
+    </div>
+    <ol id="events" class="events"><li class="empty">waiting for the mesh…</li></ol>
+  </div>
+</section>
 
 <script src="/static/dashboard.js"></script>
 </body>
