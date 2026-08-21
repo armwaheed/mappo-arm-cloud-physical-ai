@@ -431,6 +431,60 @@ def test_reverse_is_not_subjected_to_the_forward_floor():
         assert _run(main()).get("accepted") is True
 
 
+# ── advertised checkpoint sources ────────────────────────────────────────────
+def test_the_robot_advertises_where_its_checkpoints_come_from():
+    """The dashboard should name a source, not ask an operator to remember a URL.
+
+    Advertised by the ROBOT because it is a property of the deployment the robot sits in:
+    two robots on one mesh can legitimately pull from different places, which a
+    dashboard-level setting cannot express.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        sources = [
+            {"label": "Arm Neoverse CPU server", "location": "Tokyo, Japan",
+             "kind": "server", "index_url": "http://models:9000/index.json",
+             "simulated": True},
+            {"label": "AWS S3", "location": "cn-north-1, Beijing", "kind": "s3",
+             "index_url": "http://s3-standin:9001/index.json", "simulated": True},
+        ]
+        driver = _driver(tmp, model_sources=sources)
+        caps = _run(driver.get_capabilities())
+        advertised = caps["cloud"]["sources"]
+        assert [s["location"] for s in advertised] == ["Tokyo, Japan", "cn-north-1, Beijing"]
+        # The demo's stand-ins must carry their own disclaimer into the UI.
+        assert all(s["simulated"] for s in advertised)
+        assert "robot" in caps["cloud"]["resolved_by"]
+
+
+def test_a_robot_with_no_configured_sources_advertises_an_empty_list():
+    """Not a missing key: the page distinguishes 'none configured' from 'older driver'."""
+    with tempfile.TemporaryDirectory() as tmp:
+        caps = _run(_driver(tmp).get_capabilities())
+        assert caps["cloud"]["sources"] == []
+
+
+def test_a_malformed_sources_file_fails_at_startup_rather_than_advertising_nothing():
+    """A robot that quietly advertises nowhere looks, on the dashboard, exactly like one
+    configured with no sources on purpose."""
+    from robot_driver import _load_sources
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "sources.json"
+        path.write_text(json.dumps({"sources": [{"location": "Tokyo"}]}))   # no label
+        try:
+            _load_sources(str(path))
+        except ValueError as exc:
+            assert "label" in str(exc)
+        else:
+            raise AssertionError("a source with no label was accepted")
+
+        path.write_text("not json at all")
+        try:
+            _load_sources(str(path))
+        except ValueError:
+            return
+        raise AssertionError("an unparseable sources file was accepted")
+
+
 # ── bounds and plumbing ──────────────────────────────────────────────────────
 def test_seconds_is_clamped_before_it_reaches_the_worker():
     with tempfile.TemporaryDirectory() as tmp:

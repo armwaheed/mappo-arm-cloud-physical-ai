@@ -190,22 +190,32 @@ SPDX-License-Identifier: Apache-2.0
     </div>
     <div class="row">
       <label class="field grow">
-        <span>Model server index</span>
-        <input id="index-url" type="text" placeholder="http://models.example:9000/index.json">
+        <span>Source</span>
+        <select id="cloud-source"><option value="">no sources advertised</option></select>
       </label>
-      <button class="btn ghost" id="browse-server">Browse server</button>
+      <button class="btn ghost" id="browse-source">Browse</button>
     </div>
-    <div class="row">
-      <label class="field">
-        <span>or S3 bucket</span>
-        <input id="bucket" type="text" placeholder="my-bucket">
-      </label>
-      <label class="field grow">
-        <span>Prefix</span>
-        <input id="prefix" type="text" placeholder="checkpoints/">
-      </label>
-      <button class="btn ghost" id="browse">Browse bucket</button>
+    <!-- Revealed only by choosing "custom"; a demo should not open on two empty text
+         fields that nobody is going to type into. -->
+    <div id="custom-source" class="hidden">
+      <div class="row">
+        <label class="field grow">
+          <span>Server index URL</span>
+          <input id="index-url" type="text" placeholder="http://models.example:9000/index.json">
+        </label>
+      </div>
+      <div class="row">
+        <label class="field">
+          <span>or S3 bucket</span>
+          <input id="bucket" type="text" placeholder="my-bucket">
+        </label>
+        <label class="field grow">
+          <span>Prefix</span>
+          <input id="prefix" type="text" placeholder="checkpoints/">
+        </label>
+      </div>
     </div>
+    <p class="hint" id="source-note"></p>
     <div id="cloud-list" class="notes"></div>
     <pre id="model-result" class="result" aria-live="polite"></pre>
   </section>

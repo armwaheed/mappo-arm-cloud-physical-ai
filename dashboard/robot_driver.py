@@ -134,7 +134,8 @@ class MappoRobotDriver(DeviceDriver):
                  bridge_script: str = DEFAULT_BRIDGE, bridge_python: str | None = None,
                  iface: str = "eth0", allow_motion: bool = False,
                  operator_ready: bool = False, allow_http: bool = True,
-                 simulate: bool = False, camera_replay_dir: str = "") -> None:
+                 simulate: bool = False, camera_replay_dir: str = "",
+                 model_sources: list | None = None) -> None:
         super().__init__()
         self.platform = platform
         self.bridge_script = bridge_script
@@ -154,6 +155,16 @@ class MappoRobotDriver(DeviceDriver):
         #: on the other end of it.
         self.simulate = simulate
         self.camera_replay_dir = camera_replay_dir
+        #: Where THIS robot's checkpoints can come from — a list, because a deployment
+        #: legitimately has more than one and the interesting question is which. Advertised
+        #: by the ROBOT rather than configured in the dashboard: it is a property of the
+        #: deployment the robot sits in, and two robots on one mesh can pull from different
+        #: places, which a dashboard-level setting cannot express.
+        #:
+        #: ⚠️ Every address here must be routable FROM THE ROBOT. The download runs on the
+        #: robot, not in the operator's browser, so an address only a laptop can reach gives
+        #: a field that looks right and fails on fetch.
+        self.model_sources = list(model_sources or [])
         self.store = ModelStore(package_dir)
         self._motion_lock = asyncio.Lock()
         #: The in-flight worker process, so a stop can terminate it. Guarded by a threading
@@ -726,6 +737,13 @@ class MappoRobotDriver(DeviceDriver):
                          if self.platform == "sim" else
                          "the Go2 video service is shared, so a run and this can both read"),
             },
+            "cloud": {
+                "sources": self.model_sources,
+                # Stated so the dashboard can say whose reachability matters. Nothing here
+                # verifies the robot can reach any of them; that is what pressing Browse
+                # finds out, and it finds out from the robot's side of the network.
+                "resolved_by": "the robot, not the browser",
+            },
             "max_seconds": MAX_SECONDS,
             "bridge_python": self.bridge_python,
             "package_dir": str(self.store.package_dir),
@@ -887,6 +905,25 @@ class MappoRobotDriver(DeviceDriver):
                              active_model=active)
 
 
+def _load_sources(path: str) -> list:
+    """Read the advertised checkpoint sources, or none at all.
+
+    A malformed file is a startup error rather than a silent empty list: a robot that
+    quietly advertises nowhere to get checkpoints from looks, on the dashboard, exactly
+    like a robot that was configured with no sources on purpose.
+    """
+    if not path:
+        return []
+    data = json.loads(Path(path).read_text())
+    sources = data.get("sources") if isinstance(data, dict) else data
+    if not isinstance(sources, list):
+        raise ValueError(f"{path}: expected a list of sources, or an object with 'sources'")
+    for source in sources:
+        if not isinstance(source, dict) or not source.get("label"):
+            raise ValueError(f"{path}: every source needs at least a 'label'")
+    return sources
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Publish a MAPPO quadruped on the Device Connect mesh.")
@@ -913,6 +950,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--simulate", action="store_true",
                         help="Present as --platform but drive the bench double. For a demo "
                              "host with no robots. Advertised, and badged in the dashboard.")
+    parser.add_argument("--model-sources", default="",
+                        help="JSON file listing where this robot's checkpoints can come "
+                             "from; advertised to the dashboard so an operator picks a named "
+                             "source instead of remembering a URL. Every address in it MUST "
+                             "be routable from the robot — the download runs here, not in "
+                             "the operator's browser.")
     parser.add_argument("--camera-replay-dir", default="",
                         help="Serve JPEGs from this directory as the camera feed. Each frame "
                              "is labelled REPLAY in the pixels.")
@@ -944,7 +987,8 @@ def main(argv=None) -> int:
         platform=args.platform, package_dir=args.package, bridge_script=args.bridge_script,
         bridge_python=args.bridge_python, iface=args.iface, allow_motion=args.allow_motion,
         operator_ready=args.operator_ready, allow_http=not args.no_http_sources,
-        simulate=args.simulate, camera_replay_dir=args.camera_replay_dir)
+        simulate=args.simulate, camera_replay_dir=args.camera_replay_dir,
+        model_sources=_load_sources(args.model_sources))
 
     if args.allow_motion:
         log.warning("MOTION IS ENABLED. robot-stack/SAFETY.md applies: clear area, operator "
