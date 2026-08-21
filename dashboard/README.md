@@ -31,12 +31,37 @@ directory's `--live`.
 | | |
 | --- | --- |
 | **Run a fleet** | Every robot on the mesh listed at once, each with its own stop, plus one **STOP ALL**. Robots appear as they connect and are tombstoned as GONE when they drop off. |
-| **View robot events** | Every command, every refusal, every checkpoint change, plus pose and mode on a 5 s timer. Live, filterable, and replayed from a ring buffer to a page that opens late. |
+| **View robot events** | A docked drawer, always on screen. Collapsed it is one bar carrying the newest line and an unread count; open it fills the bottom of the window. Filterable, pausable, and replayed from a ring buffer to a page that opens late. |
 | **Basic motion** | Walk forward / back, strafe left / right, turn left / right, lie down. Bounded in time, and every press reports what the robot *measured*. |
 | **Swap checkpoints** | Arm any `.npz` already on the robot for the next run. |
 | **Load / unload from Cloud AI** | Pull a checkpoint from an S3 bucket or a direct server address; delete one off the robot. |
 
-## Many robots
+## Where the event stream lives, and why it is a drawer
+
+It was a panel at the foot of a scrolling page, and it was missed entirely — an operator had
+to already know it existed and scroll to find it. Two pieces of guidance pull in opposite
+directions here and the drawer is what satisfies both.
+
+Dashboard practice is consistent that a live log is **secondary**: keep detailed tables and
+audit logs below the summaries, hold the initial view to about five or six elements, and give
+a high-frequency feed collapsible sections and a pause control rather than letting it compete
+with the controls. Equally consistent is that anything critical must not depend on the user
+scrolling to find it, and that key controls belong in a fixed position that does not move.
+
+A docked, collapsible drawer is the shape that satisfies both, and it is the one DevTools,
+VS Code and PatternFly all converge on: on the same surface as the content, never covering
+it, always present. Collapsed it costs 44 px and still carries the newest line and an unread
+count, so it is telling you something even shut. `E` toggles it, and the choice is remembered.
+
+`robot_state` is hidden by default. Four robots at 5 s intervals is ~48 lines a minute of
+"nothing changed", which buries the lines that matter; one checkbox brings it back.
+
+The page also stopped being a two-column *grid* of panels. A grid puts each panel in a grid
+row, so a row begins below the tallest item in the row above — the motion panel — and the
+right-hand column grew a block of dead space with the next panel stranded below it. The two
+sides are flex columns now and stack independently.
+
+## Many robots, of more than one kind
 
 The fleet table is the page's spine and the **Focus** selector is not a fleet control. Focus
 decides which robot the motion pad and the checkpoint panels act on; **it never decides which
@@ -67,6 +92,24 @@ and watching the fleet: that is the D2D presence TTL deciding a peer has stopped
 not the dashboard's 5 s poll. So the fleet table is a good record of what *has* left and a
 poor alarm for what *just* left — if a robot stops responding, its commands fail long before
 its row greys out.
+
+**The fleet is grouped by platform — but not because platform is how a fleet is operated.**
+Mid-incident what matters is which robot is *moving*, not who made it, and grouping by vendor
+buries the one robot that needs attention inside a group of nine that do not. Platform earns
+the grouping for a different reason: **the capability differences are per-platform.** Every
+Lite3 shares "lie down does not lie it down"; every Go2 shares an unmeasured lateral floor.
+Those belong once on a group header instead of repeated on every row. Within a group the sort
+is operational — anything not live floats to the top.
+
+⚠️ **The trap that comes with grouping is the scope of a bulk action.** The moment a fleet can
+be filtered or grouped, "stop all" becomes ambiguous: an operator looking at a filtered list
+reads it as "stop these", and is wrong in whichever direction the implementation chose.
+Fleet-management practice is to preview exactly which devices an action will hit. So the
+button **names its count** — `■ STOP ALL (4)` — and is never narrowed by grouping or
+filtering; a group's own stop is a separate, separately-labelled button
+(`Stop go2 (2)`). Both go through one implementation, so they cannot report differently, and
+a malformed scope is treated as **everything** rather than nothing: for a stop, the fail-safe
+direction is more robots, not fewer.
 
 Adding robots costs no extra polling. Pose, mode and armed checkpoint are folded out of the
 `robot_state` events already streaming through the page; capabilities are fetched once per
@@ -154,7 +197,7 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 ## Tests
 
 ```bash
-for t in test_*.py; do python3 $t; done       # 86
+for t in test_*.py; do python3 $t; done       # 88
 ruff check .                                  # must be clean
 ```
 
@@ -162,7 +205,7 @@ Needs `device-connect-edge`, `device-connect-agent-tools`, `aiohttp` and `numpy`
 only for the S3 path. `test_drive_bridge.py` and `test_model_store.py` run without the
 Device Connect packages.
 
-Nine guards are mutation-tested rather than assumed — see
+Ten guards are mutation-tested rather than assumed — see
 [`../evidence/2026-08-21-device-connect-dashboard/`](../evidence/2026-08-21-device-connect-dashboard/),
 which also records the two defects the bring-up run found and what the run does **not**
 prove. No robot has moved under this yet.

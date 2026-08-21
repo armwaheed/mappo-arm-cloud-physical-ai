@@ -64,7 +64,8 @@ class _FakeMesh(Mesh):
     async def fleet(self):
         return self._fleet_rows
 
-    async def stop_all(self):
+    async def stop_all(self, device_ids=None):
+        self.stop_scope = device_ids
         if isinstance(self._stop_all, Exception):
             raise self._stop_all
         return self._stop_all
@@ -257,6 +258,44 @@ def test_a_stop_all_that_times_out_says_the_robots_may_still_be_moving():
         error = (await response.json())["error"]
         assert "STILL MOVING" in error and "physical abort" in error, error
     _serve(check, mesh=_FakeMesh(stop_all=asyncio.TimeoutError()))
+
+
+def test_a_scoped_stop_reaches_only_the_named_robots():
+    """A group stop must not quietly become a fleet stop, or the reverse.
+
+    Fleet tooling gets this wrong by scoping a bulk action to whatever filter is applied:
+    the operator reads "stop all" against a filtered list as "stop these", and is wrong in
+    whichever direction the implementation chose.
+    """
+    async def check(client, mesh):
+        await client.post("/api/stop-all", json={"device_ids": ["r1", "r3"]})
+        assert mesh.stop_scope == ["r1", "r3"], mesh.stop_scope
+
+        await client.post("/api/stop-all", json={})
+        assert mesh.stop_scope is None, "an empty body narrowed the stop"
+
+        await client.post("/api/stop-all")
+        assert mesh.stop_scope is None, "a bodyless stop-all narrowed the stop"
+    _serve(check, mesh=_FakeMesh(stop_all={"matched": 2, "results": []}))
+
+
+def test_a_malformed_stop_scope_stops_everything_rather_than_nothing():
+    """The fail-safe direction for a stop is MORE robots, not fewer.
+
+    A body this endpoint cannot parse must not be read as "stop no one" — that is the one
+    outcome an operator pressing stop can never be allowed to get.
+    """
+    async def check(client, mesh):
+        await client.post("/api/stop-all", data=b"{not json",
+                          headers={"Content-Type": "application/json"})
+        assert mesh.stop_scope is None, "a malformed scope narrowed the stop"
+
+        await client.post("/api/stop-all", json={"device_ids": "r1"})   # not a list
+        assert mesh.stop_scope is None, "a non-list scope narrowed the stop"
+
+        await client.post("/api/stop-all", json={"device_ids": []})     # empty list
+        assert mesh.stop_scope is None, "an empty scope narrowed the stop"
+    _serve(check, mesh=_FakeMesh(stop_all={"matched": 0, "results": []}))
 
 
 # ── the fleet ────────────────────────────────────────────────────────────────

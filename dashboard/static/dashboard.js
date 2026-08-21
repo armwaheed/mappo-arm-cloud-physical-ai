@@ -15,6 +15,8 @@ const state = {
   capabilities: null,
   busy: false,
   paused: false,
+  drawerOpen: false,
+  unread: 0,
 };
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -83,9 +85,65 @@ async function refreshFleet() {
     tbody.innerHTML = '<tr><td colspan="7" class="empty">no robots on the mesh</td></tr>';
   } else {
     tbody.innerHTML = "";
-    for (const row of rows) tbody.appendChild(fleetRow(row));
+    for (const [platform, group] of groupByPlatform(rows)) {
+      tbody.appendChild(groupHeader(platform, group));
+      for (const row of group) tbody.appendChild(fleetRow(row));
+    }
   }
+  // The scope of STOP ALL is stated on the button, always as the TOTAL. Fleet tooling gets
+  // this wrong by scoping a bulk action to the current filter: an operator looking at a
+  // filtered list reads "stop all" as "stop these", and is wrong in whichever direction the
+  // implementation chose. Naming the count removes the ambiguity instead of resolving it.
+  $("stop-all").textContent = `■ STOP ALL (${rows.filter((r) => r.present).length})`;
   syncFocusOptions(rows);
+}
+
+// Grouped by platform, NOT because platform is how a fleet is operated — mid-incident what
+// matters is which robot is moving, not who made it — but because the capability differences
+// are per-platform. Every Lite3 shares "lie_down does not lie it down"; every Go2 shares an
+// unmeasured lateral floor. Those belong once on a group header, not repeated on every row.
+// Within a group the ordering is operational: anything not live sorts first.
+function groupByPlatform(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const platform = (row.capabilities || {}).platform || row.device_type || "unknown";
+    if (!groups.has(platform)) groups.set(platform, []);
+    groups.get(platform).push(row);
+  }
+  for (const group of groups.values()) {
+    group.sort((a, b) => (a.present === b.present ? 0 : a.present ? 1 : -1));
+  }
+  return [...groups.entries()].sort((a, b) => a[0].localeCompare(b[0]));
+}
+
+function groupHeader(platform, group) {
+  const caps = group[0].capabilities || {};
+  const live = group.filter((r) => r.present).length;
+  const tr = document.createElement("tr");
+  tr.className = "group";
+
+  const notes = [];
+  for (const axis of caps.unmeasured_axes || []) {
+    notes.push(`no measured ${axis} gait floor`);
+  }
+  if (caps.lie_down_changes_posture === false) notes.push("lie down does not change posture");
+
+  tr.innerHTML =
+    `<td colspan="6">` +
+    `<span class="group-name">${escapeHtml(platform)}</span>` +
+    `<span class="group-count">${live} of ${group.length} live</span>` +
+    (notes.length
+      ? `<span class="group-note">⚠ ${escapeHtml(notes.join(" · "))}</span>`
+      : "") +
+    `</td><td class="actions"></td>`;
+
+  const ids = group.filter((r) => r.present).map((r) => r.device_id);
+  const stop = button(`Stop ${platform} (${ids.length})`, "btn tiny stop-all", async () => {
+    await stopSome(ids, `all ${platform}`);
+  });
+  stop.disabled = !ids.length;
+  tr.querySelector(".actions").appendChild(stop);
+  return tr;
 }
 
 function fleetRow(row) {
@@ -160,21 +218,30 @@ function syncFocusOptions(rows) {
   if (state.deviceId !== previous) onDeviceChanged();
 }
 
-async function stopAll() {
+const stopAll = () => stopSome(null, "every robot");
+
+// One implementation for every scope, so a group stop and a fleet stop cannot report
+// differently. `deviceIds === null` means the whole mesh.
+async function stopSome(deviceIds, label) {
   const el = $("fleet-result");
-  show(el, "STOP ALL — waiting for every robot to confirm…", false);
+  show(el, `STOP ${label} — waiting for confirmation…`, false);
   let body;
   try {
-    body = await (await fetch("/api/stop-all", { method: "POST" })).json();
-  } catch (e) {
-    return show(el, "STOP ALL FAILED TO SEND. Assume robots are STILL MOVING — use the physical abort.", true);
+    const response = await fetch("/api/stop-all", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(deviceIds ? { device_ids: deviceIds } : {}),
+    });
+    body = await response.json();
+  } catch {
+    return show(el, `STOP ${label} FAILED TO SEND. Assume robots are STILL MOVING — use the physical abort.`, true);
   }
   if (!body.ok) return show(el, body.error, true);
-  const lines = [`STOP ALL — ${body.stopped.length} of ${body.matched} confirmed`];
-  if (body.stopped.length) lines.push(`confirmed:  ${body.stopped.join(", ")}`);
+  const lines = [`STOP ${label} — ${body.stopped.length} of ${body.matched} confirmed`];
+  if (body.stopped.length) lines.push(`confirmed:      ${body.stopped.join(", ")}`);
   // The unconfirmed robots are the whole point of showing this: they are the ones the
   // operator now has to deal with physically.
-  for (const f of body.failed) lines.push(`NOT CONFIRMED  ${f.device_id} — ${f.error}`);
+  for (const f of body.failed) lines.push(`NOT CONFIRMED   ${f.device_id} — ${f.error}`);
   show(el, lines.join("\n"), body.failed.length > 0);
   refreshFleet();
 }
@@ -406,6 +473,42 @@ async function browseBucket() {
   }
 }
 
+// ── the event drawer ────────────────────────────────────────────────────────
+// Docked rather than in the page flow, because the previous layout put the stream at the
+// foot of a scrolling page where it was missed entirely. Collapsed by default: a live feed
+// should not compete with the controls, but it must never be something you have to know to
+// go looking for. The bar carries the newest line and an unread count while closed.
+function setDrawer(open) {
+  state.drawerOpen = open;
+  const drawer = $("event-drawer");
+  drawer.classList.toggle("collapsed", !open);
+  $("drawer-bar").setAttribute("aria-expanded", String(open));
+  if (open) { state.unread = 0; $("event-count").classList.remove("unread"); renderCount(); }
+  syncDrawerHeight();
+  try { localStorage.setItem("mappo.drawer", open ? "1" : "0"); } catch { /* private mode */ }
+}
+
+// The main region is padded by the drawer's real height so its last panel can never end up
+// underneath it — measured rather than assumed, because the bar's height depends on the font
+// the viewer actually got.
+function syncDrawerHeight() {
+  const h = $("event-drawer").getBoundingClientRect().height;
+  document.documentElement.style.setProperty("--drawer-h", `${Math.round(h)}px`);
+}
+
+function renderCount() {
+  $("event-count").textContent = String(state.unread || 0);
+}
+
+function noteUnread(record) {
+  if (state.drawerOpen) return;
+  state.unread += 1;
+  $("event-count").classList.add("unread");
+  renderCount();
+  $("event-latest").textContent =
+    `${record.device_id}  ${record.event}  ${summarisePayload(record.payload)}`.slice(0, 160);
+}
+
 // ── events ──────────────────────────────────────────────────────────────────
 function startEventStream() {
   const source = new EventSource("/api/events");
@@ -414,6 +517,7 @@ function startEventStream() {
     if (state.paused) return;
     let record;
     try { record = JSON.parse(message.data); } catch { return; }
+    noteUnread(record);
     if (!passesFilter(record)) return;
     if (list.querySelector(".empty")) list.innerHTML = "";
     // Newest first. An operator watching a robot reads the top of the list, and a stream
@@ -426,6 +530,10 @@ function startEventStream() {
 }
 
 function passesFilter(record) {
+  // robot_state arrives from every robot every 5 s, so on a four-robot fleet it is ~48
+  // lines a minute of "nothing changed" burying the lines that matter. Hidden by default,
+  // one checkbox away.
+  if ($("hide-state").checked && record.event === "robot_state") return false;
   if ($("only-selected").checked && record.device_id !== state.deviceId) return false;
   const needle = $("event-filter").value.trim().toLowerCase();
   if (!needle) return true;
@@ -482,6 +590,27 @@ function init() {
   });
   $("download").addEventListener("click", downloadModel);
   $("browse").addEventListener("click", browseBucket);
+  $("drawer-bar").addEventListener("click", () => setDrawer(!state.drawerOpen));
+  $("drawer-bar").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDrawer(!state.drawerOpen); }
+  });
+  // A keyboard shortcut for the one panel an operator reaches for repeatedly. Ignored while
+  // typing, or a filter box would toggle the drawer on every "e".
+  document.addEventListener("keydown", (e) => {
+    if (e.key !== "e" && e.key !== "E") return;
+    if (e.metaKey || e.ctrlKey || e.altKey) return;
+    const tag = (e.target.tagName || "").toLowerCase();
+    if (tag === "input" || tag === "textarea" || tag === "select") return;
+    setDrawer(!state.drawerOpen);
+  });
+  for (const id of ["event-filter", "only-selected", "hide-state"]) {
+    $(id).addEventListener("input", () => { /* filters apply to new lines as they arrive */ });
+  }
+  let restored = "0";
+  try { restored = localStorage.getItem("mappo.drawer") || "0"; } catch { /* private mode */ }
+  setDrawer(restored === "1");
+  window.addEventListener("resize", syncDrawerHeight);
+
   $("pause").addEventListener("click", () => {
     state.paused = !state.paused;
     $("pause").textContent = state.paused ? "Resume" : "Pause";

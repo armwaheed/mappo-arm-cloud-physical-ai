@@ -71,6 +71,10 @@ main {
   display: grid;
   grid-template-columns: minmax(340px, 1fr) minmax(420px, 1.35fr);
   gap: 16px; padding: 16px; align-items: start;
+  /* Room for the docked drawer, so the last panel is never hidden behind it. Driven by a
+     variable the drawer updates, because a collapsed drawer needs 44px and an open one
+     needs its full height. */
+  padding-bottom: calc(var(--drawer-h, 52px) + 16px);
 }
 @media (max-width: 980px) { main { grid-template-columns: 1fr; } }
 
@@ -84,9 +88,13 @@ main {
    at the foot of the page. Full-width put it below both columns, and the motion panel is
    the tall one — so on a 1500x1700 window the operator's live event log was the one thing
    below the fold, which is the wrong thing to hide on a robot console. */
-#event-panel { grid-column: 2; }
 .panel.wide { grid-column: 1 / -1; }
-@media (max-width: 980px) { #event-panel { grid-column: 1; } }
+
+/* Each column stacks its OWN panels. A plain two-column grid puts each panel in a grid row,
+   so a row begins below the tallest item in the row above it — the motion panel — and the
+   right-hand column grew a block of dead space with the next panel stranded far below it.
+   Real flex columns make the two sides independent, which is what was meant all along. */
+.col { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
 
 /* STOP ALL is the one control on this page that must be findable without reading. It is the
    only filled-red element, and it is never disabled — a stop you cannot press because the
@@ -232,3 +240,61 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 .events li.motion_started .e { color: var(--accent); }
 .events li.model_armed .e, .events li.model_downloaded .e { color: var(--warn); }
 .events li.robot_state { opacity: 0.62; }
+
+
+/* ── the event drawer ─────────────────────────────────────────────────────
+   Docked to the bottom, always on screen, never scrolled past. The dashboard
+   literature is consistent that a live log belongs in a secondary, collapsible
+   position rather than competing with the controls — and equally consistent
+   that critical surfaces must not depend on the user scrolling to find them.
+   A drawer is how those two are both satisfied. */
+.drawer {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
+  background: var(--panel);
+  border-top: 1px solid var(--line);
+  box-shadow: 0 -8px 24px rgba(0, 0, 0, 0.35);
+  display: flex; flex-direction: column;
+  max-height: 60vh;
+}
+
+.drawer-bar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 12px 20px; cursor: pointer; user-select: none;
+  border-bottom: 1px solid transparent;
+}
+.drawer-bar:hover { background: var(--panel-2); }
+.drawer-bar:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.drawer-bar h2 { margin: 0; }
+.drawer-bar .chev { color: var(--ink-dim); font-size: 11px; transition: transform 0.15s; }
+.drawer:not(.collapsed) .drawer-bar { border-bottom-color: var(--line); }
+.drawer:not(.collapsed) .drawer-bar .chev { transform: rotate(180deg); }
+
+/* Collapsed, the bar still carries the newest line — a log you cannot see is worth less
+   than one that tells you it is alive. */
+.drawer-bar .latest {
+  flex: 1 1 auto; min-width: 0;
+  font: 12px/1 var(--mono); color: var(--ink-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.drawer:not(.collapsed) .drawer-bar .latest { visibility: hidden; }
+.drawer-bar .drawer-hint { font-size: 11px; color: var(--ink-dim); flex: 0 0 auto; }
+.drawer-bar kbd {
+  font: 10px var(--mono); border: 1px solid var(--line); border-radius: 3px;
+  padding: 1px 4px; background: var(--bg);
+}
+#event-count { flex: 0 0 auto; }
+#event-count.unread { color: var(--accent); border-color: var(--accent); }
+
+.drawer-body { display: flex; flex-direction: column; min-height: 0; padding: 0 20px 14px; }
+.drawer.collapsed .drawer-body { display: none; }
+.drawer-controls { padding: 12px 0 4px; }
+.drawer .events { max-height: none; flex: 1 1 auto; overflow-y: auto; border-top: none; }
+
+@media (max-width: 980px) { .drawer { max-height: 50vh; } }
+
+/* Platform group headers. The shared capability warning lives here rather than being
+   repeated on every row of the group. */
+.grid tr.group td { background: var(--panel-2); border-bottom: 1px solid var(--line); padding: 7px 8px; }
+.group-name { font: 700 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; }
+.group-count { margin-left: 10px; font: 11px/1 var(--mono); color: var(--ink-dim); }
+.group-note { margin-left: 12px; font-size: 11.5px; color: var(--warn); }
