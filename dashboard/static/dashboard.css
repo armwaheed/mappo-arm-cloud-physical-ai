@@ -80,7 +80,12 @@ main {
   border-radius: var(--radius);
   padding: 16px 18px 18px;
 }
-.panel.wide { grid-column: 1 / -1; }
+/* The event stream lives in the right column under the checkpoints panel, NOT full-width
+   at the foot of the page. Full-width put it below both columns, and the motion panel is
+   the tall one — so on a 1500x1700 window the operator's live event log was the one thing
+   below the fold, which is the wrong thing to hide on a robot console. */
+#event-panel { grid-column: 2; }
+@media (max-width: 980px) { #event-panel { grid-column: 1; } }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 
 h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-dim); }
@@ -162,6 +167,9 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 .result .ok  { color: var(--ok); }
 
 /* ── model table ────────────────────────────────────────────────────────── */
+/* Wide content scrolls inside its own container rather than widening the panel: a
+   checkpoint name is up to 128 characters and one long name must not reflow the page. */
+.grid-scroll { overflow-x: auto; }
 .grid { width: 100%; border-collapse: collapse; font-size: 13px; }
 .grid th {
   text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line);
@@ -169,7 +177,14 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 }
 .grid td { padding: 8px; border-bottom: 1px solid var(--panel-2); vertical-align: middle; }
 .grid td.num, .grid td.name { font-family: var(--mono); font-size: 12px; }
-.grid td.name { word-break: break-all; }
+/* `261.8 KiB` was wrapping to two lines, which made every row double height and left the
+   armed row's tint looking like a stray band. Numbers never wrap. */
+.grid td.num, .grid th { white-space: nowrap; }
+/* The name does not break mid-token either. `word-break: break-all` let the browser hand
+   this column a narrow width and split `..._1910000.npz` across two lines; without it the
+   column claims the width the token actually needs and the scroll container absorbs the
+   pathological case. */
+.grid td.name { white-space: nowrap; }
 .grid tr.armed td { background: color-mix(in srgb, var(--ok) 8%, transparent); }
 .grid td.empty, .empty { color: var(--ink-dim); font-style: italic; padding: 14px 8px; }
 .pill { font: 600 10px/1 var(--mono); padding: 4px 7px; border-radius: 999px; text-transform: uppercase; white-space: nowrap; }
@@ -181,7 +196,7 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 /* ── event stream ───────────────────────────────────────────────────────── */
 .events {
   list-style: none; margin: 12px 0 0; padding: 0;
-  max-height: 42vh; overflow-y: auto;
+  max-height: 46vh; overflow-y: auto;
   font: 12.5px/1.6 var(--mono);
   border-top: 1px solid var(--line);
 }
