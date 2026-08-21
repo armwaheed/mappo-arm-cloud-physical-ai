@@ -277,7 +277,7 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 ## Tests
 
 ```bash
-for t in test_*.py; do python3 $t; done       # 108
+for t in test_*.py; do python3 $t; done       # 110
 ruff check .                                  # must be clean
 ```
 
@@ -291,6 +291,15 @@ which also records the two defects the bring-up run found and what the run does 
 prove. No robot has moved under this yet.
 
 ## Two traps, written down because both cost real time
+
+**"Hidden" must outrank every component rule.** `.hidden { display: none }` and
+`.safety { display: flex }` have the same specificity, so whichever is declared later wins —
+give a component a `display` and you silently disable hiding on it, everywhere, not just at
+the control that looks broken. The `hidden` *attribute* fails from the other side: the
+browser's `[hidden] { display: none }` is a user-agent rule and any author rule beats it.
+Both are `!important` at the end of the stylesheet, and `test_stylesheet.py` keeps them
+there. This cost the safety banner its X *and* its ability to hide for a motion-disabled
+robot — the second half went unnoticed because nobody was looking for it.
 
 **Do not name an `@rpc` after anything on `DeviceDriver`.** `capabilities`, `status`,
 `identity`, `invoke`, `events`, `functions`, `connect`, `registry`, `router`, `transport`

@@ -64,7 +64,6 @@ body {
   font-size: 13px; color: var(--ink);
 }
 .safety code { color: var(--ink); }
-.hidden { display: none; }
 
 /* ── layout ─────────────────────────────────────────────────────────────── */
 main {
@@ -394,3 +393,25 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 }
 
 .pill.sim { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); margin-left: 6px; }
+
+
+/* ── hiding, last and unconditional ───────────────────────────────────────
+   THIS BLOCK MUST STAY AT THE END OF THE FILE.
+
+   `.hidden { display: none }` and `.safety { display: flex }` have the SAME specificity, so
+   whichever is declared later wins. Adding a `display` to a class that is also hidden by
+   script therefore silently disables hiding — and it disables it everywhere, not only at
+   the control that looked broken. That is what happened to the safety banner: its X did
+   nothing, AND it stopped hiding itself for robots with motion disabled, which is the half
+   nobody reported because nobody was looking for it.
+
+   The `hidden` ATTRIBUTE has the same problem from the other direction: the browser's own
+   `[hidden] { display: none }` is a user-agent rule, and any author rule beats it. So
+   `fleet-more`, which sets `.hidden = true` from script, never hid either.
+
+   `!important` on a hiding utility is the one place it is not a smell — it is what makes
+   "hidden" mean hidden regardless of what any component rule says, and it is what the
+   utility classes in every CSS framework do for exactly this reason. `test_stylesheet.py`
+   keeps this block last. */
+[hidden] { display: none !important; }
+.hidden { display: none !important; }
