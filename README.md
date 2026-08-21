@@ -221,7 +221,7 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Offline regression suite | 514 tests: policy 33, integration 144, Go2 visual navigation 265, Lite3 72 |
+| ✅ Offline regression suite | 589 tests: policy 33, integration 144, Go2 visual navigation 265, Lite3 72, dashboard 75 |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; six silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
@@ -235,6 +235,8 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ⛔ Multiple quadrupeds | one robot; peers not detectable (above) |
 | ✅ Lite3 Venture offline port | high-level ROS locomotion, RGB camera, fail-closed health gate, calibration and MAPPO entry points; 30 platform tests |
 | ⏳ Lite3 hardware commissioning | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): neither event robot has been run; gait floor, actuator gain, loaded radius, camera model/source and health publisher remain measured inputs |
+| ✅ Device Connect dashboard, off-robot | [#43](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/43): events, motion, checkpoint swap and Cloud AI load/unload, end to end over a real D2D mesh against a bench double — see `evidence/2026-08-21-device-connect-dashboard/` |
+| ⏳ Device Connect dashboard, on hardware | not yet run on a robot. The bench double delivers 1.00 of what it is commanded, which is exactly the number a real robot does not produce; nothing there tests gait, DDS, the ROS bridge or the SDK import |
 
 ## Porting to the Deep Robotics Lite3 Venture
 

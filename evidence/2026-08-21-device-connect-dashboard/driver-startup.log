@@ -1,0 +1,30 @@
+2026-08-21 13:50:14,208  mappo-dashboard-driver  WARNING  MOTION IS ENABLED. robot-stack/SAFETY.md applies: clear area, operator on the abort, tether slack checked.
+2026-08-21 13:50:14,210 - device_connect_edge.device.mappo-sim - WARNING - Running in INSECURE mode (DEVICE_CONNECT_ALLOW_INSECURE=true). Do NOT use this in production!
+2026-08-21 13:50:14,217 - device_connect_edge.device.mappo-sim - INFO - Using ZENOH messaging backend
+2026-08-21 13:50:14,226 - device_connect_edge.device.mappo-sim - INFO - Connected to ZENOH broker: []
+2026-08-21 13:50:14,226 - device_connect_edge.device.mappo-sim - INFO - Connected to messaging backend: []
+2026-08-21 13:50:14,226  mappo-dashboard-driver  INFO     driver up: platform=sim motion=ENABLED package=/private/tmp/claude-501/-Users-wahbro01-workspaces-git/461602cc-09aa-4b15-aaf5-b66dac83d4ff/scratchpad/pkg
+2026-08-21 13:50:14,226 - device_connect_edge.device.mappo-sim - INFO - Driver connected: mappo_quadruped
+2026-08-21 13:50:14,227 - device_connect_edge.device.mappo-sim - INFO - Setting up DeviceDriver inter-device messaging (router, registry, @on subscriptions)
+2026-08-21 13:50:14,229  device_connect_edge.discovery  INFO     D2D [mappo-sim]: listening on device-connect.default.*.presence
+2026-08-21 13:50:14,229 - device_connect_edge.device.mappo-sim - INFO - DeviceDriver inter-device messaging ready (registry=D2DRegistry)
+2026-08-21 13:50:14,229 - device_connect_edge.device.mappo-sim - WARNING - Edge-side where predicates are unavailable on this device: where predicates require the 'cel-python' package; install with the [predicate] extra: pip install 'device-connect-edge[predicate]'. Install the predicate extra on every edge that should evaluate broadcast where clauses: pip install 'device-connect-edge[predicate]'
+2026-08-21 13:50:14,229  device_connect.drivers.base  INFO     Starting routine: publish_state (interval=5.0s)
+2026-08-21 13:50:14,233 - device_connect_edge.device.mappo-sim - INFO - Subscribed to commands on device-connect.default.mappo-sim.cmd
+2026-08-21 13:50:14,234 - device_connect_edge.device.mappo-sim - INFO - Subscribed to broadcasts on device-connect.default.broadcast
+2026-08-21 13:50:14,234 - device_connect_edge.device.mappo-sim - INFO - D2D mode: skipping registry registration, using presence announcements
+2026-08-21 13:50:14,234  device_connect_edge.discovery  INFO     D2D presence announcer started for mappo-sim
+2026-08-21 13:50:14,289  device_connect.drivers  INFO     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-08-21 13:50:14,289  device_connect.drivers  INFO     *** EVENT mappo-sim::robot_state [4f38bf4f]
+2026-08-21 13:50:14,289  device_connect.drivers  INFO         payload: pose={'x': 0.0, 'y': 0.0, 'yaw': 0.0}, velocity=[0.0, 0.0, 0.0], mode='sim', active_model='mappo_actor_3agent_1910000.npz'
+2026-08-21 13:50:14,289  device_connect.drivers  INFO     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-08-21 13:50:14,736  device_connect_edge.discovery  INFO     D2D [mappo-sim]: discovered peer mappo-lite3
+2026-08-21 13:50:14,736  device_connect_edge.discovery  INFO     D2D [mappo-sim]: discovered peer mappo-go2
+2026-08-21 13:50:19,304  device_connect.drivers  INFO     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-08-21 13:50:19,304  device_connect.drivers  INFO     *** EVENT mappo-sim::robot_state [f5dfd18b]
+2026-08-21 13:50:19,304  device_connect.drivers  INFO         payload: pose={'x': 0.0, 'y': 0.0, 'yaw': 0.0}, velocity=[0.0, 0.0, 0.0], mode='sim', active_model='mappo_actor_3agent_1910000.npz'
+2026-08-21 13:50:19,305  device_connect.drivers  INFO     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-08-21 13:50:24,299  device_connect.drivers  INFO     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+2026-08-21 13:50:24,299  device_connect.drivers  INFO     *** EVENT mappo-sim::robot_state [a2b89807]
+2026-08-21 13:50:24,299  device_connect.drivers  INFO         payload: pose={'x': 0.0, 'y': 0.0, 'yaw': 0.0}, velocity=[0.0, 0.0, 0.0], mode='sim', active_model='mappo_actor_3agent_1910000.npz'
+2026-08-21 13:50:24,300  device_connect.drivers  INFO     ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

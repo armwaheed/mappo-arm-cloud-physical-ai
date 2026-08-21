@@ -1,0 +1,51 @@
+
+=== 1. CAPABILITIES ===
+  [   ok  ] get_capabilities  ·  platform=sim  motion_enabled=True  unmeasured_axes=[]  lie_down_changes_posture=True
+
+=== 2. MOTION ===
+  [   ok  ] walk_forward 1.0s @0.35  ·  travelled_m=0.3729  delivered_fraction=1.0  seconds=1.065
+  [   ok  ] walk_back 1.0s  ·  travelled_m=0.3734
+            ⚠ REVERSE. Neither platform has rear sensing and the planner never samples this direction; nothing is watching behind the robot.
+  [   ok  ] strafe_left 1.0s  ·  travelled_m=0.2169
+  [   ok  ] strafe_right 1.0s  ·  travelled_m=0.2171
+  [   ok  ] turn_left 1.0s  ·  turned_deg=43.39
+  [   ok  ] turn_right 1.0s  ·  turned_deg=-42.91
+  [   ok  ] lie_down  ·  postured=True
+            ℹ StandDown issued
+  [   ok  ] stand  ·  standing=True
+  [   ok  ] stop  ·  stopped=True
+  [   ok  ] seconds clamped to 5 (asked 99)  ·  seconds=5.034
+
+=== 3. CHECKPOINTS ON THE ROBOT ===
+  active: mappo_actor_3agent_1910000.npz  free: 38180417536
+    mappo_actor_3agent_1910000.npz         268063B rays=12 range=0.35 active=True compatible=True
+
+=== 4. LOAD FROM CLOUD AI (direct server address) ===
+  [   ok  ] download good checkpoint  ·  downloaded_bytes=268063
+  [REFUSED] download a non-actor .npz (must refuse)
+            → refusing to install not_an_actor.npz: missing array(s) ['W2', 'W3', 'b1', 'b2', 'b3']; not a MAPPO actor checkpoint W1 has shape (8, 8), this adapter needs (256, 18)
+  [   ok  ] download an actor trained at a different lidar range  ·  downloaded_bytes=292192
+  [REFUSED] path traversal in the name (must refuse)
+            → '../../evil.npz' is not a legal checkpoint name: use letters, digits, dot, dash and underscore only, starting with a letter or digit, and no directory separators
+  [REFUSED] file:// source (must refuse)
+            → 'file:///etc/passwd' uses scheme 'file'; only s3://, https:// and http:// are supported. A local path is not a cloud source — copy the file to the models directory instead.
+  [REFUSED] 404 from the server
+            → http://127.0.0.1:8099/nope.npz returned HTTP 404 File not found
+
+=== 5. SWAP ===
+    mappo_actor_3agent_1910000.npz       active=True compatible=True 
+    mappo_actor_v2.npz                   active=False compatible=True 
+    other_range.npz                      active=False compatible=False 
+  [   ok  ] arm mappo_actor_v2.npz  ·  active=mappo_actor_v2.npz  previous=mappo_actor_3agent_1910000.npz  takes_effect=next run — a live run holds its weights in memory
+  [REFUSED] arm other_range.npz (must refuse: range mismatch)
+            → refusing to arm other_range.npz: other_range.npz was trained with lidar_range_vmas=0.5 but config.json says 0.35. The proximity convention is measured against this range, so the ru
+  [REFUSED] delete the ARMED checkpoint (must refuse)
+            → mappo_actor_v2.npz is armed for the next run; arm a different checkpoint first, otherwise config.json would point at a file that is not there
+  [   ok  ] delete a non-armed checkpoint  ·  removed=other_range.npz  freed_bytes=292192
+  [   ok  ] arm back the original  ·  active=mappo_actor_3agent_1910000.npz  previous=mappo_actor_v2.npz
+
+=== 6. STATUS ===
+  [   ok  ] get_status  ·  active_model=mappo_actor_3agent_1910000.npz  motion_enabled=True  mode=sim  busy=False
+
+=== 7. DASHBOARD GUARDS ===
+  [REFUSED] non-allow-listed function blocked with HTTP 403: '__import__' is not one of this dashboard's functions
