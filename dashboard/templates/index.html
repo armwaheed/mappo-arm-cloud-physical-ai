@@ -18,8 +18,8 @@ SPDX-License-Identifier: Apache-2.0
     <span class="sub">Arm Device Connect</span>
   </div>
   <div class="bar-right">
-    <label class="field inline">
-      <span>Robot</span>
+    <label class="field inline" title="Which robot the motion pad and checkpoint panels act on. Stops are per-row in the fleet table and are never routed through this.">
+      <span>Focus</span>
       <select id="device-select"><option value="">discovering…</option></select>
     </label>
     <span id="platform-badge" class="badge muted">—</span>
@@ -38,6 +38,29 @@ SPDX-License-Identifier: Apache-2.0
 </div>
 
 <main>
+
+  <!-- The fleet is the page's spine, not a dropdown. Every robot is visible at once with its
+       own stop, because a control that shows one robot at a time cannot be used to manage an
+       incident involving three. The selector below chooses which robot the DETAIL panels act
+       on; it never decides which robot a stop reaches. -->
+  <section class="panel wide" id="fleet-panel">
+    <div class="panel-head">
+      <h2>Fleet</h2>
+      <button class="btn stop-all" id="stop-all" title="Stop every robot on the mesh">
+        ■ STOP ALL
+      </button>
+    </div>
+    <div class="grid-scroll">
+      <table class="grid" id="fleet-table">
+        <thead>
+          <tr><th>Robot</th><th>Platform</th><th>Motion</th><th>Pose</th>
+              <th>Armed checkpoint</th><th>State</th><th></th></tr>
+        </thead>
+        <tbody><tr><td colspan="7" class="empty">discovering…</td></tr></tbody>
+      </table>
+    </div>
+    <pre id="fleet-result" class="result" aria-live="assertive"></pre>
+  </section>
 
   <section class="panel" id="motion-panel">
     <h2>Motion</h2>

@@ -19,11 +19,17 @@ const state = {
 
 // ── plumbing ────────────────────────────────────────────────────────────────
 async function invoke(fn, params = {}) {
-  if (!state.deviceId) return { ok: false, error: "no robot selected" };
+  if (!state.deviceId) return { ok: false, error: "no robot in focus" };
+  return invokeOn(state.deviceId, fn, params);
+}
+
+// Addressed at a named robot rather than at whatever is selected. Every stop goes through
+// this, so no stop can be sent to the wrong robot because the focus moved.
+async function invokeOn(deviceId, fn, params = {}) {
   const response = await fetch("/api/invoke", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ device_id: state.deviceId, function: fn, params }),
+    body: JSON.stringify({ device_id: deviceId, function: fn, params }),
   });
   const body = await response.json().catch(() => ({ ok: false, error: "bad response" }));
   if (!body.ok) return { ok: false, error: body.error || "request failed" };
@@ -46,38 +52,6 @@ function show(el, value, isError) {
 }
 
 // ── devices ─────────────────────────────────────────────────────────────────
-async function refreshDevices() {
-  let devices = [];
-  try {
-    const body = await (await fetch("/api/devices")).json();
-    devices = body.ok ? body.devices : [];
-    setBadge($("mesh-badge"), body.ok ? "mesh up" : "mesh down", body.ok ? "on" : "hot");
-  } catch {
-    setBadge($("mesh-badge"), "mesh down", "hot");
-  }
-
-  const select = $("device-select");
-  const previous = state.deviceId;
-  select.innerHTML = "";
-  if (!devices.length) {
-    select.innerHTML = '<option value="">no robots found</option>';
-    state.deviceId = null;
-    renderCapabilities(null);
-    return;
-  }
-  for (const device of devices) {
-    const option = document.createElement("option");
-    option.value = device.device_id;
-    option.textContent = `${device.device_id} · ${device.device_type || "device"}`;
-    select.appendChild(option);
-  }
-  // Keep the operator's selection across a poll. Re-selecting device one every ten seconds
-  // while someone is driving device two is the kind of bug that only shows up with a robot.
-  state.deviceId = devices.some((d) => d.device_id === previous) ? previous : devices[0].device_id;
-  select.value = state.deviceId;
-  if (state.deviceId !== previous) await onDeviceChanged();
-}
-
 async function onDeviceChanged() {
   const capabilities = await invoke("get_capabilities");
   renderCapabilities(capabilities.ok === false ? null : capabilities);
@@ -87,6 +61,122 @@ async function onDeviceChanged() {
 function setBadge(el, text, cls) {
   el.textContent = text;
   el.className = "badge " + (cls || "muted");
+}
+
+// ── the fleet ───────────────────────────────────────────────────────────────
+// Every robot, always visible, each with its own stop. The focus selector decides which
+// robot the DETAIL panels act on; it never decides which robot a stop reaches, because a
+// stop that depends on what is selected is a stop an operator has to think about.
+async function refreshFleet() {
+  let rows = [];
+  try {
+    const body = await (await fetch("/api/fleet")).json();
+    rows = body.ok ? body.fleet : [];
+    setBadge($("mesh-badge"), body.ok ? "mesh up" : "mesh down", body.ok ? "on" : "hot");
+  } catch {
+    setBadge($("mesh-badge"), "mesh down", "hot");
+    return;
+  }
+
+  const tbody = $("fleet-table").querySelector("tbody");
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">no robots on the mesh</td></tr>';
+  } else {
+    tbody.innerHTML = "";
+    for (const row of rows) tbody.appendChild(fleetRow(row));
+  }
+  syncFocusOptions(rows);
+}
+
+function fleetRow(row) {
+  const caps = row.capabilities || {};
+  const tr = document.createElement("tr");
+  tr.className = (row.present ? "" : "gone ") + (row.device_id === state.deviceId ? "focused" : "");
+
+  const pose = row.pose
+    ? `x ${row.pose.x.toFixed(2)}  y ${row.pose.y.toFixed(2)}  yaw ${(row.pose.yaw * 180 / Math.PI).toFixed(0)}°`
+    : "—";
+  const motion = caps.motion_enabled
+    ? '<span class="pill live">enabled</span>'
+    : '<span class="pill nomotion">disabled</span>';
+  const stateCell = row.present
+    ? '<span class="pill live">live</span>'
+    : `<span class="pill gone">GONE ${Math.round(row.age_s)}s</span>`;
+
+  tr.innerHTML =
+    `<td class="name">${escapeHtml(row.device_id)}</td>` +
+    `<td class="num">${escapeHtml(caps.platform || row.device_type || "—")}</td>` +
+    `<td>${motion}</td>` +
+    `<td class="pose">${pose}</td>` +
+    `<td class="name">${escapeHtml(row.active_model || "—")}</td>` +
+    `<td>${stateCell}</td>` +
+    `<td class="actions"></td>`;
+
+  const actions = tr.querySelector(".actions");
+  const stop = button("Stop", "btn tiny stop-all", async () => {
+    // Deliberately does NOT change focus first. Changing selection to stop a robot is the
+    // failure mode this whole layout exists to remove.
+    const result = await invokeOn(row.device_id, "stop", {});
+    show($("fleet-result"), result.ok === false
+      ? `stop ${row.device_id}: ${result.error}`
+      : `stopped ${row.device_id}` + (result.interrupted_motion ? " (interrupted a running nudge)" : ""),
+      result.ok === false);
+    refreshFleet();
+  });
+  stop.disabled = !row.present;
+  actions.appendChild(stop);
+
+  if (row.device_id !== state.deviceId && row.present) {
+    actions.appendChild(button("Focus", "btn ghost tiny", () => {
+      state.deviceId = row.device_id;
+      $("device-select").value = row.device_id;
+      onDeviceChanged();
+      refreshFleet();
+    }));
+  }
+  return tr;
+}
+
+function syncFocusOptions(rows) {
+  const select = $("device-select");
+  const live = rows.filter((r) => r.present);
+  const previous = state.deviceId;
+  select.innerHTML = "";
+  if (!live.length) {
+    select.innerHTML = '<option value="">no robots found</option>';
+    if (previous !== null) { state.deviceId = null; renderCapabilities(null); }
+    return;
+  }
+  for (const row of live) {
+    const option = document.createElement("option");
+    option.value = row.device_id;
+    option.textContent = `${row.device_id} · ${(row.capabilities || {}).platform || row.device_type || "device"}`;
+    select.appendChild(option);
+  }
+  // Keep the operator's choice across a poll. Re-selecting robot one every ten seconds while
+  // someone is driving robot two is the kind of bug that only shows up with a robot.
+  state.deviceId = live.some((r) => r.device_id === previous) ? previous : live[0].device_id;
+  select.value = state.deviceId;
+  if (state.deviceId !== previous) onDeviceChanged();
+}
+
+async function stopAll() {
+  const el = $("fleet-result");
+  show(el, "STOP ALL — waiting for every robot to confirm…", false);
+  let body;
+  try {
+    body = await (await fetch("/api/stop-all", { method: "POST" })).json();
+  } catch (e) {
+    return show(el, "STOP ALL FAILED TO SEND. Assume robots are STILL MOVING — use the physical abort.", true);
+  }
+  if (!body.ok) return show(el, body.error, true);
+  const lines = [`STOP ALL — ${body.stopped.length} of ${body.matched} confirmed`];
+  if (body.stopped.length) lines.push(`confirmed:  ${body.stopped.join(", ")}`);
+  // The unconfirmed robots are the whole point of showing this: they are the ones the
+  // operator now has to deal with physically.
+  for (const f of body.failed) lines.push(`NOT CONFIRMED  ${f.device_id} — ${f.error}`);
+  show(el, lines.join("\n"), body.failed.length > 0);
+  refreshFleet();
 }
 
 // ── capabilities drive the controls ─────────────────────────────────────────
@@ -398,10 +488,13 @@ function init() {
   });
   $("clear").addEventListener("click", () => { $("events").innerHTML = ""; });
 
+  $("stop-all").addEventListener("click", stopAll);
+
   startEventStream();
-  refreshDevices();
-  // Devices come and go — a robot rebooted mid-demo should reappear without a page reload.
-  setInterval(refreshDevices, 10000);
+  refreshFleet();
+  // Robots come and go — one rebooted mid-demo reappears without a page reload, and one that
+  // dies stays listed as GONE rather than silently vanishing.
+  setInterval(refreshFleet, 5000);
 }
 
 document.addEventListener("DOMContentLoaded", init);

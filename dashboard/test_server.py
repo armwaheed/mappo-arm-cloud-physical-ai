@@ -34,7 +34,9 @@ from server import ALLOWED_FUNCTIONS, Mesh, _in_time_order, _shape_event
 class _FakeMesh(Mesh):
     """A Mesh that answers from memory. Never touches Zenoh, never starts a thread pool."""
 
-    def __init__(self, devices=None, answer=None):
+    def __init__(self, devices=None, answer=None, fleet_rows=None, stop_all=None):
+        self._fleet_rows = fleet_rows if fleet_rows is not None else []
+        self._stop_all = stop_all if stop_all is not None else {"matched": 0, "results": []}
         self._devices = devices if devices is not None else [
             {"device_id": "mappo-go2", "device_type": "mappo_quadruped"}]
         self._answer = answer or {"success": True, "result": {"ok": True}}
@@ -58,6 +60,14 @@ class _FakeMesh(Mesh):
         if isinstance(self._answer, Exception):
             raise self._answer
         return self._answer
+
+    async def fleet(self):
+        return self._fleet_rows
+
+    async def stop_all(self):
+        if isinstance(self._stop_all, Exception):
+            raise self._stop_all
+        return self._stop_all
 
     async def pump(self):
         await asyncio.sleep(3600)
@@ -182,6 +192,127 @@ def test_the_page_is_served():
         text = await response.text()
         assert "dashboard.js" in text and "Device Connect" in text
     _serve(check)
+
+
+# ── the stop lane ────────────────────────────────────────────────────────────
+def test_a_stop_is_routed_to_the_dedicated_lane_wherever_it_is_issued_from():
+    """The routing is by FUNCTION NAME, not by endpoint.
+
+    The motion pad's stop key goes through the ordinary invoke endpoint, so a rule keyed on
+    the endpoint would leave one path where a stop can queue behind a walk. Measured before
+    this existed: a stop to a second robot took 4.23 s because a single-worker pool held it
+    behind a 5 s walk.
+    """
+    import inspect
+    source = inspect.getsource(Mesh.invoke)
+    assert 'function == "stop"' in source, (
+        "Mesh.invoke no longer routes stop to the dedicated pool")
+    assert "_stop_pool" in source
+
+
+def test_the_three_pools_are_separate_objects():
+    """A stop lane that is the general pool is not a lane.
+
+    Made to fail by assigning `self._stop_pool = self._pool`.
+    """
+    mesh = _FakeMesh()
+    real = Mesh(allow_insecure=True)
+    try:
+        assert real._stop_pool is not real._pool
+        assert real._event_pool is not real._pool
+        assert real._event_pool is not real._stop_pool
+        # The stop lane must have a worker of its own even when the general pool is full.
+        assert real._stop_pool._max_workers >= 1
+        assert real._pool._max_workers > 1, (
+            "the general pool is back to one worker, which is the original defect")
+    finally:
+        for pool in (real._pool, real._stop_pool, real._event_pool):
+            pool.shutdown(wait=False)
+    del mesh
+
+
+def test_stop_all_reports_which_robots_did_not_confirm():
+    """Never a bare success. The unconfirmed robots are the ones the operator must now
+    physically deal with, so hiding them is the one thing this must not do."""
+    answer = {"matched": 3, "results": [
+        {"device_id": "a", "result": {"ok": True, "stopped": True}},
+        {"device_id": "b", "result": {"ok": False, "error": "no SDK"}},
+        {"device_id": "c", "result": {"ok": True, "stopped": True}},
+    ]}
+
+    async def check(client, _mesh):
+        body = await (await client.post("/api/stop-all")).json()
+        assert body["ok"] is True
+        assert sorted(body["stopped"]) == ["a", "c"], body
+        assert [f["device_id"] for f in body["failed"]] == ["b"], body
+        assert "no SDK" in body["failed"][0]["error"]
+    _serve(check, mesh=_FakeMesh(stop_all=answer))
+
+
+def test_a_stop_all_that_times_out_says_the_robots_may_still_be_moving():
+    """The wrong message here is 'request failed'. The right one sends someone to the abort."""
+    async def check(client, _mesh):
+        response = await client.post("/api/stop-all")
+        assert response.status == 504
+        error = (await response.json())["error"]
+        assert "STILL MOVING" in error and "physical abort" in error, error
+    _serve(check, mesh=_FakeMesh(stop_all=asyncio.TimeoutError()))
+
+
+# ── the fleet ────────────────────────────────────────────────────────────────
+def test_a_departed_robot_is_tombstoned_rather_than_dropped():
+    """D2D presence is ephemeral, so a robot that dies simply vanishes from discovery.
+
+    A robot dropping off the mesh mid-walk is the single event an operator must not have
+    hidden from them, so it stays listed as absent until the tombstone window expires.
+    """
+    mesh = Mesh(allow_insecure=True)
+    try:
+        seen = []
+
+        async def fake_devices():
+            return seen
+
+        mesh.devices = fake_devices
+        mesh.invoke = lambda *a, **k: _immediate({"result": {"platform": "go2"}})
+
+        seen = [{"device_id": "r1", "device_type": "mappo_quadruped"}]
+        rows = asyncio.run(mesh.fleet())
+        assert [r["device_id"] for r in rows] == ["r1"] and rows[0]["present"] is True
+
+        seen = []                                   # r1 falls off the mesh
+        rows = asyncio.run(mesh.fleet())
+        assert [r["device_id"] for r in rows] == ["r1"], rows
+        assert rows[0]["present"] is False, "a departed robot was silently dropped"
+        assert "age_s" in rows[0]
+    finally:
+        for pool in (mesh._pool, mesh._stop_pool, mesh._event_pool):
+            pool.shutdown(wait=False)
+
+
+def test_the_fleet_takes_pose_from_the_event_stream_not_from_polling():
+    """This is what makes N robots cost nothing extra: every driver already emits its state
+    on a timer, so the table reads the stream the page is subscribed to anyway."""
+    mesh = Mesh(allow_insecure=True)
+    try:
+        mesh.note_state_event({
+            "event": "robot_state", "device_id": "r1",
+            "payload": {"pose": {"x": 1.0, "y": 2.0, "yaw": 0.5}, "mode": "normal",
+                        "active_model": "actor.npz"}})
+        row = mesh._fleet["r1"]
+        assert row["pose"]["x"] == 1.0 and row["active_model"] == "actor.npz"
+        assert row["present"] is True
+        # Anything that is not a state event leaves the table alone.
+        mesh.note_state_event({"event": "motion_completed", "device_id": "r1",
+                               "payload": {"travelled_m": 9.9}})
+        assert mesh._fleet["r1"]["pose"]["x"] == 1.0
+    finally:
+        for pool in (mesh._pool, mesh._stop_pool, mesh._event_pool):
+            pool.shutdown(wait=False)
+
+
+async def _immediate(value):
+    return value
 
 
 # ── events ───────────────────────────────────────────────────────────────────
