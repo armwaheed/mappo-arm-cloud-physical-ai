@@ -223,6 +223,34 @@ def test_the_result_reports_what_moved_not_what_was_asked_for():
     assert "delivered_fraction" in result
 
 
+def test_a_simulated_platform_keeps_the_real_platforms_rules():
+    """--platform is the RULES; --backend is what is driven. Collapsing them breaks a demo.
+
+    The first version of --simulate passed "sim" as the platform, which handed the demo the
+    bench double's gait floors of zero — so a simulated Go2 happily accepted 0.21 m/s and the
+    refusal that is this stack's most characteristic behaviour never fired. A demo that
+    teaches the wrong number is worse than no demo.
+    """
+    refused = []
+    try:
+        plan_nudge(_args(["walk", "--platform", "go2", "--backend", "sim", "--vx", "0.21"]))
+    except BridgeError as exc:
+        refused.append(str(exc))
+    assert refused and "0.350" in refused[0], (
+        "a simulated go2 accepted a sub-gait-floor speed; --backend leaked into the rules")
+
+    # ...and the real floor still lets a walkable speed through.
+    vx, _vy, _wz, _s, warning = plan_nudge(
+        _args(["walk", "--platform", "go2", "--backend", "sim", "--vx", "0.35"]))
+    assert vx == 0.35 and warning is None, (vx, warning)
+
+
+def test_the_backend_defaults_to_the_platform():
+    """Without --backend nothing changes, so a real run is unaffected by the demo path."""
+    args = _args(["status", "--platform", "go2"])
+    assert args.backend == "", args.backend
+
+
 # ── platform honesty ─────────────────────────────────────────────────────────
 def test_lie_down_reports_that_a_lite3_was_not_laid_down():
     """A green tick for both platforms would tell the operator something untrue.

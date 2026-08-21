@@ -113,6 +113,19 @@ the explanation gets to be dismissed. The banner also comes back whenever motion
 off→on or the focused robot changes, because "I already read it" is true of a sentence and not
 of a different robot, and dismissal is not persisted across a reload.
 
+## A demo host with no robots
+
+`--simulate` presents a platform's identity and **rules** while driving the bench double, so
+a simulated Go2 refuses 0.21 m/s with the same measured number a real one does. `--platform`
+carries the rules and `--backend` decides what is driven; collapsing the two hands a demo the
+bench double's gait floors of zero and the refusal silently stops firing. Simulated robots
+are badged `sim` on their fleet row and in their device identity, because a demo fleet
+indistinguishable from a real one is a hazard rather than a better demo.
+
+`--camera-replay-dir` serves a directory of JPEGs as the camera, **labelled in the pixels**
+rather than by the page — a screenshot keeps the pixels and loses the caption. See
+[`../deploy/demo/`](../deploy/demo/README.md).
+
 ## Many robots, of more than one kind
 
 The fleet table is the page's spine and the **Focus** selector is not a fleet control. Focus
@@ -249,14 +262,14 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 | `drive_bridge.py` | The SDK-env worker: one command, one JSON line, exit. Python 3.8, stdlib only. |
 | `model_store.py` | Checkpoints on disk: what is here, what is armed, what may replace it. |
 | `cloud_models.py` | S3 and http(s) fetch, with the refusals that make a URL field on a web page safe. |
-| `camera_source.py` | Front-camera frames per platform, with the ceilings and the who-is-watching lifecycle. |
+| `camera_source.py` | Front-camera frames per platform — live, synthetic, or a labelled replay — with the ceilings and the who-is-watching lifecycle. |
 | `server.py` | The dashboard: discovery, an invoke allow-list, the SSE event fan-out, and the MJPEG stream. |
 | `templates/`, `static/` | The page. It renders from `get_capabilities()`, so it never hard-codes what a robot can do. |
 
 ## Tests
 
 ```bash
-for t in test_*.py; do python3 $t; done       # 100
+for t in test_*.py; do python3 $t; done       # 105
 ruff check .                                  # must be clean
 ```
 

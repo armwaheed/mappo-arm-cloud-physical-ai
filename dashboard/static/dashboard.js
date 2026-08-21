@@ -105,6 +105,7 @@ async function refreshFleet() {
     ? `Collapse to a shorter list (${rows.length} robots)`
     : `Show all ${rows.length} robots`;
   $("fleet-more").hidden = rows.length <= 3;
+  syncFleetHeight();
   syncFocusOptions(rows);
 }
 
@@ -171,9 +172,13 @@ function fleetRow(row) {
     ? '<span class="pill live">live</span>'
     : `<span class="pill gone">GONE ${Math.round(row.age_s)}s</span>`;
 
+  // A simulated robot says so on its own row. A demo fleet that looks identical to a real
+  // one is a hazard, not a convincing demo.
+  const platform = escapeHtml(caps.platform || row.device_type || "—") +
+    (caps.simulated ? ' <span class="pill sim">sim</span>' : "");
   tr.innerHTML =
     `<td class="name">${escapeHtml(row.device_id)}</td>` +
-    `<td class="num">${escapeHtml(caps.platform || row.device_type || "—")}</td>` +
+    `<td class="num">${platform}</td>` +
     `<td>${motion}</td>` +
     `<td class="pose">${pose}</td>` +
     `<td class="name">${escapeHtml(row.active_model || "—")}</td>` +
@@ -465,16 +470,29 @@ async function downloadModel() {
   }
 }
 
+async function browseServer() {
+  const indexUrl = $("index-url").value.trim();
+  if (!indexUrl) return show($("model-result"), "give a model server index URL first", true);
+  return browseWith({ index_url: indexUrl });
+}
+
 async function browseBucket() {
   const bucket = $("bucket").value.trim();
   if (!bucket) return show($("model-result"), "give a bucket name first", true);
+  return browseWith({ bucket, prefix: $("prefix").value.trim() });
+}
+
+async function browseWith(params) {
   const list = $("cloud-list");
   list.innerHTML = "";
-  const result = await invoke("list_cloud_models", { bucket, prefix: $("prefix").value.trim() });
+  const result = await invoke("list_cloud_models", params);
   if (result.ok === false) return show($("model-result"), result.error, true);
   const objects = result.objects || [];
   if (!objects.length) {
-    return addNote(list, "", `no <code>.npz</code> objects under <code>${escapeHtml(bucket)}</code>`);
+    return addNote(list, "", "no <code>.npz</code> checkpoints at that source");
+  }
+  if (objects[0].served_by) {
+    addNote(list, "", `served by <strong>${escapeHtml(objects[0].served_by)}</strong>`);
   }
   for (const object of objects) {
     const div = document.createElement("div");
@@ -622,6 +640,30 @@ function setDrawer(open) {
 function syncDrawerHeight() {
   const h = $("event-drawer").getBoundingClientRect().height;
   document.documentElement.style.setProperty("--drawer-h", `${Math.round(h)}px`);
+  syncFleetHeight();
+}
+
+// The expanded fleet must never extend below the window: if it does, the rows at the bottom
+// are exactly as unreachable as the event panel used to be, and the robot you cannot see is
+// the one whose stop button you cannot press.
+//
+// Measured rather than guessed. A `52vh` constant is wrong as soon as the safety banner is
+// dismissed, or the drawer opens, or the browser is a different height — all three of which
+// happen inside one session.
+function syncFleetHeight() {
+  const scroll = $("fleet-scroll");
+  if (!scroll) return;
+  const top = scroll.getBoundingClientRect().top;
+  const drawer = $("event-drawer").getBoundingClientRect().height;
+  // Leave the expand toggle and the result line visible below the table; a scroll region
+  // whose own control is off screen is not usable.
+  const reserved = 96;
+  const available = Math.max(160, window.innerHeight - top - drawer - reserved);
+  document.documentElement.style.setProperty("--fleet-max", `${Math.round(available)}px`);
+  // Collapsed shows about three robot rows, but never more than is actually available —
+  // on a short window the collapsed state has to shrink too, or it is the thing overflowing.
+  document.documentElement.style.setProperty(
+    "--fleet-collapsed-h", `${Math.round(Math.min(210, available))}px`);
 }
 
 function renderCount() {
@@ -723,6 +765,7 @@ function init() {
   });
   $("download").addEventListener("click", downloadModel);
   $("browse").addEventListener("click", browseBucket);
+  $("browse-server").addEventListener("click", browseServer);
   $("drawer-bar").addEventListener("click", () => setDrawer(!state.drawerOpen));
   $("drawer-bar").addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDrawer(!state.drawerOpen); }
@@ -743,6 +786,10 @@ function init() {
   try { restored = localStorage.getItem("mappo.drawer") || "0"; } catch { /* private mode */ }
   setDrawer(restored === "1");
   window.addEventListener("resize", syncDrawerHeight);
+  // The banner and the group headers change the table's top edge as robots come and go.
+  if (window.ResizeObserver) {
+    new ResizeObserver(syncFleetHeight).observe(document.querySelector("main"));
+  }
 
   $("pause").addEventListener("click", () => {
     state.paused = !state.paused;
@@ -754,6 +801,7 @@ function init() {
   $("safety-dismiss").addEventListener("click", () => {
     state.safetyDismissedFor = state.deviceId;
     $("safety").classList.add("hidden");
+    syncFleetHeight();        // the banner going away gives the table more room
   });
   $("bell").addEventListener("click", () => setAlerts($("alerts").classList.contains("hidden")));
   $("alerts-clear").addEventListener("click", () => { state.alerts = []; renderAlerts(); });
@@ -763,6 +811,7 @@ function init() {
     state.fleetExpanded = !state.fleetExpanded;
     $("fleet-scroll").classList.toggle("collapsed", !state.fleetExpanded);
     $("fleet-more").setAttribute("aria-expanded", String(state.fleetExpanded));
+    syncFleetHeight();
     refreshFleet();
   });
 

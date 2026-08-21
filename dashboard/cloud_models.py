@@ -50,6 +50,7 @@ Pure stdlib + optional boto3. ``python3 test_cloud_models.py``.
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 import shutil
 import tempfile
@@ -237,6 +238,63 @@ def list_s3(bucket: str, prefix: str = "", *, limit: int = 100, client=None) -> 
     except Exception as exc:
         raise CloudFetchError(f"could not list s3://{bucket}/{prefix}: {exc}") from exc
 
+    found.sort(key=lambda o: (o["last_modified"] or "", o["key"]), reverse=True)
+    return found[:limit]
+
+
+def list_http_index(index_url: str, *, limit: int = 100,
+                    timeout: float = DEFAULT_TIMEOUT_S, allow_http: bool = True) -> list:
+    """The checkpoints a plain HTTP model server advertises, from a JSON index.
+
+    This exists so a self-hosted model server is a FIRST-CLASS source rather than a URL you
+    have to already know. Only S3 being browsable would say, in the shape of the UI, that a
+    bucket is the real answer and anything else is a fallback — which is precisely backwards
+    for a demo whose point is that the checkpoints can live on your own hardware.
+
+    The index is a JSON object with a ``models`` array; each entry needs a ``name`` and may
+    carry ``size_bytes``, ``sha256`` and ``modified``. A relative ``name`` resolves against
+    the index URL, so a server does not have to know its own public address.
+    """
+    parse_source(index_url, allow_http=allow_http)      # same scheme allow-list, one place
+    request = urllib.request.Request(index_url, headers={"User-Agent": "mappo-dashboard"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            raw = response.read(1 << 20)                # an index is small; cap it anyway
+            final = getattr(response, "url", index_url)
+    except urllib.error.HTTPError as exc:
+        raise CloudFetchError(f"{index_url} returned HTTP {exc.code} {exc.reason}") from exc
+    except urllib.error.URLError as exc:
+        raise CloudFetchError(f"{index_url} could not be reached: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise CloudFetchError(f"{index_url} timed out after {timeout}s") from exc
+
+    try:
+        index = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise CloudFetchError(
+            f"{index_url} did not return a JSON index. A model server should serve "
+            f'{{"models": [{{"name": "actor.npz", ...}}]}} at this address.') from exc
+    entries = index.get("models") if isinstance(index, dict) else None
+    if not isinstance(entries, list):
+        raise CloudFetchError(f"{index_url}: the index has no 'models' array")
+
+    found = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or entry.get("key")
+        if not isinstance(name, str) or not name.endswith(MODEL_SUFFIX):
+            continue
+        found.append({
+            "key": name,
+            # Resolved against the INDEX's final URL, so a server behind a redirect still
+            # hands out addresses that work, and so it need not know its own hostname.
+            "uri": urllib.parse.urljoin(final, entry.get("url") or name),
+            "size_bytes": int(entry.get("size_bytes") or 0),
+            "last_modified": entry.get("modified") or entry.get("last_modified"),
+            "sha256": entry.get("sha256"),
+            "served_by": index.get("server") if isinstance(index, dict) else None,
+        })
     found.sort(key=lambda o: (o["last_modified"] or "", o["key"]), reverse=True)
     return found[:limit]
 
