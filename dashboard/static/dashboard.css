@@ -85,7 +85,28 @@ main {
    the tall one — so on a 1500x1700 window the operator's live event log was the one thing
    below the fold, which is the wrong thing to hide on a robot console. */
 #event-panel { grid-column: 2; }
+.panel.wide { grid-column: 1 / -1; }
 @media (max-width: 980px) { #event-panel { grid-column: 1; } }
+
+/* STOP ALL is the one control on this page that must be findable without reading. It is the
+   only filled-red element, and it is never disabled — a stop you cannot press because the
+   page thinks nothing is moving is the wrong affordance on a robot console. */
+.btn.stop-all {
+  background: var(--bad); color: #120605; border-color: transparent;
+  font: 700 13px/1 var(--mono); letter-spacing: 0.08em; padding: 9px 18px;
+}
+.btn.stop-all:hover { filter: brightness(1.12); }
+.btn.stop-all:active { transform: translateY(1px); }
+
+/* A departed robot goes grey and stays listed. D2D presence is ephemeral, so deleting the
+   row would hide the single event an operator most needs to see: a robot dropping off the
+   mesh while it was moving. */
+.grid tr.gone td { opacity: 0.45; }
+.pill.gone { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
+.pill.live { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
+.pill.nomotion { background: var(--panel-2); color: var(--ink-dim); }
+.grid td.pose { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); white-space: nowrap; }
+tr.focused td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 
 h2 { margin: 0 0 6px; font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink-dim); }
@@ -206,6 +227,7 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 .events .e { flex: 0 0 auto; font-weight: 600; }
 .events .p { color: var(--ink-dim); flex: 1 1 auto; word-break: break-word; }
 .events li.motion_refused .e { color: var(--bad); }
+.events li.motion_interrupted .e { color: var(--warn); }
 .events li.motion_completed .e { color: var(--ok); }
 .events li.motion_started .e { color: var(--accent); }
 .events li.model_armed .e, .events li.model_downloaded .e { color: var(--warn); }

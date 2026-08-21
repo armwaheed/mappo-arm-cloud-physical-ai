@@ -23,14 +23,40 @@ The two are not exclusive. This connects through ``device_connect_agent_tools.co
 which speaks D2D or a router transparently, so a robot registered with a full server
 appears here as readily as one announcing itself by multicast on a demo LAN.
 
-## The threading, which is the only subtle part
+## The threading — three lanes, and the reason is a safety measurement
 
 ``device-connect-agent-tools`` is a synchronous API and aiohttp is asynchronous, so every
-call into the mesh goes through an executor. That executor has **exactly one worker** on
-purpose. The connection holds subscription buffers that are appended to by a messaging
-callback, and serialising every call through one thread removes the question of whether two
-concurrent requests can interleave inside it. A dashboard makes a handful of calls a second;
-there is no throughput to trade away.
+call into the mesh goes through an executor.
+
+**This was one executor with one worker, and that was a safety defect.** The reasoning
+written here was "a dashboard makes a handful of calls a second; there is no throughput to
+trade away". That is true for one robot and false for two. Measured, with robot A one second
+into a five-second walk:
+
+| call | returned after |
+| --- | --- |
+| STOP to a **different** robot | **4.23 s** |
+| the 5 s walk itself | 5.17 s |
+
+4.23 s is the walk's remaining time. The stop was not slow — it was never *sent* until the
+walk finished, because it was queued behind it in a single-worker pool. The driver
+deliberately puts ``stop()`` outside its own motion lock so a stop never waits; queueing it
+one layer up defeated exactly that.
+
+The premise was also wrong. ``DeviceConnection`` owns a dedicated event loop on its own
+thread and bridges with ``asyncio.run_coroutine_threadsafe``; each request carries its own
+id and the loop multiplexes them. Concurrent callers are what it is built for.
+
+So: three lanes, sized by what must not be blocked rather than by throughput.
+
+* ``_pool`` (8) — everything ordinary: discovery, invokes, checkpoint operations.
+* ``_stop_pool`` (2) — **stop and stop-all only.** Even if every general worker is wedged on
+  a hung call, a stop still has a thread. ``DeviceConnection._run`` calls ``future.result()``
+  with no timeout, so a wedged mesh call holds its worker forever; a dedicated lane is the
+  only way to actually guarantee the stop path rather than hope for it.
+* ``_event_pool`` (1) — the subscription drain. Serialised because one reader is correct for
+  it, and separate so the operator's live view cannot go dark at the moment the fleet is
+  busiest.
 
 ## Events
 
@@ -73,10 +99,25 @@ EVENT_POLL_S = 0.4
 #: driver's 5 s interval is ~240 records, so this holds a session rather than a moment.
 EVENT_RING = 500
 
-#: Ceiling on how long one RPC may block the single mesh worker. Longer than the driver's own
-#: worker timeout so that a slow robot surfaces as the driver's error rather than as this
-#: one's, which is more specific.
+#: Ceiling on how long one RPC may block. Longer than the driver's own worker timeout so that
+#: a slow robot surfaces as the driver's error rather than as this one's, which is more
+#: specific.
 INVOKE_TIMEOUT_S = 45.0
+
+#: Ceiling on a stop. Deliberately short: a stop that has not landed in this long is a stop
+#: the operator needs to know has NOT landed, so they can reach for the physical abort
+#: instead of watching a spinner.
+STOP_TIMEOUT_S = 12.0
+
+#: General-purpose mesh workers. Enough that several robots can be commanded at once without
+#: queueing; the cap exists because each wedged call holds its thread forever.
+MESH_WORKERS = 8
+
+#: How long a device stays listed after it stops announcing itself. D2D presence is
+#: ephemeral, so a robot that dies simply vanishes from discovery — and a robot dropping off
+#: the mesh mid-walk is the single event an operator must not have hidden from them. It is
+#: shown as GONE with its last-seen age until this expires.
+TOMBSTONE_S = 120.0
 
 #: Functions this dashboard will invoke. An allow-list rather than a pass-through: this
 #: endpoint takes a function name from a browser and calls it on a robot, and "whatever the
@@ -94,8 +135,9 @@ ALLOWED_FUNCTIONS = frozenset({
 class Mesh:
     """The dashboard's one connection to the Device Connect mesh.
 
-    Every method is a coroutine that hands the real, synchronous call to a single worker
-    thread. Nothing else in this file touches ``device_connect_agent_tools``.
+    Every method is a coroutine that hands the real, synchronous call to a worker thread.
+    Nothing else in this file touches ``device_connect_agent_tools``. See the module
+    docstring for why there are three pools and not one.
     """
 
     def __init__(self, allow_insecure: bool = True) -> None:
@@ -104,17 +146,32 @@ class Mesh:
             # no PKI; a router deployment passes its own credentials and this is ignored.
             os.environ.setdefault("DEVICE_CONNECT_ALLOW_INSECURE", "true")
         self._pool = concurrent.futures.ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="mesh")
+            max_workers=MESH_WORKERS, thread_name_prefix="mesh")
+        self._stop_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="mesh-stop")
+        self._event_pool = concurrent.futures.ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="mesh-events")
         self._subscription = None
         self.events: deque = deque(maxlen=EVENT_RING)
         self._listeners: set = set()
         self._seq = 0
+        #: Everything the dashboard knows about every robot it has seen, keyed by device id.
+        #: Populated by discovery AND by the event stream, so a fleet of N robots costs N
+        #: capability lookups once rather than N status polls per refresh.
+        self._fleet: dict = {}
 
-    async def _call(self, fn, *args, **kwargs):
+    async def _call(self, fn, *args, _pool=None, _timeout=INVOKE_TIMEOUT_S, **kwargs):
+        """Hand one synchronous mesh call to a worker thread.
+
+        The wrapper's own knobs are underscore-prefixed so they cannot collide with a
+        callee's keyword arguments. Without that, ``_call(invoke_many, ..., timeout=12)``
+        silently applies the 12 s to the WRAPPER and leaves ``invoke_many`` on its own
+        30 s default — a wrapper that quietly eats a parameter meant for the thing it wraps.
+        """
         loop = asyncio.get_running_loop()
         return await asyncio.wait_for(
-            loop.run_in_executor(self._pool, lambda: fn(*args, **kwargs)),
-            timeout=INVOKE_TIMEOUT_S)
+            loop.run_in_executor(_pool or self._pool, lambda: fn(*args, **kwargs)),
+            timeout=_timeout)
 
     async def start(self) -> None:
         from device_connect_agent_tools import connect
@@ -123,13 +180,13 @@ class Mesh:
         # One subscription for every event from every device. Filtering is the page's job:
         # an operator watching two robots wants both, and a dashboard that subscribed per
         # device would have to re-subscribe every time one joined.
-        self._subscription = await self._call(subscribe, "event(*)")
+        self._subscription = await self._call(subscribe, "event(*)", _pool=self._event_pool)
         log.info("connected to the mesh; streaming events")
 
     async def close(self) -> None:
         if self._subscription is not None:
             try:
-                await self._call(self._subscription.close)
+                await self._call(self._subscription.close, _pool=self._event_pool)
             except Exception as exc:
                 log.warning("closing the subscription failed: %r", exc)
         try:
@@ -137,7 +194,8 @@ class Mesh:
             await self._call(disconnect)
         except Exception as exc:
             log.warning("disconnect failed: %r", exc)
-        self._pool.shutdown(wait=False)
+        for pool in (self._pool, self._stop_pool, self._event_pool):
+            pool.shutdown(wait=False)
 
     async def devices(self) -> list:
         from device_connect_agent_tools.tools import discover
@@ -146,7 +204,122 @@ class Mesh:
 
     async def invoke(self, device_id: str, function: str, params: dict) -> dict:
         from device_connect_agent_tools.tools import invoke_device
+        # A stop rides the dedicated lane wherever it is issued from, including the generic
+        # invoke endpoint the motion pad uses. Routing by function name rather than by
+        # endpoint means there is one rule and no way to reach stop by a path that queues.
+        if function == "stop":
+            return await self._call(invoke_device, device_id, function, params,
+                                    _pool=self._stop_pool, _timeout=STOP_TIMEOUT_S)
         return await self._call(invoke_device, device_id, function, params)
+
+    async def stop_all(self) -> dict:
+        """Stop every robot on the mesh, and report what each one actually said.
+
+        ``invoke_many`` rather than ``broadcast``. Broadcast returns immediately with a
+        correlation id and the replies arrive separately, which is the right shape for a
+        fan-out whose outcome is advisory. A stop's outcome is not advisory: an operator
+        pressing this needs to know which robots confirmed and which did not, because the
+        ones that did not are the ones they must now deal with physically. ``invoke_many``
+        blocks on the slowest device and hands back per-device results, with its own
+        concurrency internally so the robots are not stopped one after another.
+        """
+        from device_connect_agent_tools.tools import invoke_many
+        return await self._call(
+            invoke_many, "device(*).function(stop)", {},
+            timeout=STOP_TIMEOUT_S,          # invoke_many's own per-device ceiling
+            _pool=self._stop_pool,
+            # The wrapper's ceiling sits ABOVE invoke_many's so that a partial result — some
+            # robots confirmed, some not — comes back and is shown, instead of this layer
+            # timing out first and reporting nothing about any of them.
+            _timeout=STOP_TIMEOUT_S + 3.0)
+
+    # ── the fleet ────────────────────────────────────────────────────────────
+    async def fleet(self) -> list:
+        """Every robot the dashboard has seen, present or departed.
+
+        Discovery gives the roster. Capabilities are fetched once per device and cached —
+        with N robots on the page, re-asking each of them what it can do on every 10 s poll
+        would be N calls a poll for an answer that does not change while a driver is up.
+        Pose, mode and armed checkpoint come from the ``robot_state`` events already
+        streaming through the pump, so the table stays live at **zero** extra RPCs.
+        """
+        now = time.time()
+        try:
+            present = await self.devices()
+        except Exception as exc:
+            log.warning("fleet discovery failed: %r", exc)
+            present = []
+
+        seen = set()
+        for device in present:
+            device_id = device.get("device_id")
+            if not device_id:
+                continue
+            seen.add(device_id)
+            row = self._fleet.setdefault(device_id, {"device_id": device_id})
+            row["device_type"] = device.get("device_type")
+            row["present"] = True
+            row["last_seen"] = now
+
+        for device_id, row in self._fleet.items():
+            if device_id not in seen:
+                # Departed. Kept, not deleted — see TOMBSTONE_S.
+                row["present"] = False
+
+        await self._fill_capabilities(seen)
+
+        rows = [row for row in self._fleet.values()
+                if row.get("present") or now - row.get("last_seen", 0) < TOMBSTONE_S]
+        # Drop anything past the tombstone window so a long session does not accumulate
+        # every robot that has ever appeared.
+        self._fleet = {row["device_id"]: row for row in rows}
+        for row in rows:
+            row["age_s"] = round(now - row.get("last_seen", now), 1)
+        return sorted(rows, key=lambda r: (not r.get("present"), r["device_id"]))
+
+    async def _fill_capabilities(self, device_ids) -> None:
+        """Ask each robot what it can do, once, and cache the answer.
+
+        Concurrently — this is the case the general pool was widened for. Cached because
+        with N robots on the page, re-asking every one of them on every 10 s poll is N calls
+        a poll for an answer that cannot change while a driver is up: it is fixed at startup
+        by ``--allow-motion`` and the platform.
+
+        A failure is skipped rather than cached, so a robot that was mid-restart is asked
+        again on the next poll instead of being stuck without capabilities forever.
+        """
+        missing = [d for d in device_ids if not self._fleet[d].get("capabilities")]
+        if not missing:
+            return
+        results = await asyncio.gather(
+            *(self.invoke(d, "get_capabilities", {}) for d in missing),
+            return_exceptions=True)
+        for device_id, result in zip(missing, results):
+            if isinstance(result, Exception):
+                continue
+            caps = (result or {}).get("result")
+            if isinstance(caps, dict) and caps.get("platform"):
+                self._fleet[device_id]["capabilities"] = caps
+
+    def note_state_event(self, record: dict) -> None:
+        """Fold a ``robot_state`` event into the fleet table.
+
+        This is what makes the fleet view free. Every driver already emits pose, mode and
+        armed checkpoint on a timer; reading them out of the stream the page is already
+        subscribed to means adding a robot costs no additional polling.
+        """
+        if record.get("event") != "robot_state":
+            return
+        device_id = record.get("device_id")
+        if not device_id:
+            return
+        payload = record.get("payload") or {}
+        row = self._fleet.setdefault(device_id, {"device_id": device_id})
+        row["pose"] = payload.get("pose")
+        row["mode"] = payload.get("mode")
+        row["active_model"] = payload.get("active_model")
+        row["present"] = True
+        row["last_seen"] = time.time()
 
     # ── event fan-out ────────────────────────────────────────────────────────
     def listen(self) -> asyncio.Queue:
@@ -161,7 +334,7 @@ class Mesh:
         """Drain the subscription into the ring buffer and out to every open page."""
         while True:
             try:
-                messages = await self._call(self._subscription.read)
+                messages = await self._call(self._subscription.read, _pool=self._event_pool)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -171,6 +344,7 @@ class Mesh:
             for message in _in_time_order(messages):
                 self._seq += 1
                 record = _shape_event(message, self._seq)
+                self.note_state_event(record)
                 self.events.append(record)
                 for queue in list(self._listeners):
                     # A page that has stopped reading has gone away or is in a background
@@ -240,6 +414,53 @@ async def api_devices(request: web.Request) -> web.Response:
         return web.json_response({"ok": False, "error": "the mesh did not answer in time"},
                                  status=504)
     return web.json_response({"ok": True, "devices": devices})
+
+
+async def api_fleet(request: web.Request) -> web.Response:
+    """Every robot the dashboard has seen — the view the controls are built on."""
+    mesh: Mesh = request.app["mesh"]
+    try:
+        rows = await mesh.fleet()
+    except asyncio.TimeoutError:
+        return web.json_response({"ok": False, "error": "the mesh did not answer in time"},
+                                 status=504)
+    return web.json_response({"ok": True, "fleet": rows, "tombstone_s": TOMBSTONE_S})
+
+
+async def api_stop_all(request: web.Request) -> web.Response:
+    """Stop every robot, and report per robot whether it confirmed.
+
+    Never returns a bare success. An operator pressing this has to know WHICH robots
+    acknowledged, because the ones that did not are the ones they now have to walk over to.
+    """
+    mesh: Mesh = request.app["mesh"]
+    try:
+        result = await mesh.stop_all()
+    except asyncio.TimeoutError:
+        return web.json_response(
+            {"ok": False, "error": "STOP ALL did not complete in time. Assume one or more "
+                                   "robots are STILL MOVING and use the physical abort."},
+            status=504)
+    except Exception as exc:
+        return web.json_response(
+            {"ok": False, "error": f"STOP ALL failed: {type(exc).__name__}: {exc}. Assume "
+                                   f"robots are STILL MOVING and use the physical abort."},
+            status=502)
+
+    stopped, failed = [], []
+    for row in (result.get("results") or []):
+        device_id = row.get("device_id")
+        inner = row.get("result")
+        if isinstance(inner, dict) and inner.get("ok"):
+            stopped.append(device_id)
+        else:
+            reason = (inner or {}).get("error") if isinstance(inner, dict) else str(inner)
+            failed.append({"device_id": device_id, "error": reason or "no acknowledgement"})
+    for row in (result.get("errors") or []):
+        failed.append({"device_id": row.get("device_id"), "error": str(row)})
+
+    return web.json_response({"ok": True, "stopped": stopped, "failed": failed,
+                              "matched": result.get("matched", 0)})
 
 
 async def api_invoke(request: web.Request) -> web.Response:
@@ -317,6 +538,8 @@ def create_app(allow_insecure: bool = True) -> web.Application:
     app["mesh"] = Mesh(allow_insecure=allow_insecure)
     app.router.add_get("/", index)
     app.router.add_get("/api/devices", api_devices)
+    app.router.add_get("/api/fleet", api_fleet)
+    app.router.add_post("/api/stop-all", api_stop_all)
     app.router.add_post("/api/invoke", api_invoke)
     app.router.add_get("/api/events", api_events)
     app.router.add_static("/static", STATIC_DIR, name="static")

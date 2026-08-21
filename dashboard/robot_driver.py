@@ -34,6 +34,24 @@ the wrong answer for a robot: a button pressed twice would walk twice, the secon
 several seconds after anyone was looking at it. :attr:`_motion_lock` is held for the whole
 subprocess, and a concurrent request comes back immediately as ``busy``.
 
+**A motion RPC returns as soon as the nudge STARTS, not when it finishes**, and the outcome
+arrives on the event stream as ``motion_completed``. That is not a style preference — it is
+what makes the stop button work:
+
+    the edge runtime dispatches ONE RPC AT A TIME PER DEVICE.
+
+``DeviceRuntime._cmd_subscription`` awaits the driver call inline in its message handler, so
+a handler that blocks for five seconds makes the robot deaf to every other command for five
+seconds — including ``stop``. Measured against a live driver with no dashboard in the path:
+a stop issued one second into a five-second walk was delivered **4.17 s** later, i.e. only
+once the walk had finished on its own. Putting ``stop()`` outside :attr:`_motion_lock` did
+nothing about that, because the stop never reached the lock.
+
+**And a delivered stop would not have been enough on its own.** The worker refreshes the
+velocity at 10 Hz for the whole nudge, so a stop landing mid-walk is overwritten within
+100 ms. :meth:`stop` therefore terminates the in-flight worker *first* — SIGTERM, so the
+worker's ``SafeStop`` damps on the way out — and only then commands zero.
+
 **Checkpoint operations are not motion and are not gated by it.** Swapping a checkpoint
 rewrites one field in ``config.json`` and takes effect on the NEXT run — a live
 ``mappo_drive`` holds its weights in memory and cannot be affected. See ``model_store.py``,
@@ -42,9 +60,11 @@ a swap safe actually lives.
 
 ## What the event stream carries
 
-``motion_started`` / ``motion_completed`` / ``motion_refused`` — every command, including the
-ones that were turned down, because a refusal is the interesting event and a dashboard that
-only shows successes teaches an operator that nothing happened.
+``motion_started`` / ``motion_completed`` / ``motion_refused`` / ``motion_interrupted`` —
+every command, including the ones that were turned down, because a refusal is the
+interesting event and a dashboard that only shows successes teaches an operator that nothing
+happened. ``interrupted`` is separate from ``refused`` on purpose: one ran and was stopped,
+the other never ran, and an operator should not see their own stop in the colour of a fault.
 ``model_armed`` / ``model_downloaded`` / ``model_deleted`` — every change to what the robot
 is carrying. ``robot_state`` — pose, velocity and controller mode on a timer, which is what
 makes the page live rather than a form.
@@ -66,6 +86,7 @@ import logging
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -122,6 +143,11 @@ class MappoRobotDriver(DeviceDriver):
         self.allow_http = allow_http
         self.store = ModelStore(package_dir)
         self._motion_lock = asyncio.Lock()
+        #: The in-flight worker process, so a stop can terminate it. Guarded by a threading
+        #: lock because it is assigned from an executor thread and read from the event loop.
+        self._worker = None
+        self._worker_guard = threading.Lock()
+        self._motion_task = None
 
     # ── identity ─────────────────────────────────────────────────────────────
     @property
@@ -192,6 +218,15 @@ class MappoRobotDriver(DeviceDriver):
         """A motion command was turned down — by the gate, a gait floor, or a busy robot."""
 
     @emit()
+    async def motion_interrupted(self, action: str, reason: str):
+        """A running nudge was cut short — almost always because someone pressed stop.
+
+        Its own event rather than a ``motion_refused``. A refusal means the command never
+        ran; this one ran and was ended deliberately, and an operator scanning the stream
+        should not see their own stop reported to them in the same colour as a fault.
+        """
+
+    @emit()
     async def model_armed(self, name: str, previous: str):
         """A different checkpoint will be used by the next run."""
 
@@ -226,6 +261,11 @@ class MappoRobotDriver(DeviceDriver):
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True)
+            # Published so stop() can terminate it. Only motion workers are worth
+            # interrupting; a status read is milliseconds and killing it gains nothing.
+            if command not in ("status", "stop"):
+                with self._worker_guard:
+                    self._worker = proc
         except OSError as exc:
             return {"ok": False, "error": f"could not start the worker: {exc}. "
                                           f"--bridge-python must be an interpreter that can "
@@ -247,11 +287,20 @@ class MappoRobotDriver(DeviceDriver):
 
         # The result is the LAST JSON line: the SDK prints a banner on import, and CycloneDDS
         # writes to stdout during discovery. Reading backwards is what makes that survivable.
+        with self._worker_guard:
+            if self._worker is proc:
+                self._worker = None
+
         for line in reversed((stdout or "").strip().splitlines()):
             try:
                 return json.loads(line)
             except ValueError:
                 continue
+        if proc.returncode is not None and proc.returncode < 0:
+            # Killed by a signal, which for a motion worker means stop() interrupted it.
+            # That is a normal outcome, not a fault, and it must not be reported as one.
+            return {"ok": False, "interrupted": True,
+                    "error": f"the {command} worker was stopped before it finished"}
         return {"ok": False, "error": f"worker exited {proc.returncode} with no JSON result; "
                                       f"stderr tail: {(stderr or '')[-400:]!r}"}
 
@@ -261,7 +310,13 @@ class MappoRobotDriver(DeviceDriver):
 
     async def _move(self, action: str, command: str, extra: list, seconds: float,
                     commanded: dict) -> dict:
-        """The one guarded path every motion RPC funnels through."""
+        """Accept a motion command and return — the nudge runs in the background.
+
+        Returning here rather than at the end of the nudge is what keeps the robot able to
+        hear ``stop``; see the module docstring for the measurement. The caller gets
+        ``accepted``, and the outcome — including the distance actually travelled — arrives
+        as a ``motion_completed`` event.
+        """
         if not self.allow_motion:
             reason = ("this device was started without --allow-motion, so it is "
                       "status-and-checkpoints only")
@@ -273,11 +328,21 @@ class MappoRobotDriver(DeviceDriver):
             await self._announce(self.motion_refused, action=action, reason=reason)
             return {"ok": False, "refused": True, "busy": True, "error": reason}
 
-        async with self._motion_lock:
-            await self._announce(self.motion_started, action=action,
-                                 commanded=commanded, seconds=seconds)
+        # Taken here, not inside the task: between this line and the check above there is no
+        # suspension point, so two rapid calls cannot both get past the guard. Acquiring it
+        # inside the task instead would leave exactly that gap.
+        await self._motion_lock.acquire()
+        await self._announce(self.motion_started, action=action,
+                             commanded=commanded, seconds=seconds)
+        self._motion_task = asyncio.create_task(self._run_motion(action, command, extra))
+        return {"ok": True, "accepted": True, "action": action, "seconds": seconds,
+                "note": "the nudge is running; its measured outcome arrives as a "
+                        "motion_completed event"}
+
+    async def _run_motion(self, action: str, command: str, extra: list) -> None:
+        """Run one accepted nudge to completion and report it on the event stream."""
+        try:
             result = await self._bridge(command, extra)
-            result["action"] = action
             if result.get("ok"):
                 await self._announce(
                     self.motion_completed,
@@ -287,10 +352,35 @@ class MappoRobotDriver(DeviceDriver):
                     delivered_fraction=result.get("delivered_fraction") or 0.0,
                     warning=result.get("warning") or "",
                 )
+            elif result.get("interrupted"):
+                await self._announce(self.motion_interrupted, action=action,
+                                     reason=result.get("error", "stopped"))
             else:
                 await self._announce(self.motion_refused, action=action,
                                      reason=result.get("error", "unknown failure"))
-            return result
+        except Exception as exc:
+            log.warning("%s failed: %r", action, exc)
+            await self._announce(self.motion_refused, action=action, reason=repr(exc))
+        finally:
+            self._motion_lock.release()
+
+    def _terminate_worker(self) -> bool:
+        """SIGTERM the in-flight motion worker, if there is one. Returns whether there was.
+
+        SIGTERM and not SIGKILL: the worker installs ``SafeStop``, which turns the signal
+        into a damp, and ``SportClient.Move`` has no dead-man timeout — a hard kill would
+        leave the last velocity latched on the bus.
+        """
+        with self._worker_guard:
+            proc = self._worker
+            self._worker = None
+        if proc is None or proc.poll() is not None:
+            return False
+        try:
+            proc.terminate()
+        except OSError:
+            return False
+        return True
 
     @staticmethod
     def _clamp_seconds(seconds: float, reverse: bool = False) -> float:
@@ -424,8 +514,13 @@ class MappoRobotDriver(DeviceDriver):
         for it. The worker is a separate process and a zero velocity from a second one is
         still a zero velocity on the bus.
         """
+        # Terminate the in-flight nudge BEFORE commanding zero. Its worker refreshes the
+        # velocity at 10 Hz, so a stop issued while it is still running is overwritten
+        # within 100 ms — the robot would visibly pause and carry on.
+        interrupted = self._terminate_worker()
         result = await self._bridge("stop")
         result["action"] = "stop"
+        result["interrupted_motion"] = interrupted
         return result
 
     # ── status ───────────────────────────────────────────────────────────────

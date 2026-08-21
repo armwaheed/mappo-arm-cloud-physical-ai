@@ -24,6 +24,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -67,6 +68,18 @@ def _driver(tmp, events=None, **kwargs):
 
 def _run(coro):
     return asyncio.run(coro)
+
+
+async def _settle(driver):
+    """Await the background nudge a motion RPC started.
+
+    Motion RPCs return as soon as the nudge is accepted, so a test that asserts on what the
+    worker was handed must wait for it. Without this the assertions depend on whether the
+    task happened to be scheduled before ``asyncio.run`` tore the loop down — green by luck.
+    """
+    task = getattr(driver, "_motion_task", None)
+    if task is not None:
+        await task
 
 
 # ── the collision that made the device invisible ─────────────────────────────
@@ -127,7 +140,8 @@ def test_every_rpc_and_event_is_discoverable():
     assert expected_functions <= functions, sorted(expected_functions - functions)
 
     expected_events = {"motion_started", "motion_completed", "motion_refused",
-                       "model_armed", "model_downloaded", "model_deleted", "robot_state"}
+                       "motion_interrupted", "model_armed", "model_downloaded",
+                       "model_deleted", "robot_state"}
     assert expected_events <= events, sorted(expected_events - events)
 
 
@@ -234,9 +248,127 @@ def test_a_failure_to_emit_never_stops_the_robot_being_commanded():
         driver._bridge_blocking = lambda *a, **k: (
             commanded.append(a) or {"ok": True, "travelled_m": 0.3})
 
-        result = _run(driver.walk_forward(seconds=1.0))
+        async def main():
+            result = await driver.walk_forward(seconds=1.0)
+            await _settle(driver)
+            return result
+        result = _run(main())
         assert result["ok"] is True, result
         assert commanded, "the walk never reached the worker because an event failed"
+
+
+# ── the stop path, which is why motion is non-blocking ───────────────────────
+def test_a_motion_rpc_returns_before_the_nudge_finishes():
+    """THE reason this design exists. The edge runtime dispatches one RPC at a time per
+    device, so a motion handler that blocks makes the robot deaf to stop for its duration.
+
+    Measured against a live driver before the change: a stop issued 1 s into a 5 s walk was
+    delivered 4.17 s later. Made to fail by awaiting ``_run_motion`` inside ``_move``.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, allow_motion=True)
+        released = threading.Event()
+        entered = threading.Event()
+
+        def slow(*_a, **_k):
+            entered.set()
+            released.wait(timeout=5)
+            return {"ok": True, "travelled_m": 0.3}
+
+        driver._bridge_blocking = slow
+
+        async def main():
+            result = await driver.walk_forward(seconds=5.0)   # must NOT wait for `slow`
+            assert result["accepted"] is True, result
+            assert "travelled_m" not in result, (
+                "the RPC returned a measurement, so it waited for the nudge")
+            # The worker really is running: the lock is held and the task is alive.
+            assert driver._motion_lock.locked()
+            released.set()
+            await _settle(driver)
+            assert not driver._motion_lock.locked(), "the lock outlived the nudge"
+
+        _run(main())
+
+
+def test_stop_terminates_the_in_flight_worker_before_commanding_zero():
+    """A stop that only commands zero is overwritten within 100 ms.
+
+    The worker refreshes the velocity at 10 Hz for the whole nudge, so the running worker
+    has to be killed as well. Made to fail by deleting the ``_terminate_worker()`` call in
+    ``stop()``: ``interrupted_motion`` comes back False and the walk runs to completion.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, allow_motion=True)
+
+        class _Proc:
+            def __init__(self): self.terminated = False
+            def poll(self): return None
+            def terminate(self): self.terminated = True
+
+        proc = _Proc()
+        driver._worker = proc
+        driver._bridge_blocking = lambda *a, **k: {"ok": True, "stopped": True}
+
+        result = _run(driver.stop())
+        assert proc.terminated is True, "the in-flight worker was left running"
+        assert result["interrupted_motion"] is True, result
+        assert driver._worker is None, "the worker handle was not cleared"
+
+
+def test_stopping_an_idle_robot_reports_that_nothing_was_interrupted():
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, allow_motion=True)
+        driver._bridge_blocking = lambda *a, **k: {"ok": True, "stopped": True}
+        result = _run(driver.stop())
+        assert result["interrupted_motion"] is False, result
+
+
+def test_an_interrupted_nudge_is_not_reported_as_a_refusal():
+    """An operator must not see their own stop in the colour of a fault.
+
+    A refusal means the command never ran; an interruption means it ran and was ended.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        emitted = []
+        driver = _driver(tmp, events=emitted, allow_motion=True)
+        driver._bridge_blocking = lambda *a, **k: {
+            "ok": False, "interrupted": True, "error": "the walk worker was stopped"}
+
+        async def main():
+            await driver.walk_forward(seconds=2.0)
+            await _settle(driver)
+        _run(main())
+
+        names = [name for name, _ in emitted]
+        assert "motion_interrupted" in names, names
+        assert "motion_refused" not in names, (
+            "an interruption was reported as a refusal: " + str(names))
+
+
+def test_a_worker_that_dies_of_a_signal_is_interrupted_not_failed():
+    """The bridge distinguishes 'killed' from 'broken' by the negative return code.
+
+    Without it, every stop would post a scary failure into the operator's event log.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, allow_motion=True)
+
+        class _Killed:
+            returncode = -15
+            def poll(self): return -15
+            def communicate(self, timeout=None): return ("", "")
+            def terminate(self): pass
+
+        import subprocess as sp
+        original = sp.Popen
+        sp.Popen = lambda *a, **k: _Killed()
+        try:
+            result = driver._bridge_blocking("walk", ["--vx", "0.35"])
+        finally:
+            sp.Popen = original
+        assert result["interrupted"] is True, result
+        assert result["ok"] is False
 
 
 # ── bounds and plumbing ──────────────────────────────────────────────────────
@@ -250,7 +382,11 @@ def test_seconds_is_clamped_before_it_reaches_the_worker():
             return {"ok": True}
 
         driver._bridge_blocking = capture
-        _run(driver.walk_forward(seconds=900))
+
+        async def main():
+            await driver.walk_forward(seconds=900)
+            await _settle(driver)
+        _run(main())
         assert "--seconds" in seen["extra"]
         value = float(seen["extra"][seen["extra"].index("--seconds") + 1])
         assert value <= 5.0, value
@@ -296,7 +432,11 @@ def test_direction_is_set_by_the_method_not_by_the_caller():
             seen.clear()
             # Deliberately pass a POSITIVE magnitude; the method owns the sign.
             kwargs = {"rate_rad_s": 0.7} if "turn" in action else {"speed_mps": 0.3}
-            _run(getattr(driver, action)(**kwargs))
+
+            async def main(action=action, kwargs=kwargs):
+                await getattr(driver, action)(**kwargs)
+                await _settle(driver)
+            _run(main())
             _, extra = seen[0]
             value = float(extra[extra.index(flag) + 1])
             assert (value < 0) == expect_negative, (action, value)
