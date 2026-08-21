@@ -221,7 +221,7 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Offline regression suite | 622 tests: policy 33, integration 144, Go2 visual navigation 265, Lite3 72, dashboard 108 |
+| ✅ Offline regression suite | 624 tests: policy 33, integration 144, Go2 visual navigation 265, Lite3 72, dashboard 110 |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; six silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
@@ -355,7 +355,7 @@ cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done
 cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
 cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done #  39
 cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py #  16
-cd dashboard   && for t in test_*.py; do python3 $t; done                          # 108
+cd dashboard   && for t in test_*.py; do python3 $t; done                          # 110
 ```
 
 `policy/` and the parts of `integration/` that touch the policy need `numpy`; the
