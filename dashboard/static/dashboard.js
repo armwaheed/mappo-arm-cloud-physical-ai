@@ -20,6 +20,7 @@ const state = {
   fleetExpanded: false,
   alerts: [],
   cameraOn: false,
+  cameraChosen: null,     // null = never touched; true/false = the operator decided
   safetyDismissedFor: null,
 };
 
@@ -289,7 +290,9 @@ function renderCapabilities(caps) {
   $("safety").classList.toggle("hidden", !showSafety);
   setPadEnabled(!!caps.motion_enabled);
   applyCaveats(caps);
-  if (state.cameraOn) setCamera(true);
+  // Re-point the stream at whichever robot is now focused, and start it if this robot's
+  // feed is one of the free ones.
+  setCamera(shouldAutostart(caps));
 
   if (!caps.motion_enabled) {
     addNote(notes, "warn",
@@ -599,14 +602,40 @@ function applyCaveats(caps) {
 // An <img> pointed at an MJPEG endpoint. No canvas and no per-frame JavaScript: the browser
 // decodes off the main thread, and a dead feed shows as a broken image rather than as a
 // frozen last frame that looks live.
-function setCamera(on) {
+// Auto-start, but only for a camera that costs nothing to run.
+//
+// A viewport nobody notices is a viewport nobody uses — the black rectangle was the
+// commonest reaction to the first build. But "start streaming the moment a page opens" is
+// the wrong universal default: on real hardware that is 200-320 KB/s off a robot, and a
+// camera contended with a live run, because somebody opened a tab. So a SYNTHETIC or
+// REPLAYED feed starts by itself and a LIVE one waits to be asked. The driver already
+// advertises which it is.
+//
+// An explicit choice always wins and is remembered: stopping a feed must stay stopped, or
+// the button reads as broken.
+function shouldAutostart(caps) {
+  if (state.cameraChosen !== null) return state.cameraChosen;
+  const cam = (caps || {}).camera || {};
+  return !!(cam.available && (cam.synthetic || cam.replay));
+}
+
+function setCamera(on, byOperator = false) {
+  if (byOperator) {
+    state.cameraChosen = on;
+    try { localStorage.setItem("mappo.camera", on ? "1" : "0"); } catch { /* private mode */ }
+  }
   state.cameraOn = on;
   const img = $("camera");
   const caps = state.capabilities || {};
   if (!on || !state.deviceId) {
     img.removeAttribute("src");
     $("camera-toggle").textContent = "Start";
-    $("camera-label").textContent = "camera idle";
+    const cam = (state.capabilities || {}).camera || {};
+    // A black rectangle looks like a broken camera. Say which it is.
+    $("camera-label").textContent =
+      !state.deviceId ? "no robot in focus"
+      : cam.available === false ? "no camera on this platform"
+      : "press Start to stream";
     return;
   }
   const fps = Math.max(1, Math.min(15, parseInt($("camera-fps").value, 10) || 6));
@@ -805,7 +834,11 @@ function init() {
   });
   $("bell").addEventListener("click", () => setAlerts($("alerts").classList.contains("hidden")));
   $("alerts-clear").addEventListener("click", () => { state.alerts = []; renderAlerts(); });
-  $("camera-toggle").addEventListener("click", () => setCamera(!state.cameraOn));
+  $("camera-toggle").addEventListener("click", () => setCamera(!state.cameraOn, true));
+  try {
+    const remembered = localStorage.getItem("mappo.camera");
+    if (remembered !== null) state.cameraChosen = remembered === "1";
+  } catch { /* private mode */ }
   $("camera-fps").addEventListener("change", () => { if (state.cameraOn) setCamera(true); });
   $("fleet-more").addEventListener("click", () => {
     state.fleetExpanded = !state.fleetExpanded;

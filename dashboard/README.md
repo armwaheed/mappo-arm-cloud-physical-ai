@@ -84,6 +84,14 @@ parameter, so raising it is a decision someone makes with the number in front of
 Nothing streams to an empty room: the feed starts when a viewer asks and stops when that
 interest lapses, so closing the tab stops the robot emitting.
 
+**A synthetic or replayed feed starts on its own; a live one waits to be asked.** The black
+rectangle was the commonest reaction to the first build — a viewport nobody notices is a
+viewport nobody uses. But "start streaming the moment a page opens" is the wrong universal
+default: on real hardware that is 200–320 KB/s off a robot, and a camera contended with a
+live run, because somebody opened a tab. The driver advertises which kind of feed it has, so
+the demo autoplays and a robot does not. An explicit Start/Stop always wins and is
+remembered, because a feed you stopped must stay stopped or the button reads as broken.
+
 ⚠️ **The Lite3 will disappoint you here.** Its frames come from an OpenCV `VideoCapture`,
 which on Linux is typically **exclusive** — so while a `lite3_visual_nav` run holds the
 camera, this cannot open it. That is reported as "the camera is in use" rather than as a
