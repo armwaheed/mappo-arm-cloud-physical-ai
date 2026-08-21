@@ -269,7 +269,7 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 ## Tests
 
 ```bash
-for t in test_*.py; do python3 $t; done       # 105
+for t in test_*.py; do python3 $t; done       # 108
 ruff check .                                  # must be clean
 ```
 

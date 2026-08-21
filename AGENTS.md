@@ -39,7 +39,7 @@ cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done
 cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
 cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 39
 cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py # 16
-cd dashboard   && for t in test_*.py; do python3 $t; done                          # 105
+cd dashboard   && for t in test_*.py; do python3 $t; done                          # 108
 ruff check .        # must be clean in each code directory above; each has a ruff.toml
 ```
 
