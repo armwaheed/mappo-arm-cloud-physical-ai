@@ -20,10 +20,15 @@ PY="$VENV/bin/python"
 
 DASH_PORT="${MAPPO_DASH_PORT:-8090}"
 MODEL_PORT="${MAPPO_MODEL_PORT:-9000}"
+# The second source the demo contrasts against. Same server program, different label and
+# different contents — see the note by SOURCES below for why it is not really S3.
+S3_PORT="${MAPPO_S3_PORT:-9001}"
 BIND="${MAPPO_BIND:-0.0.0.0}"
 FRAMES="${MAPPO_FRAMES:-$RUN/frames}"
 PKG="${MAPPO_PKG:-$RUN/policy}"
 STORE="${MAPPO_MODEL_STORE:-$RUN/served-models}"
+S3_STORE="${MAPPO_S3_STORE:-$RUN/served-models-s3}"
+SOURCES="$RUN/model-sources.json"
 LOGS="$RUN/logs"
 
 # The fleet: two Go2s and two Lite3s. One Lite3 is left WITHOUT --allow-motion on purpose, so
@@ -36,16 +41,58 @@ FLEET=(
   "lite3 demo-lite3-02"
 )
 
+# THE TWO SOURCES THE DEMO OFFERS, advertised by every robot so the dashboard can name them
+# rather than asking anyone to remember a URL.
+#
+# ⚠️ NEITHER IS WHAT ITS NAME SAYS, and both say so. The first is this VM in eastus, not a
+# CPU server in Tokyo. The second is the SAME program with a different label and different
+# contents — it is not AWS, there is no bucket, and nothing here speaks the S3 API. They
+# exist so the demo can show the CHOICE between two places, which is the actual subject;
+# `simulated: true` travels with each one into the dashboard, which prints it.
+#
+# ⚠️ The addresses are what the ROBOT must reach, not what a browser must. Here they are the
+# same host, so loopback would work — but a real deployment has the robot elsewhere, and a
+# loopback address that happens to work on a demo box is a trap for whoever copies this file.
+write_sources() {
+  local host; host="$(hostname -I 2>/dev/null | awk "{print \$1}")"
+  cat > "$SOURCES" <<JSON
+{
+  "sources": [
+    {
+      "label": "Arm Neoverse CPU server",
+      "location": "Tokyo, Japan",
+      "kind": "server",
+      "index_url": "http://${host}:${MODEL_PORT}/index.json",
+      "simulated": true
+    },
+    {
+      "label": "AWS S3",
+      "location": "cn-north-1, Beijing",
+      "kind": "s3",
+      "index_url": "http://${host}:${S3_PORT}/index.json",
+      "simulated": true
+    }
+  ]
+}
+JSON
+}
+
 start() {
-  mkdir -p "$LOGS"
+  mkdir -p "$LOGS" "$S3_STORE"
   [ -x "$PY" ] || { echo "no venv at $VENV — run install_demo.sh first" >&2; exit 1; }
   [ -d "$FRAMES" ] || echo "WARNING: no replay frames at $FRAMES; cameras will be synthetic" >&2
   stop >/dev/null 2>&1 || true
 
-  echo "==> checkpoint server on :$MODEL_PORT"
+  write_sources
+  echo "==> Arm Neoverse checkpoint server on :$MODEL_PORT"
   nohup "$PY" "$HERE/model_server.py" --dir "$STORE" --port "$MODEL_PORT" --host "$BIND" \
       --label "Arm Neoverse CPU server" --location "Tokyo, Japan" \
       > "$LOGS/model-server.log" 2>&1 &
+
+  echo "==> stand-in for the China S3 bucket on :$S3_PORT"
+  nohup "$PY" "$HERE/model_server.py" --dir "$S3_STORE" --port "$S3_PORT" --host "$BIND" \
+      --label "AWS S3 (stand-in — not the S3 API)" --location "cn-north-1, Beijing" \
+      > "$LOGS/model-server-s3.log" 2>&1 &
 
   for spec in "${FLEET[@]}"; do
     # shellcheck disable=SC2086
@@ -54,7 +101,7 @@ start() {
     echo "==> $id ($platform, simulated)"
     DEVICE_CONNECT_ALLOW_INSECURE=true nohup "$PY" "$ROOT/dashboard/robot_driver.py" \
         --platform "$platform" --simulate --package "$PKG" --device-id "$id" \
-        --camera-replay-dir "$FRAMES" "$@" \
+        --camera-replay-dir "$FRAMES" --model-sources "$SOURCES" "$@" \
         > "$LOGS/$id.log" 2>&1 &
     sleep 1
   done
@@ -82,10 +129,13 @@ status() {
   # pgrep -f matches this script's own command line too, so count by the interpreter path.
   printf "drivers:   %s running\n" "$(pgrep -fc "$PY $ROOT/dashboard/robot_driver.py" || echo 0)"
   printf "dashboard: %s\n" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$DASH_PORT/" || echo down)"
-  printf "models:    %s\n" "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$MODEL_PORT/index.json" || echo down)"
+  printf "models:    %s (Arm)  %s (S3 stand-in)\n" \
+    "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$MODEL_PORT/index.json" || echo down)" \
+    "$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$S3_PORT/index.json" || echo down)"
   echo
   echo "  dashboard     http://$(hostname -I 2>/dev/null | awk '{print $1}'):$DASH_PORT/"
-  echo "  model server  http://$(hostname -I 2>/dev/null | awk '{print $1}'):$MODEL_PORT/index.json"
+  echo "  Arm server    http://$(hostname -I 2>/dev/null | awk '{print $1}'):$MODEL_PORT/index.json"
+  echo "  S3 stand-in   http://$(hostname -I 2>/dev/null | awk '{print $1}'):$S3_PORT/index.json"
 }
 
 case "${1:-start}" in

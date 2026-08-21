@@ -31,7 +31,7 @@ somebody eventually presses a key believing a robot is on the other end of it.
 | | |
 | --- | --- |
 | **Dashboard** | <http://mappo.10-241-11-4.nip.io:8090/> |
-| **Checkpoint server** | <http://models.10-241-11-4.nip.io:9000/index.json> |
+| **Checkpoint sources** | Arm: <http://models.10-241-11-4.nip.io:9000/index.json> · S3 stand-in: <http://models.10-241-11-4.nip.io:9001/index.json> |
 | Same thing by IP | <http://10.241.11.4:8090/> · <http://10.241.11.4:9000/index.json> |
 | Host | `waheedbrown-learning-paths`, Ubuntu 24.04, **aarch64** (`Standard_D2ps_v6`, Arm Neoverse), eastus |
 | Fleet | `demo-go2-01`, `demo-go2-02`, `demo-lite3-01`, `demo-lite3-02` — all simulated |
@@ -109,6 +109,28 @@ ffmpeg -i run.mp4 -vf "scale=-2:480,crop=640:480" -q:v 6 frames/f%04d.jpg
 Pre-extracted rather than decoded live, so the demo host needs neither OpenCV nor ffmpeg for
 a job `ffmpeg` already did once. They loop, because a demo outlives an 11-second recording
 and a feed frozen on its last frame looks exactly like a camera that has died.
+
+## The two checkpoint sources
+
+Every robot advertises where its checkpoints can come from, so the dashboard offers a named
+**choice** — `Arm Neoverse CPU server — Tokyo, Japan` or `AWS S3 — cn-north-1, Beijing` — and
+nobody has to remember a URL. The list is advertised by the **robot**, not configured in the
+dashboard, because it is a property of the deployment the robot sits in; two robots on one
+mesh can legitimately pull from different places, which a dashboard-level setting cannot say.
+
+⚠️ **Neither source is what its name says, and both say so.** The first is this VM in
+`eastus`, not a CPU server in Tokyo. The second is the *same program* with a different label
+and different contents — **it is not AWS, there is no bucket, and nothing here speaks the S3
+API.** They exist so the demo can show the *choice between two places*, which is the actual
+subject. `simulated: true` travels with each into the dashboard, which prints it under the
+picker.
+
+The real S3 path is still there and still works — pick **custom address…** and give a bucket,
+and `cloud_models.list_s3` does the genuine thing with boto3 and real credentials.
+
+⚠️ **The addresses are what the ROBOT must reach, not what a browser must.** The download runs
+on the robot. On this host they are the same machine, so loopback would work — which is
+exactly the trap for anyone copying this file to a deployment where the robot is elsewhere.
 
 ## The checkpoint server
 

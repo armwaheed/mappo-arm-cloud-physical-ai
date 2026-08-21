@@ -19,6 +19,7 @@ const state = {
   unread: 0,
   fleetExpanded: false,
   alerts: [],
+  sources: [],
   cameraOn: false,
   cameraChosen: null,     // null = never touched; true/false = the operator decided
   safetyDismissedFor: null,
@@ -290,6 +291,7 @@ function renderCapabilities(caps) {
   $("safety").classList.toggle("hidden", !showSafety);
   setPadEnabled(!!caps.motion_enabled);
   applyCaveats(caps);
+  renderSources(caps);
   // Re-point the stream at whichever robot is now focused, and start it if this robot's
   // feed is one of the free ones.
   setCamera(shouldAutostart(caps));
@@ -473,16 +475,67 @@ async function downloadModel() {
   }
 }
 
-async function browseServer() {
-  const indexUrl = $("index-url").value.trim();
-  if (!indexUrl) return show($("model-result"), "give a model server index URL first", true);
-  return browseWith({ index_url: indexUrl });
+// The robot advertises where ITS checkpoints can come from, and the operator picks one by
+// name. Two things this gets right that a pair of empty text fields did not: a demo opens
+// with something in it, and the choice is between PLACES ("Tokyo", "Beijing") rather than
+// between protocols ("index URL", "S3 bucket") — which is the distinction anyone actually
+// cares about when deciding where to pull a model from.
+function renderSources(caps) {
+  const select = $("cloud-source");
+  const sources = ((caps || {}).cloud || {}).sources || [];
+  const previous = select.value;
+  select.innerHTML = "";
+  for (const [i, source] of sources.entries()) {
+    const option = document.createElement("option");
+    option.value = String(i);
+    option.textContent = source.location
+      ? `${source.label} — ${source.location}`
+      : source.label;
+    select.appendChild(option);
+  }
+  const custom = document.createElement("option");
+  custom.value = "custom";
+  custom.textContent = sources.length ? "custom address…" : "custom address… (none advertised)";
+  select.appendChild(custom);
+  select.value = sources.includes(previous) ? previous : (sources.length ? "0" : "custom");
+  state.sources = sources;
+  onSourceChanged();
 }
 
-async function browseBucket() {
+function currentSource() {
+  const value = $("cloud-source").value;
+  if (value === "custom" || value === "") return null;
+  return state.sources[Number(value)] || null;
+}
+
+function onSourceChanged() {
+  const source = currentSource();
+  $("custom-source").classList.toggle("hidden", !!source);
+  const note = $("source-note");
+  if (!source) {
+    note.textContent = "The robot fetches this, not your browser — the address has to be "
+                     + "routable from the robot.";
+    return;
+  }
+  const bits = [];
+  if (source.simulated) bits.push("SIMULATED for this demo");
+  if (source.kind === "s3") bits.push("S3");
+  bits.push("fetched by the robot, not your browser");
+  note.textContent = bits.join(" · ");
+}
+
+async function browseSelected() {
+  const source = currentSource();
+  if (source) {
+    if (source.index_url) return browseWith({ index_url: source.index_url });
+    if (source.bucket) return browseWith({ bucket: source.bucket, prefix: source.prefix || "" });
+    return show($("model-result"), `${source.label} advertises no address`, true);
+  }
+  const indexUrl = $("index-url").value.trim();
+  if (indexUrl) return browseWith({ index_url: indexUrl });
   const bucket = $("bucket").value.trim();
-  if (!bucket) return show($("model-result"), "give a bucket name first", true);
-  return browseWith({ bucket, prefix: $("prefix").value.trim() });
+  if (bucket) return browseWith({ bucket, prefix: $("prefix").value.trim() });
+  return show($("model-result"), "choose a source, or give an address", true);
 }
 
 async function browseWith(params) {
@@ -793,8 +846,8 @@ function init() {
     onDeviceChanged();
   });
   $("download").addEventListener("click", downloadModel);
-  $("browse").addEventListener("click", browseBucket);
-  $("browse-server").addEventListener("click", browseServer);
+  $("browse-source").addEventListener("click", browseSelected);
+  $("cloud-source").addEventListener("change", onSourceChanged);
   $("drawer-bar").addEventListener("click", () => setDrawer(!state.drawerOpen));
   $("drawer-bar").addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDrawer(!state.drawerOpen); }
