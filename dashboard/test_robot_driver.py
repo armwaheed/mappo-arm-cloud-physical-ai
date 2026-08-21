@@ -371,6 +371,66 @@ def test_a_worker_that_dies_of_a_signal_is_interrupted_not_failed():
         assert result["ok"] is False
 
 
+def test_a_sub_gait_floor_speed_is_refused_in_the_REPLY_not_only_as_an_event():
+    """Regression. Making motion non-blocking moved the worker's verdict off the reply path.
+
+    The RPC then answered "accepted" for a speed measured not to walk, emitted a
+    motion_started for a motion that never started, and the refusal turned up in the alert
+    list milliseconds later. Caught by pressing 0.21 m/s at a simulated Go2 on the demo host.
+
+    Made to fail by deleting the ``_precheck`` call in ``_move``.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        emitted = []
+        driver = _driver(tmp, events=emitted, allow_motion=True)
+        driver.platform = "go2"
+        started = []
+        driver._bridge_blocking = lambda *a, **k: started.append(a) or {"ok": True}
+
+        result = _run(driver.walk_forward(seconds=1.0, speed_mps=0.21))
+        assert result["ok"] is False and result["refused"] is True, result
+        assert "0.350" in result["error"], result["error"]
+        assert not started, "the worker was started for a speed that cannot walk"
+
+        names = [n for n, _ in emitted]
+        assert "motion_started" not in names, (
+            "a motion_started was announced for a motion that never started: " + str(names))
+        assert "motion_refused" in names, names
+
+
+def test_force_still_gets_past_the_synchronous_check():
+    """The floor is overridable — that is what --force is for — and the override must not be
+    swallowed by the new early check."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, allow_motion=True)
+        driver.platform = "go2"
+        started = []
+        driver._bridge_blocking = lambda *a, **k: started.append(a) or {"ok": True}
+
+        async def main():
+            result = await driver.walk_forward(seconds=1.0, speed_mps=0.21, force=True)
+            await _settle(driver)
+            return result
+        result = _run(main())
+        assert result.get("accepted") is True, result
+        assert started, "force did not reach the worker"
+
+
+def test_reverse_is_not_subjected_to_the_forward_floor():
+    """The floor measures the FORWARD gait; applying it to reverse is the axis conflation
+    issue #42 is about."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, allow_motion=True)
+        driver.platform = "go2"
+        driver._bridge_blocking = lambda *a, **k: {"ok": True}
+
+        async def main():
+            result = await driver.walk_back(seconds=1.0, speed_mps=0.21)
+            await _settle(driver)
+            return result
+        assert _run(main()).get("accepted") is True
+
+
 # ── bounds and plumbing ──────────────────────────────────────────────────────
 def test_seconds_is_clamped_before_it_reaches_the_worker():
     with tempfile.TemporaryDirectory() as tmp:

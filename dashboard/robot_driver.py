@@ -105,6 +105,8 @@ from drive_bridge import (
     DEFAULT_WZ,
     MAX_REVERSE_SECONDS,
     MAX_SECONDS,
+    BridgeError,
+    check_gait_floor,
 )
 from model_store import ModelStore, ModelStoreError
 
@@ -340,8 +342,37 @@ class MappoRobotDriver(DeviceDriver):
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._bridge_blocking, command, extra)
 
+    def _precheck(self, action: str, commanded: dict, force: bool) -> str:
+        """Refuse a speed measured not to walk, synchronously, before anything is accepted.
+
+        The worker checks this too, and that check is still the backstop. But since motion
+        RPCs became non-blocking the worker's verdict arrives as an EVENT some milliseconds
+        later, so the reply said "accepted" and the refusal turned up in the alert list —
+        and a ``motion_started`` was emitted for a motion that never started. Found by
+        pressing 0.21 m/s at a simulated Go2 on the demo host and watching it be accepted.
+
+        The check is a pure table lookup (``check_gait_floor`` takes no robot), so doing it
+        here costs nothing and restores the immediate answer.
+        """
+        axis, speed = None, 0.0
+        if action == "walk_forward":
+            axis, speed = "forward", commanded.get("vx", 0.0)
+        elif action in ("strafe_left", "strafe_right"):
+            axis, speed = "lateral", commanded.get("vy", 0.0)
+        elif action in ("turn_left", "turn_right"):
+            axis, speed = "yaw", commanded.get("wz", 0.0)
+        # walk_back is deliberately absent: the floor is a measurement of the FORWARD gait
+        # and applying it to reverse is the axis conflation issue #42 is about.
+        if axis is None:
+            return ""
+        try:
+            check_gait_floor(self.platform, axis, speed, force)
+        except BridgeError as exc:
+            return str(exc)
+        return ""
+
     async def _move(self, action: str, command: str, extra: list, seconds: float,
-                    commanded: dict) -> dict:
+                    commanded: dict, force: bool = False) -> dict:
         """Accept a motion command and return — the nudge runs in the background.
 
         Returning here rather than at the end of the nudge is what keeps the robot able to
@@ -359,6 +390,13 @@ class MappoRobotDriver(DeviceDriver):
             reason = "the robot is already executing a motion command"
             await self._announce(self.motion_refused, action=action, reason=reason)
             return {"ok": False, "refused": True, "busy": True, "error": reason}
+
+        # Before the lock and before motion_started: a command refused here never started,
+        # and announcing that it did would put a lie in the operator's event log.
+        floor_refusal = self._precheck(action, commanded, force)
+        if floor_refusal:
+            await self._announce(self.motion_refused, action=action, reason=floor_refusal)
+            return {"ok": False, "refused": True, "error": floor_refusal}
 
         # Taken here, not inside the task: between this line and the check above there is no
         # suspension point, so two rapid calls cannot both get past the guard. Acquiring it
@@ -443,7 +481,7 @@ class MappoRobotDriver(DeviceDriver):
         seconds = self._clamp_seconds(seconds)
         extra = ["--vx", abs(speed_mps), "--seconds", seconds] + (["--force"] if force else [])
         return await self._move("walk_forward", "walk", extra, seconds,
-                                {"vx": abs(speed_mps)})
+                                {"vx": abs(speed_mps)}, force=force)
 
     @rpc()
     async def walk_back(self, seconds: float = 1.0, speed_mps: float = DEFAULT_VX) -> dict:
@@ -475,7 +513,7 @@ class MappoRobotDriver(DeviceDriver):
         seconds = self._clamp_seconds(seconds)
         extra = ["--vy", abs(speed_mps), "--seconds", seconds] + (["--force"] if force else [])
         return await self._move("strafe_left", "strafe", extra, seconds,
-                                {"vy": abs(speed_mps)})
+                                {"vy": abs(speed_mps)}, force=force)
 
     @rpc()
     async def strafe_right(self, seconds: float = 1.5, speed_mps: float = DEFAULT_VY,
@@ -490,7 +528,7 @@ class MappoRobotDriver(DeviceDriver):
         seconds = self._clamp_seconds(seconds)
         extra = ["--vy", -abs(speed_mps), "--seconds", seconds] + (["--force"] if force else [])
         return await self._move("strafe_right", "strafe", extra, seconds,
-                                {"vy": -abs(speed_mps)})
+                                {"vy": -abs(speed_mps)}, force=force)
 
     @rpc()
     async def turn_left(self, seconds: float = 1.0, rate_rad_s: float = DEFAULT_WZ) -> dict:
