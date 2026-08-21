@@ -30,19 +30,38 @@ somebody eventually presses a key believing a robot is on the other end of it.
 
 | | |
 | --- | --- |
-| **Dashboard** | <http://10.241.11.4:8090/> |
-| **Checkpoint server** | <http://10.241.11.4:9000/index.json> |
+| **Dashboard** | <http://mappo.10-241-11-4.nip.io:8090/> |
+| **Checkpoint server** | <http://models.10-241-11-4.nip.io:9000/index.json> |
+| Same thing by IP | <http://10.241.11.4:8090/> · <http://10.241.11.4:9000/index.json> |
 | Host | `waheedbrown-learning-paths`, Ubuntu 24.04, **aarch64** (`Standard_D2ps_v6`, Arm Neoverse), eastus |
 | Fleet | `demo-go2-01`, `demo-go2-02`, `demo-lite3-01`, `demo-lite3-02` — all simulated |
 | Survives a reboot | yes, via a user crontab `@reboot`; no sudo, nothing system-wide |
 | Control | `~/mappo-demo-src/deploy/demo/run_demo.sh start|status|stop` |
 
-⚠️ **That address is as shareable as it gets, and it is not very.** The VM has **no public
-IP** — `publicIpAddress` is empty in its instance metadata — so `10.241.11.4` is reachable
-only from inside the Arm network. No DNS name resolves for it either, internal or external.
-For an audience joining from outside, this needs a public IP and an NSG rule on the
-subscription, which is a change to someone's cloud estate rather than something the demo can
-arrange for itself. Worth settling **before** the room, not in it.
+### The hostname
+
+`nip.io` is wildcard DNS that decodes an IP out of the name it is asked for:
+`mappo.10-241-11-4.nip.io` resolves to `10.241.11.4`, and any label in front is free. So a
+readable, self-describing name costs no DNS record, no ticket and no infrastructure — which
+is worth knowing, because the obvious conclusion after checking reverse DNS, the
+Azure-provided internal FQDN and Azure Private DNS is that a name is impossible here. It is
+not; those are just the wrong three places to look.
+
+Two caveats, neither serious:
+
+* **It depends on a third party.** If `nip.io` is unreachable the name stops working and the
+  IP still does. `mappo.10-241-11-4.sslip.io` is the same trick from a different operator and
+  resolves identically, so there are two independent fallbacks behind one IP.
+* **The lookup is public.** Resolving this tells the service's operator that somebody asked
+  about `10.241.11.4`. That is an RFC1918 address belonging to millions of networks, so it
+  identifies nothing — but the query does leave the building, and on a host holding anything
+  sensitive that is a reason to use the IP instead.
+
+⚠️ **The VM has no public IP.** `publicIpAddress` is empty in its instance metadata, so this
+is reachable from inside the Arm network and nowhere else — the hostname is a convenience,
+not a route. An audience joining from outside needs a public IP and an NSG rule on the
+subscription: a change to somebody's cloud estate, not something the demo can arrange for
+itself. Worth settling **before** the room, not in it.
 
 ⚠️ **The host has another tenant.** `papa-web` holds `0.0.0.0:80` and `0.0.0.0:8080`, and a
 Hugo server holds `1313`. Nothing here touches them; the ports were chosen around them.
