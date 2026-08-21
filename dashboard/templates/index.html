@@ -189,8 +189,15 @@ SPDX-License-Identifier: Apache-2.0
       <button class="btn" id="download">Load onto robot</button>
     </div>
     <div class="row">
+      <label class="field grow">
+        <span>Model server index</span>
+        <input id="index-url" type="text" placeholder="http://models.example:9000/index.json">
+      </label>
+      <button class="btn ghost" id="browse-server">Browse server</button>
+    </div>
+    <div class="row">
       <label class="field">
-        <span>S3 bucket</span>
+        <span>or S3 bucket</span>
         <input id="bucket" type="text" placeholder="my-bucket">
       </label>
       <label class="field grow">

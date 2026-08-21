@@ -365,9 +365,13 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
    Scrolls rather than hides. Collapsed it is capped near three robot rows; the rest
    are a scroll away and the toggle says how many there are. Nothing is removed from
    the DOM, so a robot is always one scroll from its stop button. */
-.fleet-scroll { transition: max-height 0.15s ease; }
-.fleet-scroll.collapsed { max-height: 208px; overflow-y: auto; }
-.fleet-scroll:not(.collapsed) { max-height: 52vh; overflow-y: auto; }
+/* Scrolls in BOTH states, and neither state is allowed to grow past the window.
+   `--fleet-max` is measured in JS from what is actually left between the fleet panel and
+   the docked drawer, because the header, the safety banner and the drawer all change
+   height at runtime — a fixed vh guess is wrong the moment the banner is dismissed. */
+.fleet-scroll { overflow-y: auto; overscroll-behavior: contain; transition: max-height 0.15s ease; }
+.fleet-scroll.collapsed { max-height: var(--fleet-collapsed-h, 210px); }
+.fleet-scroll:not(.collapsed) { max-height: var(--fleet-max, 52vh); }
 .fleet-scroll thead th, .grid tr.group td { position: sticky; z-index: 1; background: var(--panel); }
 .fleet-scroll thead th { top: 0; }
 .grid tr.group td { top: 26px; background: var(--panel-2); }
@@ -388,3 +392,5 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
   content: "⚠"; position: absolute; top: 4px; right: 6px;
   font-size: 10px; color: var(--warn); line-height: 1;
 }
+
+.pill.sim { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); margin-left: 6px; }

@@ -395,7 +395,12 @@ def dispatch(args):
     # Jetson and put a client on the bus for a command that was never going to run.
     plan = plan_nudge(args) if args.command in ("walk", "strafe", "turn") else None
 
-    loco = load_platform(args.platform, iface=args.iface,
+    # `--platform` is the RULES (gait floors, posture semantics); `--backend` is what is
+    # actually driven. They differ only when simulating, and keeping them separate is what
+    # makes a simulated Go2 refuse 0.21 m/s exactly like a real one. Collapsing them — which
+    # the first version of --simulate did — silently gave a demo the bench double's floors of
+    # zero, so the refusal that is this stack's most characteristic behaviour never fired.
+    loco = load_platform(args.backend or args.platform, iface=args.iface,
                          operator_ready=args.operator_ready)
     try:
         if args.command == "status":
@@ -455,7 +460,11 @@ def build_parser():
         description="Run one bounded motion command on a quadruped and report what it did.")
     parser.add_argument("command", choices=sorted(
         MOTION_COMMANDS | {"status", "stop"}))
-    parser.add_argument("--platform", default="sim", choices=("go2", "lite3", "sim"))
+    parser.add_argument("--platform", default="sim", choices=("go2", "lite3", "sim"),
+                        help="Whose RULES apply: gait floors, posture semantics, warnings.")
+    parser.add_argument("--backend", default="", choices=("", "go2", "lite3", "sim"),
+                        help="What is actually driven. Defaults to --platform; set it to "
+                             "'sim' to apply a real platform's rules to the bench double.")
     parser.add_argument("--iface", default=os.environ.get("GO2_DDS_IFACE", "eth0"),
                         help="DDS interface (Go2).")
     parser.add_argument("--operator-ready", action="store_true",

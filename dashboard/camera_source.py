@@ -142,6 +142,77 @@ class SimCameraSource:
         return None
 
 
+class ReplayCameraSource:
+    """Frames from a directory of JPEGs, cycled — a recorded run standing in for a camera.
+
+    ⚠️ **This is a REPLAY and every frame says so.** It exists so a demo can show what the
+    viewport looks like carrying real robot footage on a machine with no robot attached to
+    it. That is a legitimate thing to want and an illegitimate thing to leave unlabelled:
+    somebody will photograph this screen, and a recording of a past run presented as a live
+    camera is the kind of claim this repository spends its evidence files avoiding.
+
+    So the label is burned into the frame rather than left to the page, because a screenshot
+    keeps the pixels and loses the surrounding UI.
+
+    Frames are pre-encoded JPEGs on disk. Decoding a video would mean putting OpenCV or
+    ffmpeg on the demo host for a job that ``ffmpeg`` already did once, offline.
+    """
+
+    width, height = 0, 0
+
+    def __init__(self, directory, label="REPLAY", fps_hint=None):
+        self._paths = sorted(
+            os.path.join(directory, name) for name in os.listdir(directory)
+            if name.lower().endswith((".jpg", ".jpeg")))
+        if not self._paths:
+            raise CameraUnavailable(f"no .jpg frames in {directory}")
+        self._index = 0
+        self._label = label
+        self._stamped = None
+        try:
+            from PIL import Image  # noqa: F401
+        except ImportError:
+            self._stamped = False       # serve the raw frames, unlabelled but working
+        else:
+            self._stamped = True
+
+    def read(self):
+        path = self._paths[self._index % len(self._paths)]
+        self._index += 1
+        with open(path, "rb") as handle:
+            raw = handle.read()
+        if not self._stamped:
+            return raw
+        return self._stamp(raw)
+
+    def _stamp(self, raw):
+        """Burn the replay label into the pixels.
+
+        In the frame and not in the page chrome: a screenshot keeps the pixels and loses
+        everything around them, and the screenshot is exactly how this ends up somewhere it
+        was not explained.
+        """
+        from io import BytesIO
+
+        from PIL import Image, ImageDraw
+        try:
+            image = Image.open(BytesIO(raw)).convert("RGB")
+        except Exception:
+            return raw
+        draw = ImageDraw.Draw(image)
+        text = f"{self._label} — recorded run, not a live camera"
+        draw.rectangle([0, 0, image.width, 20], fill=(90, 60, 10))
+        draw.text((8, 6), text, fill=(255, 214, 120))
+        draw.text((8, image.height - 16),
+                  f"frame {self._index} / {len(self._paths)}", fill=(230, 230, 230))
+        buffer = BytesIO()
+        image.save(buffer, format="JPEG", quality=62)
+        return buffer.getvalue()
+
+    def close(self):
+        return None
+
+
 class Go2CameraSource:
     """The Go2's front RGB camera through the vendored ``Go2Camera``."""
 
@@ -206,8 +277,16 @@ class Lite3CameraSource:
             self._camera.stop()
 
 
-def open_source(platform, *, iface="eth0", source=0, pose_fn=None):
-    """The camera for one platform, or :class:`CameraUnavailable` saying why not."""
+def open_source(platform, *, iface="eth0", source=0, pose_fn=None, replay_dir=None,
+                replay_label="REPLAY"):
+    """The camera for one platform, or :class:`CameraUnavailable` saying why not.
+
+    ``replay_dir`` overrides everything: a directory of JPEGs is served in place of a
+    camera, labelled in the pixels. That is how a demo host with no robot shows real
+    footage without anybody being able to mistake it for a live feed.
+    """
+    if replay_dir:
+        return ReplayCameraSource(replay_dir, label=replay_label)
     if platform == "sim":
         return SimCameraSource(pose_fn=pose_fn)
     if platform == "go2":

@@ -131,7 +131,8 @@ class MappoRobotDriver(DeviceDriver):
     def __init__(self, *, platform: str = "sim", package_dir: str = "../policy",
                  bridge_script: str = DEFAULT_BRIDGE, bridge_python: str | None = None,
                  iface: str = "eth0", allow_motion: bool = False,
-                 operator_ready: bool = False, allow_http: bool = True) -> None:
+                 operator_ready: bool = False, allow_http: bool = True,
+                 simulate: bool = False, camera_replay_dir: str = "") -> None:
         super().__init__()
         self.platform = platform
         self.bridge_script = bridge_script
@@ -143,6 +144,14 @@ class MappoRobotDriver(DeviceDriver):
         self.allow_motion = allow_motion
         self.operator_ready = operator_ready
         self.allow_http = allow_http
+        #: Present as ``platform`` — its gait floors, its posture rules, its identity — while
+        #: driving the bench double instead of a robot. For a demo host with no robots
+        #: attached. It is advertised in ``get_capabilities`` and badged in the dashboard,
+        #: because a demo fleet that is indistinguishable from a real one is a hazard rather
+        #: than a convincing demo: somebody will eventually press a key believing a robot is
+        #: on the other end of it.
+        self.simulate = simulate
+        self.camera_replay_dir = camera_replay_dir
         self.store = ModelStore(package_dir)
         self._motion_lock = asyncio.Lock()
         #: The in-flight worker process, so a stop can terminate it. Guarded by a threading
@@ -166,7 +175,7 @@ class MappoRobotDriver(DeviceDriver):
         return DeviceIdentity(
             device_type=self.device_type,
             manufacturer=vendor,
-            model=model,
+            model=f"{model} (SIMULATED)" if self.simulate else model,
             description=(
                 f"{model} running a MAPPO policy. Bounded motion nudges, checkpoint "
                 f"management, and a live event stream. Motion is "
@@ -267,8 +276,14 @@ class MappoRobotDriver(DeviceDriver):
         worker installs a damp on SIGTERM, and ``SportClient.Move`` has no dead-man timeout,
         so a bare kill of a walking robot leaves the last velocity latched on the bus.
         """
+        # --platform carries the RULES and --backend what is driven. When simulating they
+        # differ, which is what makes a simulated Go2 refuse a sub-gait-floor speed exactly
+        # as a real one does. Passing "sim" as the platform instead would hand the demo the
+        # bench double's floors of zero and quietly delete the refusal.
         cmd = [self.bridge_python, self.bridge_script, command,
                "--platform", self.platform, "--iface", self.iface]
+        if self.simulate:
+            cmd += ["--backend", "sim"]
         cmd += [str(a) for a in (extra or [])]
         if self.allow_motion:
             cmd.append("--allow-motion")
@@ -578,6 +593,8 @@ class MappoRobotDriver(DeviceDriver):
             self._camera = await loop.run_in_executor(
                 None, lambda: camera_source.open_source(
                     self.platform, iface=self.iface,
+                    replay_dir=self.camera_replay_dir or None,
+                    replay_label=f"REPLAY · {self.platform}",
                     pose_fn=lambda: (self._last_pose or {})))
         except CameraUnavailable as exc:
             self._camera_error = str(exc)
@@ -644,6 +661,7 @@ class MappoRobotDriver(DeviceDriver):
         floors = GAIT_FLOORS.get(self.platform, {})
         return {
             "platform": self.platform,
+            "simulated": self.simulate,
             "motion_enabled": self.allow_motion,
             "gait_floors_m_s": floors,
             "unmeasured_axes": [axis for axis, value in floors.items() if value is None],
@@ -659,7 +677,8 @@ class MappoRobotDriver(DeviceDriver):
                              "unobserved space and is capped at 2 s"),
             "camera": {
                 "available": self.platform in ("sim", "go2", "lite3"),
-                "synthetic": self.platform == "sim",
+                "synthetic": self.platform == "sim" and not self.camera_replay_dir,
+                "replay": bool(self.camera_replay_dir),
                 "default_fps": camera_source.DEFAULT_FPS,
                 "max_fps": camera_source.MAX_FPS,
                 "error": self._camera_error,
@@ -768,22 +787,38 @@ class MappoRobotDriver(DeviceDriver):
         return result
 
     @rpc()
-    async def list_cloud_models(self, bucket: str, prefix: str = "") -> dict:
-        """List the ``.npz`` checkpoints in an S3 bucket, newest first.
+    async def list_cloud_models(self, bucket: str = "", prefix: str = "",
+                                index_url: str = "") -> dict:
+        """List the checkpoints a Cloud AI source advertises, newest first.
 
-        Needs boto3 and AWS credentials on the robot. A direct http(s) source needs neither
-        and can be pasted straight into download_model.
+        Two kinds of source, and neither is privileged over the other. ``index_url`` reads a
+        JSON index from a self-hosted model server; ``bucket`` lists an S3 bucket and needs
+        boto3 plus AWS credentials on the robot. Browsing a bucket but not a server would
+        say, in the shape of this API, that S3 is the real answer — which is backwards for a
+        deployment whose checkpoints live on its own hardware.
 
         Args:
-            bucket: the S3 bucket name.
-            prefix: an optional key prefix to narrow the listing.
+            bucket: an S3 bucket name.
+            prefix: an optional key prefix, for the S3 form.
+            index_url: a model server's JSON index — takes precedence when both are given.
         """
+        loop = asyncio.get_running_loop()
         try:
-            objects = await asyncio.get_running_loop().run_in_executor(
+            if index_url:
+                objects = await loop.run_in_executor(
+                    None, lambda: cloud_models.list_http_index(
+                        index_url, allow_http=self.allow_http))
+                return {"ok": True, "objects": objects, "source": index_url,
+                        "kind": "server"}
+            if not bucket:
+                return {"ok": False,
+                        "error": "give either an S3 bucket or a model server index URL"}
+            objects = await loop.run_in_executor(
                 None, lambda: cloud_models.list_s3(bucket, prefix))
         except CloudFetchError as exc:
             return {"ok": False, "error": str(exc)}
-        return {"ok": True, "objects": objects, "bucket": bucket, "prefix": prefix}
+        return {"ok": True, "objects": objects, "bucket": bucket, "prefix": prefix,
+                "kind": "s3"}
 
     # ── liveness ─────────────────────────────────────────────────────────────
     @periodic(interval=STATE_INTERVAL_S)
@@ -837,6 +872,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--operator-ready", action="store_true",
                         help="Lite3: the operator has confirmed STANDING + high-level "
                              "navigation mode on the vendor interface.")
+    parser.add_argument("--simulate", action="store_true",
+                        help="Present as --platform but drive the bench double. For a demo "
+                             "host with no robots. Advertised, and badged in the dashboard.")
+    parser.add_argument("--camera-replay-dir", default="",
+                        help="Serve JPEGs from this directory as the camera feed. Each frame "
+                             "is labelled REPLAY in the pixels.")
     parser.add_argument("--no-http-sources", action="store_true",
                         help="Refuse plain-http checkpoint sources; require https or s3.")
     # NOT "--allow-insecure": a store_true with default=True can never be switched off, so
@@ -853,7 +894,10 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO,
                         format="%(asctime)s  %(name)s  %(levelname)-7s  %(message)s")
 
-    if args.platform != "sim" and args.bridge_python is None:
+    if args.simulate:
+        log.warning("SIMULATED %s: presenting this platform's rules against the bench "
+                    "double. No robot is attached.", args.platform)
+    if args.platform != "sim" and not args.simulate and args.bridge_python is None:
         log.warning("--bridge-python was not given, so the worker will run under %s. "
                     "On a real robot that interpreter almost certainly cannot import the "
                     "SDK; every command will fail with an import error.", sys.executable)
@@ -861,7 +905,8 @@ def main(argv=None) -> int:
     driver = MappoRobotDriver(
         platform=args.platform, package_dir=args.package, bridge_script=args.bridge_script,
         bridge_python=args.bridge_python, iface=args.iface, allow_motion=args.allow_motion,
-        operator_ready=args.operator_ready, allow_http=not args.no_http_sources)
+        operator_ready=args.operator_ready, allow_http=not args.no_http_sources,
+        simulate=args.simulate, camera_replay_dir=args.camera_replay_dir)
 
     if args.allow_motion:
         log.warning("MOTION IS ENABLED. robot-stack/SAFETY.md applies: clear area, operator "

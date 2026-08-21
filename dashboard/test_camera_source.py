@@ -22,6 +22,7 @@ from camera_source import (
     MAX_FPS,
     MAX_FRAME_BYTES,
     CameraUnavailable,
+    ReplayCameraSource,
     Viewers,
     clamp_fps,
     encode,
@@ -106,6 +107,71 @@ def test_the_sim_source_produces_a_real_jpeg_that_changes():
     assert first[:2] == b"\xff\xd8", "not a JPEG"
     assert first != second, "the synthetic feed is a still image"
     assert len(first) < MAX_FRAME_BYTES
+
+
+def test_a_replay_frame_says_it_is_a_replay_in_the_pixels():
+    """The label is burned into the JPEG, not drawn by the page.
+
+    A screenshot keeps the pixels and loses the surrounding UI, and the screenshot is
+    exactly how a recorded run ends up somewhere nobody explained it. Made to fail by
+    returning the raw frame from ``read``.
+    """
+    import tempfile
+
+    try:
+        from PIL import Image
+    except ImportError:
+        print("  skip  Pillow not installed")
+        return
+
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(3):
+            Image.new("RGB", (320, 240), (20, 30, 40)).save(
+                os.path.join(tmp, f"f{i:03d}.jpg"), quality=70)
+        source = ReplayCameraSource(tmp, label="REPLAY")
+        raw = source.read()
+        source.close()
+
+        assert raw[:2] == b"\xff\xd8", "not a JPEG"
+        from io import BytesIO
+
+        import numpy as np
+        pixels = np.asarray(Image.open(BytesIO(raw)).convert("RGB"))
+        # The banner is burned along the top; the source frames are a flat dark colour, so
+        # any bright pixel in the top rows can only be the label.
+        assert pixels[:20].max() > 120, "no label was burned into the frame"
+        assert pixels[40:200].max() < 90, "the label bled into the picture area"
+
+
+def test_a_replay_cycles_rather_than_ending():
+    """A demo runs longer than a recording. The feed loops instead of freezing on the last
+    frame, which would look exactly like a camera that had died."""
+    import tempfile
+
+    try:
+        from PIL import Image
+    except ImportError:
+        print("  skip  Pillow not installed")
+        return
+    with tempfile.TemporaryDirectory() as tmp:
+        for i in range(3):
+            Image.new("RGB", (64, 48), (i * 40, 0, 0)).save(os.path.join(tmp, f"f{i}.jpg"))
+        source = ReplayCameraSource(tmp)
+        frames = [source.read() for _ in range(7)]
+        source.close()
+        assert all(frames), "a cycle produced an empty frame"
+        assert len(frames) == 7
+
+
+def test_an_empty_replay_directory_is_refused_by_name():
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            ReplayCameraSource(tmp)
+        except CameraUnavailable as exc:
+            assert "no .jpg frames" in str(exc)
+            return
+        raise AssertionError("an empty replay directory was accepted")
 
 
 if __name__ == "__main__":
