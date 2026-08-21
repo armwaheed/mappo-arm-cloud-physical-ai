@@ -26,6 +26,27 @@ made to people who cannot check them from the room.
 A demo fleet that is indistinguishable from a real one is a hazard rather than a better demo:
 somebody eventually presses a key believing a robot is on the other end of it.
 
+## The standing deployment
+
+| | |
+| --- | --- |
+| **Dashboard** | <http://10.241.11.4:8090/> |
+| **Checkpoint server** | <http://10.241.11.4:9000/index.json> |
+| Host | `waheedbrown-learning-paths`, Ubuntu 24.04, **aarch64** (`Standard_D2ps_v6`, Arm Neoverse), eastus |
+| Fleet | `demo-go2-01`, `demo-go2-02`, `demo-lite3-01`, `demo-lite3-02` — all simulated |
+| Survives a reboot | yes, via a user crontab `@reboot`; no sudo, nothing system-wide |
+| Control | `~/mappo-demo-src/deploy/demo/run_demo.sh start|status|stop` |
+
+⚠️ **That address is as shareable as it gets, and it is not very.** The VM has **no public
+IP** — `publicIpAddress` is empty in its instance metadata — so `10.241.11.4` is reachable
+only from inside the Arm network. No DNS name resolves for it either, internal or external.
+For an audience joining from outside, this needs a public IP and an NSG rule on the
+subscription, which is a change to someone's cloud estate rather than something the demo can
+arrange for itself. Worth settling **before** the room, not in it.
+
+⚠️ **The host has another tenant.** `papa-web` holds `0.0.0.0:80` and `0.0.0.0:8080`, and a
+Hugo server holds `1313`. Nothing here touches them; the ports were chosen around them.
+
 ## Install
 
 ```bash
