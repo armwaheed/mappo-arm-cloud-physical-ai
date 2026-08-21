@@ -53,16 +53,28 @@ FLEET=(
 # ⚠️ The addresses are what the ROBOT must reach, not what a browser must. Here they are the
 # same host, so loopback would work — but a real deployment has the robot elsewhere, and a
 # loopback address that happens to work on a demo box is a trap for whoever copies this file.
+# The newest .npz in a directory, or empty. Used to prefill the dashboard's Source field so
+# a demo opens with a loadable address in it rather than an empty box. Computed from what
+# the store actually holds — a hard-coded filename here is a demo that breaks silently the
+# first time somebody swaps the checkpoints out.
+newest_model() {
+  ls -t "$1"/*.npz 2>/dev/null | head -1 | xargs -r basename
+}
+
 write_sources() {
   local host; host="$(hostname -I 2>/dev/null | awk "{print \$1}")"
+  local arm_default s3_default
+  arm_default="$(newest_model "$STORE")"
+  s3_default="$(newest_model "$S3_STORE")"
   cat > "$SOURCES" <<JSON
 {
   "sources": [
     {
-      "label": "Arm Neoverse CPU server",
+      "label": "Arm AGI CPU server",
       "location": "Tokyo, Japan",
       "kind": "server",
       "index_url": "http://${host}:${MODEL_PORT}/index.json",
+      "default_model": "http://${host}:${MODEL_PORT}/${arm_default}",
       "simulated": true
     },
     {
@@ -70,6 +82,7 @@ write_sources() {
       "location": "cn-north-1, Beijing",
       "kind": "s3",
       "index_url": "http://${host}:${S3_PORT}/index.json",
+      "default_model": "http://${host}:${S3_PORT}/${s3_default}",
       "simulated": true
     }
   ]
@@ -84,9 +97,9 @@ start() {
   stop >/dev/null 2>&1 || true
 
   write_sources
-  echo "==> Arm Neoverse checkpoint server on :$MODEL_PORT"
+  echo "==> Arm AGI checkpoint server on :$MODEL_PORT"
   nohup "$PY" "$HERE/model_server.py" --dir "$STORE" --port "$MODEL_PORT" --host "$BIND" \
-      --label "Arm Neoverse CPU server" --location "Tokyo, Japan" \
+      --label "Arm AGI CPU server" --location "Tokyo, Japan" \
       > "$LOGS/model-server.log" 2>&1 &
 
   echo "==> stand-in for the China S3 bucket on :$S3_PORT"

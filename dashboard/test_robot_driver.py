@@ -441,9 +441,9 @@ def test_the_robot_advertises_where_its_checkpoints_come_from():
     """
     with tempfile.TemporaryDirectory() as tmp:
         sources = [
-            {"label": "Arm Neoverse CPU server", "location": "Tokyo, Japan",
+            {"label": "Arm AGI CPU server", "location": "Tokyo, Japan",
              "kind": "server", "index_url": "http://models:9000/index.json",
-             "simulated": True},
+             "default_model": "http://models:9000/actor.npz", "simulated": True},
             {"label": "AWS S3", "location": "cn-north-1, Beijing", "kind": "s3",
              "index_url": "http://s3-standin:9001/index.json", "simulated": True},
         ]
@@ -454,6 +454,22 @@ def test_the_robot_advertises_where_its_checkpoints_come_from():
         # The demo's stand-ins must carry their own disclaimer into the UI.
         assert all(s["simulated"] for s in advertised)
         assert "robot" in caps["cloud"]["resolved_by"]
+
+
+def test_an_advertised_source_may_name_a_default_checkpoint():
+    """So the dashboard's Source field opens with a loadable address in it.
+
+    Carried through verbatim rather than derived: the page prefills from this with NO
+    network call, which is what makes the panel populated the instant a robot is focused
+    even when the source itself is unreachable.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, model_sources=[
+            {"label": "Arm AGI CPU server", "location": "Tokyo, Japan",
+             "index_url": "http://models:9000/index.json",
+             "default_model": "http://models:9000/actor_2450000.npz"}])
+        source = _run(driver.get_capabilities())["cloud"]["sources"][0]
+        assert source["default_model"] == "http://models:9000/actor_2450000.npz"
 
 
 def test_a_robot_with_no_configured_sources_advertises_an_empty_list():

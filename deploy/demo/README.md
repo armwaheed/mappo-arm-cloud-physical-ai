@@ -113,7 +113,7 @@ and a feed frozen on its last frame looks exactly like a camera that has died.
 ## The two checkpoint sources
 
 Every robot advertises where its checkpoints can come from, so the dashboard offers a named
-**choice** — `Arm Neoverse CPU server — Tokyo, Japan` or `AWS S3 — cn-north-1, Beijing` — and
+**choice** — `Arm AGI CPU server — Tokyo, Japan` or `AWS S3 — cn-north-1, Beijing` — and
 nobody has to remember a URL. The list is advertised by the **robot**, not configured in the
 dashboard, because it is a property of the deployment the robot sits in; two robots on one
 mesh can legitimately pull from different places, which a dashboard-level setting cannot say.
@@ -124,6 +124,14 @@ and different contents — **it is not AWS, there is no bucket, and nothing here
 API.** They exist so the demo can show the *choice between two places*, which is the actual
 subject. `simulated: true` travels with each into the dashboard, which prints it under the
 picker.
+
+The panel opens **populated**: the picker lands on the Arm server, the Source field already
+holds a loadable checkpoint address, and the listing fills in behind it. Two steps, because
+they fail independently — `default_model` prefills with **no network at all**, so the field
+is populated the instant a robot is focused even if the source is unreachable, and the
+automatic browse then replaces it with the newest checkpoint the source really advertises.
+Neither overwrites something an operator typed; a field that rewrites itself under someone
+mid-edit is worse than one that starts empty.
 
 The real S3 path is still there and still works — pick **custom address…** and give a bucket,
 and `cloud_models.list_s3` does the genuine thing with boto3 and real credentials.
@@ -142,7 +150,7 @@ first.
 
 ```bash
 python3 model_server.py --dir ./checkpoints --port 9000 \
-    --label "Arm Neoverse CPU server" --location "Tokyo, Japan"
+    --label "Arm AGI CPU server" --location "Tokyo, Japan"
 ```
 
 Pass `--real` only when it is genuinely running where `--location` says. Without it the index

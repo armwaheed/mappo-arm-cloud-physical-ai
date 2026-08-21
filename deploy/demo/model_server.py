@@ -18,7 +18,7 @@ so in ``location_claimed`` rather than ``location``, and the dashboard shows wha
 says about itself — so the honest reading is always available to anyone who looks.
 
     python3 model_server.py --dir ./checkpoints --port 9000 \\
-        --label "Arm Neoverse CPU server" --location "Tokyo, Japan"
+        --label "Arm AGI CPU server" --location "Tokyo, Japan"
 """
 
 from __future__ import annotations
