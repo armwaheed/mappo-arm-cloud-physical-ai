@@ -20,6 +20,8 @@ const state = {
   fleetExpanded: false,
   alerts: [],
   sources: [],
+  browsedFor: null,
+  sourceIsPrefilled: false,
   cameraOn: false,
   cameraChosen: null,     // null = never touched; true/false = the operator decided
   safetyDismissedFor: null,
@@ -500,6 +502,62 @@ function renderSources(caps) {
   select.value = sources.includes(previous) ? previous : (sources.length ? "0" : "custom");
   state.sources = sources;
   onSourceChanged();
+  primeSource();
+}
+
+// Fill the panel in so a demo does not open on an empty field somebody has to type into.
+//
+// Two steps, because they fail independently. `default_model` is prefilled with no network
+// at all, so the field is populated the instant a robot is focused even if the source is
+// unreachable. Then the browse runs and replaces it with the newest checkpoint the source
+// actually advertises — which is the honest value, but arrives a round trip later and can
+// legitimately fail.
+//
+// Neither step overwrites something the operator typed. A field that rewrites itself under
+// someone mid-edit is worse than a field that starts empty.
+function primeSource() {
+  const source = currentSource();
+  const field = $("source");
+  if (!source) return;
+
+  if (!field.value.trim() && source.default_model) {
+    field.value = source.default_model;
+    state.sourceIsPrefilled = true;
+  }
+  autoBrowse(source);
+}
+
+async function autoBrowse(source) {
+  if (!source.index_url && !source.bucket) return;
+  const token = `${state.deviceId}::${source.label}`;
+  if (state.browsedFor === token) return;      // once per robot+source, not once per poll
+  state.browsedFor = token;
+
+  const params = source.index_url
+    ? { index_url: source.index_url }
+    : { bucket: source.bucket, prefix: source.prefix || "" };
+  const result = await invoke("list_cloud_models", params);
+  if (result.ok === false) {
+    // A browse the operator did not ask for must not shout in the result panel. It says so
+    // where the listing would have been, and leaves the prefilled default in place.
+    const list = $("cloud-list");
+    list.innerHTML = "";
+    addNote(list, "warn",
+      `<strong>${escapeHtml(source.label)} did not answer.</strong> ${escapeHtml(result.error || "")} ` +
+      `— remember this is fetched by the robot, not by your browser.`);
+    return;
+  }
+  renderCloudList(result.objects || []);
+  const newest = (result.objects || [])[0];
+  // Only replace a value this code put there, never one that was typed.
+  if (newest && (!field_touched() || state.sourceIsPrefilled)) {
+    $("source").value = newest.uri;
+    state.sourceIsPrefilled = true;
+  }
+}
+
+function field_touched() {
+  return $("source").dataset.touched === "1";
 }
 
 function currentSource() {
@@ -543,7 +601,12 @@ async function browseWith(params) {
   list.innerHTML = "";
   const result = await invoke("list_cloud_models", params);
   if (result.ok === false) return show($("model-result"), result.error, true);
-  const objects = result.objects || [];
+  renderCloudList(result.objects || []);
+}
+
+function renderCloudList(objects) {
+  const list = $("cloud-list");
+  list.innerHTML = "";
   if (!objects.length) {
     return addNote(list, "", "no <code>.npz</code> checkpoints at that source");
   }
@@ -554,7 +617,10 @@ async function browseWith(params) {
     const div = document.createElement("div");
     div.className = "note";
     div.innerHTML = `<strong>${escapeHtml(object.key)}</strong> · ${formatBytes(object.size_bytes)} · ${object.last_modified || ""} `;
-    div.appendChild(button("Use", "btn ghost tiny", () => { $("source").value = object.uri; }));
+    div.appendChild(button("Use", "btn ghost tiny", () => {
+      $("source").value = object.uri;
+      state.sourceIsPrefilled = true;
+    }));
     list.appendChild(div);
   }
 }
@@ -847,7 +913,17 @@ function init() {
   });
   $("download").addEventListener("click", downloadModel);
   $("browse-source").addEventListener("click", browseSelected);
-  $("cloud-source").addEventListener("change", onSourceChanged);
+  $("cloud-source").addEventListener("change", () => {
+    onSourceChanged();
+    state.browsedFor = null;          // a deliberate change re-browses
+    if (state.sourceIsPrefilled) { $("source").value = ""; state.sourceIsPrefilled = false; }
+    primeSource();
+  });
+  // Once someone types here, nothing may overwrite it.
+  $("source").addEventListener("input", () => {
+    $("source").dataset.touched = "1";
+    state.sourceIsPrefilled = false;
+  });
   $("drawer-bar").addEventListener("click", () => setDrawer(!state.drawerOpen));
   $("drawer-bar").addEventListener("keydown", (e) => {
     if (e.key === "Enter" || e.key === " ") { e.preventDefault(); setDrawer(!state.drawerOpen); }
