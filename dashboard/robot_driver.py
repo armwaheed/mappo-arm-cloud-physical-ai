@@ -95,7 +95,9 @@ from device_connect_edge import DeviceRuntime
 from device_connect_edge.drivers import DeviceDriver, emit, periodic, rpc
 from device_connect_edge.types import DeviceIdentity, DeviceStatus
 
+import camera_source
 import cloud_models
+from camera_source import CameraUnavailable
 from cloud_models import CloudFetchError
 from drive_bridge import (
     DEFAULT_VX,
@@ -148,6 +150,12 @@ class MappoRobotDriver(DeviceDriver):
         self._worker = None
         self._worker_guard = threading.Lock()
         self._motion_task = None
+        self._camera = None
+        self._last_pose: dict = {}
+        self._camera_task = None
+        self._camera_fps = camera_source.DEFAULT_FPS
+        self._camera_error = ""
+        self._viewers = camera_source.Viewers()
 
     # ── identity ─────────────────────────────────────────────────────────────
     @property
@@ -237,6 +245,15 @@ class MappoRobotDriver(DeviceDriver):
     @emit()
     async def model_deleted(self, name: str, freed_bytes: int):
         """A checkpoint was removed from the robot."""
+
+    @emit()
+    async def camera_frame(self, jpeg_b64: str, seq: int, fps: float):
+        """One frame from the front RGB camera.
+
+        An EVENT and not an RPC reply, deliberately. The runtime dispatches one RPC at a time
+        per device, so polling frames over that channel would occupy it continuously and make
+        the robot deaf to ``stop``. Events are pub/sub and do not queue behind commands.
+        """
 
     @emit()
     async def robot_state(self, pose: dict, velocity: list, mode: str, active_model: str):
@@ -523,6 +540,76 @@ class MappoRobotDriver(DeviceDriver):
         result["interrupted_motion"] = interrupted
         return result
 
+    # ── camera ───────────────────────────────────────────────────────────────
+    @rpc()
+    async def watch_camera(self, fps: float = camera_source.DEFAULT_FPS) -> dict:
+        """Start (or keep alive) the front-camera feed, emitted as ``camera_frame`` events.
+
+        Call it repeatedly while watching. Interest expires, so a closed browser tab stops
+        the stream by itself rather than leaving a robot emitting to nobody.
+
+        Args:
+            fps: frames per second, capped at 15 — roughly what the Go2 sensor delivers.
+        """
+        self._camera_fps = camera_source.clamp_fps(fps)
+        self._viewers.note_interest()
+        if self._camera_task is None or self._camera_task.done():
+            self._camera_error = ""
+            self._camera_task = asyncio.create_task(self._camera_loop())
+        return {"ok": True, "fps": self._camera_fps, "watching": True,
+                "error": self._camera_error}
+
+    @rpc()
+    async def stop_camera(self) -> dict:
+        """Stop the camera feed now rather than waiting for interest to expire."""
+        self._viewers.clear()
+        return {"ok": True, "watching": False}
+
+    async def _camera_loop(self) -> None:
+        """Emit frames while someone is watching, then release the camera.
+
+        The camera is opened on a worker thread: both real backends block on a device or an
+        SDK call, and doing that on the event loop would stall every other RPC on this
+        driver — including the stop this whole design exists to keep fast.
+        """
+        loop = asyncio.get_running_loop()
+        seq = 0
+        try:
+            self._camera = await loop.run_in_executor(
+                None, lambda: camera_source.open_source(
+                    self.platform, iface=self.iface,
+                    pose_fn=lambda: (self._last_pose or {})))
+        except CameraUnavailable as exc:
+            self._camera_error = str(exc)
+            log.warning("camera unavailable: %s", exc)
+            return
+
+        try:
+            while self._viewers.watching():
+                started = loop.time()
+                try:
+                    raw = await loop.run_in_executor(None, self._camera.read)
+                    encoded = camera_source.encode(raw)
+                except CameraUnavailable as exc:
+                    self._camera_error = str(exc)
+                    break
+                except Exception as exc:
+                    log.warning("frame read failed: %r", exc)
+                    encoded = None
+                if encoded:
+                    seq += 1
+                    await self._announce(self.camera_frame, jpeg_b64=encoded, seq=seq,
+                                         fps=self._camera_fps)
+                # Pace from the START of the cycle so encoding time comes out of the interval
+                # rather than being added to it; otherwise the real rate is always under the
+                # requested one by however long a frame took.
+                elapsed = loop.time() - started
+                await asyncio.sleep(max(0.0, (1.0 / self._camera_fps) - elapsed))
+        finally:
+            await loop.run_in_executor(None, self._camera.close)
+            self._camera = None
+            log.info("camera released after %d frames", seq)
+
     # ── status ───────────────────────────────────────────────────────────────
     @rpc()
     async def get_status(self) -> dict:
@@ -570,6 +657,18 @@ class MappoRobotDriver(DeviceDriver):
             "reverse_supported": True,
             "reverse_note": ("no rear sensing on either platform; reverse is open-loop into "
                              "unobserved space and is capped at 2 s"),
+            "camera": {
+                "available": self.platform in ("sim", "go2", "lite3"),
+                "synthetic": self.platform == "sim",
+                "default_fps": camera_source.DEFAULT_FPS,
+                "max_fps": camera_source.MAX_FPS,
+                "error": self._camera_error,
+                "note": ("the Lite3 capture is exclusive, so a live visual_nav run holds the "
+                         "camera and this cannot" if self.platform == "lite3" else
+                         "synthetic frames; there is no camera on this platform"
+                         if self.platform == "sim" else
+                         "the Go2 video service is shared, so a run and this can both read"),
+            },
             "max_seconds": MAX_SECONDS,
             "bridge_python": self.bridge_python,
             "package_dir": str(self.store.package_dir),
@@ -708,6 +807,7 @@ class MappoRobotDriver(DeviceDriver):
             active = self.store.active_model() or ""
         except ModelStoreError:
             active = ""
+        self._last_pose = state.get("pose") or {}
         await self._announce(self.robot_state, pose=state.get("pose") or {},
                              velocity=state.get("velocity") or [],
                              mode=state.get("mode") or "",

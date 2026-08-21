@@ -33,6 +33,7 @@ directory's `--live`.
 | **Run a fleet** | Every robot on the mesh listed at once, each with its own stop, plus one **STOP ALL**. Robots appear as they connect and are tombstoned as GONE when they drop off. |
 | **View robot events** | A docked drawer, always on screen. Collapsed it is one bar carrying the newest line and an unread count; open it fills the bottom of the window. Filterable, pausable, and replayed from a ring buffer to a page that opens late. |
 | **Basic motion** | Walk forward / back, strafe left / right, turn left / right, lie down. Bounded in time, and every press reports what the robot *measured*. |
+| **Front camera** | A live MJPEG viewport beside the pad, default 6 fps, started only while someone is watching. |
 | **Swap checkpoints** | Arm any `.npz` already on the robot for the next run. |
 | **Load / unload from Cloud AI** | Pull a checkpoint from an S3 bucket or a direct server address; delete one off the robot. |
 
@@ -60,6 +61,57 @@ The page also stopped being a two-column *grid* of panels. A grid puts each pane
 row, so a row begins below the tallest item in the row above — the motion panel — and the
 right-hand column grew a block of dead space with the next panel stranded below it. The two
 sides are flex columns now and stack independently.
+
+## The camera, and why it is not an RPC
+
+The obvious implementation is a `get_frame()` RPC the page polls. It is the one
+implementation that must not be used here, because **the edge runtime dispatches one RPC at a
+time per device**. Polling frames at even 6 Hz would occupy the command channel continuously
+and put the robot back to being deaf to `stop` — reintroducing the defect the non-blocking
+motion work removed, in a form nobody would suspect, because "the camera is on" does not
+sound like "the stop button no longer works".
+
+So frames are **emitted as events** (pub/sub, its own subject), drained by the dashboard on
+**its own subscription and its own thread**, and served to the browser as
+`multipart/x-mixed-replace`. A plain `<img>` renders that natively: no canvas, no per-frame
+JavaScript, decode off the main thread, and a dead feed shows as a broken image rather than
+as a frozen last frame that still looks live.
+
+**12 fps was asked for; 6 is the default.** A 640×480 JPEG at quality 60 is 25–40 KB and
+base64 adds a third, so 6 fps is roughly 200–320 KB/s *per watched robot* and 12 is double
+that — for a viewport whose job is "can I see where the robot is pointing". It is a
+parameter, so raising it is a decision someone makes with the number in front of them.
+Nothing streams to an empty room: the feed starts when a viewer asks and stops when that
+interest lapses, so closing the tab stops the robot emitting.
+
+⚠️ **The Lite3 will disappoint you here.** Its frames come from an OpenCV `VideoCapture`,
+which on Linux is typically **exclusive** — so while a `lite3_visual_nav` run holds the
+camera, this cannot open it. That is reported as "the camera is in use" rather than as a
+black rectangle. The Go2's frames come from the SDK's `VideoClient`, an RPC to the robot's own
+video service, so a run and the viewport can both read it. On `sim` the frames are
+**synthetic** and marked as such on screen, because a screenshot of a fake camera must not be
+mistakable for hardware.
+
+## Alerts, and what is deliberately NOT in them
+
+The bell carries **things that happened** — a refusal, an interruption, a checkpoint change.
+Clicking one focuses the robot that raised it, which is the point of an alert: to get you to
+the thing, not to tell you about it. They are dismissible individually or all at once.
+
+**The standing capability caveats are not in there.** "No measured lateral gait floor on the
+go2" is not an event — it is true on *every* press, forever. A caveat you can dismiss once and
+then never see again while you press that control fifty more times is worse than no caveat at
+all. Those ride the control instead: a ⚠ marker on the key itself, with the full sentence in
+its tooltip. The wall of yellow boxes under the motion pad is gone; one line remains saying
+which keys are marked.
+
+## The safety banner collapses, but the state does not
+
+The red "motion is enabled" banner has a dismiss button. The **`MOTION ENABLED` badge in the
+top bar does not** — the badge is the *state* and the banner is the *explanation*, and only
+the explanation gets to be dismissed. The banner also comes back whenever motion transitions
+off→on or the focused robot changes, because "I already read it" is true of a sentence and not
+of a different robot, and dismissal is not persisted across a reload.
 
 ## Many robots, of more than one kind
 
@@ -110,6 +162,12 @@ filtering; a group's own stop is a separate, separately-labelled button
 (`Stop go2 (2)`). Both go through one implementation, so they cannot report differently, and
 a malformed scope is treated as **everything** rather than nothing: for a stop, the fail-safe
 direction is more robots, not fewer.
+
+The fleet table **scrolls** rather than hiding anything, capped near three robot rows with a
+toggle that says how many there are (`Show all 6 robots`). Group headers stay sticky while you
+scroll, so you always know which platform you are inside. Nothing is removed from the DOM: a
+robot is always one scroll from its own stop button, which is why this is a scroll cap and not
+a "show first three".
 
 Adding robots costs no extra polling. Pose, mode and armed checkpoint are folded out of the
 `robot_state` events already streaming through the page; capabilities are fetched once per
@@ -191,18 +249,19 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 | `drive_bridge.py` | The SDK-env worker: one command, one JSON line, exit. Python 3.8, stdlib only. |
 | `model_store.py` | Checkpoints on disk: what is here, what is armed, what may replace it. |
 | `cloud_models.py` | S3 and http(s) fetch, with the refusals that make a URL field on a web page safe. |
-| `server.py` | The dashboard: discovery, an invoke allow-list, and the SSE event fan-out. |
+| `camera_source.py` | Front-camera frames per platform, with the ceilings and the who-is-watching lifecycle. |
+| `server.py` | The dashboard: discovery, an invoke allow-list, the SSE event fan-out, and the MJPEG stream. |
 | `templates/`, `static/` | The page. It renders from `get_capabilities()`, so it never hard-codes what a robot can do. |
 
 ## Tests
 
 ```bash
-for t in test_*.py; do python3 $t; done       # 88
+for t in test_*.py; do python3 $t; done       # 100
 ruff check .                                  # must be clean
 ```
 
 Needs `device-connect-edge`, `device-connect-agent-tools`, `aiohttp` and `numpy`; `boto3`
-only for the S3 path. `test_drive_bridge.py` and `test_model_store.py` run without the
+only for the S3 path, and `Pillow` only for the sim camera. `test_drive_bridge.py` and `test_model_store.py` run without the
 Device Connect packages.
 
 Ten guards are mutation-tested rather than assumed — see
