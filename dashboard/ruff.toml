@@ -1,0 +1,35 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint settings for dashboard/. Deliberately the same rule set as integration/ and
+# visual_nav, because these directories are read together and a second style would be noise.
+#
+#   ruff check .                                    # this config
+#   ruff check . --select E722,E731,C901,PLR0911,PLR0912,PLR0913,PLR0915   # SE pass
+line-length = 100
+
+# THIS DIRECTORY SPANS TWO PYTHON VERSIONS, and the lower one is the constraint.
+#
+# `drive_bridge.py` runs in the ROBOT's SDK environment — Python 3.8 on the Go2's Jetson,
+# because that is where `unitree_sdk2py` and CycloneDDS live. Everything else here needs
+# Python >= 3.11, which is what `device-connect-edge` requires; that split is the whole
+# reason the two-env bridge exists.
+#
+# Targeting py38 for the directory means the file that actually has to run there is linted
+# against the version it will run on. The cost is that the 3.11 files are held to the same
+# syntax — `from __future__ import annotations` makes the modern annotation spellings legal
+# in both, so the cost is small and the alternative (splitting the config by file) is a trap
+# the first time a helper moves between them. The same argument, and the same outcome, as
+# `integration/ruff.toml`.
+target-version = "py38"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
+
+[lint.per-file-ignores]
+# Every module here puts its own directory on sys.path before importing its siblings, so
+# their imports genuinely are not at the top of the file. `ruff --fix` will hoist them above
+# the sys.path line and break the import if this is removed — it has already done exactly
+# that twice in this repository (see AGENTS.md).
+"robot_driver.py" = ["E402"]
+"test_*.py" = ["E402"]

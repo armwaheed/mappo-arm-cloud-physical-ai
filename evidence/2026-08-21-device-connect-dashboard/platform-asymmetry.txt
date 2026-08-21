@@ -1,0 +1,17 @@
+Three drivers on one mesh, one dashboard. get_capabilities() drives what the page shows.
+
+device        motion   unmeasured axes       lie_down lays it down
+----------------------------------------------------------------------
+mappo-go2     True     ['lateral', 'yaw']    True
+              Go2 lie_down issues StandDown.
+mappo-lite3   False    ['yaw']               False
+              Lite3 posture is operator-controlled through the vendor app; lie_down stops the robot and does not lay it down.
+mappo-sim     True     []                    True
+              The bench double records the posture change and moves nothing.
+
+Go2, 0.21 m/s forward — refused from the measured table, no DDS connection made:
+  0.210 is below this go2's measured forward gait floor of 0.350. Below it the robot does not walk: it stands still with no fault and every instrument agreeing it is fine. Raise the speed or pass --force.
+
+Lite3 started without --allow-motion:
+  walk_forward -> this device was started without --allow-motion, so it is status-and-checkpoints only
+  list_models  -> ok, active=mappo_actor_3agent_1910000.npz

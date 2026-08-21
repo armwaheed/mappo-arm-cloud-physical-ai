@@ -1,0 +1,26 @@
+mappo-sim     robot_state        pose={'x': 0.0, 'y': 0.0, 'yaw': 0.0}  velocity=[0.0, 0.0, 0.0]  mode=sim  active_model=mappo_actor_3agent_191
+mappo-sim     robot_state        pose={'x': 0.0, 'y': 0.0, 'yaw': 0.0}  velocity=[0.0, 0.0, 0.0]  mode=sim  active_model=mappo_actor_3agent_191
+mappo-sim     motion_completed   action=walk_forward  travelled_m=0.3616  turned_deg=0.0  delivered_fraction=1.0
+mappo-sim     motion_started     action=walk_forward  commanded={'vx': 0.35}  seconds=1.0
+mappo-sim     motion_completed   action=walk_back  travelled_m=0.3617  turned_deg=0.0  delivered_fraction=1.0  warning=REVERSE. Neither platfor
+mappo-sim     motion_started     action=walk_back  commanded={'vx': -0.35}  seconds=1.0
+mappo-sim     motion_completed   action=strafe_left  travelled_m=0.2063  turned_deg=0.0  delivered_fraction=1.0
+mappo-sim     motion_started     action=strafe_left  commanded={'vy': 0.2}  seconds=1.0
+mappo-sim     motion_completed   action=strafe_right  travelled_m=0.2056  turned_deg=0.0  delivered_fraction=1.0
+mappo-sim     motion_started     action=strafe_right  commanded={'vy': -0.2}  seconds=1.0
+mappo-sim     motion_completed   action=turn_left  travelled_m=0.0  turned_deg=41.31  delivered_fraction=0.0
+mappo-sim     motion_started     action=turn_left  commanded={'wz': 0.7}  seconds=1.0
+mappo-sim     motion_completed   action=turn_right  travelled_m=0.0  turned_deg=-41.01  delivered_fraction=0.0
+mappo-sim     motion_started     action=turn_right  commanded={'wz': -0.7}  seconds=1.0
+mappo-sim     motion_completed   action=lie_down  travelled_m=0.0  turned_deg=0.0  delivered_fraction=0.0
+mappo-sim     motion_completed   action=stand  travelled_m=0.0  turned_deg=0.0  delivered_fraction=0.0
+mappo-sim     motion_completed   action=walk_forward  travelled_m=1.7733  turned_deg=0.0  delivered_fraction=1.0
+mappo-sim     motion_started     action=lie_down  seconds=0.0
+mappo-sim     motion_started     action=stand  seconds=0.0
+mappo-sim     motion_started     action=walk_forward  commanded={'vx': 0.35}  seconds=5.0
+mappo-sim     model_armed        name=mappo_actor_v2.npz  previous=mappo_actor_3agent_1910000.npz
+mappo-sim     model_armed        name=mappo_actor_3agent_1910000.npz  previous=mappo_actor_v2.npz
+mappo-sim     model_deleted      name=other_range.npz  freed_bytes=292192
+mappo-sim     model_downloaded   name=mappo_actor_v2.npz  source=http://127.0.0.1:8099/mappo_actor_v2.npz  size_bytes=268063  sha256=7327f72401
+mappo-sim     model_downloaded   name=other_range.npz  source=http://127.0.0.1:8099/other_range.npz  size_bytes=292192  sha256=c5ace3a91394c548
+mappo-sim     robot_state        pose={'x': 0.0, 'y': 0.0, 'yaw': 0.0}  velocity=[0.0, 0.0, 0.0]  mode=sim  active_model=mappo_actor_3agent_191

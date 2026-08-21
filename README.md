@@ -221,7 +221,7 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Offline regression suite | 514 tests: policy 33, integration 144, Go2 visual navigation 265, Lite3 72 |
+| ✅ Offline regression suite | 589 tests: policy 33, integration 144, Go2 visual navigation 265, Lite3 72, dashboard 75 |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; six silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
@@ -235,6 +235,8 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ⛔ Multiple quadrupeds | one robot; peers not detectable (above) |
 | ✅ Lite3 Venture offline port | high-level ROS locomotion, RGB camera, fail-closed health gate, calibration and MAPPO entry points; 30 platform tests |
 | ⏳ Lite3 hardware commissioning | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): neither event robot has been run; gait floor, actuator gain, loaded radius, camera model/source and health publisher remain measured inputs |
+| ✅ Device Connect dashboard, off-robot | [#43](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/43): events, motion, checkpoint swap and Cloud AI load/unload, end to end over a real D2D mesh against a bench double — see `evidence/2026-08-21-device-connect-dashboard/` |
+| ⏳ Device Connect dashboard, on hardware | not yet run on a robot. The bench double delivers 1.00 of what it is commanded, which is exactly the number a real robot does not produce; nothing there tests gait, DDS, the ROS bridge or the SDK import |
 
 ## Porting to the Deep Robotics Lite3 Venture
 
@@ -274,6 +276,54 @@ temperature topics that the public high-level vendor bridge does not publish. Th
 binding fails closed until a supported companion feed supplies them. Peer detection is
 still the known two-robot gap.
 
+## Watching and driving it from a browser
+
+[`dashboard/`](dashboard/README.md) puts the robot on the Device Connect mesh as a device and
+serves a page that discovers it — a live event stream, bounded motion, checkpoint swap, and
+loading a checkpoint from an S3 bucket or a server on the LAN. There is no broker, no etcd and
+no Docker: D2D mode finds the robot by multicast on the LAN the demo already runs on.
+
+Try it with no robot at all:
+
+```bash
+pip install device-connect-edge device-connect-agent-tools aiohttp    # Python >= 3.11
+
+cd dashboard
+python3 robot_driver.py --platform sim --package ../policy --allow-motion   # terminal 1
+python3 server.py --port 8080                                              # terminal 2
+```
+
+Then open <http://127.0.0.1:8080>. `--platform sim` is a bench double that integrates the
+commanded velocity into a pose; it exercises the mesh, the schemas, the event stream and every
+refusal without a robot in the room.
+
+On the real thing, start **without** `--allow-motion` — the device is then status-and-
+checkpoints only — and pass `--bridge-python` pointing at the interpreter that can import the
+robot's SDK:
+
+```bash
+python3 robot_driver.py --platform go2 --package ../policy \
+        --bridge-python /home/unitree/robotics-connect-go2/bin/python
+```
+
+Device Connect requires Python ≥ 3.11 and the Go2's Jetson runs its SDK on 3.8, so the driver
+reaches the robot by running `drive_bridge.py` as a subprocess in that second environment.
+That split is also why a driver that hangs or is killed cannot leave a velocity latched.
+
+**`robot-stack/SAFETY.md` governs the motion buttons exactly as it governs `--live`.**
+`--allow-motion` is this directory's `--live`: it needs a clear area, an operator on the
+controller abort, and adequate battery. The page has **no login**, so `--host 0.0.0.0` means
+anyone who can reach the port can drive any motion-enabled robot on the mesh.
+
+Two things it deliberately does not smooth over. Each motion press is duration-bounded and
+open-loop, and reports what the robot *measured* — including the fraction of the commanded
+speed actually delivered, which is ~0.45 on this Go2 and is the number that explains a robot
+that looks like it is not moving. And the platforms are not interchangeable: `lie_down` on a
+Lite3 only *stops* it, because posture there is operator-controlled through the vendor app,
+and a Go2 strafe carries a warning because that robot's lateral gait floor has never been
+measured ([#42](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/42)). The page
+learns both from `get_capabilities()` rather than hard-coding either.
+
 ## Layout
 
 ```
@@ -281,6 +331,7 @@ robot-stack/     Go2 control stack plus Lite3 platform bindings — see PROVENAN
 policy/          the MAPPO adapter and checkpoint, vendored — see policy/PROVENANCE.md
 integration/     the bridge, the replay, the closed-loop sim, and the two live runners
 deploy/          install.sh, uninstall.sh, and the runbook for a day at the robot
+dashboard/       the robot as a Device Connect device, and a browser page that drives it
 evidence/        the approved run, the static-obstacle dry run, a sample telemetry file
 ```
 
@@ -303,10 +354,12 @@ cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done
 cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
 cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done #  39
 cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py #  16
+cd dashboard   && for t in test_*.py; do python3 $t; done                          #  75
 ```
 
 `policy/` and the parts of `integration/` that touch the policy need `numpy`; the
-robot-stack suites also need `opencv-python`. `deploy/install.sh` runs the first two
+robot-stack suites also need `opencv-python`; `dashboard/` needs `device-connect-edge`,
+`device-connect-agent-tools` and `aiohttp` on Python ≥ 3.11. `deploy/install.sh` runs the first two
 suites as part of installing, because a truncated checkout should fail there rather than
 in the arena. Every listed code directory carries a `ruff.toml`; `ruff check .` is clean
 in each.

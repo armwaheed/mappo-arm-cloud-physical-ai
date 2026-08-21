@@ -1,0 +1,159 @@
+<!--
+Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
+-->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MAPPO · Device Connect</title>
+<link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <span class="mark">MAPPO</span>
+    <span class="sub">Arm Device Connect</span>
+  </div>
+  <div class="bar-right">
+    <label class="field inline">
+      <span>Robot</span>
+      <select id="device-select"><option value="">discovering…</option></select>
+    </label>
+    <span id="platform-badge" class="badge muted">—</span>
+    <span id="motion-badge" class="badge muted">motion —</span>
+    <span id="mesh-badge" class="badge muted">mesh —</span>
+  </div>
+</header>
+
+<!-- The safety statement is not a footnote. Anyone who can see the buttons can walk a
+     robot, so the conditions under which that is legitimate are on screen next to them. -->
+<div id="safety" class="safety hidden">
+  <strong>Motion is enabled on this device.</strong>
+  <code>robot-stack/SAFETY.md</code> applies: a clear area, an operator on the controller
+  abort with the e-stop in hand, tether slack checked, and adequate battery. Every command
+  here is bounded in time and stops itself.
+</div>
+
+<main>
+
+  <section class="panel" id="motion-panel">
+    <h2>Motion</h2>
+    <p class="hint">
+      Each press commands a velocity for a fixed time and then stops. The result reports what
+      the robot <em>measured</em>, not what it was told — the delivered fraction is the number
+      that explains a robot that looks like it is not moving.
+    </p>
+
+    <div class="pad">
+      <button class="key" data-fn="turn_left"    title="Turn counter-clockwise">↺<span>turn L</span></button>
+      <button class="key" data-fn="walk_forward" title="Walk forward">↑<span>forward</span></button>
+      <button class="key" data-fn="turn_right"   title="Turn clockwise">↻<span>turn R</span></button>
+
+      <button class="key" data-fn="strafe_left"  title="Crab left">←<span>strafe L</span></button>
+      <button class="key stop" data-fn="stop"    title="Stop now — never gated">■<span>stop</span></button>
+      <button class="key" data-fn="strafe_right" title="Crab right">→<span>strafe R</span></button>
+
+      <button class="key" data-fn="stand"        title="Balanced stand">⬔<span>stand</span></button>
+      <button class="key warn" data-fn="walk_back" title="Reverse — nothing is watching behind">↓<span>back</span></button>
+      <button class="key" data-fn="lie_down"     title="Lie down">⌄<span>lie down</span></button>
+    </div>
+
+    <div class="row">
+      <label class="field">
+        <span>Seconds</span>
+        <input id="seconds" type="number" min="0.1" max="5" step="0.1" value="1.5">
+      </label>
+      <label class="field">
+        <span>Speed m/s</span>
+        <input id="speed" type="number" min="0.05" max="1.0" step="0.05" value="0.35">
+      </label>
+      <label class="field">
+        <span>Yaw rad/s</span>
+        <input id="rate" type="number" min="0.1" max="1.5" step="0.05" value="0.70">
+      </label>
+      <label class="field check" title="Command a speed below the platform's measured gait floor anyway">
+        <input id="force" type="checkbox">
+        <span>force sub-floor</span>
+      </label>
+    </div>
+
+    <div id="capability-notes" class="notes"></div>
+    <pre id="motion-result" class="result" aria-live="polite"></pre>
+  </section>
+
+  <section class="panel" id="model-panel">
+    <h2>Checkpoints on the robot</h2>
+    <p class="hint">
+      Arming a checkpoint rewrites <code>model_path</code> and takes effect on the
+      <strong>next</strong> run — a run already walking holds its weights in memory.
+      A checkpoint whose training constants disagree with the config is refused here rather
+      than at the start of that run.
+    </p>
+    <table class="grid" id="model-table">
+      <thead>
+        <tr><th>Checkpoint</th><th>Size</th><th>Rays</th><th>Trained range</th><th>State</th><th></th></tr>
+      </thead>
+      <tbody><tr><td colspan="6" class="empty">no robot selected</td></tr></tbody>
+    </table>
+    <p class="hint" id="disk-note"></p>
+
+    <h2 class="spaced">Load from Cloud AI</h2>
+    <p class="hint">
+      An <code>s3://bucket/key</code> URI, or an <code>http(s)://</code> address — a presigned
+      bucket URL or a workstation serving a directory on the demo LAN. A download is
+      inspected against the network contract before it lands, and it is not armed until you
+      arm it.
+    </p>
+    <div class="row">
+      <label class="field grow">
+        <span>Source</span>
+        <input id="source" type="text" placeholder="s3://my-bucket/checkpoints/actor.npz  ·  http://192.168.1.20:8000/actor.npz">
+      </label>
+      <label class="field">
+        <span>Install as</span>
+        <input id="install-as" type="text" placeholder="(from the source)">
+      </label>
+      <button class="btn" id="download">Load onto robot</button>
+    </div>
+    <div class="row">
+      <label class="field">
+        <span>S3 bucket</span>
+        <input id="bucket" type="text" placeholder="my-bucket">
+      </label>
+      <label class="field grow">
+        <span>Prefix</span>
+        <input id="prefix" type="text" placeholder="checkpoints/">
+      </label>
+      <button class="btn ghost" id="browse">Browse bucket</button>
+    </div>
+    <div id="cloud-list" class="notes"></div>
+    <pre id="model-result" class="result" aria-live="polite"></pre>
+  </section>
+
+  <section class="panel wide" id="event-panel">
+    <div class="panel-head">
+      <h2>Events</h2>
+      <div class="row tight">
+        <label class="field inline">
+          <span>Filter</span>
+          <input id="event-filter" type="text" placeholder="motion, model, state…">
+        </label>
+        <label class="field check">
+          <input id="only-selected" type="checkbox">
+          <span>selected robot only</span>
+        </label>
+        <button class="btn ghost" id="pause">Pause</button>
+        <button class="btn ghost" id="clear">Clear</button>
+      </div>
+    </div>
+    <ol id="events" class="events"><li class="empty">waiting for the mesh…</li></ol>
+  </section>
+
+</main>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>
