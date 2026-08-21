@@ -246,6 +246,56 @@ loaded on every run, and it is worth reading.
 
 Between each, read the tail of the drive log: `N/M ticks driven by the policy`.
 
+## Beside the rungs — the Device Connect dashboard
+
+[`../dashboard/`](../dashboard/README.md) is **not a fourth rung.** The ladder above is about
+handing the legs to a learned policy, and the dashboard does not do that: it drives the robot
+directly, in bounded nudges, with no perception, no planner and no veto. It is what you use to
+check a robot before a run, to nudge it back onto the start line between runs, and to see what
+it is carrying — plus a live event stream so a room full of people can watch without an SSH
+session each.
+
+```bash
+# on the robot, in the Python >= 3.11 env — START HERE, no motion
+cd dashboard
+python3 robot_driver.py --platform go2 --package ../policy \
+        --bridge-python ~/robotics-connect-go2/bin/python
+
+# on a workstation on the same LAN
+python3 server.py --port 8080 --host 0.0.0.0        # then open http://<workstation>:8080
+```
+
+`--bridge-python` is the **SDK env's** interpreter, not the one running the driver — Device
+Connect needs Python ≥ 3.11 and `unitree_sdk2py` lives on the Jetson's 3.8, so the driver
+reaches the robot by running `drive_bridge.py` as a subprocess there. Get it wrong and every
+command fails with an import error; `get_capabilities` reports the path it will use, so check
+it before you need it. On a Lite3, stand the robot and enable high-level navigation mode on the
+vendor interface first, then add `--operator-ready`.
+
+Once the robot answers `get_status` and `list_models`, and **with the same conditions §Rung 3
+requires — clear area, operator on the controller abort, tether slack checked** — restart the
+driver with `--allow-motion`. That flag is the dashboard's `--live`, and
+[`../robot-stack/SAFETY.md`](../robot-stack/SAFETY.md) governs it identically.
+
+Two things about it that are easy to misread:
+
+- **A checkpoint swap takes effect on the NEXT run, not the one in progress.**
+  `MappoController` loads its weights at construction, so a running `mappo_drive` cannot have
+  the network changed under it. Swapping while a run is live is safe and does nothing.
+- **Every press reports what the robot measured**, not what it was told — including the
+  fraction of the commanded speed actually delivered. On this Go2 that is ~0.45, and a press
+  that says `commanded 0.35 for 1.5 s, travelled 0.012 m` is the gait floor at the top of this
+  page, diagnosing itself.
+
+Sub-gait-floor speeds are refused from the measured table before the driver even connects.
+The Go2's **lateral** floor has never been measured (issue #42), so a Go2 strafe is permitted
+and warns on every press that it may produce no gait at all — which would not be a fault. If
+you run that experiment, issue #42 is where the number belongs.
+
+⛔ **No robot has moved under the dashboard yet.** Everything above is verified against a bench
+double that delivers exactly what it is commanded, which is precisely the number a real robot
+does not produce. See `../evidence/2026-08-21-device-connect-dashboard/`.
+
 ## Troubleshooting
 
 | symptom | cause |
@@ -259,6 +309,10 @@ Between each, read the tail of the drive log: `N/M ticks driven by the policy`.
 | a policy config is refused at load | it disagrees with the checkpoint's own recorded training constants. The message names the field; do not "fix" it by editing the checkpoint. |
 | `REFUSING TO RUN — the policy's scale was calibrated for a different robot size` | `--robot-radius` and `meters_per_vmas_unit` disagree. Pass `--robot-radius 0.25`, or pass `--policy-scale` to match the radius you meant and **re-run the simulation** — the numbers above do not transfer. Nothing moved; the robot is still prone. Every refusal is also appended to `~/.mappo-refusals.jsonl` (`--refusal-log`), because a refused run writes no telemetry and would otherwise leave no trace of why the demo did not start. |
 | RPC segfault on any DDS call | `setup_env.sh` was not sourced. `LD_LIBRARY_PATH` is load-bearing — see `robot-stack/unitree/go2/install/setup_env.sh`. |
+| the dashboard shows "no robots found" | the driver is running but not announcing. Check it is on the same LAN segment (D2D is multicast), then that no `@rpc` was added whose name collides with a `DeviceDriver` member — that stops presence silently, with no error in any log. `dashboard/test_robot_driver.py` catches the second case. |
+| every dashboard command fails with an import error | `--bridge-python` points at the driver's interpreter instead of the SDK env's. `get_capabilities` reports the path in use. |
+| the motion keys are greyed out | the driver was started without `--allow-motion`. That is the default and it is deliberate. |
+| a strafe on the Go2 does nothing | expected, and not a fault — that robot's lateral gait floor is unmeasured (issue #42). The result panel reports the distance actually travelled. |
 
 ## What is still open
 
