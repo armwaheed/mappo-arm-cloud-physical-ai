@@ -245,7 +245,12 @@ def test_a_slow_policy_command_is_scaled_up_to_the_gait_floor_keeping_direction(
     obstacle is the one direction it was steering away from."""
     planner = _planner(gait_floor_m_s=0.35)
     vx, vy, wz = planner._at_least_walking_pace((0.14, -0.09, 0.2))
-    assert math.isclose(math.hypot(vx, vy), 0.35, rel_tol=1e-6), "scaled to the floor"
+    # The floor is an ELLIPSE through both measured points — 0.35 forward, 0.20 lateral —
+    # not a circle of 0.35. A circle cannot be reached inside a 0.35 x 0.20 envelope past
+    # 34.8 deg off forward, which is what let the old per-axis clamp rotate the command.
+    floor_x, floor_y = 0.35, 0.20
+    assert math.isclose(math.hypot(vx / floor_x, vy / floor_y), 1.0, rel_tol=1e-6), \
+        "scaled onto the floor ellipse"
     assert math.isclose(math.atan2(vy, vx), math.atan2(-0.09, 0.14), rel_tol=1e-6), \
         "direction must survive the scaling"
     assert wz == 0.2, "yaw has no gait floor and must not be touched"
@@ -267,12 +272,50 @@ def test_the_gait_floor_scaling_is_off_unless_asked_for():
     assert planner._at_least_walking_pace((0.14, -0.09, 0.0)) == (0.14, -0.09, 0.0)
 
 
+def test_direction_survives_scaling_at_every_bearing():
+    """THE REGRESSION. The old code scaled to a circular floor and then clamped vy on its
+    own, so past ``asin(0.20/0.35)`` = 34.8 deg off forward the command came back BOTH
+    rotated toward straight ahead — the one direction it was steering away from — and
+    still under the floor, while ``speed_raised`` reported success. Measured then:
+    50 deg in gave (+0.225, +0.200) at heading 41.6 deg, 70 deg gave heading 59.1 deg.
+
+    The old test could not catch it: its one vector sits at 32.7 deg, inside the cone
+    where the clamp never bites. Sweeping past the boundary is the whole point."""
+    floor_x, floor_y = 0.35, 0.20
+    for degrees in (0, 10, 20, 34, 36, 50, 70, 89):
+        planner = _planner(gait_floor_m_s=0.35)
+        angle = math.radians(degrees)
+        given = (0.10 * math.cos(angle), 0.10 * math.sin(angle), 0.0)
+        vx, vy, _ = planner._at_least_walking_pace(given)
+        assert math.isclose(math.atan2(vy, vx), angle, abs_tol=1e-9), \
+            f"{degrees} deg command was rotated to {math.degrees(math.atan2(vy, vx)):.1f}"
+        assert math.isclose(math.hypot(vx / floor_x, vy / floor_y), 1.0, rel_tol=1e-6), \
+            f"{degrees} deg command did not reach the floor ellipse"
+        assert planner.counts["floor_unreachable"] == 0
+        assert abs(vx) <= 0.35 + 1e-9 and abs(vy) <= 0.20 + 1e-9, "left the envelope"
+
+
+def test_a_derated_envelope_reports_a_floor_it_cannot_reach():
+    """``--derate`` shrinks the envelope but the robot's gait floor does not shrink with
+    it, so a derated run can be unable to walk at all in some direction. That is a real
+    outcome and it must not be counted as a successful scale-up: reporting it as
+    ``speed_raised`` is how a stall gets blamed on the tether rather than on the flag."""
+    planner = _planner(limits=Limits(max_vx=0.20, max_vy=0.05), gait_floor_m_s=0.35)
+    vx, vy, _ = planner._at_least_walking_pace((0.02, 0.06, 0.0))
+    assert planner.counts["floor_unreachable"] == 1
+    assert planner.counts["speed_raised"] == 0
+    assert math.isclose(math.atan2(vy, vx), math.atan2(0.06, 0.02), abs_tol=1e-9), \
+        "direction survives even when the floor cannot be reached"
+
+
 def test_the_scaled_command_still_respects_the_envelope():
     """The floor may not become a way to out-run --derate. A command scaled up is still
     clamped to the stack's limits, which are the safety envelope."""
     planner = _planner(limits=Limits(max_vx=0.20, max_vy=0.05), gait_floor_m_s=0.35)
     vx, vy, _ = planner._at_least_walking_pace((0.10, -0.04, 0.0))
     assert abs(vx) <= 0.20 and abs(vy) <= 0.05
+    assert math.isclose(math.atan2(vy, vx), math.atan2(-0.04, 0.10), abs_tol=1e-9), \
+        "the envelope cap must not rotate the command either"
 
 
 def test_the_policy_can_never_command_reverse():

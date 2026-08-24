@@ -169,7 +169,8 @@ class MappoPlanner(DynamicWindowPlanner):
         #: that fires on every tick are both worth knowing about, and neither is visible
         #: in a log of velocities.
         self.counts: dict = {"ticks": 0, "policy": 0, "vetoed": 0, "stopped": 0,
-                             "velocity_unavailable": 0, "speed_raised": 0}
+                             "velocity_unavailable": 0, "speed_raised": 0,
+                             "floor_unreachable": 0}
         #: Commanded speeds below this are scaled up, direction preserved — see
         #: :meth:`_at_least_walking_pace`. Zero disables it.
         self._gait_floor_m_s = gait_floor_m_s
@@ -361,7 +362,31 @@ class MappoPlanner(DynamicWindowPlanner):
 
         Direction is preserved by scaling ``vx`` and ``vy`` together — scaling only the
         forward axis would rotate the command toward straight ahead, which near an
-        obstacle is the one direction the policy was steering away from.
+        obstacle is the one direction the policy was steering away from. The envelope cap
+        is folded into that SAME scalar for the same reason; clamping the axes separately
+        afterwards rotates the command just as surely.
+
+        THE FLOOR IS AN ELLIPSE, NOT A CIRCLE, and that is the correction here. Both ends
+        of it are measured on this robot: 0.35 m/s forward
+        (:data:`MIN_GAIT_COMMAND_M_S`), and 0.20 m/s laterally — 0.15 does not walk it,
+        0.20 does, three repeats out of three. A single circular floor of 0.35 cannot be
+        reached inside a 0.35 x 0.20 envelope past ``asin(0.20/0.35)`` = 34.8 deg off
+        forward, so the previous per-axis clamp produced commands that were BOTH rotated
+        and still under the floor — the two failures this method exists to prevent — while
+        the counter reported success:
+
+            50 deg in -> (+0.225, +0.200), speed 0.301, heading 41.6 deg
+            70 deg in -> (+0.120, +0.200), speed 0.233, heading 59.1 deg
+
+        Scaling to the ellipse through both measured points instead reaches the floor at
+        every bearing, and reduces to the old behaviour straight ahead. ⚠️ The ellipse is
+        an INTERPOLATION: only 0 and 90 deg have ever been measured, and the intermediate
+        bearings assume the floor varies smoothly between them. That is an assumption
+        about the gait controller, not a measurement, and the cheapest way to falsify it
+        is a bearing sweep at 45 deg.
+
+        Note what the lateral end implies: ``max_vy`` is 0.20 and the lateral floor is
+        0.20, so a pure strafe has exactly ONE legal speed on this robot.
 
         Applied BEFORE the veto on purpose. A command clamped on the way OUT would mean
         ``is_feasible`` validated a velocity different from the one the legs receive, and
@@ -376,9 +401,17 @@ class MappoPlanner(DynamicWindowPlanner):
             return proposed
         vx, vy, wz = proposed
         speed = math.hypot(vx, vy)
+        # The floor ellipse's semi-axes. The lateral one is carried as a fraction of the
+        # envelope rather than as a second constant so that `--derate`, which scales the
+        # whole envelope, scales the floor with it: a derated robot is a slower robot, not
+        # one that has become unable to walk.
+        floor_x = floor
+        floor_y = floor * (self.limits.max_vy / self.limits.max_vx)
+        # Radius of this command in units of the floor ellipse: >= 1 is already walkable.
+        reach = math.hypot(vx / floor_x, vy / floor_y) if speed > 0.0 else 0.0
         # A genuine stop stays a stop. Only a command the policy meant as MOTION is
         # scaled, or a zeroed status tick would be turned into a walk.
-        if speed <= 0.0 or speed >= floor:
+        if speed <= 0.0 or reach >= 1.0:
             return proposed
         # Never scale a command that is going BACKWARDS. Scaling multiplies the whole
         # vector, so without this a timid backward twitch becomes a committed one at full
@@ -403,10 +436,23 @@ class MappoPlanner(DynamicWindowPlanner):
         # `< 0.0` not `<= 0.0`: a sideways step is not a reverse.
         if vx < 0.0:
             return proposed
-        scale = floor / speed
-        scaled_vx = max(-self.limits.max_vx, min(self.limits.max_vx, vx * scale))
-        scaled_vy = max(-self.limits.max_vy, min(self.limits.max_vy, vy * scale))
-        self.counts["speed_raised"] += 1
+        # ONE scalar onto the floor ellipse, then capped by the envelope with the SAME
+        # scalar. Clamping the axes independently afterwards is what rotated the command.
+        scale = 1.0 / reach
+        if abs(vx) > 0.0:
+            scale = min(scale, self.limits.max_vx / abs(vx))
+        if abs(vy) > 0.0:
+            scale = min(scale, self.limits.max_vy / abs(vy))
+        scaled_vx, scaled_vy = vx * scale, vy * scale
+
+        # Report what happened, because "scaled but still unwalkable" is a real outcome
+        # of a box envelope and a circular floor, and counting it as `speed_raised` is how
+        # a stall gets blamed on the tether. Scaling anyway is still right: it is the
+        # fastest command available in the direction the policy asked for.
+        if math.hypot(scaled_vx / floor_x, scaled_vy / floor_y) < 1.0 - 1e-9:
+            self.counts["floor_unreachable"] += 1
+        else:
+            self.counts["speed_raised"] += 1
         return (scaled_vx, scaled_vy, wz)
 
     def report(self) -> str:
@@ -415,6 +461,8 @@ class MappoPlanner(DynamicWindowPlanner):
                 f"policy, {counts['vetoed']} vetoed, {counts['stopped']} stopped"
                 + (f", {counts['speed_raised']} scaled up to the gait floor"
                    if counts["speed_raised"] else "")
+                + (f", {counts['floor_unreachable']} scaled but still under the floor"
+                   if counts["floor_unreachable"] else "")
                 + (f", {counts['velocity_unavailable']} with no measured velocity"
                    if counts["velocity_unavailable"] else ""))
 
