@@ -42,27 +42,34 @@ module of white outside that border. The sheet therefore has to carry
 which at s = 200 mm is **267 mm**, against A4's 210 mm width. Solving against a 190 mm
 printable width (A4 less 10 mm of printer margin) gives **s ≤ 142.5 mm**.
 
-## What that costs, measured
+Two refinements worth knowing. The quiet zone can be *unprinted paper* rather than printed
+white, so bare A4 actually allows **157.5 mm**; 142.5 mm is the strict answer and the one
+worth designing to, because it is the width a "fit to page" print scales into. And the
+one-module quiet zone is a **convention, not a cliff** — measured, OpenCV needs none at all
+against a mid-grey background and about 0.1 of a module against an ink-dark one. One module
+is kept here because the background is not knowable in advance.
 
-Detection range, simulated against the measured focal length of this unit (1290.2 px) by
-rendering the marker at the pixel size the sensor would actually see and running it back
-through `goal.aruco_detector`:
+## What that costs, measured — a predictable 30%, not nothing
 
-| black square | `detect_scale` | sharp | blurred |
-| --- | --- | --- | --- |
-| 140 mm | 0.5 (**the shipped default**) | 9.8 m | 5.2 m |
-| 140 mm | 1.0 | 10.7 m | 6.4 m |
-| 200 mm | 0.5 | 9.4 m | 7.5 m |
-| 200 mm | 1.0 | 11.9 m | 9.1 m |
+⚠️ **CORRECTED.** An earlier version of this file said 140 mm cost nothing when sharp. That
+was a measurement error, and the error was visible in its own table: it reported 9.8 m for
+140 mm against 9.4 m for 200 mm at the same `detect_scale`, which is **non-monotonic in
+marker size** and therefore impossible. The sweep took the *maximum* range at which
+detection ever succeeded, so it picked up isolated hits — up to 2 m — past the range where
+detection is continuous.
 
-Sharp, 140 mm costs nothing — it is inside the noise of the 200 mm figure, and both are
-far beyond the ~3 m demo area. **Under blur the larger marker is genuinely better**
-(7.5 m against 5.2 m), so if a run needs to acquire the goal at long range while the
-robot is already trotting, print 200 mm on A3 rather than 140 mm on A4.
+Measured properly, detection range is **exactly linear in the printed side**. The ceiling
+is a constant pixel floor: **23.7 full-frame px** at the shipped `detect_scale` of 0.5, and
+19.2 px at 1.0, steady to a tenth of a pixel across sizes from 100 mm to 300 mm. So
 
-The blurred column is a Gaussian stand-in for motion blur, not a calibrated match to what
-a trotting Go2 produces at 0.35 m/s — treat the ordering as sound and the absolute
-numbers as indicative.
+    range(140 mm) = 0.70 x range(200 mm)
+
+at every blur level tested (Gaussian sigma 0, 1, 1.5 and 2 px). **A4 costs a predictable
+30% of range.** That is the honest trade, and it is still the right one for this demo: the
+arena is ~3 m and a 140 mm sheet was detected on the robot's own camera at **6.43 m** in a
+live frame today.
+
+Print 200 mm on A3 if a run has to acquire the goal from across a large room.
 
 ## The peer robot is the more interesting marker
 
