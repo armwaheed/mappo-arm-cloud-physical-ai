@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
@@ -199,6 +200,31 @@ def _light(sprite: np.ndarray, rng: random.Random) -> np.ndarray:
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def fisheye_tangential_stretch(column: float, row: float, width: int, height: int,
+                               focal_px: float) -> float:
+    """The ``theta / sin(theta)`` factor an equidistant fisheye applies off-axis.
+
+    The sprite is rendered ON-AXIS — the render camera looks straight at the robot — and
+    then placed using ``r = f * theta``, so its position and its RADIAL extent are already
+    what the fisheye would produce. One term is still missing.
+
+    For an object at off-axis angle ``theta``, an equidistant lens images a physical
+    height ``h`` at range ``R`` across ``f * h / R`` pixels radially, but a physical width
+    ``w`` across ``f * (w / R) * (theta / sin theta)`` pixels tangentially: the azimuthal
+    extent subtended by ``w`` is ``(w / R) / sin theta``, and it lands on a circle of
+    radius ``f * theta``. The ratio is the stretch returned here.
+
+    It is small where it matters and large where it does not — 2.1% at 20 degrees off
+    axis, 13.3% at the corner of this frame — because a peer close enough to avoid is
+    roughly ahead. Applied because it is exact and costs nothing, not because it is the
+    dominant term: unmodelled contact shadows, mismatched lighting direction, and the
+    absent specular highlights on what is a brushed-metal robot are all larger.
+    """
+    radius = math.hypot(column - width / 2.0, row - height / 2.0)
+    theta = radius / focal_px
+    return 1.0 if theta < 1e-6 else theta / math.sin(theta)
+
+
 def compose(background: np.ndarray, sprite: np.ndarray, mask: np.ndarray,
             camera: DeploymentCamera, rng: random.Random
             ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
@@ -229,10 +255,6 @@ def compose(background: np.ndarray, sprite: np.ndarray, mask: np.ndarray,
     if target_h < 12 or target_w < 12 or target_h > height * 3:
         return None
 
-    scaled = cv2.resize(sprite, (target_w, target_h), interpolation=cv2.INTER_AREA)
-    scaled_mask = cv2.resize(mask, (target_w, target_h), interpolation=cv2.INTER_NEAREST)
-    scaled = _light(scaled, rng)
-
     # Where the floor at this range lands, in image rows. Jittered by a couple of degrees
     # for the trunk pitch a walking quadruped actually carries.
     feet_row = height / 2.0 + camera.focal_px * (
@@ -242,6 +264,21 @@ def compose(background: np.ndarray, sprite: np.ndarray, mask: np.ndarray,
         x = rng.randint(-target_w // 2, width - target_w // 2)
     else:
         x = rng.randint(0, max(0, width - target_w))
+
+    # Now that the sprite's position is known, apply the lens' tangential stretch. It
+    # depends on WHERE the sprite sits, so it cannot be folded into the scale above.
+    stretch = fisheye_tangential_stretch(x + target_w / 2.0, y + target_h / 2.0,
+                                         width, height, camera.focal_px)
+    # Tangential means perpendicular to the radius from the principal point. Resolving
+    # that exactly needs a rotation; at these magnitudes the dominant component is
+    # horizontal for a sprite standing on the floor near the vertical centre, so the
+    # stretch is applied to width. Documented rather than hidden: the residual is the
+    # vertical component, under 2% over the band where a peer is worth avoiding.
+    target_w = max(8, round(target_w * stretch))
+    scaled = _light(cv2.resize(sprite, (target_w, target_h),
+                               interpolation=cv2.INTER_AREA), rng)
+    scaled_mask = cv2.resize(mask, (target_w, target_h),
+                             interpolation=cv2.INTER_NEAREST)
 
     x0, y0 = max(x, 0), max(y, 0)
     x1, y1 = min(x + target_w, width), min(y + target_h, height)
