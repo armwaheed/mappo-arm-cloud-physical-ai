@@ -33,6 +33,16 @@ a table in a message because three of the mappings are not the obvious ones:
     falls back to a speed threshold when it does not — see :data:`MOVER_SPEED_MPS` for
     why the fallback is a stopgap and not a fix.
 
+  * **Movers are not all the same.** Until now every track was a hold, which meant a peer
+    robot — the whole point of a MULTI-agent demo — reached the policy as a single
+    boolean meaning *stop*, and the avoidance was 100% incumbent planner. The split is now
+    two-tier: a **person** holds, always, by label; anything moving faster than
+    :data:`POLICY_MAX_MOVER_SPEED_MPS` holds, whatever it is; everything else, a parked or
+    shuffling peer included, is handed to the policy as one more disc. See
+    :func:`holds_the_robot`. ⚠️ The policy's observation carries no obstacle-velocity
+    channel, so a mover enters it as an instantaneous disc — that speed gate is the only
+    thing standing between the policy and a problem it was never trained on.
+
 Pure stdlib and no numpy, matching :mod:`observation`: this has to be importable in a
 test environment that has no policy package, and the numpy dependency belongs to the
 policy, not to the mapping. :func:`robot_input` returns a plain dict whose keys are
@@ -67,6 +77,36 @@ VELOCITY_FRAME = "body"
 #: the existing stop-and-wait logic's job. The fix is the ``kind`` field; this exists so
 #: the bridge can read the runs that already exist.
 MOVER_SPEED_MPS = 0.05
+
+#: Labels that keep the STOP path no matter what. A person is not an obstacle to be
+#: pathed around by a policy that was trained on static discs, has no obstacle-velocity
+#: channel, and responds as a cliff rather than a ramp (1.8 deg of steering outside
+#: 0.525 m, 96.6 deg inside). Holding for a person is the conservative behaviour and the
+#: one the README describes; routing them into the policy would change what the demo
+#: claims as well as what it does.
+#:
+#: This is the tier boundary, and it sits where the detector is strongest: ``person`` is
+#: the one class MobileNet-SSD is actually good at, measured at 0.93-0.97 on this robot's
+#: own footage.
+HOLD_LABELS = ("person",)
+
+#: A tracked object faster than this holds the robot regardless of its label.
+#:
+#: The policy's 18-value observation carries NO obstacle-velocity channel — a mover
+#: enters as an instantaneous disc at wherever it happened to be — so it can only be
+#: right about something that has barely moved by the time the command lands. With a
+#: 0.875 m sensing horizon and a 10 Hz loop, a peer closing at 0.7 m/s relative leaves
+#: about 1.2 s between first response and contact, against a response that saturates at
+#: ~100 deg the moment it fires.
+#:
+#: So the split is not really person-versus-robot, it is slow-versus-fast: a parked or
+#: shuffling peer is inside what the policy was trained for, and anything with intent is
+#: not. 0.25 m/s is below this robot's own 0.35 m/s gait floor, i.e. slower than the
+#: slowest walk a peer quadruped can produce, which makes "it is manoeuvring, not
+#: travelling" the thing being tested. ⚠️ Chosen from the policy's measured horizon and
+#: not from a sweep of peer speeds; a shadow run with a peer driven at 0.2/0.4/0.6 m/s
+#: is what would justify it.
+POLICY_MAX_MOVER_SPEED_MPS = 0.25
 
 
 @dataclass(frozen=True)
@@ -132,14 +172,41 @@ def _finite(value) -> float | None:
 
 
 def is_stationary(obstacle: dict) -> bool:
-    """Whether this obstacle belongs in ``stationary_objects`` rather than a hold.
+    """Whether this obstacle is a MAPPED LANDMARK rather than a track.
 
-    Prefers the explicit ``kind`` field and falls back to :data:`MOVER_SPEED_MPS`.
+    Prefers the explicit ``kind`` field and falls back to :data:`MOVER_SPEED_MPS`. Note
+    this is no longer the same question as "does the policy see it" — see
+    :func:`holds_the_robot` and :func:`policy_objects` for that split. It still answers
+    "is this a mapped prop", which is what the audit counts and what ``replay_mappo``
+    reports.
     """
     kind = obstacle.get("kind")
     if kind is not None:
         return kind == "static"
     return math.hypot(obstacle.get("vx", 0.0), obstacle.get("vy", 0.0)) < MOVER_SPEED_MPS
+
+
+def holds_the_robot(obstacle: dict) -> bool:
+    """Whether this obstacle stops the robot instead of being handed to the policy.
+
+    Two tiers, and the boundary is deliberate.
+
+    A **person** always holds, by label — see :data:`HOLD_LABELS`. A **fast mover** always
+    holds, by speed, whatever it is — see :data:`POLICY_MAX_MOVER_SPEED_MPS`. Everything
+    else, including a parked or slowly-manoeuvring peer robot, goes to the policy as one
+    more disc in its ray cast, which is exactly how the policy already treats every mapped
+    landmark. It has never had a notion of what an obstacle *is*; only where it is and how
+    big it is.
+
+    A mapped landmark never holds: that is the situation the policy exists to solve, and
+    holding for it would make the integration a no-op in the one scene it was built for.
+    """
+    if is_stationary(obstacle):
+        return False
+    if obstacle.get("label") in HOLD_LABELS:
+        return True
+    speed = math.hypot(obstacle.get("vx", 0.0) or 0.0, obstacle.get("vy", 0.0) or 0.0)
+    return speed > POLICY_MAX_MOVER_SPEED_MPS
 
 
 def external_hold(tick: dict) -> bool:
@@ -158,11 +225,18 @@ def external_hold(tick: dict) -> bool:
     command = tick.get("command")
     if not command or command.get("reason") != "hold":
         return False
-    return any(not is_stationary(o) for o in tick.get("obstacles", []))
+    return any(holds_the_robot(o) for o in tick.get("obstacles", []))
 
 
-def stationary_objects(tick: dict) -> list:
-    """``StationaryObject`` kwargs for one tick, in the robot's body frame.
+def policy_objects(tick: dict) -> list:
+    """Obstacle kwargs for one tick, in the robot's body frame.
+
+    NAMED FOR WHAT IT IS. These become the policy's ``stationary_objects``, because that
+    is the field name the vendored package uses, but the set is no longer only stationary
+    things: a peer robot that is parked or shuffling is in here too. The policy's ray
+    caster never asked whether a disc was moving — it asks where the disc is — so the
+    field name is the stale part, not the behaviour. Renaming it in ``policy/`` is a
+    change to Sagar's package and belongs in a conversation with him, not in this commit.
 
     Bearing is measured from the robot's nose, positive to the left (CCW), which is the
     convention :class:`StationaryObject` documents. ``radius_m`` is passed through
@@ -176,7 +250,7 @@ def stationary_objects(tick: dict) -> list:
     pose = tick["pose"]
     out = []
     for obstacle in tick.get("obstacles", []):
-        if not is_stationary(obstacle):
+        if holds_the_robot(obstacle):
             continue
         x, y, radius = (_finite(obstacle.get(k)) for k in ("x", "y", "radius_m"))
         if x is None or y is None or radius is None:
@@ -236,7 +310,7 @@ def robot_input(tick: dict, *, reset_run: bool = False,
         "goal_x_m": goal_x,
         "goal_y_m": goal_y,
         "external_hold": external_hold(tick),
-        "stationary_objects": stationary_objects(tick),
+        "stationary_objects": policy_objects(tick),
         "reset_run": reset_run,
         "timestamp_s": monotonic_s,
     }

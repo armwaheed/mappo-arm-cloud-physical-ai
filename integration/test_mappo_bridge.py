@@ -27,8 +27,8 @@ from mappo_bridge import (
     audit,
     external_hold,
     is_stationary,
+    policy_objects,
     robot_input,
-    stationary_objects,
 )
 from telemetry_reader import read_run
 
@@ -40,6 +40,11 @@ BIN = {"label": "bin", "kind": "static", "id": "landmark-1",
 WALKER = {"label": "person", "kind": "tracked", "id": "track-7",
           "x": 3.0, "y": 1.0, "vx": 0.6, "vy": 0.0, "radius_m": 0.5}
 STOPPED_PERSON = {**WALKER, "vx": 0.0, "vy": 0.0}
+# A peer quadruped: a track, but not a person, and barely moving.
+PARKED_PEER = {"label": "lite3", "kind": "tracked", "id": "track-3",
+               "x": 2.5, "y": -0.4, "vx": 0.0, "vy": 0.0, "radius_m": 0.35}
+SHUFFLING_PEER = {**PARKED_PEER, "vx": 0.10, "vy": 0.05}
+CHARGING_PEER = {**PARKED_PEER, "vx": 0.60, "vy": 0.00}
 
 
 def _tick(**overrides):
@@ -136,9 +141,51 @@ def test_a_log_written_before_kind_existed_still_maps():
     assert counted["unidentified_objects"] == 1
 
 
-def test_only_stationary_objects_are_handed_to_the_policy():
-    objects = stationary_objects(_tick(obstacles=[BIN, WALKER, STOPPED_PERSON]))
+def test_a_person_always_holds_the_robot_however_fast_they_are_going():
+    """The tier boundary. A person is not something to path around with a policy trained
+    on static discs, and a STOPPED person is still a person — they have a bin's velocity
+    and a person's claim on the lane, which is exactly when the distinction decides
+    behaviour. Label, not speed, makes this call."""
+    objects = policy_objects(_tick(obstacles=[BIN, WALKER, STOPPED_PERSON]))
     assert [o["object_id"] for o in objects] == ["landmark-1"]
+    assert external_hold(_tick(obstacles=[STOPPED_PERSON],
+                               command={"reason": "hold"})) is True
+
+
+def test_a_parked_peer_reaches_the_policy_instead_of_stopping_the_robot():
+    """THE POINT OF THE CHANGE. A peer used to be a track, every track was a hold, and a
+    hold is a single boolean meaning stop — so the peer avoidance in a MULTI-agent demo
+    was 100% incumbent planner and 0% policy. A parked peer is a disc at a known place,
+    which is precisely what the policy was trained to path around."""
+    objects = policy_objects(_tick(obstacles=[BIN, PARKED_PEER]))
+    assert [o["object_id"] for o in objects] == ["landmark-1", "track-3"]
+    assert objects[1]["radius_m"] == 0.35, "the peer's own footprint, not a default"
+    assert external_hold(_tick(obstacles=[PARKED_PEER],
+                               command={"reason": "hold"})) is False
+
+
+def test_a_shuffling_peer_still_reaches_the_policy():
+    """Manoeuvring, not travelling: below the gait floor of any quadruped here, so it has
+    barely moved by the time the command lands — which is the only condition under which
+    an observation with no velocity channel can be right about it."""
+    assert [o["object_id"] for o in policy_objects(
+        _tick(obstacles=[SHUFFLING_PEER]))] == ["track-3"]
+
+
+def test_a_fast_mover_holds_the_robot_whatever_it_is():
+    """The speed gate is the safety half of the two-tier split, and it is not about
+    class. The policy's observation has NO obstacle-velocity channel, so a mover enters
+    as an instantaneous disc; with a 0.875 m horizon at 10 Hz, something crossing with
+    intent is a problem it was never trained on. Anything above the threshold holds, even
+    a peer robot, even though a slow one would not."""
+    assert policy_objects(_tick(obstacles=[CHARGING_PEER])) == []
+    assert external_hold(_tick(obstacles=[CHARGING_PEER],
+                               command={"reason": "hold"})) is True
+
+
+def test_a_mapped_landmark_never_holds_however_it_is_labelled():
+    """A hold for the bin would zero the policy in the one scene it exists for."""
+    assert external_hold(_tick(obstacles=[BIN], command={"reason": "hold"})) is False
 
 
 # ── The geometry ────────────────────────────────────────────────────────────
@@ -146,7 +193,7 @@ def test_bearing_is_measured_from_the_nose_and_is_positive_to_the_left():
     """``StationaryObject`` documents +left / CCW. An object at odom +y with the robot
     facing +x is on its left, so the bearing is +90 degrees, not -90."""
     left = {**BIN, "x": 0.0, "y": 2.0}
-    mapped = stationary_objects(_tick(obstacles=[left]))[0]
+    mapped = policy_objects(_tick(obstacles=[left]))[0]
     assert abs(mapped["bearing_rad"] - math.pi / 2) < 1e-9
     assert abs(mapped["distance_m"] - 2.0) < 1e-9
 
@@ -157,7 +204,7 @@ def test_the_bearing_follows_the_robot_rather_than_the_map():
     of the robot — if it does not, the yaw was dropped somewhere."""
     ahead = {**BIN, "x": 2.0, "y": 0.0}
     turned = _tick(pose={"x": 0.0, "y": 0.0, "yaw": math.pi / 2}, obstacles=[ahead])
-    mapped = stationary_objects(turned)[0]
+    mapped = policy_objects(turned)[0]
     assert abs(mapped["bearing_rad"] + math.pi / 2) < 1e-9
     assert abs(mapped["distance_m"] - 2.0) < 1e-9
 
@@ -166,7 +213,7 @@ def test_the_radius_is_passed_through_rather_than_defaulted():
     """It already carries the map's position uncertainty and the planner treats it as a
     hard footprint. ``StationaryObject`` would otherwise default to 0.15 m, which is half
     the smallest radius this stack has ever reported for the staged bin."""
-    assert stationary_objects(_tick(obstacles=[BIN]))[0]["radius_m"] == 0.3
+    assert policy_objects(_tick(obstacles=[BIN]))[0]["radius_m"] == 0.3
 
 
 # ── Things that must not be invented ────────────────────────────────────────
@@ -210,8 +257,8 @@ def test_a_half_recorded_obstacle_is_dropped_rather_than_placed_at_the_origin():
     """``None`` coordinates would otherwise become an obstacle at the robot's own
     position, which every ray reports as a collision."""
     broken = {**BIN, "x": None}
-    assert stationary_objects(_tick(obstacles=[broken, BIN])) != []
-    assert len(stationary_objects(_tick(obstacles=[broken, BIN]))) == 1
+    assert policy_objects(_tick(obstacles=[broken, BIN])) != []
+    assert len(policy_objects(_tick(obstacles=[broken, BIN]))) == 1
 
 
 def test_a_mistyped_counter_is_rejected_rather_than_silently_ignored():
