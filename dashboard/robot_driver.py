@@ -69,6 +69,14 @@ the other never ran, and an operator should not see their own stop in the colour
 is carrying. ``robot_state`` — pose, velocity and controller mode on a timer, which is what
 makes the page live rather than a form.
 
+``peer_pose`` — this robot's pose at 10 Hz, for ANOTHER robot to avoid, and off unless
+``--publish-pose`` asks for it. It is a separate event from ``robot_state`` rather than a
+faster one because ``robot_state`` is skipped while a motion command holds the lock and
+costs a subprocess per sample: both are disqualifying for a channel that matters most
+while this robot is walking and is needed ten times a second. It is the input that lets a
+peer be avoided with no detector, no marker and no training — see
+``integration/peer_source.py``, and ``peer_link.py`` for the other end.
+
 Run on the robot:
     python3 robot_driver.py --platform go2 --package ../policy --allow-motion
 Off-robot, against the bench double:
@@ -81,12 +89,14 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import logging
 import os
 import subprocess
 import sys
 import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -103,8 +113,10 @@ from drive_bridge import (
     DEFAULT_VX,
     DEFAULT_VY,
     DEFAULT_WZ,
+    MAX_POSE_STREAM_HZ,
     MAX_REVERSE_SECONDS,
     MAX_SECONDS,
+    POSE_STREAM_HZ,
     BridgeError,
     check_gait_floor,
 )
@@ -124,6 +136,36 @@ BRIDGE_TIMEOUT_S = MAX_SECONDS + 25.0
 #: of these is a subprocess that connects, reads and exits.
 STATE_INTERVAL_S = 5.0
 
+#: The disc another robot should model this one as, metres, per platform.
+#:
+#: **Half-diagonal, not half-length**, which is the whole reason this is a table and not a
+#: parameter with a friendly default. ``avoidance.NavConfig.robot_radius_m`` already made
+#: this call for the Go2 and its comment states it: "Go2 is ~0.70 x 0.31 m; half-diagonal,
+#: rounded up" — ``hypot(0.35, 0.155) = 0.383``, so 0.40. The half-LENGTH, 0.35, leaves the
+#: corners outside the disc, and a peer's heading is not something the robot avoiding it
+#: gets to choose.
+#:
+#: Published by the robot rather than assumed by whoever is avoiding it, for the same
+#: reason ``model_sources`` is: it is a property of this machine, and two platforms on one
+#: mesh have different ones. The colour-prop path's 0.15 m default is a bin and would
+#: under-model either of these by more than half.
+#:
+#: ⚠️ The Lite3 figure is derived the same way from the vendor's 610 x 370 mm and has never
+#: been measured on the robot. ⚠️ A Go2 **Wheel** carries wheel modules the base Go2's
+#: 0.70 x 0.31 m does not describe; ``mappo_drive.py --peer-radius`` overrides this when the
+#: peer is one and somebody has a tape measure.
+PEER_FOOTPRINT_M = {"go2": 0.40, "lite3": 0.36, "sim": 0.40}
+
+#: How long to wait for the pose worker's first line before calling it dead. It pays the
+#: same cold-Jetson SDK import and DDS discovery every other worker does, so it is the
+#: same budget — measured in tens of seconds, not in control periods.
+POSE_FIRST_LINE_S = BRIDGE_TIMEOUT_S
+
+#: How long to wait before restarting a dead pose worker. Short, because every second it
+#: is down is a second the robot avoiding this one is stopped — but not zero, or a worker
+#: that fails on startup becomes a spawn loop nobody can read the log of.
+POSE_RESTART_S = 1.0
+
 
 class MappoRobotDriver(DeviceDriver):
     """A Go2 or Lite3 Venture carrying a MAPPO checkpoint, on the Device Connect mesh."""
@@ -135,7 +177,7 @@ class MappoRobotDriver(DeviceDriver):
                  iface: str = "eth0", allow_motion: bool = False,
                  operator_ready: bool = False, allow_http: bool = True,
                  simulate: bool = False, camera_replay_dir: str = "",
-                 model_sources: list | None = None) -> None:
+                 model_sources: list | None = None, publish_pose_hz: float = 0.0) -> None:
         super().__init__()
         self.platform = platform
         self.bridge_script = bridge_script
@@ -178,6 +220,14 @@ class MappoRobotDriver(DeviceDriver):
         self._camera_fps = camera_source.DEFAULT_FPS
         self._camera_error = ""
         self._viewers = camera_source.Viewers()
+        #: Rate for ``peer_pose``, or 0.0 for off. NOT interest-gated the way the camera
+        #: is, and that is the deliberate difference between the two: a camera feed costs
+        #: 200-320 KB/s and nobody is harmed by it starting late, while a pose is ~200
+        #: bytes a sample and is what stops another robot's legs. Making it wait for a
+        #: consumer to ask adds "the request did not arrive" as a way for a peer to become
+        #: invisible, to a channel whose entire job is to not be silently absent.
+        self._pose_hz = min(float(publish_pose_hz or 0.0), MAX_POSE_STREAM_HZ)
+        self._pose_task = None
 
     # ── identity ─────────────────────────────────────────────────────────────
     @property
@@ -203,6 +253,10 @@ class MappoRobotDriver(DeviceDriver):
     async def connect(self) -> None:
         log.info("driver up: platform=%s motion=%s package=%s", self.platform,
                  "ENABLED" if self.allow_motion else "disabled", self.store.package_dir)
+        if self._pose_hz > 0.0:
+            # Started here rather than on request: see `_pose_hz`. "This robot is on the
+            # mesh" and "this robot's pose is on the mesh" should be the same fact.
+            self._pose_task = asyncio.create_task(self._pose_stream_loop())
 
     async def disconnect(self) -> None:
         """Stop the robot on the way out.
@@ -211,6 +265,13 @@ class MappoRobotDriver(DeviceDriver):
         process is being torn down because the worker environment is broken, a failure here
         must not mask that.
         """
+        if self._pose_task is not None:
+            # Cancelled, not awaited. The task's own `finally` SIGTERMs the worker, and if
+            # the loop tears down before that runs, the worker's stdout pipe closes with
+            # this process and it exits on the BrokenPipeError it already handles. There
+            # is no velocity to leave latched either way — see `command_pose_stream`.
+            self._pose_task.cancel()
+            self._pose_task = None
         if self.allow_motion:
             try:
                 await self._bridge("stop")
@@ -280,6 +341,30 @@ class MappoRobotDriver(DeviceDriver):
     @emit()
     async def robot_state(self, pose: dict, velocity: list, mode: str, active_model: str):
         """Periodic liveness: where the robot is and what it is carrying."""
+
+    @emit()
+    async def peer_pose(self, pose: dict, velocity: list, radius_m: float, seq: int,
+                        sample_age_s: float, platform: str, ok: bool):
+        """Where this robot is, at 10 Hz, so another robot on the mesh can avoid it.
+
+        NOT ``robot_state`` at a faster interval, and the difference is not the rate.
+        ``robot_state`` is a dashboard liveness poll: it is SKIPPED while a motion command
+        holds the lock, and each one is a subprocess that connects to DDS, reads and exits.
+        Both of those are disqualifying here. A peer pose is needed most precisely while
+        the peer is walking, which is exactly when that lock is held, and 10 Hz of process
+        starts on a Jetson is not a rate this robot can produce.
+
+        ``pose`` is in THIS robot's odom frame, which begins where it was switched on and
+        means nothing to anybody else. ``velocity`` is (vx, vy, wz) in this robot's BODY
+        frame — the estimator's own frame, per ``mappo_bridge.VELOCITY_FRAME``. Turning
+        either into something the consumer can plan against is the consumer's job and it
+        needs a measured transform between the two robots; see ``integration/peer_source``.
+
+        ``sample_age_s`` is how long ago the estimator was read, measured here, on this
+        host, as a DURATION. It is not a timestamp and must not become one: two robots on
+        a demo LAN with no NTP share no clock, so a duration crosses the mesh and an
+        instant does not.
+        """
 
     # ── the worker bridge ────────────────────────────────────────────────────
     def _bridge_blocking(self, command: str, extra=None) -> dict:
@@ -676,6 +761,107 @@ class MappoRobotDriver(DeviceDriver):
             self._camera = None
             log.info("camera released after %d frames", seq)
 
+    # ── peer pose ────────────────────────────────────────────────────────────
+    async def _pose_stream_loop(self) -> None:
+        """Run the pose worker and turn each of its lines into a ``peer_pose`` event.
+
+        One long-lived subprocess, restarted if it dies. The alternative — a subprocess per
+        sample, the way ``publish_state`` does it — cannot reach 10 Hz on a Jetson, where
+        SDK import and DDS discovery are most of :data:`BRIDGE_TIMEOUT_S`.
+
+        A worker that exits is restarted after :data:`POSE_RESTART_S` and the gap is logged
+        at warning level. It is worth being loud about: while this is down, every robot
+        avoiding this one is stopped, because their side treats a pose that stopped
+        arriving as a peer whose position is unknown rather than as a peer standing still.
+        """
+        cmd = [self.bridge_python, self.bridge_script, "pose-stream",
+               "--platform", self.platform, "--iface", self.iface,
+               "--hz", str(self._pose_hz)]
+        if self.simulate:
+            cmd += ["--backend", "sim"]
+        radius = PEER_FOOTPRINT_M.get(self.platform, PEER_FOOTPRINT_M["go2"])
+        log.info("publishing peer_pose at %.1f Hz, modelled as a %.2f m disc",
+                 self._pose_hz, radius)
+        seq = 0
+        while True:
+            try:
+                seq = await self._pump_pose_worker(cmd, radius, seq)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                log.warning("pose worker failed: %r", exc)
+            log.warning("pose worker stopped after %d samples; restarting in %.1f s. "
+                        "Any robot avoiding this one is holding until it does.",
+                        seq, POSE_RESTART_S)
+            await asyncio.sleep(POSE_RESTART_S)
+
+    async def _pump_pose_worker(self, cmd: list, radius: float, seq: int) -> int:
+        """One worker's lifetime. Returns the sample counter it reached."""
+        process = await asyncio.create_subprocess_exec(
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        try:
+            first = True
+            while True:
+                # Only the FIRST line gets a deadline, and it is the full worker budget:
+                # everything before it is SDK import and DDS discovery. After that the
+                # worker is pacing itself and a wait is just the next sample.
+                line = await asyncio.wait_for(
+                    process.stdout.readline(), POSE_FIRST_LINE_S if first else None)
+                if not line:
+                    return seq                       # the worker exited
+                first = False
+                record = self._pose_line(line)
+                if record is None:
+                    continue
+                seq += 1
+                await self._announce(
+                    self.peer_pose, pose=record["pose"], velocity=record["velocity"],
+                    radius_m=radius, seq=seq, sample_age_s=record["sample_age_s"],
+                    platform=self.platform, ok=record["ok"])
+        finally:
+            # SIGTERM first, as everywhere else in this file. The pose worker latches no
+            # velocity so it needs no damp, but a bare kill would still leave a DDS client
+            # to time out on the bus, and the next worker would be the second one on it.
+            with contextlib.suppress(ProcessLookupError):
+                process.terminate()
+            with contextlib.suppress(asyncio.TimeoutError):
+                await asyncio.wait_for(process.wait(), 5.0)
+
+    @staticmethod
+    def _pose_line(line: bytes):
+        """One worker stdout line as an emittable record, or ``None`` to skip it.
+
+        Non-JSON lines are skipped rather than fatal: the SDK prints on import, which is
+        the same reason ``_bridge_blocking`` reads the result backwards from the end of
+        stdout rather than parsing all of it.
+
+        A line with no usable ``mono_s`` is DROPPED, and that is the one judgement call
+        here. Its age cannot be computed, and a safety input that cannot be dated is not a
+        safety input — emitting it with an invented age of zero would make an undatable
+        sample look like the freshest one there is. Dropping it ages the consumer out
+        instead, which stops the other robot, which is the outcome an unreadable clock
+        should have.
+        """
+        try:
+            record = json.loads(line.decode("utf-8", "replace"))
+        except ValueError:
+            return None
+        if not isinstance(record, dict):
+            return None
+        mono = record.get("mono_s")
+        if not isinstance(mono, (int, float)) or isinstance(mono, bool):
+            log.warning("pose worker line carried no readable clock; dropping it")
+            return None
+        return {
+            # Same host, same CLOCK_MONOTONIC, two processes — so this subtraction is
+            # meaningful, and it is the only one in the whole chain that is. What crosses
+            # the mesh is the result, a duration.
+            "sample_age_s": max(0.0, time.monotonic() - float(mono)),
+            "pose": record.get("pose") or {},
+            "velocity": record.get("velocity") or [],
+            "ok": bool(record.get("ok")),
+        }
+
     # ── status ───────────────────────────────────────────────────────────────
     @rpc()
     async def get_status(self) -> dict:
@@ -956,6 +1142,13 @@ def build_parser() -> argparse.ArgumentParser:
                              "source instead of remembering a URL. Every address in it MUST "
                              "be routable from the robot — the download runs here, not in "
                              "the operator's browser.")
+    parser.add_argument("--publish-pose", nargs="?", type=float, const=POSE_STREAM_HZ,
+                        default=0.0, metavar="HZ",
+                        help="Publish this robot's pose as peer_pose events so another "
+                             f"robot on the mesh can avoid it. Default {POSE_STREAM_HZ} Hz, "
+                             f"capped at {MAX_POSE_STREAM_HZ}. Off unless asked for: it "
+                             "holds a persistent SDK worker on the DDS bus. It needs no "
+                             "--allow-motion, because it only reads.")
     parser.add_argument("--camera-replay-dir", default="",
                         help="Serve JPEGs from this directory as the camera feed. Each frame "
                              "is labelled REPLAY in the pixels.")
@@ -988,7 +1181,8 @@ def main(argv=None) -> int:
         bridge_python=args.bridge_python, iface=args.iface, allow_motion=args.allow_motion,
         operator_ready=args.operator_ready, allow_http=not args.no_http_sources,
         simulate=args.simulate, camera_replay_dir=args.camera_replay_dir,
-        model_sources=_load_sources(args.model_sources))
+        model_sources=_load_sources(args.model_sources),
+        publish_pose_hz=args.publish_pose)
 
     if args.allow_motion:
         log.warning("MOTION IS ENABLED. robot-stack/SAFETY.md applies: clear area, operator "

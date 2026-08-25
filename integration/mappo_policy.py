@@ -204,7 +204,8 @@ class PolicyRunner:
 
 def tick_from_state(t: float, pose: tuple, goal: tuple | None, obstacles: list,
                     measured: tuple = (0.0, 0.0, 0.0),
-                    reason: str | None = None, stale: bool = False) -> dict:
+                    reason: str | None = None, stale: bool = False,
+                    peer_link: dict | None = None) -> dict:
     """A telemetry-shaped tick built from live or simulated state.
 
     The point of routing through the tick shape rather than calling
@@ -215,6 +216,12 @@ def tick_from_state(t: float, pose: tuple, goal: tuple | None, obstacles: list,
 
     ``obstacles`` are dicts or anything with ``x``, ``y``, ``radius_m``, ``kind``,
     ``object_id``, ``vx`` and ``vy`` attributes, i.e. ``avoidance.Obstacle``.
+
+    ``peer_link`` carries ``{"lost": bool, "reason": str}`` when a mesh peer source is
+    running, and is absent otherwise — which is every recorded run and the whole of
+    ``closed_loop_sim``. ``mappo_bridge.external_hold`` is what reads it; it is threaded
+    through here rather than handed to the policy directly so that the simulator and the
+    robot go on sharing one mapping, which is the reason this function exists at all.
     """
     def _record(obstacle) -> dict:
         if isinstance(obstacle, dict):
@@ -232,4 +239,5 @@ def tick_from_state(t: float, pose: tuple, goal: tuple | None, obstacles: list,
         "command": None if reason is None else {"reason": reason},
         "obstacles": [_record(o) for o in obstacles],
         "perception": {"stale": stale},
+        "peer_link": dict(peer_link or {}),
     }

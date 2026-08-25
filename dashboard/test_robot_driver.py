@@ -32,7 +32,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from device_connect_edge.drivers import DeviceDriver
 
-from robot_driver import MappoRobotDriver
+from robot_driver import PEER_FOOTPRINT_M, MappoRobotDriver
 
 
 def _package(tmp):
@@ -617,6 +617,122 @@ def test_the_periodic_state_poll_is_skipped_while_the_robot_is_moving():
                 await driver.publish_state()
         _run(main())
         assert not calls, "a state poll ran while a motion command held the lock"
+
+
+# ── the peer pose channel ────────────────────────────────────────────────────
+class _FakeStdout:
+    """The lines a pose worker would print, then EOF."""
+
+    def __init__(self, lines):
+        self.lines = list(lines)
+
+    async def readline(self):
+        return self.lines.pop(0) if self.lines else b""
+
+
+class _FakeWorker:
+    def __init__(self, lines):
+        self.stdout = _FakeStdout(lines)
+        self.terminated = False
+
+    def terminate(self):
+        self.terminated = True
+
+    async def wait(self):
+        return 0
+
+
+def _pose_lines(*records):
+    return [(json.dumps(r) + "\n").encode() for r in records]
+
+
+def test_publishing_a_pose_is_off_unless_it_is_asked_for():
+    """It holds a persistent SDK worker on the DDS bus, so it is not something a robot
+    starts because somebody ran the driver. It needs no ``--allow-motion`` though: telling
+    other robots where you are must not require permission to walk."""
+    with tempfile.TemporaryDirectory() as tmp:
+        assert _driver(tmp)._pose_hz == 0.0
+        assert _driver(tmp, publish_pose_hz=10.0, allow_motion=False)._pose_hz == 10.0
+
+
+def test_the_published_footprint_is_the_half_diagonal_of_the_platform():
+    """The half-LENGTH of a 0.70 x 0.31 m Go2 is 0.35 and its half-DIAGONAL is 0.383, and
+    a peer's heading is not something the robot avoiding it gets to choose.
+    ``avoidance.NavConfig.robot_radius_m`` already rounded that to 0.40 for this robot's
+    own body; a peer gets the same number. The colour-prop path's 0.15 m is a bin."""
+    import math
+    assert PEER_FOOTPRINT_M["go2"] > math.hypot(0.35, 0.155)
+    assert min(PEER_FOOTPRINT_M.values()) > 2.0 * 0.15
+
+
+def test_each_worker_line_becomes_one_peer_pose_carrying_an_age_not_a_timestamp():
+    """``mono_s`` is the worker's own clock and never leaves this host. What goes on the
+    mesh is ``sample_age_s``, a duration — two robots on a demo LAN with no NTP share no
+    clock, so an interval crosses it and an instant does not.
+
+    Made to fail by emitting ``mono_s`` itself: the consumer would then subtract two
+    unrelated clocks and compute an age of about -1.8e9 s, which is under every threshold
+    and so never fires. That is the same fail-OPEN bug ``mappo_bridge.robot_input``
+    documents, one machine further out.
+    """
+    import time as _time
+    with tempfile.TemporaryDirectory() as tmp:
+        events = []
+        driver = _driver(tmp, events=events, publish_pose_hz=10.0)
+        now = _time.monotonic()
+        worker = _FakeWorker(_pose_lines(
+            {"ok": True, "mono_s": now - 0.03, "pose": {"x": 1.0, "y": 2.0, "yaw": 0.0},
+             "velocity": [0.1, 0.0, 0.0]},
+            {"ok": True, "mono_s": now - 0.01, "pose": {"x": 1.1, "y": 2.0, "yaw": 0.0},
+             "velocity": [0.1, 0.0, 0.0]}))
+        async def _fake_exec(*_a, **_k):
+            return worker
+
+        # Swapped on the module rather than on the driver: `_pump_pose_worker` is the code
+        # under test and stubbing it would leave nothing being tested.
+        real_exec = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = _fake_exec
+        try:
+            seq = _run(driver._pump_pose_worker(["cmd"], PEER_FOOTPRINT_M["sim"], 0))
+        finally:
+            asyncio.create_subprocess_exec = real_exec
+
+        assert seq == 2
+        names = [name for name, _payload in events]
+        assert names == ["peer_pose", "peer_pose"], names
+        payload = events[0][1]
+        assert "mono_s" not in payload, "a raw clock reading must not reach the mesh"
+        assert 0.0 <= payload["sample_age_s"] < 1.0, payload["sample_age_s"]
+        assert payload["radius_m"] == PEER_FOOTPRINT_M["sim"]
+        assert payload["pose"] == {"x": 1.0, "y": 2.0, "yaw": 0.0}
+        assert worker.terminated is True, "the worker was left running"
+
+
+def test_a_line_that_cannot_be_dated_is_dropped_rather_than_given_an_age_of_zero():
+    """An undatable safety input is not a safety input. Emitting it with an invented age
+    of zero would make the one sample nobody can date look like the freshest there is;
+    dropping it ages the consumer out, which stops the other robot."""
+    assert MappoRobotDriver._pose_line(b'{"ok": true, "pose": {"x": 1.0}}') is None
+    assert MappoRobotDriver._pose_line(b'{"ok": true, "mono_s": "soon"}') is None
+
+
+def test_sdk_chatter_on_stdout_is_skipped_rather_than_fatal():
+    """The SDK prints on import, which is the same reason ``_bridge_blocking`` reads the
+    result backwards from the end of stdout instead of parsing all of it."""
+    assert MappoRobotDriver._pose_line(b"[CycloneDDS] discovery started\n") is None
+    assert MappoRobotDriver._pose_line(b'"a bare string"') is None
+
+
+def test_a_failed_estimator_read_is_published_rather_than_swallowed():
+    """It reaches the consumer as a pose it cannot use, which reports the estimator. A
+    dropped sample would reach it as silence, and silence is reported as a dead link —
+    true, and pointing at the wrong machine."""
+    record = MappoRobotDriver._pose_line(
+        json.dumps({"ok": False, "mono_s": 1.0, "pose": None, "velocity": None,
+                    "error": "the estimator went away"}).encode())
+    assert record is not None
+    assert record["ok"] is False
+    assert record["pose"] == {} and record["velocity"] == []
 
 
 if __name__ == "__main__":

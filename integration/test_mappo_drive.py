@@ -16,6 +16,7 @@ Run: ``python3 test_mappo_drive.py``
 """
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import math
@@ -34,14 +35,17 @@ sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
                                 "visual_nav"))
 from avoidance import Limits, Obstacle, PlannerConfig
 
+from mappo_bridge import external_hold
 from mappo_drive import (
     _STOP_REASONS,
     MappoPlanner,
     _add_arguments,
     _record_refusal,
+    peer_navigator,
     split_argv,
 )
 from mappo_policy import DEFAULT_PACKAGE, HeadingServo, PolicyRunner
+from peer_source import PEER_TIMEOUT_S, Alignment, PeerSource, spool_document, write_spool
 from replay_mappo import derived_config
 
 BIN = Obstacle(x=1.0, y=0.0, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
@@ -566,6 +570,162 @@ def test_a_refusal_is_recorded_even_when_the_detail_is_not_serialisable():
         record = json.loads(path.read_text().strip())
     assert record["reason"] == "unserialisable_detail"
     assert record["where"] == "/tmp/x", "recorded approximately, not lost"
+
+
+# ── Peer robots off the mesh ────────────────────────────────────────────────
+_PEER_ID = "mappo-go2-peer"
+_PEER_NOW = 98_765.0
+
+
+def _peer_spool(tmpdir, received=_PEER_NOW, written=_PEER_NOW, x=1.6, y=0.4):
+    path = os.path.join(tmpdir, "peers.json")
+    write_spool(path, spool_document(
+        {_PEER_ID: {"received_monotonic_s": received, "x": x, "y": y, "yaw": 0.0,
+                    "vx": 0.0, "vy": 0.0, "radius_m": 0.40}},
+        (_PEER_ID,), domain="test-boot", written_monotonic_s=written))
+    return PeerSource(path, Alignment(), domain="test-boot")
+
+
+def test_a_lost_peer_stops_the_robot_even_if_the_policy_never_looks_at_the_hold():
+    """BELT AND BRACES, and this is the braces.
+
+    The peer hold also travels the ordinary route — into ``RobotInput.external_hold`` via
+    ``mappo_bridge`` — which is what keeps the policy's own view of the world honest. But
+    that route runs a SAFETY property through the vendored policy package, and nothing in
+    this repository decides whether a future checkpoint or runner honours it.
+    ``_StubRunner`` is exactly such a runner: it returns a full-ahead COMMAND whatever it
+    is told. The legs must stop anyway.
+
+    Made to fail by deleting the ``peer_link.get("lost")`` branch in ``plan()``: the stub's
+    0.35 m/s goes straight out.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        planner = _planner(supervised=False, runner=_StubRunner((0.35, 0.0, 0.0)))
+        planner.attach_peers(_peer_spool(tmp, written=_PEER_NOW + 5.0))
+        planner._peers.read(_PEER_NOW + 5.0)         # what PeerNavigator does each tick
+        command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+        assert (command.vx, command.vy, command.wz) == (0.0, 0.0, 0.0), command
+        assert command.reason == "hold", "'hold' is what starts the rest-when-blocked timer"
+        assert planner.counts["peer_held"] == 1
+
+
+def test_the_policy_is_TOLD_the_link_is_gone_and_not_just_overruled():
+    """The belt, to the test above's braces — and it needs its own test, because the
+    braces hide it: with the direct check in place the robot stops whether or not the
+    policy was ever informed, so the bridge route can be deleted and nothing goes red.
+    Found by mutation-testing this file.
+
+    It matters because the alternative is silently handing the policy a world with one
+    fewer robot in it. Its obstacle memory associates by position across ticks, and a peer
+    that vanishes from the observation is indistinguishable, to it, from a peer that
+    moved. ``external_hold`` is how it is told the difference.
+    """
+    ticks = []
+
+    class _Recording(_StubRunner):
+        def step(self, tick, monotonic_s=None):
+            ticks.append(tick)
+            return _StubRunner.step(self, tick, monotonic_s)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        planner = _planner(supervised=False, runner=_Recording((0.35, 0.0, 0.0)))
+        planner.attach_peers(_peer_spool(tmp, written=_PEER_NOW + 5.0))
+        planner._peers.read(_PEER_NOW + 5.0)
+        planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+    assert ticks and ticks[0]["peer_link"]["lost"] is True
+    assert external_hold(ticks[0]) is True, "the policy was not told the link was gone"
+    assert "peer link" in ticks[0]["peer_link"]["reason"]
+
+
+def test_a_fresh_peer_leaves_the_policy_in_charge():
+    """The other side of the same branch — without it the test above would pass on a
+    planner that simply never drives."""
+    with tempfile.TemporaryDirectory() as tmp:
+        planner = _planner(supervised=False, runner=_StubRunner((0.35, 0.0, 0.0)))
+        planner.attach_peers(_peer_spool(tmp))
+        planner._peers.read(_PEER_NOW)
+        command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+        assert command.reason == "policy", command
+        assert planner.counts["peer_held"] == 0
+
+
+def test_a_peer_source_that_has_never_been_read_holds_rather_than_reading_as_absent():
+    """"Peers are configured and I have not looked yet" and "there are no peers" are the
+    same empty snapshot and opposite situations. Reading the first as the second is the
+    fail-open direction: the robot drives with peers configured and none of them modelled.
+
+    Found by mutation-testing this file — deleting the ``last is None`` guard left every
+    other test green, because they all read the source before planning, which a navigator
+    that had been swapped out would not.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        planner = _planner(supervised=False, runner=_StubRunner((0.35, 0.0, 0.0)))
+        planner.attach_peers(_peer_spool(tmp))       # attached, deliberately never read
+        command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+        assert command.reason == "hold", command
+        assert planner.counts["peer_held"] == 1
+
+
+def test_a_planner_with_no_peer_link_is_unchanged():
+    """Peer avoidance is opt-in, and every run recorded so far was made without it."""
+    planner = _planner(supervised=False, runner=_StubRunner((0.35, 0.0, 0.0)))
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+    assert command.reason == "policy"
+    assert planner.counts["peer_held"] == 0
+
+
+class _FakeNavigator:
+    """Enough of ``VisualNavigator`` for the seam: an ``_obstacles`` to extend."""
+
+    def __init__(self, *args, **kwargs):
+        self.args = args
+
+    def _obstacles(self, now: float) -> list:
+        return [BIN]
+
+
+def test_the_peer_joins_the_one_obstacle_list_the_whole_loop_reads():
+    """``_obstacles`` is the seam, not ``plan()``, and this is why: the vendored loop
+    builds the list ONCE per tick and hands the same object to the planner, the recorder,
+    the console log and the telemetry writer. A peer added here is in all four, on every
+    path through the loop — including the stale-frame and goal-search ticks where
+    ``plan()`` is never called and a peer appended there would go unrecorded."""
+    with tempfile.TemporaryDirectory() as tmp:
+        peers = _peer_spool(tmp)
+        navigator = peer_navigator(_FakeNavigator, peers)("loco", "perception", "planner")
+        obstacles = navigator._obstacles(_PEER_NOW)
+        assert [o.object_id for o in obstacles] == ["landmark-1", f"peer-{_PEER_ID}"]
+        peer = obstacles[-1]
+        # A planner Obstacle, so the veto's rollout and the telemetry writer both work on
+        # it with no special case — which is the entire argument for this shape.
+        assert isinstance(peer, Obstacle)
+        assert peer.kind == "tracked" and peer.radius_m >= 0.40
+        assert peer.soft_gap_m is None and peer.hard_gap_m is None, (
+            "a peer takes the planner's person-sized gaps: unlike a bin it can step "
+            "sideways into the space the robot has committed to")
+
+
+def test_the_obstacle_list_and_the_hold_are_one_ticks_decision():
+    """``plan()`` reads the snapshot ``_obstacles`` took rather than re-reading the spool.
+    Re-reading would let the policy be handed a peer the hold has already given up on,
+    half a spool-write apart."""
+    with tempfile.TemporaryDirectory() as tmp:
+        peers = _peer_spool(tmp, written=_PEER_NOW + 5.0)
+        navigator = peer_navigator(_FakeNavigator, peers)("loco", "perception", "planner")
+        obstacles = navigator._obstacles(_PEER_NOW + 5.0)
+        assert [o.object_id for o in obstacles] == ["landmark-1"], "a lost peer is no disc"
+        assert peers.last.holds is True
+
+
+def test_the_transform_is_the_enabling_flag_so_it_can_never_be_absent():
+    """Two robots' odom frames start at their own power-on poses and have no relationship
+    until one is measured. A separate on/off switch would create a combination — peers on,
+    frames undeclared — whose only sane answer is a refusal; making the transform itself
+    the switch removes the state instead of validating it."""
+    parser = _add_arguments(argparse.ArgumentParser())
+    assert parser.parse_args([]).peer_odom_align is None
+    assert parser.parse_args(["--peer-odom-align", "2,1,180"]).peer_odom_align == "2,1,180"
+    assert parser.parse_args([]).peer_timeout == PEER_TIMEOUT_S
 
 
 if __name__ == "__main__":

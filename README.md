@@ -206,10 +206,15 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 - **No rear view.** ~85° of camera, and the robot never reverses. Everything else reads
   clear — the optimistic direction. A policy that learned to back out of a dead end will
   believe the space behind it is empty.
-- **Peers are invisible.** Another quadruped is not a detector class and not a colour
-  profile. For a *multi*-agent demo this is the gap that matters most, and closing it is
-  the obvious next piece of work — an ArUco marker or a colour panel on each robot would
-  make peers detectable through machinery that already exists.
+- **Peers are invisible *to the camera*, and are no longer inferred from it.** Another
+  quadruped is not a detector class and not a colour profile, and it turned out not to be
+  worth making into one: a detector fine-tuned on 1,343 real in-domain frames of the peer
+  reached 53% recall at 38% false positives on held-out footage, with no usable operating
+  point at any threshold. Peers now arrive as **their own published pose over the Device
+  Connect mesh** — see *Peers over the mesh* below. That is not a workaround for a failed
+  detector; it is what the trained policy describes, since the VMAS agents it learned
+  against observed each other's true positions rather than running detectors on each
+  other.
 - **Perception is a few hundred ms behind reality** (median 309 ms, p90 436 ms). The
   stack extrapolates tracks and inflates their radii to cover it; the policy sees the
   result, not the raw sensor.
@@ -221,7 +226,7 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Offline regression suite | 628 tests: policy 33, integration 144, Go2 visual navigation 265, Lite3 72, dashboard 114 |
+| ✅ Offline regression suite | 698 tests: policy 33, integration 189, Go2 visual navigation 265, Lite3 72, dashboard 139 |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; six silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
@@ -232,7 +237,8 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Policy on Go2 hardware, empty lane | arrived 0.77 m from the chair after 2.78 m; policy drove 53/53 ticks, 0 vetoed, 0 stopped; obstacle run remains open |
 | ⚠️ Arriving at the chair past the bin | needs ~0.3 m more lane than this corridor has |
 | ⚠️ D1 arm latch | its servo bus does not energise (tracked in the upstream Go2 stack); runs use `--no-latch-arm`, and the arm creeps a few degrees off the dorsal line each run |
-| ⛔ Multiple quadrupeds | one robot; peers not detectable (above) |
+| ⛔ Peers from the camera | detector ceiling measured: 53% recall at 38% false positives on held-out footage, no usable operating point. Frozen MobileNet-SSD features cannot separate the class; a marker and a colour panel were both ruled out |
+| ✅ Peers over the Device Connect mesh | the peer publishes its own pose at 10 Hz and the navigator consumes it as an ordinary obstacle — no detector, no marker, no training. 66 offline tests, 11 of them mutation-checked; **no two-robot hardware run yet** |
 | ✅ Lite3 Venture offline port | high-level ROS locomotion, RGB camera, fail-closed health gate, calibration and MAPPO entry points; 30 platform tests |
 | ⏳ Lite3 hardware commissioning | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): neither event robot has been run; gait floor, actuator gain, loaded radius, camera model/source and health publisher remain measured inputs |
 | ✅ Dashboard drives a fleet | every robot listed at once with its own stop, plus STOP ALL; cross-robot stop 4.23 s → 0.06 s, same-robot stop 4.17 s → 0.07 s and it now interrupts the walk |
@@ -274,8 +280,67 @@ and the gate is absolute). The Lite3 parser has no `--no-require-arm` or
 **The unresolved item is hardware evidence.** A live run requires a measured gait floor,
 actuator gain, loaded radius and Lite3 camera JSON. It also requires battery and motor
 temperature topics that the public high-level vendor bridge does not publish. The
-binding fails closed until a supported companion feed supplies them. Peer detection is
-still the known two-robot gap.
+binding fails closed until a supported companion feed supplies them. Peers are no longer
+a *detection* gap — a Lite3 on the mesh publishes its pose through the same driver a Go2
+does — but no two-robot run has happened on either platform.
+
+## Peers over the mesh
+
+**The second robot is avoided with no perception at all.** Each robot publishes its own
+pose as a `peer_pose` event on the Device Connect mesh; the navigator consumes it and hands
+it to the policy as one more obstacle disc. There is no detector, no marker, no colour
+panel and nothing to train.
+
+```
+  peer robot                                    navigator robot
+  drive_bridge.py pose-stream  (py3.8, SDK)     peer_link.py       (py>=3.11, DC)
+        │ JSON lines, 10 Hz                            │ writes ~/.mappo-peers.json
+  robot_driver.py --publish-pose (py>=3.11) ═══════════╡ event(peer_pose)
+                                    the mesh           │
+                                                 peer_source.py    (py3.8, stdlib)
+                                                       │ an odom-frame Obstacle
+                                                 visual_nav's ONE obstacle list
+                                                       ├── the policy   (a disc to path around)
+                                                       ├── the veto     (rolled forward on its velocity)
+                                                       ├── telemetry, the overlay, the log
+```
+
+Three things are worth knowing before using it.
+
+**Two robots' odom frames have no relationship until somebody measures one.** Each begins
+at that robot's own power-on pose, so a peer reporting `(0, 0)` says nothing about where
+that is. `--peer-odom-align DX,DY,DYAW_DEG` is therefore the *enabling* flag rather than an
+option on one: there is no code path in which peer avoidance is on and the frames are
+undeclared. A peer that started 2 m ahead, 1 m left and facing back is `2.0,1.0,180`. It is
+a tape measure and a floor mark, both of which are already needed to stage the goal. It
+also decays: two odometries drift, and nothing observes that.
+
+**A peer pose that stops arriving is not a peer standing still.** It is a peer whose
+position is no longer known, so past 0.6 s the obstacle is **dropped and the robot holds**
+— and those are one decision, not two. Dropping the disc is only safe because the legs
+stop. 0.6 s is `perception_timeout_s`, the same budget this stack already spends on a
+camera that has fallen behind, because it is the same kind of blindness. Between samples
+the peer is advanced on its last velocity and its radius grown by `0.5·σ·t²`, which is
+bounded at 0.18 m precisely because the timeout ends it.
+
+**A peer is a 0.40 m disc, which is the half-DIAGONAL.** A Go2 is 0.70 × 0.31 m, so the
+half-length is 0.35 and the half-diagonal is 0.383. `avoidance.NavConfig.robot_radius_m`
+made the same call for this robot's own body and rounded up; nothing here controls which
+way a peer is facing, so the long axis is the one that has to fit. For scale, the
+colour-prop path defaults to 0.15 m, which is a bin.
+
+What the mesh adds that no detector could is the peer's **velocity** — though not to the
+network, which has no obstacle-velocity channel. It reaches the planner's rollout, which
+scores the policy's command against where the peer *will* be, and the speed gate that
+decides whether a peer is handed to the policy at all or simply stopped for.
+
+```bash
+# on the peer
+python3 dashboard/robot_driver.py --platform go2 --device-id mappo-go2-peer --publish-pose
+# on the navigator
+python3 dashboard/peer_link.py --peer mappo-go2-peer
+python3 integration/mappo_drive.py --live --peer-odom-align 2.0,1.0,180 ...
+```
 
 ## Watching and driving it from a browser
 

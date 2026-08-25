@@ -33,6 +33,14 @@ a table in a message because three of the mappings are not the obvious ones:
     falls back to a speed threshold when it does not — see :data:`MOVER_SPEED_MPS` for
     why the fallback is a stopgap and not a fix.
 
+  * **A peer that is not there is not the same as a peer that is not moving.** Peer poses
+    arriving over the Device Connect mesh reach this file as ordinary ``kind="tracked"``
+    obstacles and need no special case — that is the point of routing them through
+    ``visual_nav._obstacles``' shape. What DOES need one is the link itself going quiet:
+    :func:`external_hold` reads a ``peer_link`` block, because the producer drops the
+    obstacle when it can no longer date it and a dropped obstacle with no hold is a robot
+    planning through a peer. See ``peer_source``.
+
   * **Movers are not all the same.** Until now every track was a hold, which meant a peer
     robot — the whole point of a MULTI-agent demo — reached the policy as a single
     boolean meaning *stop*, and the avoidance was 100% incumbent planner. The split is now
@@ -219,8 +227,18 @@ def external_hold(tick: dict) -> bool:
 
     A stale-perception hold IS external — the robot is blind, and a policy acting on a
     frozen world model is worse than a policy that does not act.
+
+    A LOST PEER LINK is external for exactly that reason, one input over. A peer pose
+    that stopped arriving is not a peer standing still, it is a peer whose position is no
+    longer known, and ``peer_source`` drops the obstacle when that happens — so the hold
+    is not an extra caution on top of a disc that is still there, it is the only thing
+    left. The two halves are one decision and separating them is how this becomes unsafe.
+    Absent from a tick means "no peer link configured", which is every recorded run in
+    ``evidence/`` and must stay false.
     """
     if (tick.get("perception") or {}).get("stale"):
+        return True
+    if (tick.get("peer_link") or {}).get("lost"):
         return True
     command = tick.get("command")
     if not command or command.get("reason") != "hold":

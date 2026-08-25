@@ -30,6 +30,26 @@ for people, so that would zero the policy in the one scene it exists to solve. R
 the actual command separates "the planner would rather wait" from "this command ends
 inside the bin", and only the second is worth overriding.
 
+## Peer robots, with no perception at all
+
+``--peer-odom-align`` turns on a second obstacle source: peer poses published over the
+Device Connect mesh by ``dashboard/robot_driver.py --publish-pose`` and spooled locally by
+``dashboard/peer_link.py``. No detector, no marker, no training — and it is the faithful
+deployment of this policy rather than a fallback, because the VMAS agents it was trained
+against observed each other's true positions.
+
+The peers arrive as ordinary ``kind="tracked"`` obstacles in the list ``_obstacles``
+already builds, so the veto, the telemetry, the overlay and the policy all consume them
+through the paths they already had. The only new decision in the control loop is what to
+do when the link goes quiet, and that is a HOLD — see ``peer_source``, which argues it.
+
+**The transform is the enabling flag on purpose.** Two robots' odom frames both start at
+their own power-on pose and have no relationship until somebody measures one, so there is
+no code path in which peer avoidance is on and the frames have not been declared. A
+default of identity would be a claim that both robots were switched on at the same spot,
+which is true at a bench and false in a room, and would put the obstacle somewhere
+plausible and wrong.
+
 ``--policy-mode raw`` removes the veto. The closed-loop simulation's numbers for the two
 are in `deploy/README.md`; raw collided and supervised did not, so raw is for a
 deliberately empty arena and nothing else.
@@ -71,6 +91,7 @@ from mappo_policy import (
     PolicyRunner,
     tick_from_state,
 )
+from peer_source import DEFAULT_SPOOL, PEER_TIMEOUT_S, Alignment, PeerSource
 
 _STACK = Path(__file__).resolve().parent.parent / "robot-stack" / "unitree" / "go2"
 # `go2/` so `locomotion.*` and `d1_arm.*` resolve as the packages the stack imports them
@@ -87,6 +108,7 @@ for _directory in (_STACK, _STACK / "visual_nav"):
 from avoidance import (  # noqa: E402
     Command,
     DynamicWindowPlanner,
+    Obstacle,
 )
 
 #: Statuses that mean "stop", mapped to the reason string the vendored loop understands.
@@ -165,11 +187,17 @@ class MappoPlanner(DynamicWindowPlanner):
         #: :meth:`_check_radius_calibration`.
         self._scale_override = scale_override
         self._loco = None
+        #: The mesh peer source, or ``None`` when peer avoidance is off. Read here rather
+        #: than re-derived, so the hold and the obstacle list are one tick's decision:
+        #: ``PeerNavigator._obstacles`` refreshes it, and the vendored loop calls that
+        #: before every ``plan()``.
+        self._peers = None
         #: Counted and printed at the end of a run. A veto that never fires and a veto
         #: that fires on every tick are both worth knowing about, and neither is visible
         #: in a log of velocities.
         self.counts: dict = {"ticks": 0, "policy": 0, "vetoed": 0, "stopped": 0,
-                             "velocity_unavailable": 0, "speed_raised": 0}
+                             "velocity_unavailable": 0, "speed_raised": 0,
+                             "peer_held": 0}
         #: Commanded speeds below this are scaled up, direction preserved — see
         #: :meth:`_at_least_walking_pace`. Zero disables it.
         self._gait_floor_m_s = gait_floor_m_s
@@ -263,6 +291,10 @@ class MappoPlanner(DynamicWindowPlanner):
             f"  the simulation before trusting anything it does.\n"
             + "!" * 78)
 
+    def attach_peers(self, peers) -> None:
+        """Give the planner the peer source, so a lost link can stop the robot here."""
+        self._peers = peers
+
     def attach(self, loco) -> None:
         """Give the planner the locomotion client, for the MEASURED velocity.
 
@@ -288,12 +320,48 @@ class MappoPlanner(DynamicWindowPlanner):
         else:
             measured = self._loco.velocity()
 
+        # The peer link's verdict is computed by `PeerNavigator._obstacles`, which the
+        # vendored loop calls immediately before this on every tick. Reading the stored
+        # snapshot rather than re-reading the spool keeps the obstacle list and the hold
+        # as one tick's decision — otherwise the policy could be handed a peer that the
+        # hold has already given up on, half a spool-write apart.
+        #
+        # A source that has been ATTACHED but never READ is a hold and not an absent link,
+        # and the difference is the whole file: `{}` means "no peers configured", which is
+        # the fail-open reading of "peers are configured and I have not looked". Found by
+        # mutation-testing `test_mappo_drive.py`, where deleting the `last is None` guard
+        # left every test green while a run with peers configured but a navigator that
+        # never called `_obstacles` drove straight through them.
+        if self._peers is None:
+            peer_link = {}
+        elif self._peers.last is None:
+            peer_link = {"lost": True,
+                         "reason": "peer link: configured, but nothing has been read yet"}
+        else:
+            peer_link = {"lost": self._peers.last.holds,
+                         "reason": self._peers.last.reason()}
+
         step = self._runner.step(
             tick_from_state(time.monotonic(), pose, goal, obstacles, measured=measured,
-                            reason=last_reason),
+                            reason=last_reason, peer_link=peer_link),
             monotonic_s=time.monotonic())
         if step is None:                      # no goal; the vendored loop filters these
             return planned
+
+        # BELT AND BRACES, and the braces are the important half. `peer_link` above
+        # reaches the policy through `mappo_bridge.external_hold`, which is what makes the
+        # policy's own view of the world consistent — it is told the link is gone rather
+        # than silently handed a world with one fewer robot in it. But that path routes a
+        # SAFETY property through the vendored policy package, and nothing in this
+        # repository controls whether a future checkpoint or runner honours
+        # `external_hold`. This check does not go through it. A peer whose position is
+        # unknown stops the legs whether or not anything downstream agrees, in supervised
+        # mode and in raw, and `test_mappo_drive` proves it against a runner that ignores
+        # external_hold entirely.
+        if peer_link.get("lost"):
+            self.counts["peer_held"] += 1
+            return Command(0.0, 0.0, 0.0, reason="hold", gap_m=planned.gap_m,
+                           feasible=planned.feasible, evaluated=planned.evaluated)
 
         if step.status != "COMMAND":
             self.counts["stopped"] += 1
@@ -415,8 +483,49 @@ class MappoPlanner(DynamicWindowPlanner):
                 f"policy, {counts['vetoed']} vetoed, {counts['stopped']} stopped"
                 + (f", {counts['speed_raised']} scaled up to the gait floor"
                    if counts["speed_raised"] else "")
+                + (f", {counts['peer_held']} held for a peer this robot could not locate"
+                   if counts["peer_held"] else "")
                 + (f", {counts['velocity_unavailable']} with no measured velocity"
                    if counts["velocity_unavailable"] else ""))
+
+
+def peer_navigator(base, peers: PeerSource):
+    """A ``VisualNavigator`` subclass whose obstacle list also carries the mesh peers.
+
+    ``_obstacles`` is the seam and not ``plan()``, and the difference is what a consumer
+    sees. ``visual_nav``'s loop builds the obstacle list ONCE per tick and hands the same
+    object to the planner, the recorder, the console log and the telemetry writer — so
+    adding a peer here puts it in all four, on every path through the loop, including the
+    stale-frame and goal-search ticks where ``plan()`` is never called. Appending inside
+    ``plan()`` instead would have been fewer lines and would have left the peer out of the
+    record on exactly the ticks a reader would later want to explain.
+
+    ``robot-stack/`` is a vendored copy and ``PROVENANCE.md`` is emphatic that editing it
+    in place is how this project has lost fixes three times, so this is a subclass through
+    the ``navigator_factory`` seam ``visual_nav.main()`` already offers rather than a
+    change to ``_obstacles`` itself.
+
+    A factory returning a class, rather than a class taking a source, because
+    ``navigator_factory`` is called with the vendored constructor's positional arguments
+    and this must not add one.
+    """
+
+    class PeerNavigator(base):
+        def _obstacles(self, now: float) -> list:
+            obstacles = super()._obstacles(now)
+            # `now` is the vendored loop's `time.monotonic()`, which is the clock the
+            # spool's stamps are in. That is not a coincidence to rely on quietly: see
+            # `PeerSource.read`, which says what happens if it is ever a wall clock.
+            link = peers.read(now)
+            obstacles.extend(
+                Obstacle(x=record["x"], y=record["y"],
+                         vx=record["vx"], vy=record["vy"],
+                         radius_m=record["radius_m"], label=record["label"],
+                         kind=record["kind"], object_id=record["id"])
+                for record in link.obstacles)
+            return obstacles
+
+    return PeerNavigator
 
 
 def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
@@ -453,6 +562,37 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                             "exactly what threading a gap needs — comes out below the "
                             "Go2's gait floor and the robot stands still reporting no "
                             "fault. 0 (the default) leaves the command alone")
+    group.add_argument("--peer-odom-align", metavar="DX,DY,DYAW_DEG",
+                       help="TURNS ON peer avoidance over the Device Connect mesh, and "
+                            "declares where the peer's odom frame is relative to this "
+                            "robot's. Both frames start at their own robot's power-on "
+                            "pose and have no relationship until it is measured, so this "
+                            "is the enabling flag rather than an option on one: there is "
+                            "no path where peers are on and the frames are undeclared. "
+                            "DX/DY are where the peer was standing when it was switched "
+                            "on, in metres, in this robot's start frame (+x ahead, +y "
+                            "left); DYAW_DEG is its start heading minus this robot's, CCW "
+                            "positive. A peer 2 m ahead, 1 m left, facing back at this "
+                            "robot is 2.0,1.0,180. Pass 0,0,0 for a bench where both "
+                            "really do start on the same spot")
+    group.add_argument("--peer-spool", type=Path, default=DEFAULT_SPOOL,
+                       metavar="PATH.json",
+                       help="where dashboard/peer_link.py is writing peer poses. Must "
+                            "match its --spool")
+    group.add_argument("--peer-radius", type=float, metavar="METRES",
+                       help="override the footprint a peer is modelled as. The default is "
+                            "whatever the peer PUBLISHES for itself, which is the "
+                            "half-diagonal of its own platform — 0.40 m for a Go2. Pass "
+                            "this only with a tape measure in hand: a Go2 Wheel carries "
+                            "modules the published 0.70 x 0.31 m does not describe")
+    group.add_argument("--peer-timeout", type=float, default=PEER_TIMEOUT_S,
+                       metavar="SECONDS",
+                       help=f"how old a peer pose may be before the robot HOLDS. Default "
+                            f"{PEER_TIMEOUT_S}, which is the stack's own "
+                            f"perception_timeout_s: a peer link that has gone quiet is "
+                            f"the same blindness as a camera that has. Raising it does "
+                            f"not make a peer's position better known, it makes the robot "
+                            f"act for longer on a position it no longer has")
     group.add_argument("--no-heading-servo", action="store_true",
                        help="do not turn the nose towards the direction of travel. The "
                             "policy commands no yaw at all, so without the servo the "
@@ -543,6 +683,15 @@ def main(argv=None, bindings=None) -> int:
             planners.append(planner)
             return planner
 
+        peers = None
+        if args.peer_odom_align is not None:
+            peers = PeerSource(args.peer_spool, Alignment.parse(args.peer_odom_align),
+                               timeout_s=args.peer_timeout,
+                               **({} if args.peer_radius is None
+                                  else {"radius_m": args.peer_radius}))
+            print(f"[mappo_drive] peer link: {args.peer_spool}, align "
+                  f"{args.peer_odom_align}, hold after {args.peer_timeout:.2f} s")
+
         # The measured velocity is the one thing plan() cannot reach, and it is not
         # optional: the commanded and achieved velocities differ by about a factor of two
         # on this robot, so a policy fed the command believes it is moving twice as fast
@@ -552,7 +701,11 @@ def main(argv=None, bindings=None) -> int:
         def navigator(loco, perception, planner, *rest, **kwargs):
             if isinstance(planner, MappoPlanner):
                 planner.attach(loco)
-            return real_navigator(loco, perception, planner, *rest, **kwargs)
+                planner.attach_peers(peers)
+            if peers is None:
+                return real_navigator(loco, perception, planner, *rest, **kwargs)
+            return peer_navigator(real_navigator, peers)(
+                loco, perception, planner, *rest, **kwargs)
 
         try:
             visual_nav.main(
@@ -564,6 +717,8 @@ def main(argv=None, bindings=None) -> int:
         finally:
             for planner in planners:
                 print(planner.report())
+            if peers is not None:
+                print(peers.report())
     return 0
 
 
