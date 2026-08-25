@@ -47,6 +47,36 @@ can be given separately, and the trainer prints a loud warning when they are not
 This is the same error, one level down, that the 20% figure exposed: *a test that shares
 its conditions with the thing it is testing measures nothing.*
 
+## A confound in this evidence, found and tested
+
+The held-out Aug-20 frames were recorded with `--record`, which **burns the navigator's
+overlay into the video** — a plan-view radar inset in the top-right, a status plate bottom
+left, and detection rectangles. The 2026-08-24 training frames were captured straight from
+the camera and carry none of it. Measured: the radar corner is 0.000 near-black in every
+training frame and 0.900 in every held-out one.
+
+So the numbers above compare a model trained on clean frames against frames carrying a
+large synthetic artefact it had never seen, and "different day" was confounded with "has an
+overlay".
+
+**Tested by masking both fixed overlay regions with the frame's own median colour:**
+
+| threshold | FP with overlay | FP masked | recall with | recall masked |
+| --- | --- | --- | --- | --- |
+| 0.25 | 38% | 34% | 53% | 40% |
+| 0.50 | 24% | 23% | 47% | 33% |
+| 0.90 | 7% | 4% | 20% | 20% |
+
+**The confound is real and immaterial.** False positives move four points, recall drops,
+and the best precision anywhere goes from 21% to 30%. There is still no usable operating
+point. The conclusion below is unaffected — but the confound is recorded because it was a
+genuine flaw in the evidence, and because the next person measuring against this corpus
+needs to know the overlay is there.
+
+⚠️ The same fact is a hazard for TRAINING, not just evaluation: compositing a synthetic
+robot onto these frames would teach a detector that a peer arrives with an orange rectangle
+attached.
+
 ## Three hypotheses, all tested, all falsified
 
 **"It needs more regularisation."** `--l2` 0.05 → 0.15 made it **worse**: 37.7% → 48.4%.
