@@ -5,11 +5,12 @@ SPDX-License-Identifier: Apache-2.0
 
 # Teaching the perception stack to see a peer robot
 
-Nothing in this stack can see another quadruped. That is measured, not assumed:
+No off-the-shelf model in this stack knows what a quadruped robot *is*. That is measured,
+not assumed:
 
 | detector | best response to a Go2 Wheel filling half the frame |
 | --- | --- |
-| MobileNet-SSD / VOC-21 (**what the robot runs**) | **nothing at any score down to 0.02** |
+| MobileNet-SSD / VOC-21 (**what the robot runs**) | no *correct* class; the box comes back as `bicycle` **0.984** — see the correction below |
 | YOLO11n / COCO-80 | `motorcycle` 0.138, `bicycle` 0.112 |
 | YOLO-World, prompted "robot dog" / "quadruped robot" | `robotic dog` **0.039** |
 
@@ -18,6 +19,21 @@ the same code path, scores `person` **0.932** — so the pipeline is verified an
 result is real. There is no off-the-shelf model that knows what a Lite3 is. Across 148
 ticks of two runs staged specifically to record a crossing peer, the telemetry contains
 `bin` and `person` and nothing else.
+
+> ⚠️ **Correction, 2026-08-25.** The first row of that table used to read "nothing at any
+> score down to 0.02", and it was wrong twice over. `MobileNetSSD_deploy.prototxt` carries
+> `confidence_threshold: 0.25` inside its `DetectionOutput` layer, so **0.02 was never
+> reachable** — the network cannot emit a box below 0.25 whatever a caller passes. And the
+> stock net does not return "nothing": read class-agnostically it puts a box on a
+> close-range peer at **0.984**, and on 81.2% of a 1,903-frame peer corpus at 0.15. What is
+> genuinely absent is the *label*, not the box — which is the premise this directory rests
+> on, and it is unchanged. The measured sweep is in
+> [`evidence/2026-08-25-peer-detector-threshold-and-tracks/`](../evidence/2026-08-25-peer-detector-threshold-and-tracks/).
+>
+> The practical consequence: a planner that needs a box and not a name can have **17 points
+> of free recall** (64.4% → 81.2%) for a one-line prototxt edit. That does not remove the
+> need for a `go2wheel` class — at ~4 m the peer's best score is 0.077, *below* the 0.1318
+> a backlit doorway scores in the same corridor, so no threshold separates them.
 
 ## What binds, and why it is not the training
 
