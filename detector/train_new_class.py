@@ -170,7 +170,7 @@ class FrozenFeatures:
         self.priors = priors
         self.shapes = [m.shape for m in maps]
         expected = sum(m.shape[2] * m.shape[3] * n
-                       for m, (_, _, n) in zip(maps, CONF_SOURCES))
+                       for m, (_, _, n) in zip(maps, CONF_SOURCES, strict=True))
         if expected != len(priors):
             raise ValueError(f"{expected} priors implied by the feature maps but the "
                              f"network produced {len(priors)} — CONF_SOURCES is stale")
@@ -232,7 +232,7 @@ def slot_priors(priors: np.ndarray, shapes: list) -> list:
     order ``mbox_conf`` uses, which is what makes a slot's weights shared across cells.
     """
     out, offset = [], 0
-    for shape, (_, _, slots) in zip(shapes, CONF_SOURCES):
+    for shape, (_, _, slots) in zip(shapes, CONF_SOURCES, strict=True):
         cells = shape[2] * shape[3]
         block = priors[offset:offset + cells * slots].reshape(cells, slots, 4)
         out.append([block[:, s, :] for s in range(slots)])
@@ -303,7 +303,7 @@ def gather(dataset: Path, negatives: Path | None, frozen: FrozenFeatures,
                     absorb(image, None)
 
     return [(np.concatenate(f), [np.concatenate(y) for y in slots])
-            for f, slots in zip(features, labels)]
+            for f, slots in zip(features, labels, strict=True)]
 
 
 def fit_logit(features: np.ndarray, labels: np.ndarray, rival: np.ndarray,
@@ -525,7 +525,7 @@ def main(argv: list[str] | None = None) -> int:
     settings = {"steps": args.steps, "learning_rate": args.learning_rate,
                 "l2": args.l2, "target_norm": target_norm}
     trained, warnings = 0, []
-    for (_, name, slots), slot_data in zip(CONF_SOURCES, data):
+    for (_, name, slots), slot_data in zip(CONF_SOURCES, data, strict=True):
         count, issues = train_source(net, name, slots, slot_data, old_classes, settings)
         trained += count
         warnings.extend(issues)

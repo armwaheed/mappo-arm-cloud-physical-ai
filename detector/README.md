@@ -39,6 +39,10 @@ Both corrections point the same way, and
 [`FROZEN-FEATURE-CEILING.md`](FROZEN-FEATURE-CEILING.md) now ends with the measurement rather
 than with a training plan: **do not fine-tune this detector — read the stock one
 class-agnostically.** [`eval_class_agnostic.py`](eval_class_agnostic.py) is the check.
+Both fine-tunes were taken to the end first — the frozen-feature head, then the backbone
+unfrozen over twelve 40-epoch runs, which does lift the first's ceiling and still loses to
+the stock model on the same frames ([`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md)).
+
 Everything below this line is still accurate about *how* to add a class, and remains the
 route if one ever has to be added for a reason a stock label cannot serve.
 
