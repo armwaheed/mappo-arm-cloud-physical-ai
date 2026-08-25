@@ -159,29 +159,6 @@ def _record_refusal(path: Path | None, reason: str, detail: dict) -> None:
               file=sys.stderr)
 
 
-
-#: Lateral intent below this is gait noise, not a decision. Measured on the 2026-08-25
-#: live run: commanded ``vy`` ranged 0.077-0.166 while MEASURED ``vy`` scattered +-0.045
-#: about a mean of 0.054, so anything under roughly 0.08 cannot be told apart from the
-#: walk itself.
-SIDESTEP_MIN_INTENT_M_S = 0.08
-
-#: The measured lateral gait floor. 0.15 m/s does not walk this robot and 0.20 does,
-#: three repeats of three on 2026-08-19. A sidestep is issued AT this speed because any
-#: slower produces no travel at all.
-LATERAL_GAIT_FLOOR_M_S = 0.20
-
-#: How long one sidestep runs. At the floor this is 0.10 m of real lateral displacement,
-#: which is more than the ENTIRE 3.28 m live run of 2026-08-25 achieved (0.067 m).
-SIDESTEP_DURATION_S = 0.5
-
-#: Total sidestep time granted per encounter, returned only once the intent goes away.
-#: This bounds the CYCLE and not merely the step: two states that can re-enter each other
-#: have no timeout unless the pair is bounded, and a sidestep that re-armed every time the
-#: policy restated the same intent would crab the robot across the room.
-SIDESTEP_BUDGET_S = 1.5
-
-
 class MappoPlanner(DynamicWindowPlanner):
     """A planner-shaped object that asks the policy first.
 
@@ -220,13 +197,7 @@ class MappoPlanner(DynamicWindowPlanner):
         #: in a log of velocities.
         self.counts: dict = {"ticks": 0, "policy": 0, "vetoed": 0, "stopped": 0,
                              "velocity_unavailable": 0, "speed_raised": 0,
-                             "peer_held": 0, "floor_unreachable": 0, "sidestep": 0,
-                             "sidestep_unreachable": 0}
-        #: Sidestep state. `_until` is a `time.monotonic()` deadline and `_spent_s` is the
-        #: cycle budget; both are reset together when the lateral intent disappears.
-        self._sidestep_until = 0.0
-        self._sidestep_sign = 1.0
-        self._sidestep_spent_s = 0.0
+                             "peer_held": 0, "floor_unreachable": 0}
         #: Commanded speeds below this are scaled up, direction preserved — see
         #: :meth:`_at_least_walking_pace`. Zero disables it.
         self._gait_floor_m_s = gait_floor_m_s
@@ -416,7 +387,6 @@ class MappoPlanner(DynamicWindowPlanner):
             max(-self.limits.max_vy, min(self.limits.max_vy, step.vy_mps)),
             max(-self.limits.max_wz, min(self.limits.max_wz, step.wz_radps)))
 
-        proposed = self._sidestep(proposed, pose, obstacles, time.monotonic())
         proposed = self._at_least_walking_pace(proposed)
 
         if self._supervised and not self.is_feasible(pose, proposed, obstacles,
@@ -437,94 +407,6 @@ class MappoPlanner(DynamicWindowPlanner):
         return Command(proposed[0], proposed[1], proposed[2], reason="policy",
                        gap_m=planned.gap_m,
                        feasible=planned.feasible, evaluated=planned.evaluated)
-
-    def _sidestep(self, proposed: tuple, pose, obstacles,
-                  monotonic_s: float) -> tuple:
-        """Execute a sub-floor lateral intent as a PURE CRAB, or not at all.
-
-        THE ARITHMETIC THIS EXISTS FOR. The envelope is anisotropic — 0.35 m/s forward,
-        0.20 m/s lateral — and the lateral axis has a FLOOR of 0.20, not just a ceiling:
-        0.15 m/s does not walk this robot and 0.20 does. So a diagonal command only
-        produces sideways travel if its lateral component reaches 0.20, and with ``vx`` at
-        its own maximum that needs ``atan(0.20/0.35)`` = **29.7 degrees** off the nose.
-
-        The policy lives entirely inside that dead zone. Measured on the live run of
-        2026-08-25, raw mode, the policy driving all 58 ticks: commanded ``vy`` averaged
-        0.130 and peaked at 0.166, **0 of 57 ticks reached 0.20**, and the path bowed
-        **0.067 m over 3.28 m of travel**. The intent was real and continuous and the
-        robot went straight. Roughly 20 degrees of steering, against 29.7 needed.
-
-        So the choice is not "swerve harder". It is what to do with a direction the
-        envelope cannot express. Rotating the command out to 29.7 degrees would be the
-        smaller change and is exactly the sin :meth:`_at_least_walking_pace` was just
-        fixed for committing — silently turning a command the policy chose. A pure crab
-        keeps the direction the policy asked for, drops only the forward component, and
-        lands on a speed measured to walk.
-
-        GATED ON AN OBSTACLE BEING IN RANGE, and that is not belt-and-braces. Part of the
-        policy's lateral command is goal-seeking, not avoidance: on the same run the early
-        ticks carried ``vy`` about 0.12 with ``obst=[none]``. Sidestepping for those would
-        stop the robot dead and crab it toward a goal it was already walking to.
-
-        BOUNDED AS A CYCLE, not as a step. ``SIDESTEP_BUDGET_S`` is spent across an
-        encounter and returned only when the intent disappears, because a step that
-        re-armed on every restatement of the same intent has no timeout at all.
-
-        ``wz`` is passed through untouched, as everywhere else on this path.
-        """
-        if self._gait_floor_m_s <= 0.0:
-            return proposed
-        vx, vy, wz = proposed
-        intent = abs(vy)
-
-        # No intent: the encounter is over, and the budget comes back with it.
-        if intent < SIDESTEP_MIN_INTENT_M_S:
-            self._sidestep_until = 0.0
-            self._sidestep_spent_s = 0.0
-            return proposed
-
-        # Already executable as a diagonal — the floor projection will land it on the
-        # ellipse and it will crab as part of the walk. Nothing to convert.
-        if intent >= LATERAL_GAIT_FLOOR_M_S:
-            return proposed
-
-        if not self._obstacle_in_range(pose, obstacles):
-            return proposed
-
-        # A derated envelope cannot deliver the floor, so the sidestep would command a
-        # speed measured NOT to walk. Say so rather than issue a command that does
-        # nothing: a silent no-op here reads in the telemetry as a manoeuvre that ran.
-        if self.limits.max_vy < LATERAL_GAIT_FLOOR_M_S:
-            self.counts["sidestep_unreachable"] += 1
-            return proposed
-
-        mid_step = monotonic_s < self._sidestep_until
-        if not mid_step:
-            if self._sidestep_spent_s >= SIDESTEP_BUDGET_S:
-                return proposed
-            self._sidestep_sign = 1.0 if vy >= 0.0 else -1.0
-            self._sidestep_until = monotonic_s + SIDESTEP_DURATION_S
-            self._sidestep_spent_s += SIDESTEP_DURATION_S
-
-        self.counts["sidestep"] += 1
-        return (0.0, math.copysign(LATERAL_GAIT_FLOOR_M_S, self._sidestep_sign), wz)
-
-    def _obstacle_in_range(self, pose, obstacles) -> bool:
-        """Whether anything sits inside the POLICY's sensing horizon.
-
-        The horizon is the policy's, not the planner's, because the intent being executed
-        is the policy's: an obstacle it cannot see cannot be what it is steering around.
-        """
-        horizon = self._runner.config.lidar_range_m
-        for obstacle in obstacles or ():
-            x = getattr(obstacle, "x", None)
-            y = getattr(obstacle, "y", None)
-            if x is None or y is None:
-                continue
-            radius = getattr(obstacle, "radius_m", 0.0) or 0.0
-            if math.hypot(x - pose[0], y - pose[1]) - radius <= horizon:
-                return True
-        return False
 
     def _at_least_walking_pace(self, proposed: tuple) -> tuple:
         """Scale a policy command up to the gait floor, KEEPING ITS DIRECTION.
@@ -647,10 +529,6 @@ class MappoPlanner(DynamicWindowPlanner):
                    if counts["speed_raised"] else "")
                 + (f", {counts['floor_unreachable']} with a direction the envelope "
                    f"cannot reach" if counts["floor_unreachable"] else "")
-                + (f", {counts['sidestep']} sidestepping"
-                   if counts["sidestep"] else "")
-                + (f", {counts['sidestep_unreachable']} wanting a sidestep this derated "
-                   f"envelope cannot walk" if counts["sidestep_unreachable"] else "")
                 + (f", {counts['peer_held']} held for a peer this robot could not locate"
                    if counts["peer_held"] else "")
                 + (f", {counts['velocity_unavailable']} with no measured velocity"
