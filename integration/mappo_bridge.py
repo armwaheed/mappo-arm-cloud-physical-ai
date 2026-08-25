@@ -116,6 +116,53 @@ HOLD_LABELS = ("person",)
 #: is what would justify it.
 POLICY_MAX_MOVER_SPEED_MPS = 0.25
 
+#: How far ahead a moving obstacle's disc is grown, seconds.
+#:
+#: THE POLICY CANNOT SEE MOTION, and this is how it is told anyway. Its 18-value
+#: observation is ``[x, y, vx, vy, x-gx, y-gy, *12 lidar]`` where ``vx, vy`` are the
+#: ROBOT'S OWN; there is no channel for an obstacle's velocity, so a crossing peer enters
+#: as an instantaneous disc wherever it happened to be. Measured in simulation with the
+#: peer's EXACT position handed over every tick, the policy sees it (ray proximity 0.176,
+#: well inside the 0.875 m horizon) and responds by STOPPING — forward command to zero —
+#: with a closest approach of 0.194 m at the worst crossing speed.
+#:
+#: A disc does not have to mean "where it is". Growing it by ``speed * horizon`` makes the
+#: ray cast report where the peer WILL be, which is the one thing the policy's only input
+#: can express. The planner's own rollout already reasons this way in ``avoidance._gaps``;
+#: this gives the policy the same idea through the channel it has.
+#:
+#: Measured, same simulation, clearance against the TRUE disc:
+#:
+#:   ==========  ==============  =================
+#:   peer m/s    disc as-is      grown at 1.5 s
+#:   ==========  ==============  =================
+#:   0.10        0.148 m         0.275 m
+#:   0.20        0.194 m         0.505 m
+#:   0.35        0.537 m         0.791 m
+#:   0.50        0.790 m         1.004 m
+#:   ==========  ==============  =================
+#:
+#: and mean steering deflection at 0.20 m/s rises 9.5 deg -> 24.2 deg, attributed against a
+#: paired ablated control with the peer removed. That is the policy steering around the
+#: peer rather than halting in front of it.
+#:
+#: ISOTROPIC, NOT SWEPT, and that was the surprise. Placing the disc at the peer's
+#: predicted position instead — directional, and self-cancelling once the peer is past —
+#: was measured WORSE at every speed (0.376 m against 0.505 m at 0.20 m/s). Growing
+#: backwards as well keeps pushing the robot away during the approach, and that margin is
+#: worth more than the false conservatism costs.
+#:
+#: BOUNDED BY THE GATE ABOVE, with no clamp needed. Only an obstacle slower than
+#: :data:`POLICY_MAX_MOVER_SPEED_MPS` reaches the policy at all — anything faster holds the
+#: robot — so the largest disc the policy can ever be shown is its true radius plus
+#: ``0.25 * 1.5 = 0.375 m``. The two mechanisms compose; neither needs to know about the
+#: other.
+#:
+#: 1.5 s rather than the planner's 2.5 s veto horizon: 2.5 was also measured and gained
+#: nothing at the speeds that matter (0.460 m against 0.505 m at 0.20 m/s), while inflating
+#: every disc further into space the robot might legitimately use.
+POLICY_MOTION_HORIZON_S = 1.5
+
 
 @dataclass(frozen=True)
 class BridgeReport:
@@ -264,6 +311,12 @@ def policy_objects(tick: dict) -> list:
     An obstacle the robot is standing INSIDE is still emitted. The range caster on the
     far side reports zero for it, which is the correct and conservative reading; dropping
     it here would report clear space instead.
+
+    A MOVING obstacle's disc is grown by ``speed * POLICY_MOTION_HORIZON_S`` — see that
+    constant for why, and for the measurements. ⚠️ The growth applies ONLY here. The
+    planner and its feasibility veto keep the true radius and do their own rollout, so
+    nothing double-counts, and every clearance this repository reports is still measured
+    against the real disc.
     """
     pose = tick["pose"]
     out = []
@@ -274,6 +327,11 @@ def policy_objects(tick: dict) -> list:
         if x is None or y is None or radius is None:
             continue                       # a half-recorded obstacle is not a detection
         body_x, body_y = to_body_frame(pose, x, y)
+        # Grow the disc by where the obstacle is going. Falls out to zero for anything
+        # stationary, so a mapped landmark is unaffected and no branch is needed.
+        speed = math.hypot(_finite(obstacle.get("vx")) or 0.0,
+                           _finite(obstacle.get("vy")) or 0.0)
+        radius += speed * POLICY_MOTION_HORIZON_S
         out.append({
             "distance_m": math.hypot(body_x, body_y),
             "bearing_rad": wrap_pi(math.atan2(body_y, body_x)),

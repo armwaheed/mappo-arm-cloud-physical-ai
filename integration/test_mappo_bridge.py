@@ -22,6 +22,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mappo_bridge import (
+    POLICY_MAX_MOVER_SPEED_MPS,
+    POLICY_MOTION_HORIZON_S,
     VELOCITY_FRAME,
     BridgeReport,
     audit,
@@ -150,6 +152,57 @@ def test_a_person_always_holds_the_robot_however_fast_they_are_going():
     assert [o["object_id"] for o in objects] == ["landmark-1"]
     assert external_hold(_tick(obstacles=[STOPPED_PERSON],
                                command={"reason": "hold"})) is True
+
+
+def test_a_moving_peers_disc_is_grown_by_where_it_is_going():
+    """The policy has no obstacle-velocity channel, so motion is expressed as SIZE.
+
+    Measured in simulation with the peer's exact position handed over every tick: without
+    this the policy sees the peer and STOPS, closest approach 0.194 m at the worst crossing
+    speed; with it, 0.505 m and mean deflection 9.5 -> 24.2 deg. The disc is the only thing
+    the 18-value observation can carry this in."""
+    peer = {**PARKED_PEER, "vx": 0.0, "vy": 0.20}
+    grown = policy_objects(_tick(obstacles=[peer]))[0]
+    assert math.isclose(grown["radius_m"],
+                        PARKED_PEER["radius_m"] + 0.20 * POLICY_MOTION_HORIZON_S,
+                        rel_tol=1e-9)
+
+
+def test_a_stationary_obstacle_is_not_grown_at_all():
+    """No branch guards this: speed is zero, so the growth term vanishes. A mapped bin must
+    not creep outward because a velocity field exists on its record."""
+    assert policy_objects(_tick(obstacles=[BIN]))[0]["radius_m"] == BIN["radius_m"]
+    parked = policy_objects(_tick(obstacles=[PARKED_PEER]))[0]
+    assert parked["radius_m"] == PARKED_PEER["radius_m"]
+
+
+def test_growth_is_isotropic_so_the_disc_stays_centred_on_the_peer():
+    """Placing the disc at the PREDICTED position instead was measured worse at every
+    crossing speed (0.376 m against 0.505 m at 0.20 m/s): growing backwards as well keeps
+    the robot pushed away during the approach, and that margin outweighs the conservatism.
+    So the centre must not move."""
+    # 0.20 and not 0.30: anything above POLICY_MAX_MOVER_SPEED_MPS holds the robot and
+    # never reaches the policy at all, so a faster peer would make this assert an empty
+    # list. That interaction bounds the growth — see the constant.
+    peer = {**PARKED_PEER, "vx": 0.0, "vy": 0.20}
+    still = policy_objects(_tick(obstacles=[PARKED_PEER]))[0]
+    moving = policy_objects(_tick(obstacles=[peer]))[0]
+    assert math.isclose(moving["bearing_rad"], still["bearing_rad"], abs_tol=1e-9)
+    assert math.isclose(moving["distance_m"], still["distance_m"], abs_tol=1e-9)
+
+
+def test_the_growth_is_bounded_by_the_speed_gate_that_precedes_it():
+    """The two mechanisms compose into a bound nobody has to enforce separately.
+
+    Only an obstacle slower than POLICY_MAX_MOVER_SPEED_MPS reaches the policy at all;
+    anything faster holds the robot. So the largest disc the policy can ever be shown is
+    its true radius plus 0.25 * 1.5 = 0.375 m, and no clamp is needed to guarantee it."""
+    fastest_that_still_reaches = POLICY_MAX_MOVER_SPEED_MPS - 1e-6
+    peer = {**PARKED_PEER, "vx": 0.0, "vy": fastest_that_still_reaches}
+    grown = policy_objects(_tick(obstacles=[peer]))[0]
+    assert grown["radius_m"] < PARKED_PEER["radius_m"] + 0.376
+    faster = {**PARKED_PEER, "vx": 0.0, "vy": POLICY_MAX_MOVER_SPEED_MPS + 0.05}
+    assert policy_objects(_tick(obstacles=[faster])) == [], "should hold, not be grown"
 
 
 def test_a_parked_peer_reaches_the_policy_instead_of_stopping_the_robot():
