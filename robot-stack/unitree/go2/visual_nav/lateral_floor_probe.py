@@ -125,12 +125,21 @@ def main(argv=None) -> int:
         return 0
 
     from locomotion.go2_locomotion import Go2Locomotion
+    from safety import lie_down, stand_up
+
     loco = Go2Locomotion(iface=args.iface)
     loco.connect()
     rows = []
     try:
-        loco.stand()
-        time.sleep(2.0)
+        # `safety.stand_up`, NOT `loco.stand()`. Getting up needs TWO calls — recover()
+        # is RecoveryStand and is what lifts a prone robot, stand() is BalanceStand and
+        # is what puts it in the mode that accepts Move. The first version of this probe
+        # called only stand(), the robot stayed prone, every Move was silently ignored,
+        # and the run reported 0.000 m/s on EVERY axis including forward — which reads
+        # as "the floor is real and total" rather than as "nothing moved". That function
+        # exists precisely because two callers had already drifted into private copies
+        # of this sequence; this was the third.
+        stand_up(loco)
         for vy in plan:
             row = _segment(loco, FORWARD_M_S, vy, args.segment)
             rows.append(row)
@@ -138,9 +147,17 @@ def main(argv=None) -> int:
                   f"lateral {row['lateral_mps']:+.3f} m/s  "
                   f"yaw {row['yaw_change_deg']:+.1f} deg")
     finally:
-        loco.set_velocity(0.0, 0.0, 0.0)
-        time.sleep(0.3)
-        loco.stand_down()
+        lie_down(loco)
+
+    # A run in which the robot never walked reports 0.000 lateral at every setting,
+    # which reads exactly like "the floor is real and total". Refuse to tabulate it.
+    walked = [r for r in rows if abs(r["forward_mps"]) > 0.05]
+    if len(walked) < len(rows):
+        print()
+        print(f"⚠️  REFUSING TO REPORT: {len(rows) - len(walked)} of {len(rows)} segments "
+              f"had no forward motion, so the legs were not walking and a zero lateral "
+              f"means nothing. Check the stand sequence and the motion mode.")
+        return 1
 
     print()
     print(f"{'commanded vy':>13} {'lateral m/s':>12} {'vs control':>11} {'delivered':>10}")
