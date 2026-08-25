@@ -108,7 +108,7 @@ def _coast(tracker: ObstacleTracker, filter_time: float, seconds: float) -> floa
 
 
 def _navigator(tracker: ObstacleTracker, filter_time: float,
-               static_map=None) -> VisualNavigator:
+               static_map=None, expansion=None) -> VisualNavigator:
     """A navigator wired to nothing but the planner and tracker ``_obstacles`` reads.
 
     ``_tracker_time`` is set directly because the loop that normally maintains it is
@@ -118,7 +118,7 @@ def _navigator(tracker: ObstacleTracker, filter_time: float,
         loco=None, perception=None,
         planner=DynamicWindowPlanner(config=PlannerConfig()),
         tracker=tracker, goal_source=None, health=None, config=NavConfig(),
-        static_map=static_map)
+        static_map=static_map, expansion=expansion)
     navigator._tracker_time = filter_time
     return navigator
 
@@ -184,6 +184,65 @@ def test_obstacles_are_only_the_confirmed_tracks():
     navigator = _navigator(tracker, filter_time)
     assert tracker.tracks, "a track should exist"
     assert navigator._obstacles(filter_time + LATENCY_S) == []
+
+
+class _RejectAll:
+    """Stand-in for ``ExpansionConsistency`` that rejects whatever it is asked about.
+
+    A real gate needs a walking robot to say anything, and this test is about the
+    WIRING: does a rejection reach the planner's obstacle list, and does the track
+    survive it? ``expansion.py``'s own suite covers whether the verdict is right.
+    """
+
+    def __init__(self, rejected=None):
+        self.rejected = rejected
+        self.asked = []
+
+    def rejects(self, track_ids):
+        ids = list(track_ids)
+        self.asked.append(ids)
+        return set(ids) if self.rejected is None else set(self.rejected) & set(ids)
+
+
+def test_a_rejected_track_is_withheld_from_the_planner():
+    """The one behaviour the gate buys. Without it the whole module is an opinion
+    nothing reads."""
+    tracker, filter_time = _tracked_person()
+    gate = _RejectAll()
+    navigator = _navigator(tracker, filter_time, expansion=gate)
+    assert tracker.confirmed_tracks(), "there is a confirmed track to withhold"
+    assert navigator._obstacles(filter_time + LATENCY_S) == []
+    assert gate.asked and gate.asked[0], "the gate was never consulted"
+
+
+def test_a_rejected_track_is_withheld_and_NOT_deleted():
+    """⚠️ Withholding and deleting are different, and only one of them is safe.
+
+    A deleted track loses its hits, its velocity and its window, and the very next
+    detection of the same box spawns a NEW id with a clean sheet — which re-confirms in
+    CONFIRM_HITS frames and is planned against again. That create/destroy loop is the
+    bug ``static_map``'s MAX_MISSES was written to break. Keeping the track means the
+    evidence keeps accumulating and a wrong rejection can be undone."""
+    tracker, filter_time = _tracked_person()
+    before = [t.track_id for t in tracker.confirmed_tracks()]
+    navigator = _navigator(tracker, filter_time, expansion=_RejectAll())
+    navigator._obstacles(filter_time + LATENCY_S)
+    after = [t.track_id for t in tracker.confirmed_tracks()]
+    assert after == before, f"the tracker lost {set(before) - set(after)}"
+
+
+def test_without_a_gate_nothing_changes():
+    """The flag is off by default, so the no-gate path is the deployed one and has to
+    be byte-for-byte the behaviour that shipped."""
+    tracker, filter_time = _tracked_person()
+    plain = _navigator(tracker, filter_time)._obstacles(filter_time + LATENCY_S)
+    tracker2, filter_time2 = _tracked_person()
+    kept = _navigator(tracker2, filter_time2,
+                      expansion=_RejectAll(rejected=[]))._obstacles(
+                          filter_time2 + LATENCY_S)
+    assert len(plain) == 1 and len(kept) == 1
+    assert plain[0].object_id == kept[0].object_id
+    assert abs(plain[0].radius_m - kept[0].radius_m) < 1e-12
 
 
 def _coast_budget_s(range_m: float, bearing_deg: float = 20.0) -> float:

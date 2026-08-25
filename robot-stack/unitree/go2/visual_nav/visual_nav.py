@@ -148,6 +148,7 @@ from colour_detector import (
     ColourProfile,
     load_colour_profile,
 )
+from expansion import ExpansionConsistency
 from goal import (
     DEFAULT_GOAL_CROP,
     DEFAULT_GOAL_INPUT_SIZE,
@@ -409,7 +410,8 @@ class VisualNavigator:
                  static_map: StaticObstacleMap | None = None,
                  telemetry: TelemetryWriter | None = None,
                  stand_up_fn=None, lie_down_fn=None,
-                 raw_recorder: cv2.VideoWriter | None = None) -> None:
+                 raw_recorder: cv2.VideoWriter | None = None,
+                 expansion: ExpansionConsistency | None = None) -> None:
         self._loco = loco
         self._perception = perception
         self._planner = planner
@@ -425,6 +427,10 @@ class VisualNavigator:
         self._raw_recorder = raw_recorder
         self._static_map = static_map
         self._telemetry = telemetry
+        # Read in _obstacles only. Passed separately from the tracker it is also
+        # attached to, because the two use it for different things and the navigator
+        # must not reach into the tracker's private state to find it.
+        self._expansion = expansion
         self._stand_up_fn = stand_up_fn or self._default_stand_up
         self._lie_down_fn = lie_down_fn or self._default_lie_down
 
@@ -505,6 +511,15 @@ class VisualNavigator:
         """
         latency = max(0.0, now - self._tracker_time)
         extrapolation_sigma = 0.5 * PROCESS_ACCEL_SIGMA * latency * latency
+        confirmed = self._tracker.confirmed_tracks()
+        # The expansion gate, where one is fitted, subtracts here and NOWHERE ELSE.
+        # A rejected track keeps being predicted, associated and corrected, so it keeps
+        # accumulating the evidence that could restore it; what it stops doing is
+        # constraining the plan. Deleting it in the tracker would throw that evidence
+        # away and let the same box respawn as a new id with a clean sheet, which is
+        # the loop `static_map`'s MAX_MISSES was written to break.
+        rejected = (set() if self._expansion is None
+                    else self._expansion.rejects(t.track_id for t in confirmed))
         obstacles = [
             Obstacle(x=float(track.state[0] + track.state[2] * latency),
                      y=float(track.state[1] + track.state[3] * latency),
@@ -513,7 +528,7 @@ class VisualNavigator:
                                + track.position_sigma + extrapolation_sigma),
                      label=track.label, person_shaped=track.person_shaped,
                      kind="tracked", object_id=f"track-{track.track_id}")
-            for track in self._tracker.confirmed_tracks()
+            for track in confirmed if track.track_id not in rejected
         ]
         # Landmarks need none of the above. They are not extrapolated because they do
         # not move, and their radius carries no latency term for the same reason — the
@@ -1028,6 +1043,13 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
                          "person when no volunteer is available — but the size priors "
                          "in camera_model are a PERSON's, so any other class is ranged "
                          "with the wrong prior unless you say what it is")
+    ap.add_argument("--expansion-filter", action="store_true",
+                    help="withhold a confirmed track from the planner when its range "
+                         "does not fall as fast as the robot's own odometry demands — "
+                         "i.e. it is further off than its size prior claims. OFF by "
+                         "default: the gate's noise floor is measured but it has never "
+                         "run against a moving robot, so it is opt-in until a walking "
+                         "sequence says what it catches. See expansion.py")
     ap.add_argument("--obstacle-height", type=float, default=None,
                     help="true height of the tracked object in metres, when --classes "
                          "is something other than person")
@@ -1247,7 +1269,12 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
               f"top speed), robot radius {planner_config.robot_radius_m:.2f} m, "
               f"mover radius {planner_config.obstacle_radius_m:.2f} m")
         planner = planner_factory(limits=limits, config=planner_config)
-        tracker = ObstacleTracker(fov_rad=math.radians(camera_model.hfov_deg))
+        expansion = ExpansionConsistency() if args.expansion_filter else None
+        if expansion is not None:
+            print("[visual_nav] expansion filter ON: a confirmed track whose range "
+                  "does not fall as odometry demands is withheld from the planner")
+        tracker = ObstacleTracker(fov_rad=math.radians(camera_model.hfov_deg),
+                                  expansion=expansion)
 
         perception = PerceptionWorker(camera, detector, camera_model, goal_source,
                                       pose_tuple, prior, colour_detector)
@@ -1309,6 +1336,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
             loco, perception, planner, tracker, goal_source, health, config, recorder,
             static_map, telemetry, stand_up_fn=bindings.stand_up,
             lie_down_fn=bindings.lie_down, raw_recorder=raw_recorder,
+            expansion=expansion,
         )
         navigator.run()
     finally:
