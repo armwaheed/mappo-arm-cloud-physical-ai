@@ -6,18 +6,41 @@ SPDX-License-Identifier: Apache-2.0
 # Teaching the perception stack to see a peer robot
 
 No off-the-shelf detector has a **name** for another quadruped. That much is measured,
-not assumed — though the first row is wrong, and why it is wrong turned out to be the
-whole story:
+not assumed — though the first row used to say something stronger and false, and why it
+was wrong turned out to be the whole story:
 
 | detector | best response to a Go2 Wheel filling half the frame |
 | --- | --- |
-| MobileNet-SSD / VOC-21 (**what the robot runs**) | **nothing at any score down to 0.02** |
+| MobileNet-SSD / VOC-21 (**what the robot runs**) | no *correct* class; the box comes back as `bicycle` **0.984** — see the correction below |
 | YOLO11n / COCO-80 | `motorcycle` 0.138, `bicycle` 0.112 |
 | YOLO-World, prompted "robot dog" / "quadruped robot" | `robotic dog` **0.039** |
 
 The open-vocabulary row is the one that settles it. That model, on the same frames, with
 the same code path, scores `person` **0.932** — so the pipeline is verified and the null
 result is real. There is no off-the-shelf model that knows what a Lite3 is.
+
+> ⚠️ **Correction, 2026-08-25 — the floor, and the sweep it hid.** The first row of that
+> table used to read "nothing at any score down to 0.02", and it was wrong twice over.
+> `MobileNetSSD_deploy.prototxt` carries `confidence_threshold: 0.25` inside its
+> `DetectionOutput` layer, so **0.02 was never reachable** — the network cannot emit a box
+> below 0.25 whatever a caller passes. And the stock net does not return "nothing": read
+> class-agnostically it puts a box on a close-range peer at **0.984**, and on **81.2%** of a
+> 1,903-frame peer corpus at 0.15, against 64.4% at the shipped 0.25. What is genuinely
+> absent is the *label*, not the box — which is the premise this directory rests on, and it
+> is unchanged. The measured sweep is in
+> [`evidence/2026-08-25-peer-detector-threshold-and-tracks/`](../evidence/2026-08-25-peer-detector-threshold-and-tracks/).
+>
+> That sweep also killed the **18% false-alarm rate** this directory had been quoting: all
+> 159 of those "alarms" are correct boxes on a peer in a frame the label file forgot, and on
+> the 705 genuinely peer-free frames of that capture the rate is **0/705** at every
+> threshold ≥ 0.14.
+>
+> ⛔ **Do not read that 0/705 as a licence to drop the floor.** Those 705 frames are staged
+> negatives — one corridor, cleared and shot for the purpose, same session as the positives.
+> Scored **cross-day** on a furnished room the same class-agnostic read fires on **57%** of
+> peer-free frames, which is the number the section below is built on. The recall figure is
+> a property of the network and stands; the false-alarm figure is a property of the room and
+> does not.
 
 ### ⚠️ Two of the sentences above were wrong, and finding out ended the fine-tune
 
