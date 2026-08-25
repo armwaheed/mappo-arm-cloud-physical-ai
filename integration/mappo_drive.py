@@ -197,7 +197,7 @@ class MappoPlanner(DynamicWindowPlanner):
         #: in a log of velocities.
         self.counts: dict = {"ticks": 0, "policy": 0, "vetoed": 0, "stopped": 0,
                              "velocity_unavailable": 0, "speed_raised": 0,
-                             "peer_held": 0}
+                             "peer_held": 0, "floor_unreachable": 0}
         #: Commanded speeds below this are scaled up, direction preserved — see
         #: :meth:`_at_least_walking_pace`. Zero disables it.
         self._gait_floor_m_s = gait_floor_m_s
@@ -429,7 +429,10 @@ class MappoPlanner(DynamicWindowPlanner):
 
         Direction is preserved by scaling ``vx`` and ``vy`` together — scaling only the
         forward axis would rotate the command toward straight ahead, which near an
-        obstacle is the one direction the policy was steering away from.
+        obstacle is the one direction the policy was steering away from. Clamping one
+        axis afterwards turns the command for the same reason, which is why the floor is
+        projected onto as an ELLIPSE rather than scaled to as a circle; see the worked
+        example below.
 
         Applied BEFORE the veto on purpose. A command clamped on the way OUT would mean
         ``is_feasible`` validated a velocity different from the one the legs receive, and
@@ -471,11 +474,52 @@ class MappoPlanner(DynamicWindowPlanner):
         # `< 0.0` not `<= 0.0`: a sideways step is not a reverse.
         if vx < 0.0:
             return proposed
-        scale = floor / speed
-        scaled_vx = max(-self.limits.max_vx, min(self.limits.max_vx, vx * scale))
-        scaled_vy = max(-self.limits.max_vy, min(self.limits.max_vy, vy * scale))
+
+        # CORRECTED 2026-08-25: the floor is an ELLIPSE, and treating it as a circle
+        # rotated the command this method's own docstring promises to preserve.
+        #
+        # The two floors are different numbers — 0.35 m/s forward, 0.20 m/s lateral —
+        # so `floor / speed` overshoots on the lateral axis and the `max_vy` clamp then
+        # trims only THAT component. Trimming one component of a vector turns it. Worked
+        # example, and it is not a rounding error: the policy proposes (0.05, 0.108),
+        # 65.2 deg off the nose. `scale` is 0.35/0.119 = 2.94, giving (0.147, 0.318);
+        # the clamp cuts vy to 0.20 and leaves vx at 0.147, which is 53.7 deg. The
+        # command arrives 11.5 deg closer to straight ahead — and near an obstacle,
+        # straight ahead is the one direction the policy was steering away from. A
+        # command at 80 deg is rotated by 34.8 deg, the worst case.
+        #
+        # Both floors happen to equal their own axis limit (MIN_GAIT_COMMAND_M_S 0.35 ==
+        # max_vx, lateral floor 0.20 == max_vy), so the floor ellipse and the envelope
+        # ellipse are the SAME curve. That makes the fix a projection onto it: normalise
+        # each axis by its own limit, and scale the whole vector by one scalar until the
+        # normalised radius reaches 1. Multiplying both components by a single number
+        # cannot change their ratio, so the direction survives exactly, and the result
+        # lands on the boundary rather than needing a clamp afterwards.
+        #
+        # The floor is measured only on the two axes; in between it is interpolated, and
+        # that assumption is worth stating because it could be wrong. It does not need to
+        # be right. Landing on the envelope boundary is the FASTEST command available in
+        # the requested direction — nothing in that direction can be commanded harder. So
+        # if the projected command does not walk, no command in that direction would, and
+        # the only alternative left is to turn the command into a different one, which is
+        # precisely the bug above. Optimal-in-direction holds whatever shape the true
+        # floor has between the axes.
+        #
+        # A pure strafe is the case this exists to serve: (0.000, 0.108) has a normalised
+        # radius of 0.54, so it scales to (0.000, 0.200) — the measured lateral floor,
+        # direction untouched. That is the swerve, executed as a crab step.
+        reach = math.hypot(vx / self.limits.max_vx, vy / self.limits.max_vy)
+        if reach >= 1.0:
+            # Already on or outside the ellipse: it walks as proposed. `speed < floor`
+            # can still hold here, because a mostly-lateral command reaches the lateral
+            # floor well below the forward one.
+            return proposed
+        if reach <= 0.0:
+            self.counts["floor_unreachable"] += 1
+            return proposed
+        scale = 1.0 / reach
         self.counts["speed_raised"] += 1
-        return (scaled_vx, scaled_vy, wz)
+        return (vx * scale, vy * scale, wz)
 
     def report(self) -> str:
         counts = self.counts
@@ -483,6 +527,8 @@ class MappoPlanner(DynamicWindowPlanner):
                 f"policy, {counts['vetoed']} vetoed, {counts['stopped']} stopped"
                 + (f", {counts['speed_raised']} scaled up to the gait floor"
                    if counts["speed_raised"] else "")
+                + (f", {counts['floor_unreachable']} with a direction the envelope "
+                   f"cannot reach" if counts["floor_unreachable"] else "")
                 + (f", {counts['peer_held']} held for a peer this robot could not locate"
                    if counts["peer_held"] else "")
                 + (f", {counts['velocity_unavailable']} with no measured velocity"
