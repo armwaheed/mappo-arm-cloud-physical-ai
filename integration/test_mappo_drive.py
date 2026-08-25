@@ -33,10 +33,14 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
                                 "visual_nav"))
+import pytest
+
 from avoidance import Limits, Obstacle, PlannerConfig
 
 from mappo_bridge import external_hold
 from mappo_drive import (
+    SIDESTEP_BUDGET_S,
+    SIDESTEP_DURATION_S,
     _STOP_REASONS,
     MappoPlanner,
     _add_arguments,
@@ -771,3 +775,121 @@ if __name__ == "__main__":
         t()
         print(f"  ok  {t.__name__}")
     print(f"mappo_drive: {len(tests)}/{len(tests)} passed")
+
+
+# ── The sidestep ────────────────────────────────────────────────────────────
+def _obstacle_at(x: float, y: float, radius_m: float = 0.30) -> Obstacle:
+    return Obstacle(x=x, y=y, vx=0.0, vy=0.0, radius_m=radius_m,
+                    label="lite3", person_shaped=False, kind="tracked",
+                    object_id="track-1")
+
+
+NEAR = [_obstacle_at(1.0, 0.0)]
+POSE = (0.0, 0.0, 0.0)
+
+
+def test_a_sub_floor_lateral_intent_becomes_a_pure_crab():
+    """THE MEASUREMENT THIS EXISTS FOR. On the 2026-08-25 live run, raw mode, the policy
+    drove all 58 ticks and commanded a mean vy of 0.130 with a peak of 0.166 — and 0 of
+    57 ticks reached the 0.20 m/s lateral floor, so the path bowed 0.067 m over 3.28 m of
+    travel. The intent was real and continuous and the robot went straight.
+
+    With vx at its own maximum, a diagonal needs atan(0.20/0.35) = 29.7 degrees off the
+    nose before ANY lateral travel occurs. The policy commands about 20. So the diagonal
+    is dropped and the direction is kept."""
+    planner = _planner(gait_floor_m_s=0.35)
+    vx, vy, wz = planner._sidestep((0.35, 0.13, 0.4), POSE, NEAR, 100.0)
+    assert vx == 0.0, "the forward component is what is given up"
+    assert vy == pytest.approx(0.20), "issued AT the measured lateral floor"
+    assert wz == 0.4, "yaw is passed through untouched"
+    assert planner.counts["sidestep"] == 1
+
+
+def test_the_sidestep_keeps_the_side_the_policy_asked_for():
+    """Direction is the one thing that must survive: a step to the wrong side moves the
+    robot INTO what it was avoiding."""
+    planner = _planner(gait_floor_m_s=0.35)
+    _, vy, _ = planner._sidestep((0.35, -0.13, 0.0), POSE, NEAR, 100.0)
+    assert vy == pytest.approx(-0.20)
+
+
+def test_goal_seeking_lateral_does_not_trigger_a_sidestep():
+    """Part of the policy's lateral command is goal-seeking, not avoidance: on the same
+    live run the early ticks carried vy about 0.12 with obst=[none]. Converting those
+    would stop the robot dead and crab it towards a goal it was already walking to.
+
+    Remove the obstacle gate and this fails."""
+    planner = _planner(gait_floor_m_s=0.35)
+    assert planner._sidestep((0.35, 0.13, 0.0), POSE, [], 100.0) == (0.35, 0.13, 0.0)
+    assert planner.counts["sidestep"] == 0
+
+
+def test_an_obstacle_beyond_the_policy_horizon_does_not_trigger_one():
+    """The gate is the POLICY's sensing horizon, because the intent being executed is the
+    policy's — it cannot be steering around something absent from its own observation."""
+    planner = _planner(gait_floor_m_s=0.35)
+    far = [_obstacle_at(planner._runner.config.lidar_range_m + 2.0, 0.0)]
+    assert planner._sidestep((0.35, 0.13, 0.0), POSE, far, 100.0) == (0.35, 0.13, 0.0)
+
+
+def test_lateral_noise_is_not_an_intent():
+    """Measured vy scattered +-0.045 about a mean of 0.054 on the live run, so a small
+    commanded vy cannot be told from the walk itself. Stepping for it would crab the
+    robot on gait noise."""
+    planner = _planner(gait_floor_m_s=0.35)
+    assert planner._sidestep((0.35, 0.02, 0.0), POSE, NEAR, 100.0) == (0.35, 0.02, 0.0)
+    assert planner.counts["sidestep"] == 0
+
+
+def test_an_intent_that_already_walks_is_left_as_a_diagonal():
+    """At or above the floor the command crabs as part of the walk, and the floor
+    projection lands it on the ellipse. Converting it would throw away forward progress
+    that was already executable."""
+    planner = _planner(gait_floor_m_s=0.35)
+    assert planner._sidestep((0.35, 0.20, 0.0), POSE, NEAR, 100.0) == (0.35, 0.20, 0.0)
+    assert planner.counts["sidestep"] == 0
+
+
+def test_the_budget_bounds_the_cycle_and_not_merely_the_step():
+    """A step that re-armed on every restatement of the same intent would have no timeout
+    at all and would crab the robot across the room. The budget is spent ACROSS an
+    encounter. Walk the clock forward past each step's deadline and the grants must stop."""
+    planner = _planner(gait_floor_m_s=0.35)
+    now, granted = 100.0, 0
+    for _ in range(20):
+        vx, _vy, _ = planner._sidestep((0.35, 0.13, 0.0), POSE, NEAR, now)
+        granted += vx == 0.0
+        now += SIDESTEP_DURATION_S          # each call lands past the last deadline
+    assert granted == pytest.approx(SIDESTEP_BUDGET_S / SIDESTEP_DURATION_S), \
+        "the encounter budget must cap the number of steps"
+
+
+def test_the_budget_returns_only_once_the_intent_goes_away():
+    """Otherwise one encounter's spending would disable the manoeuvre for the rest of the
+    run."""
+    planner = _planner(gait_floor_m_s=0.35)
+    now = 100.0
+    for _ in range(20):
+        planner._sidestep((0.35, 0.13, 0.0), POSE, NEAR, now)
+        now += SIDESTEP_DURATION_S
+    assert planner._sidestep((0.35, 0.13, 0.0), POSE, NEAR, now)[0] == 0.35, "spent"
+    planner._sidestep((0.35, 0.00, 0.0), POSE, NEAR, now)      # intent gone
+    vx, _, _ = planner._sidestep((0.35, 0.13, 0.0), POSE, NEAR, now)
+    assert vx == 0.0, "a fresh encounter gets a fresh budget"
+
+
+def test_a_derated_envelope_reports_that_it_cannot_sidestep():
+    """--derate or --max-vy below the measured floor makes the manoeuvre impossible. It
+    must say so rather than issue a command measured NOT to walk: a silent no-op reads in
+    the telemetry as a manoeuvre that ran."""
+    planner = _planner(limits=Limits(max_vx=0.35, max_vy=0.10), gait_floor_m_s=0.35)
+    assert planner._sidestep((0.35, 0.09, 0.0), POSE, NEAR, 100.0) == (0.35, 0.09, 0.0)
+    assert planner.counts["sidestep_unreachable"] == 1
+    assert planner.counts["sidestep"] == 0
+
+
+def test_the_sidestep_is_off_unless_the_gait_floor_is_on():
+    """Same switch as the floor projection: this is a deliberate override of what the
+    policy asked for and is not on by default."""
+    planner = _planner()
+    assert planner._sidestep((0.35, 0.13, 0.0), POSE, NEAR, 100.0) == (0.35, 0.13, 0.0)
