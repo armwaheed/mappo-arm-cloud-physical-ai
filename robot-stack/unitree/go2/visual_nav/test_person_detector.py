@@ -20,11 +20,15 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from camera_model import PERSON_HEIGHT_M, FisheyeCamera
+import pytest
+
+from camera_model import PERSON_HEIGHT_M, PERSON_WIDTH_M, FisheyeCamera
 from person_detector import (
     FILLS_FRAME_RANGE_M,
+    PERSON_ASPECT_MIN,
     PERSON_PRIOR,
     Detection,
+    RangedDetection,
     SizePrior,
     estimate_range,
     object_fit_range,
@@ -208,3 +212,75 @@ if __name__ == "__main__":
         t()
         print(f"  ok  {t.__name__}")
     print(f"person_detector: {len(tests)}/{len(tests)} passed")
+
+
+# ── Routing on shape rather than on the label ───────────────────────────────
+def _ranged(x1, y1, x2, y2, label="person"):
+    """A RangedDetection with a given box. Range and bearing are irrelevant here —
+    the whole point of the shape rule is that it does not consult them."""
+    return RangedDetection(
+        detection=Detection(x1=x1, y1=y1, x2=x2, y2=y2, score=0.9, label=label),
+        range_m=2.0, bearing_rad=0.0, source="height")
+
+
+FRAME_W, FRAME_H = 1920, 1080
+
+
+def test_a_peer_shaped_box_is_not_person_shaped_whatever_voc_called_it():
+    """THE REASON THIS EXISTS. On 12 consecutive live frames the Go2 Wheel came back
+    labelled `person`, and `mappo_bridge.HOLD_LABELS` would have stopped the robot for
+    it every time. Aspect settles it: the peer corpus tops out at 0.99 over 1,159
+    unclipped boxes against a standing adult's 1.70/0.50 = 3.40."""
+    peer = _ranged(1150, 410, 1490, 790, label="person")   # 340 x 380 -> aspect 1.12
+    assert peer.person_shaped(FRAME_W, FRAME_H) is False
+
+
+def test_a_person_shaped_box_holds_even_when_voc_calls_it_furniture():
+    """The same failure in the other direction, and the more dangerous one: across the
+    2026-08-24 corpus the peer was called `motorbike` 613 times and `chair` 372, so a
+    real person landing on one of those labels used to be handed straight to the policy.
+    Shape stops that."""
+    upright = _ranged(900, 200, 1000, 800, label="motorbike")   # 100 x 600 -> 6.0
+    assert upright.person_shaped(FRAME_W, FRAME_H) is True
+
+
+def test_a_clipped_box_is_unclassifiable_and_must_hold():
+    """A person whose head leaves the frame gives a short wide box indistinguishable
+    from a quadruped, and that happens at CLOSE range where being wrong costs most.
+    39% of the peer corpus is clipped, so this is the common path, not an edge case."""
+    # Peer-shaped by aspect, but running off the right edge.
+    clipped = _ranged(1600, 410, 1920, 790, label="person")
+    assert clipped.person_shaped(FRAME_W, FRAME_H) is True, "clipped must fail safe"
+    # And off the top, which is the person-with-head-cut-off case.
+    topped = _ranged(900, 0, 1240, 380, label="person")
+    assert topped.person_shaped(FRAME_W, FRAME_H) is True
+
+
+def test_the_threshold_sits_between_the_two_measured_populations():
+    """Pins PERSON_ASPECT_MIN against the numbers that chose it. The peer's worst
+    observed box is 0.99 and a standing adult is 3.40; a threshold outside (1.0, 3.4)
+    would collapse one population into the other."""
+    assert 1.0 < PERSON_ASPECT_MIN < PERSON_HEIGHT_M / PERSON_WIDTH_M
+    just_under = _ranged(500, 100, 600, 100 + int(100 * PERSON_ASPECT_MIN) - 10)
+    just_over = _ranged(500, 100, 600, 100 + int(100 * PERSON_ASPECT_MIN) + 10)
+    assert just_under.person_shaped(FRAME_W, FRAME_H) is False
+    assert just_over.person_shaped(FRAME_W, FRAME_H) is True
+
+
+def test_a_degenerate_box_holds_rather_than_dividing_by_zero():
+    """A zero-width box would raise on the aspect division. It must fail safe, not
+    crash the perception thread."""
+    assert _ranged(700, 200, 700, 800).person_shaped(FRAME_W, FRAME_H) is True
+
+
+def test_the_width_prior_is_not_inferred_when_it_is_measured():
+    """`of_height` alone fills width from a PERSON's aspect ratio: 0.514 m of peer
+    becomes 0.151 m wide against a real ~0.31 m. Width ranges a vertically clipped box,
+    and 39% of peer boxes are clipped, so the inferred prior reported the peer at
+    0.09-0.14 m — inside the robot's own footprint."""
+    inferred = SizePrior.of_height(0.514)
+    assert inferred.width_m == pytest.approx(0.514 * PERSON_WIDTH_M / PERSON_HEIGHT_M)
+    assert inferred.width_m < 0.16, "the bug this documents"
+    measured = SizePrior.of_height(0.514, 0.31)
+    assert measured.width_m == pytest.approx(0.31)
+    assert measured.height_m == pytest.approx(0.514)

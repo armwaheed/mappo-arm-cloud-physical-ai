@@ -96,12 +96,21 @@ class Observation:
     sigma_cross: float         # 1-sigma perpendicular to it (bearing error)
     world_bearing: float       # line-of-sight direction in odom, for rotating R
     label: str = "person"
+    #: Whether this measurement must STOP the robot. Decided on box SHAPE by
+    #: ``person_detector.RangedDetection.person_shaped``, and carried BESIDE ``label``
+    #: rather than folded into it because ``_associate`` gates on label equality — a
+    #: peer whose verdict flipped as it clipped the frame edge would otherwise fail to
+    #: associate and leave a coasting ghost that holds the robot. Defaults True: an
+    #: observation from a source that does not judge shape is treated as person-like,
+    #: which is the stopping side.
+    person_shaped: bool = True
 
     @classmethod
     def from_bearing_range(cls, bearing_rad: float, range_m: float,
                            robot_x: float, robot_y: float, robot_yaw: float,
                            label: str = "person",
-                           range_sigma_scale: float = 1.0) -> Observation:
+                           range_sigma_scale: float = 1.0,
+                           person_shaped: bool = True) -> Observation:
         """Build from a body-frame measurement plus the frame-associated robot pose.
 
         ``bearing_rad`` is positive to the robot's left. ``range_sigma_scale``
@@ -116,6 +125,7 @@ class Observation:
             sigma_cross=max(range_m, 0.1) * BEARING_SIGMA_RAD,
             world_bearing=world_bearing,
             label=label,
+            person_shaped=person_shaped,
         )
 
     def covariance(self) -> np.ndarray:
@@ -144,7 +154,8 @@ def _range_sigma_scale(source: str) -> float:
 
 
 def observation_from(bearing_rad: float, range_m: float, source: str, label: str,
-                     pose: tuple[float, float, float]) -> Observation:
+                     pose: tuple[float, float, float],
+                     person_shaped: bool = True) -> Observation:
     """Build an :class:`Observation` from a ranged detection and the robot's pose.
 
     Takes primitives rather than a detection object so this module stays pure numpy —
@@ -155,7 +166,7 @@ def observation_from(bearing_rad: float, range_m: float, source: str, label: str
     return Observation.from_bearing_range(
         bearing_rad=bearing_rad, range_m=range_m,
         robot_x=pose[0], robot_y=pose[1], robot_yaw=pose[2], label=label,
-        range_sigma_scale=_range_sigma_scale(source))
+        range_sigma_scale=_range_sigma_scale(source), person_shaped=person_shaped)
 
 
 @dataclass
@@ -166,6 +177,12 @@ class Track:
     state: np.ndarray                       # [x, y, vx, vy]
     covariance: np.ndarray                  # 4x4
     label: str = "person"
+    #: Latest shape verdict, refreshed on every associated observation. NOT sticky in
+    #: either direction: a peer that clips the frame edge starts holding the robot, and
+    #: stops holding when it comes back whole. Latching it True would park the robot for
+    #: the rest of the run after one clipped frame; latching it False would let a person
+    #: through on the strength of one bad box.
+    person_shaped: bool = True
     hits: int = 1
     misses: int = 0
     last_seen: float = 0.0                  # monotonic seconds
@@ -349,6 +366,10 @@ class ObstacleTracker:
         track.hits += 1
         track.misses = 0
         track.last_seen = now
+        # Refresh the shape verdict from the measurement that just matched. A coasting
+        # track keeps whatever it last saw, which is the conservative choice: a peer
+        # last seen clipped goes on holding until it is measured whole again.
+        track.person_shaped = obs.person_shaped
 
     def _spawn(self, obs: Observation, now: float) -> None:
         covariance = np.zeros((4, 4))
@@ -361,6 +382,7 @@ class ObstacleTracker:
             state=np.array([obs.x, obs.y, 0.0, 0.0]),
             covariance=covariance,
             label=obs.label,
+            person_shaped=obs.person_shaped,
             last_seen=now,
         ))
         self._next_id += 1

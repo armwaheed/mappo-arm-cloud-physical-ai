@@ -522,6 +522,12 @@ class PeerSource:
             radius = self.radius_m
         return ({
             "label": PEER_LABEL,
+            # A mesh peer is a ROBOT, asserted by the peer itself rather than guessed
+            # from a box, so it is never person-shaped. Stated explicitly because
+            # `mappo_bridge.holds_the_robot` defaults this True for any producer that
+            # does not judge shape, and a mesh peer that fell to that default would hold
+            # the robot for exactly the object this path exists to route to the policy.
+            "person_shaped": False,
             "kind": "tracked",
             "id": f"peer-{device}",
             "x": px + pvx * age,
