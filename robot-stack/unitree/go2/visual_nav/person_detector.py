@@ -57,6 +57,17 @@ VOC_CLASSES = (
 # see the README.
 DYNAMIC_CLASSES = ("person",)
 
+#: Box aspect (height/width) at or above which a detection is treated as PERSON-SHAPED
+#: and stops the robot, whatever VOC called it. See
+#: :meth:`RangedDetection.person_shaped` for why shape decides this and the label
+#: does not. 2.0 is the geometric midpoint of the two populations it separates: the peer
+#: corpus tops out at 0.99 over 1,159 unclipped boxes, and a standing adult is
+#: ``PERSON_HEIGHT_M / PERSON_WIDTH_M`` = 3.40. Raising it towards 3.4 starts letting
+#: crouching or partly-occluded people through to the policy; lowering it towards 1.0
+#: starts holding for the peer this exists to pass.
+PERSON_ASPECT_MIN = 2.0
+
+
 # Preprocessing constants baked into the published MobileNet-SSD weights.
 _SSD_SCALE = 1.0 / 127.5
 _SSD_MEAN = 127.5
@@ -125,16 +136,27 @@ class SizePrior:
     width_m: float = PERSON_WIDTH_M
 
     @classmethod
-    def of_height(cls, height_m: float) -> SizePrior:
-        """A prior for an object of known height with the width left to a person's
-        aspect ratio.
+    def of_height(cls, height_m: float, width_m: float | None = None) -> SizePrior:
+        """A prior for an object of known height, with an optional measured width.
 
-        The width prior only matters when the box is vertically clipped, which for
-        anything much smaller than a person happens only when it is nearly touching
-        the lens — so this approximation is not load-bearing for small objects.
+        ⚠️ PASS ``width_m`` FOR ANYTHING THAT IS NOT PERSON-SHAPED. Without it the
+        width is inferred from a standing adult's aspect ratio, and the old docstring
+        here claimed that "only matters when the box is vertically clipped, which for
+        anything much smaller than a person happens only when it is nearly touching the
+        lens". Both halves of that are wrong for a quadruped, and the error runs in the
+        dangerous direction.
+
+        Measured on the 2026-08-24 peer corpus: **39% of 1,903 boxes touch a frame
+        edge**, not a rare event, because a wide low robot fills the frame sideways long
+        before a person would. And the inferred width for a 0.514 m peer is
+        ``0.514 * 0.50/1.70 = 0.151 m`` against a real ~0.31 m head-on. Ranging a
+        clipped box by a width prior 2x too small reports the object 2x too NEAR:
+        segments of that corpus come out at 0.09-0.14 m, i.e. inside the robot's own
+        footprint, which the planner reads as an unavoidable collision and stops for.
         """
         return cls(height_m=height_m,
-                   width_m=height_m * (PERSON_WIDTH_M / PERSON_HEIGHT_M))
+                   width_m=(width_m if width_m is not None
+                            else height_m * (PERSON_WIDTH_M / PERSON_HEIGHT_M)))
 
 
 #: The default prior. A module-level singleton rather than a `SizePrior()` call in
@@ -230,6 +252,49 @@ class RangedDetection:
     @property
     def label(self) -> str:
         return self.detection.label
+
+    def person_shaped(self, width: int, height: int) -> bool:
+        """Whether this must STOP the robot, judged on shape rather than on the VOC label.
+
+        WHY THE VOC LABEL CANNOT DECIDE THIS. ``mappo_bridge.HOLD_LABELS`` stops the
+        robot dead for a ``person`` and routes everything else to the policy. That rule
+        needs the classifier to tell a person from a robot, and this classifier cannot:
+        on 12 consecutive live frames the Go2 Wheel was labelled ``person`` every single
+        time, and across the 2026-08-24 corpus the same peer came back as ``motorbike``
+        613 times, ``chair`` 372, ``aeroplane`` 200 and ``person`` 109. The labels are
+        noise; the boxes are good. So the split was resting on the one thing the
+        detector does badly, and it failed in BOTH directions — the peer was held like a
+        person, and a person read as ``motorbike`` was silently handed to the policy.
+
+        WHAT DECIDES IT INSTEAD. Box aspect, which is scale-free, so it needs no range.
+        That matters because there IS no independent range on this robot: the
+        ground-plane intersection is unusable (``camera_model`` documents a 2 deg trunk
+        wobble swinging a 3 m estimate from 2.3 m to 4.4 m, and a trotting Go2 does
+        more), and ranging by a size prior and then inferring size from that range just
+        returns the prior. Aspect sidesteps the circle entirely.
+
+        THE MARGIN, measured on 1,159 unclipped boxes of the peer corpus: median 0.78,
+        p99 0.92, **max 0.99**. The repo's own standing-adult prior is
+        ``1.70 / 0.50 = 3.40``. :data:`PERSON_ASPECT_MIN` sits at 2.0, roughly the
+        geometric mean of the two, so it clears the peer's worst observed case by 2x and
+        sits 1.7x below a person.
+
+        ⚠️ A CLIPPED BOX IS NOT CLASSIFIABLE AND MUST HOLD. A person whose head leaves
+        the frame produces a short wide box that looks exactly like a quadruped, and
+        that happens at close range — precisely where being wrong costs the most. 39% of
+        the corpus is clipped, so this branch is the common case, not an edge case. It
+        fails to ``person``, which is the stopping side.
+
+        The consequence to understand before relying on this: the peer routes to the
+        policy at MID range and holds at close range, so a swerve has to be committed
+        early or not at all.
+        """
+        vertical, horizontal = self.detection.clipped(width, height)
+        if vertical or horizontal:
+            return True
+        if self.detection.width_px <= 0.0:
+            return True
+        return self.detection.height_px / self.detection.width_px >= PERSON_ASPECT_MIN
 
 
 def range_detections(detections: list[Detection], camera: FisheyeCamera,
