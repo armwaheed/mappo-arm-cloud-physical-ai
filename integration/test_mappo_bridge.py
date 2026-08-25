@@ -183,6 +183,34 @@ def test_a_fast_mover_holds_the_robot_whatever_it_is():
                                command={"reason": "hold"})) is True
 
 
+def test_a_peer_whose_pose_stopped_arriving_holds_the_robot():
+    """A mesh peer link that has gone quiet is the same blindness as a stale camera, one
+    input over — and unlike a stale camera the obstacle is GONE, because a position that
+    can no longer be dated is not a position. ``peer_source`` drops the disc; this is the
+    other half of that decision, and separating the two is what would make it unsafe.
+
+    Note it holds with an EMPTY obstacle list and no planner hold at all, which is exactly
+    the situation: there is nothing left to be blocked by."""
+    assert external_hold(_tick(obstacles=[], command={"reason": "goal"},
+                               peer_link={"lost": True,
+                                          "reason": "peer link: peer-a is 0.9 s old"})) is True
+
+
+def test_a_peer_link_that_is_healthy_does_not_hold():
+    """Otherwise the test above would pass on a bridge that holds unconditionally."""
+    assert external_hold(_tick(peer_link={"lost": False, "reason": ""})) is False
+
+
+def test_a_tick_from_before_the_peer_link_existed_never_holds_for_one():
+    """Every run in ``evidence/`` predates the field. Absent must read as "no peer link
+    configured" and not as "lost", or replaying the recorded corpus reports a robot that
+    should have been standing still for 122 ticks."""
+    assert external_hold(_tick()) is False
+    run = read_run(EVIDENCE)
+    assert not any(t.get("peer_link") for t in run.ticks)
+    assert not any(external_hold(t) and not t.get("obstacles") for t in run.ticks)
+
+
 def test_a_mapped_landmark_never_holds_however_it_is_labelled():
     """A hold for the bin would zero the policy in the one scene it exists for."""
     assert external_hold(_tick(obstacles=[BIN], command={"reason": "hold"})) is False

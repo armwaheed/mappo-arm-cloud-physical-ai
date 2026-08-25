@@ -31,6 +31,7 @@ directory's `--live`.
 | | |
 | --- | --- |
 | **Run a fleet** | Every robot on the mesh listed at once, each with its own stop, plus one **STOP ALL**. Robots appear as they connect and are tombstoned as GONE when they drop off. |
+| **Let robots avoid each other** | `--publish-pose` puts a robot's own pose on the mesh at 10 Hz, and `peer_link.py` on another robot spools it for that robot's control loop. No detector, no marker. See below. |
 | **View robot events** | A docked drawer, always on screen. Collapsed it is one bar carrying the newest line and an unread count; open it fills the bottom of the window. Filterable, pausable, and replayed from a ring buffer to a page that opens late. |
 | **Basic motion** | Walk forward / back, strafe left / right, turn left / right, lie down. Bounded in time, and every press reports what the robot *measured*. |
 | **Front camera** | A live MJPEG viewport beside the pad, default 6 fps, started only while someone is watching. |
@@ -99,6 +100,68 @@ black rectangle. The Go2's frames come from the SDK's `VideoClient`, an RPC to t
 video service, so a run and the viewport can both read it. On `sim` the frames are
 **synthetic** and marked as such on screen, because a screenshot of a fake camera must not be
 mistakable for hardware.
+
+## Letting one robot avoid another, with no perception at all
+
+Another quadruped is not a detector class. A detector fine-tuned on 1,343 real in-domain
+frames of the peer reached **53% recall at 38% false positives** on held-out footage, with
+no usable operating point at any threshold — the ceiling is the frozen backbone, not the
+data. A marker and a colour panel on the peer were both ruled out.
+
+The mesh already carries the answer. A robot knows its own pose to the accuracy of its own
+estimator, and both robots are already on it.
+
+```
+  peer robot                                    navigator robot
+  drive_bridge.py pose-stream  (py3.8, SDK)     peer_link.py       (py>=3.11, DC)
+        │ JSON lines, 10 Hz                            │ writes ~/.mappo-peers.json
+  robot_driver.py --publish-pose (py>=3.11) ═══════════╡ event(peer_pose)
+                                    the mesh           │
+                                                integration/peer_source.py  (py3.8)
+```
+
+`peer_link.py` is `drive_bridge.py` in the other direction: the driver exists because the
+Device Connect side cannot import the robot's SDK; this exists because the SDK side cannot
+import Device Connect. Same wall, opposite direction, and the same file-on-disk seam.
+
+**`peer_pose` is a separate event from `robot_state`, not a faster one**, and the reason is
+not the rate. `robot_state` is skipped while a motion command holds the lock, and each one
+is a subprocess that connects to DDS, reads and exits. Both are disqualifying: a peer pose
+is needed *most* while the peer is walking, which is exactly when that lock is held, and
+10 Hz of process starts on a Jetson is not a rate a robot can produce. `pose-stream` is
+therefore the one bridge command that does not exit after one result — permitted because
+the "one command, one process" rule guards against a **latched velocity**, and a command
+that only reads the estimator has none to latch. It is also deliberately not wrapped in
+`safe_stop_guard`: a pose *reader* must not stop a peer that is walking.
+
+**Publishing is not interest-gated the way the camera is.** A camera feed costs 200–320
+KB/s and nobody is harmed by it starting late; a pose is ~200 bytes a sample and is what
+stops another robot's legs. Making it wait for a consumer to ask would add "the request
+never arrived" as a way for a peer to become silently invisible. So `--publish-pose` starts
+at `connect()` and runs for the driver's lifetime: *this robot is on the mesh* and *this
+robot's pose is on the mesh* should be the same fact. It needs no `--allow-motion`, because
+telling other robots where you are is not permission to walk.
+
+**`--peer` on `peer_link.py` is an allow-list, and required.** The navigator very likely
+publishes its own pose too — so that peers can avoid *it* — and a denylist that forgot to
+exclude self would put an obstacle on top of the robot and hold the run forever, with a
+diagnosis nobody would guess. It is also a safety input, and what a demo LAN with no PKI
+gets to put on the obstacle list should be a deliberate act. The cost is that an unlisted
+robot is invisible, which is the wrong way to fail, so every unlisted device seen
+publishing is logged once by name with the flag to add.
+
+⚠️ **No timestamp taken on the peer is used, anywhere.** Two robots on a demo LAN with no
+NTP share no wall clock, and their monotonic clocks count from unrelated boots. What
+crosses the mesh is a *duration* — how long ago the peer read its own estimator, measured
+on the peer, between two readings of one clock. Every age is then computed from clocks read
+on the navigator. The staleness argument, and what happens when a pose stops arriving, is
+in [`../integration/peer_source.py`](../integration/peer_source.py); the short version is
+that the obstacle is dropped and the robot holds, and those are one decision.
+
+⚠️ **Nothing here can supply the transform between two robots' odom frames.** Each starts
+at its own robot's power-on pose. `mappo_drive.py --peer-odom-align` is where that is
+declared, and it is the flag that turns peer avoidance on, so there is no state in which it
+is missing.
 
 ## Alerts, and what is deliberately NOT in them
 
@@ -266,8 +329,9 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 
 | | |
 | --- | --- |
-| `robot_driver.py` | The Device Connect device. 16 RPCs, 8 events. Runs on the robot, Python ≥ 3.11. |
-| `drive_bridge.py` | The SDK-env worker: one command, one JSON line, exit. Python 3.8, stdlib only. |
+| `robot_driver.py` | The Device Connect device. 16 RPCs, 9 events. Runs on the robot, Python ≥ 3.11. |
+| `drive_bridge.py` | The SDK-env worker: one command, one JSON line, exit — plus `pose-stream`, which does not exit. Python 3.8, stdlib only. |
+| `peer_link.py` | The other direction: subscribe to peers' poses on the mesh and spool them for a Python 3.8 control loop. Runs on the robot, Python ≥ 3.11. |
 | `model_store.py` | Checkpoints on disk: what is here, what is armed, what may replace it. |
 | `cloud_models.py` | S3 and http(s) fetch, with the refusals that make a URL field on a web page safe. |
 | `camera_source.py` | Front-camera frames per platform — live, synthetic, or a labelled replay — with the ceilings and the who-is-watching lifecycle. |
@@ -277,13 +341,16 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 ## Tests
 
 ```bash
-for t in test_*.py; do python3 $t; done       # 114
+for t in test_*.py; do python3 $t; done       # 139
 ruff check .                                  # must be clean
 ```
 
 Needs `device-connect-edge`, `device-connect-agent-tools`, `aiohttp` and `numpy`; `boto3`
-only for the S3 path, and `Pillow` only for the sim camera. `test_drive_bridge.py` and `test_model_store.py` run without the
-Device Connect packages.
+only for the S3 path, and `Pillow` only for the sim camera. `test_drive_bridge.py`,
+`test_model_store.py` and `test_peer_link.py` run without the Device Connect packages —
+and `test_peer_link.py` runs the real spooler, the real spool file and the real reader in
+`../integration/peer_source.py` end to end, which is the only thing that proves the writer
+and the reader agree about the format.
 
 Ten guards are mutation-tested rather than assumed — see
 [`../evidence/2026-08-21-device-connect-dashboard/`](../evidence/2026-08-21-device-connect-dashboard/),

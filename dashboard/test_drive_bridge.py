@@ -30,11 +30,13 @@ from drive_bridge import (
     GAIT_FLOORS,
     MAX_REVERSE_SECONDS,
     MAX_SECONDS,
+    MOTION_COMMANDS,
     BridgeError,
     SimLocomotion,
     build_parser,
     check_gait_floor,
     command_lie_down,
+    command_pose_stream,
     main,
     plan_nudge,
     run_nudge,
@@ -347,6 +349,77 @@ def test_an_unknown_platform_is_named_rather_than_crashing():
     except SystemExit:
         return                                    # argparse rejects it at the boundary
     raise AssertionError("an unknown platform was accepted")
+
+
+# ── the pose stream ──────────────────────────────────────────────────────────
+def test_the_pose_stream_never_commands_a_velocity():
+    """THE test for this command, and the reason it is allowed to outlive one result.
+
+    The "one command, one process, exit" rule in this module is a guard against a LATCHED
+    VELOCITY: ``Move`` has no dead-man timeout, so a worker that does not exit can leave
+    one on the bus. A reader that never calls ``set_velocity`` has nothing to latch, which
+    is what buys the exception — and this is what keeps that true. Fails the moment
+    anything in the stream path touches the legs.
+    """
+    loco = _Recorder()
+    buffer = io.StringIO()
+    command_pose_stream(loco, "go2", 100.0, out=buffer, sleep=lambda _s: None, limit=5)
+    assert loco.commands == [], f"the pose stream commanded {loco.commands}"
+    assert loco.stops == 0, "a pose READER must not stop a peer that is walking"
+
+
+def test_every_pose_line_carries_a_clock_reading_and_a_pose():
+    """``mono_s`` is what the driver turns into an age. A line without one is dropped by
+    ``robot_driver._pose_line``, because an undatable safety input is not one."""
+    buffer = io.StringIO()
+    command_pose_stream(SimLocomotion(), "go2", 100.0, out=buffer,
+                        sleep=lambda _s: None, limit=3)
+    lines = [json.loads(line) for line in buffer.getvalue().splitlines()]
+    assert len(lines) == 3
+    for line in lines:
+        assert isinstance(line["mono_s"], float)
+        assert set(line["pose"]) == {"x", "y", "yaw"}
+        assert len(line["velocity"]) == 3
+        assert line["ok"] is True
+
+
+def test_a_throwing_estimator_is_reported_rather_than_skipped():
+    """A skipped sample is indistinguishable, at the far end, from a network drop — and
+    the far end's answer to a drop is to stop the other robot. Reporting it means the
+    diagnosis names the estimator instead."""
+    class _Broken(SimLocomotion):
+        def pose(self):
+            raise RuntimeError("the estimator went away")
+
+    buffer = io.StringIO()
+    command_pose_stream(_Broken(), "go2", 100.0, out=buffer, sleep=lambda _s: None,
+                        limit=2)
+    lines = [json.loads(line) for line in buffer.getvalue().splitlines()]
+    assert len(lines) == 2, "a failed read produced no line at all"
+    assert all(line["ok"] is False for line in lines)
+    assert all("estimator went away" in line["error"] for line in lines)
+
+
+def test_the_pose_stream_ends_quietly_when_the_driver_goes_away():
+    """The parent is the only consumer, so a closed pipe is a shutdown it initiated. A
+    traceback about a broken pipe would be the last thing in its log about it."""
+    class _Closed(io.StringIO):
+        def write(self, _text):
+            raise BrokenPipeError(32, "Broken pipe")
+
+    result = command_pose_stream(SimLocomotion(), "go2", 100.0, out=_Closed(),
+                                 sleep=lambda _s: None, limit=100)
+    assert result["ok"] is True
+    assert result["streamed"] == 0
+    assert "parent closed" in result["stopped"]
+
+
+def test_the_pose_stream_runs_without_allow_motion():
+    """A peer publishing where it is must not require the flag that lets it be walked.
+    Motion is gated by membership of ``MOTION_COMMANDS``, so this asserts the membership
+    rather than the behaviour it produces — that is where the decision actually lives."""
+    assert "pose-stream" not in MOTION_COMMANDS
+    assert "pose-stream" in build_parser().parse_args(["pose-stream"]).command
 
 
 if __name__ == "__main__":

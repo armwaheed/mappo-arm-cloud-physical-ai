@@ -21,6 +21,14 @@ a process that exits, so a driver that hangs, crashes or is killed cannot leave 
 latched — the worker's own ``finally`` stops the robot, and if the worker dies instead the
 process is gone and the next command starts from a clean client.
 
+**``pose-stream`` is the one command that does not exit, and it is allowed to because the
+property above is about a LATCHED VELOCITY.** It reads the estimator and writes JSON lines;
+it never calls ``set_velocity``, so there is nothing for its lifetime to leave latched. It
+exists because a peer robot has to publish its pose at 10 Hz for another robot to avoid it,
+and one subprocess per sample is not an implementation of 10 Hz — ``robot_driver`` budgets
+``MAX_SECONDS + 25`` seconds for one ``status``, nearly all of it SDK import and DDS
+discovery. See :func:`command_pose_stream`.
+
 ## Every button is a measurement
 
 Commands are **duration-bounded and open-loop**, and the result reports what the robot
@@ -74,6 +82,13 @@ MAX_SECONDS = 5.0
 
 #: Reverse is capped harder than forward, because nothing on either robot looks backwards.
 MAX_REVERSE_SECONDS = 2.0
+
+#: Default rate for ``pose-stream``. The control loop that consumes it runs at 10 Hz, and
+#: a peer pose arriving slower than the loop that reads it is a loop reading the same
+#: sample twice. Capped at :data:`MAX_POSE_STREAM_HZ` because the sample comes off DDS and
+#: the peer's own control stack is on that bus too.
+POSE_STREAM_HZ = 10.0
+MAX_POSE_STREAM_HZ = 20.0
 
 #: Measured gait floors. These are per-platform and per-axis, and the two axes genuinely
 #: differ — see issue #42, which is about a calibration interface that assumed they did not.
@@ -364,6 +379,63 @@ def command_status(loco, platform):
             "mode": mode, "error": pose_error}
 
 
+def command_pose_stream(loco, platform, hz, out=None, sleep=time.sleep,
+                        clock=time.monotonic, limit=None):
+    """Print one pose line per sample, forever, so a peer can be avoided over the mesh.
+
+    ⚠️ **This is the one command in this file that does not exit after one result**, and
+    the exception is argued rather than assumed. The module's "one command, one JSON line,
+    exit" rule is a SAFETY property: every command runs in a process that exits, so a
+    driver that hangs or is killed cannot leave a velocity latched on the bus. That rule
+    protects against a latched velocity. This command never sets one — it calls
+    ``pose()`` and ``velocity()`` and nothing else — so there is no latch for its lifetime
+    to extend, and it is deliberately NOT wrapped in ``safe_stop_guard``: stopping the
+    robot on the way out of a READ would be a pose reader that stops a peer's legs, and
+    the peer is very likely walking under the dashboard's own motion RPC while this runs.
+
+    It has to be persistent because the alternative measured out. ``robot_driver`` polls
+    ``status`` as a subprocess every 5 s and budgets ``MAX_SECONDS + 25`` for one, because
+    process start, SDK import and DDS discovery are the slow part on a cold Jetson. A peer
+    pose is needed at 10 Hz. One process per sample is not an implementation of that.
+
+    ``mono_s`` is this process's own ``time.monotonic()`` at the moment the estimator was
+    read. It is meaningless to anyone off this host and it is not meant to leave it: the
+    driver, which is another process on the SAME machine, subtracts it from its own
+    ``time.monotonic()`` to turn it into an AGE — a duration — and only the duration goes
+    on the mesh. See ``integration/peer_source.py`` for why no timestamp can make that
+    trip and a duration can.
+
+    ``limit`` stops after that many samples and exists for the tests; a run leaves it None.
+    """
+    out = sys.stdout if out is None else out
+    period = 1.0 / max(0.1, float(hz))
+    emitted = 0
+    while limit is None or emitted < limit:
+        started = clock()
+        pose, error = _pose_tuple(loco)
+        try:
+            velocity = [float(v) for v in loco.velocity()]
+        except Exception as exc:
+            velocity, error = None, str(exc)
+        # A failed read is REPORTED, not skipped. A skipped sample is indistinguishable
+        # from a network drop at the far end, and the far end's answer to a drop is to
+        # stop the robot — which is right for a drop and an unhelpfully vague diagnosis
+        # for an estimator that is throwing.
+        line = {"ok": pose is not None and velocity is not None, "platform": platform,
+                "mono_s": started, "pose": pose, "velocity": velocity, "error": error}
+        try:
+            out.write(json.dumps(line) + "\n")
+            out.flush()
+        except (BrokenPipeError, ValueError):
+            # The driver has gone. Exiting here rather than raising: the parent is the
+            # only consumer, and a traceback about a closed pipe would be the last thing
+            # in its log about a shutdown it initiated.
+            return {"ok": True, "streamed": emitted, "stopped": "parent closed stdout"}
+        emitted += 1
+        sleep(max(0.0, period - (clock() - started)))
+    return {"ok": True, "streamed": emitted}
+
+
 def command_lie_down(loco, platform):
     """Lie the robot down — and be honest that this means two different things.
 
@@ -405,6 +477,9 @@ def dispatch(args):
     try:
         if args.command == "status":
             return command_status(loco, args.platform)
+        if args.command == "pose-stream":
+            return command_pose_stream(loco, args.platform,
+                                       min(args.hz, MAX_POSE_STREAM_HZ))
         if args.command == "stop":
             loco.stop()
             return {"ok": True, "stopped": True}
@@ -459,7 +534,7 @@ def build_parser():
     parser = argparse.ArgumentParser(
         description="Run one bounded motion command on a quadruped and report what it did.")
     parser.add_argument("command", choices=sorted(
-        MOTION_COMMANDS | {"status", "stop"}))
+        MOTION_COMMANDS | {"status", "stop", "pose-stream"}))
     parser.add_argument("--platform", default="sim", choices=("go2", "lite3", "sim"),
                         help="Whose RULES apply: gait floors, posture semantics, warnings.")
     parser.add_argument("--backend", default="", choices=("", "go2", "lite3", "sim"),
@@ -482,6 +557,8 @@ def build_parser():
                         help="rad/s CCW (negative = CW).")
     parser.add_argument("--seconds", type=float, default=1.5,
                         help=f"How long to hold the command, capped at {MAX_SECONDS}.")
+    parser.add_argument("--hz", type=float, default=POSE_STREAM_HZ,
+                        help=f"pose-stream sample rate, capped at {MAX_POSE_STREAM_HZ}.")
     return parser
 
 

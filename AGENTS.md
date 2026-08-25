@@ -34,12 +34,12 @@ current, and it documents three mappings that are *not* the obvious ones.
 
 ```bash
 cd policy      && python3 test_physical_ai_mappo.py                                #  33
-cd integration && for t in test_*.py; do python3 $t; done                          # 142
+cd integration && for t in test_*.py; do python3 $t; done                          # 189
 cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 265
 cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
 cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 39
 cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py # 16
-cd dashboard   && for t in test_*.py; do python3 $t; done                          # 114
+cd dashboard   && for t in test_*.py; do python3 $t; done                          # 139
 ruff check .        # must be clean in each code directory above; each has a ruff.toml
 ```
 
@@ -50,7 +50,7 @@ That is a missing dependency, not a regression — install it or say so explicit
 `dashboard/` needs `device-connect-edge`, `device-connect-agent-tools` and `aiohttp`, in a
 **Python >= 3.11** environment — that is what Device Connect requires, and it is why
 `dashboard/drive_bridge.py` is a separate Python 3.8 process rather than an import.
-`test_drive_bridge.py` and `test_model_store.py` run without any of them.
+`test_drive_bridge.py`, `test_model_store.py` and `test_peer_link.py` run without any of them.
 
 **`ruff --fix` sorts imports and will hoist a `from avoidance import ...` above the
 `sys.path` line that makes it importable.** Two test files went from passing to
