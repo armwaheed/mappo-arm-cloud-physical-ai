@@ -30,10 +30,13 @@ Six do. So "8 of 15" is 8 fires over a set of which 6 held a robot, against this
 box on the six frames that carry one, this head localised **1**. The ceiling is deeper than
 this page claimed, not shallower.
 
-**And the ceiling has since been cleared.** Unfreezing the backbone — item 1 of "What would
-work", below — reaches **70% recall at 1% false positives and 97% precision** on a corrected,
-tenfold larger cross-day set. See [`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md), including
-the part where it costs `person`.
+**The ceiling was cleared, and it did not matter.** Unfreezing the backbone — item 1 of
+"What would work", below — does reach **72% recall at 4% false positives** on the corrected
+cross-day set, so the linear-probe limit this page diagnoses is real and unfreezing is what
+lifts it. Scored against the stock model on the same 2,800 frames, that same checkpoint gets
+**53% at 38%** and loses on both axes. See [`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md),
+including the part where it costs `person` and the part where 47 held-out positives could not
+rank anything.
 
 Everything else on this page stands. The three falsified hypotheses are still falsified, and
 the reason they were falsified is still the right one: a linear probe on frozen VOC features
@@ -173,12 +176,24 @@ reaches the policy, and neither is a training problem:
   whether that is a false alarm or a correct one, and that is the piece of work this replaces
   the fine-tune with.
 
-### The bar any fine-tune now has to clear
+### The bar every fine-tune failed to clear
 
 **64% recall at 18% false alarms, on these frames, from a model that costs nothing and is
 already installed.** Nothing on this page was ever measured against it — the tables above are
 the Aug-20 cross-day set, a different day and a different denominator, so they do not compare
 to it directly.
+
+The one model that *was* measured against it is the best checkpoint of the unfrozen
+fine-tune, `runs/best/epoch015`, scored the same way over the same 2,800 frames:
+
+| | reads | box on the peer | fires on a peer-free frame |
+| --- | --- | --- | --- |
+| **stock 21-class, unmodified** | any VOC label | **64%** of 1,903 | **18%** of 897 |
+| unfrozen fine-tune, `epoch015` | its own `go2wheel` | 53% | 38% |
+
+**It loses on both axes, and its row is the generous one.** 1,343 of those 1,903 peer frames
+and 705 of those 897 peer-free frames were in its training set; the stock model has never
+seen any of them. See [`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md).
 
 Reproduce the bar with [`eval_class_agnostic.py`](eval_class_agnostic.py); it is the script
 that produced the two rows above, and it needs no training run and no `.caffemodel` that is

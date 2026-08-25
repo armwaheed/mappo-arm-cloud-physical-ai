@@ -3,18 +3,65 @@ Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# A real fine-tune clears the frozen-feature ceiling, once the loss stops calling people background
+# The fine-tune clears the frozen-feature ceiling, and still loses to the stock model
 
 `FROZEN-FEATURE-CEILING.md` said what would work: unfreeze the backbone, multibox loss,
 prior matching, hard negative mining, augmentation, then export back through the
-`.caffemodel` path. `finetune_ssd.py` is that, and the ceiling is gone — **72% cross-day
-recall at a 4% false-positive rate, against 74% at 60%.**
+`.caffemodel` path. `finetune_ssd.py` is that, and on the axis that page named, it delivers —
+**72% cross-day recall at a 4% false-positive rate, against 74% at 60%.** The linear-probe
+limit is real and unfreezing lifts it.
 
-But the first six runs also taught the network that people are background, and that is the
-finding to carry forward. The fix is in and measured; the residual cost is small and is
-stated below rather than smoothed over.
+> ⛔ **It is still not worth deploying, and this page ends in a recommendation not to.**
+> Scored against the robot's own **stock, unmodified** 21-class weights over the same
+> 2,800-frame Aug-24 capture — the parsimony test in
+> [`eval_class_agnostic.py`](eval_class_agnostic.py), which takes any VOC label as an
+> obstacle because the planner needs a box and not a name — the best checkpoint here gets
+> **53% recall at 38% false alarms** against the stock model's **64% at 18%**. It loses on
+> both axes, from a training run that cost a day of GB10 time, to a file that was already on
+> the robot. See *The comparison that ended this* below.
 
-## The cross-day number, first
+Two things on this page outlive the recommendation, and both are the reason it is being
+merged rather than deleted: **fine-tuning on a one-class corpus teaches the network that
+people are background**, which is a hazard for any future run over a partially-labelled
+corpus; and **47 held-out positives could not rank anything**, which is why the number in the
+first paragraph and the number in the block above are the same checkpoint.
+
+## ⛔ The comparison that ended this
+
+Same weights, same `cv2.dnn` path, same 2,800 frames of the Aug-24 capture — 1,903 with a
+hand-labelled peer, 897 peer-free — at 0.25, counting a hit as any detection overlapping the
+labelled box at IoU >= 0.30:
+
+| | reads | box on the peer | fires on a peer-free frame |
+| --- | --- | --- | --- |
+| **stock 21-class, unmodified** | **any VOC label** | **64%** of 1,903 | **18%** of 897 |
+| this fine-tune, `runs/best/epoch015` | its own `go2wheel` | 53% | 38% |
+
+Labels the stock model puts on the peer: `motorbike` 613, `chair` 372, `aeroplane` 200,
+`person` 109. Nonsense names, correctly placed boxes.
+
+**The fine-tune's row is the generous one.** 1,343 of those 1,903 peer frames and 705 of
+those 897 peer-free frames were in its own training set. The stock weights have never seen a
+frame of the corpus, so its row is clean out-of-sample and the trap that invalidated the
+refusal gate — negatives sharing a session with the training frames — cannot apply to it.
+Reading the fine-tune class-agnostically as well would only add its remaining twenty classes'
+alarms on top of the 38%.
+
+### ⚠️ 72% and 53% are the same checkpoint
+
+`runs/best/epoch015` scores 72% recall at 4% false positives on the 47-positive Aug-20 test
+split, and 53% at 38% on 1,903 Aug-24 positives it was largely trained on. A model does not
+normally do *worse* on its own training day than on a held-out one, and no reading of the two
+sets reconciles them as a ranking. The safe reading is the one the denominators force: 47
+positives and 136 negatives could not rank anything, and 1,903 and 897 can. Every table on
+this page below is the 47-positive split, and should be read as ordering runs against each
+other rather than as a claim about the world.
+
+That is the same failure as the refusal gate one level up, and the same failure as the
+fifteen stills one level down: **the evidence set was too small and too like itself, three
+times in a row, and each time it flattered the thing being tested.**
+
+## The cross-day number, on its own terms
 
 Every row is the **held-out test split**: 47 frames containing a Go2 Wheel and 136 containing
 none, all recorded 2026-08-20, none trained on, scored through the deployed `cv2.dnn` path at
@@ -46,7 +93,7 @@ carries `confidence_threshold: 0.25` and has already discarded weaker boxes befo
 `forward()` returns.
 
 **Does it beat the frozen head? Yes, and the axis is precision.** 30% -> 85% at the same
-recall; 60% -> 4% false positives. On the original fifteen-still protocol — its original
+recall; 60% -> 4% false positives. It does not beat the stock model — see above. On the original fifteen-still protocol — its original
 labels, its original JPEGs, so nothing is re-baselined — the fine-tune scores **5 of 15 at
 0 of 159 false positives** against the published **8 of 15 at 60 of 159**. Fewer fires, and
 not one of them on the 159 frames that hold nothing. Precision 12% -> 100%.
@@ -192,7 +239,8 @@ valuable frames in the set. `--neg-floor 32` is what lets them contribute.
 * **No hardware run, and no robot has seen these weights.** The `.caffemodel` is verified
   against `cv2` and nothing more.
 * **`person` is close to par but not at it.** 2 of 15 lost against the frozen head's 1. Two
-  frames is two frames; on this evidence it is a candidate for a shadow run, not a swap.
+  frames is two frames. This was written up as a shadow-run candidate; it is not one any
+  more, because the stock model needs no shadow run and costs `person` nothing at all.
 * **A new false `person`, on the peer.** On `peer_cross5` frame 039 the shipped model calls
   the peer `chair 0.291` and this model calls it **`person 0.543`** — above the deployed
   threshold. It fails safe (the navigator holds) but routes a peer into the always-hold path
@@ -214,6 +262,25 @@ valuable frames in the set. `--neg-floor 32` is what lets them contribute.
   numbers to the percent.
 * **One corridor, one day of training data, one day of test data**, 47 held-out positives.
   Everything above is a claim about this building.
+
+## The recommendation
+
+**Do not fine-tune this detector, and do not deploy any checkpoint on this page.** Read the
+stock one class-agnostically instead: it wins on both axes over 40x the frames, it costs no
+training, it cannot regress `person` because it *is* the model that defines `person`, and it
+is already installed on every robot. `FROZEN-FEATURE-CEILING.md` carries the full argument
+and `eval_class_agnostic.py` carries the check.
+
+What the class-agnostic route still owes, and none of it is a training problem: a range prior
+for a box with no meaningful label — `estimate_range` currently picks between a person's
+height and shoulder width, and a `motorbike` box on a peer robot ranged against a standing
+adult reads **far**, in the dangerous direction — and a decision about which of the 18% is
+furniture the static map should hold rather than the tracker carry as a mover.
+
+**Everything in `finetune_ssd.py` stays and stays runnable.** It is how the negative result
+was produced; a conclusion nobody can re-derive is an opinion. It also remains the only route
+if a class ever has to be added for a reason no stock VOC label can serve, and the
+people-are-background finding above applies to any such run.
 
 ## Reproducing
 
@@ -238,6 +305,14 @@ eval_detector.py --proto mnssd22.prototxt --model runs/best/epoch015.caffemodel 
                  --reference mnssd22.caffemodel \
                  --manifest labels/peer_crossday_20260820.json --frames-dir XDAY \
                  --split test                        # report it
+```
+
+And the comparison that ended it, which needs no training run and no `.caffemodel` that is
+not already on the robot:
+
+```sh
+eval_class_agnostic.py --model-dir ROBOTMODELS \
+                       --labels labels/peer_go2wheel_20260824.json --frames-dir PEERCAP
 ```
 
 `XDAY` is filled by the extraction command in `labels/CROSSDAY.md`. `PEERCAP` is the 394 MB

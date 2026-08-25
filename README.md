@@ -206,15 +206,19 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 - **No rear view.** ~85° of camera, and the robot never reverses. Everything else reads
   clear — the optimistic direction. A policy that learned to back out of a dead end will
   believe the space behind it is empty.
-- **Peers are invisible *to the camera*, and are no longer inferred from it.** Another
-  quadruped is not a detector class and not a colour profile, and it turned out not to be
-  worth making into one: a detector fine-tuned on 1,343 real in-domain frames of the peer
-  reached 53% recall at 38% false positives on held-out footage, with no usable operating
-  point at any threshold. Peers now arrive as **their own published pose over the Device
-  Connect mesh** — see *Peers over the mesh* below. That is not a workaround for a failed
-  detector; it is what the trained policy describes, since the VMAS agents it learned
-  against observed each other's true positions rather than running detectors on each
-  other.
+- **A peer has no *name* the camera can give it, and inferring one is not worth doing.**
+  Another quadruped is not a shipped detector class and not a colour profile. Two fine-tunes
+  were taken to the end — a linear probe on frozen features, then the backbone unfrozen over
+  twelve 40-epoch runs — and the second does lift the first's ceiling. Neither beats the
+  robot's own **stock, unmodified** weights read *class-agnostically*: **64% of 1,903
+  labelled peer frames get a box on the peer, at 18% false alarms over 897 peer-free
+  frames**, against the best fine-tune's 53% at 38% on the same frames. The labels are
+  nonsense (`motorbike`, `chair`, `aeroplane`) and correctly placed, which is what a planner
+  needs — see [`detector/FROZEN-FEATURE-CEILING.md`](detector/FROZEN-FEATURE-CEILING.md).
+  Peers today arrive as **their own published pose over the Device Connect mesh** — see
+  *Peers over the mesh* below — which is what the trained policy describes, since the VMAS
+  agents it learned against observed each other's true positions rather than running
+  detectors on each other.
 - **Perception is a few hundred ms behind reality** (median 309 ms, p90 436 ms). The
   stack extrapolates tracks and inflates their radii to cover it; the policy sees the
   result, not the raw sensor.
@@ -237,7 +241,8 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Policy on Go2 hardware, empty lane | arrived 0.77 m from the chair after 2.78 m; policy drove 53/53 ticks, 0 vetoed, 0 stopped; obstacle run remains open |
 | ⚠️ Arriving at the chair past the bin | needs ~0.3 m more lane than this corridor has |
 | ⚠️ D1 arm latch | its servo bus does not energise (tracked in the upstream Go2 stack); runs use `--no-latch-arm`, and the arm creeps a few degrees off the dorsal line each run |
-| ⛔ Peers from the camera | detector ceiling measured: 53% recall at 38% false positives on held-out footage, no usable operating point. Frozen MobileNet-SSD features cannot separate the class; a marker and a colour panel were both ruled out |
+| ⛔ Peers from the camera, as a trained class | closed as a negative result. A frozen-feature head and a fully unfrozen fine-tune both land below the **stock** model read class-agnostically — 64% recall at 18% false alarms over 1,903/897 frames, against the best fine-tune's 53% at 38% on the same frames. A marker and a colour panel were ruled out earlier |
+| ⏳ Peers from the camera, class-agnostically | the boxes exist and are correctly placed; `PersonDetector` is configured `classes=("person",)` and drops them before anything downstream. Not yet wired: a range prior for a box with no meaningful label, and which of the 18% the static map should hold rather than the tracker carry as a mover |
 | ✅ Peers over the Device Connect mesh | the peer publishes its own pose at 10 Hz and the navigator consumes it as an ordinary obstacle — no detector, no marker, no training. 66 offline tests, 11 of them mutation-checked; **no two-robot hardware run yet** |
 | ✅ Lite3 Venture offline port | high-level ROS locomotion, RGB camera, fail-closed health gate, calibration and MAPPO entry points; 30 platform tests |
 | ⏳ Lite3 hardware commissioning | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): neither event robot has been run; gait floor, actuator gain, loaded radius, camera model/source and health publisher remain measured inputs |

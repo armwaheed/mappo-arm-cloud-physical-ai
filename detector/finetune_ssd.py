@@ -11,6 +11,17 @@ positives cross-day, no usable operating point at any threshold. The stated next
 "unfreeze the backbone: real SSD training — multibox loss, prior matching, hard negative
 mining, augmentation — then export back through ``add_class.py``". This is that.
 
+⛔ **IT WORKED AND IT IS STILL NOT WORTH DEPLOYING.** Unfreezing does lift the linear-probe
+ceiling — 72% cross-day recall at 4% false positives against the frozen head's 74% at 60%.
+But scored against the robot's own STOCK 21-class weights over the same 2,800-frame Aug-24
+capture, the best checkpoint here gets 53% recall at 38% false alarms and the untouched model
+gets 64% at 18%, reading any VOC label as an obstacle. It loses on both axes. See
+``UNFROZEN-FINE-TUNE.md`` and ``eval_class_agnostic.py``.
+
+This file is kept because it is how that was established, and because the
+people-are-background finding below applies to any future run over a partially-labelled
+corpus. Nothing here should be run expecting a deployable model.
+
 ## What is borrowed rather than re-derived, and why it matters
 
 **The priors come from ``cv2``**, out of the deployed network's own ``mbox_priorbox`` blob.
