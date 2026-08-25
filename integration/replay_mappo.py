@@ -39,7 +39,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from mappo_bridge import BridgeReport, audit, is_stationary, robot_input
+from mappo_bridge import BridgeReport, audit, holds_the_robot, robot_input
 from observation import wrap_pi
 from telemetry_reader import read_run
 
@@ -99,14 +99,19 @@ def _goal_bearing(tick: dict) -> float:
 
 
 def _nearest_surface_m(tick: dict) -> float:
-    """Distance to the closest static obstacle's SURFACE, or inf if none is mapped.
+    """Distance to the closest SURFACE the policy can see, or inf if it sees none.
 
     Surface rather than centre because that is what the policy's range vector measures
     and what its lidar range is therefore comparable against.
+
+    Gated on what the POLICY sees, not on ``is_stationary``. Those were the same question
+    until peers started reaching the policy; keeping the old predicate would leave the
+    instrument reporting open floor while the policy swerved around a peer two metres
+    away, and an instrument that disagrees with the thing it measures is worse than none.
     """
     pose = tick["pose"]
     return min((math.hypot(o["x"] - pose["x"], o["y"] - pose["y"]) - o["radius_m"]
-                for o in tick.get("obstacles", []) if is_stationary(o)),
+                for o in tick.get("obstacles", []) if not holds_the_robot(o)),
                default=float("inf"))
 
 
