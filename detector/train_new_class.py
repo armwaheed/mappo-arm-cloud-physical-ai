@@ -31,6 +31,14 @@ a way no test catches until a real frame goes through it.
 It also means the only dependencies are `cv2` and `numpy`, the same pair the robot already
 has.
 
+## The gate scores HELD-OUT negatives, and that distinction is the whole point
+
+``--negatives`` are trained on; ``--gate-negatives`` are not. Measured on this stack: a
+head fitted against one session's peer-free frames scored **0 of 705** on that same
+session and **16 of 80** on another day's footage of the same corridor. Same model, same
+corridor, 0% versus 20%. A gate whose negatives share an hour, a light level and a camera
+pose with its training set is measuring whether the fit memorised them.
+
 ## What it does NOT do
 
 The existing 20 classes are never touched. That is the point — ``person`` stays on the stop
@@ -458,8 +466,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dataset", type=Path, required=True,
                         help="directory from render_lite3.py (annotations.json + images/)")
     parser.add_argument("--negatives", type=Path, required=True,
-                        help="frames KNOWN to contain no instance of the new class. Not "
-                             "optional: without them the head fires on ordinary scenes")
+                        help="TRAINING frames known to contain no instance of the new "
+                             "class. Not optional: without them the head fires on "
+                             "ordinary scenes")
+    parser.add_argument("--gate-negatives", type=Path, default=None,
+                        help="HELD-OUT negatives the gate scores against. Should be a "
+                             "different session from --negatives — ideally a different "
+                             "day. Defaults to --negatives, which measures memorisation "
+                             "rather than generalisation and says so loudly")
     parser.add_argument("--proto", type=Path, required=True)
     parser.add_argument("--model", type=Path, required=True)
     parser.add_argument("--class-name", required=True)
@@ -521,7 +535,16 @@ def main(argv: list[str] | None = None) -> int:
     candidate = args.out_model.with_suffix(".candidate")
     candidate.write_bytes(net.SerializeToString())
 
-    checked = verify(args.out_proto, candidate, args.negatives, old_classes,
+    # THE GATE MUST NOT SCORE THE FRAMES IT TRAINED ON. Measured: a head fitted on one
+    # session's negatives scored 0 of 705 against that same session and 16 of 80 — 20% —
+    # against another day's footage of the same corridor. The first number is
+    # memorisation and it is the one an unsplit gate reports.
+    gate_dir = args.gate_negatives or args.negatives
+    if args.gate_negatives is None:
+        print("WARNING: --gate-negatives not given, so the gate is scoring the frames it "
+              "trained on. That measures memorisation. Expect the real rate to be far "
+              "worse on another session.", flush=True)
+    checked = verify(args.out_proto, candidate, gate_dir, old_classes,
                      args.detect_threshold)
     print(f"gate: fired on {checked['false_positive_frames']}/{checked['frames']} "
           f"negative frames ({100 * checked['false_positive_rate']:.1f}%), "
