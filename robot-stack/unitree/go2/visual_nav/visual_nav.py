@@ -923,7 +923,8 @@ def build_goal_source(args, camera_model: FisheyeCamera, pose_fn) -> GoalSource:
                                   crop=args.goal_crop, refresh_s=args.goal_refresh,
                                   min_score=args.goal_confidence)
     return ArucoGoal(camera_model, marker_id=args.marker_id,
-                     marker_size_m=args.marker_size)
+                     marker_size_m=args.marker_size,
+                     detect_scale=args.goal_detect_scale)
 
 
 def warn_if_below_gait_floor(max_vx: float) -> bool:
@@ -998,6 +999,13 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
     goal_group = ap.add_argument_group("goal")
     goal_group.add_argument("--marker-id", type=int, default=DEFAULT_MARKER_ID,
                             help="ArUco id to walk toward")
+    goal_group.add_argument("--goal-detect-scale", type=float, default=0.5,
+                            metavar="FRACTION",
+                            help="downscale the frame by this before ArUco detection. "
+                                 "0.5 is ~4x cheaper and is the default, but it costs "
+                                 "range: detection needs about 23.7 px of marker, so a "
+                                 "105 mm marker stops locking past roughly 3.0 m. Pass "
+                                 "1.0 to trade that latency back for range")
     goal_group.add_argument("--marker-size", type=float, default=DEFAULT_MARKER_SIZE_M,
                             help="printed marker's black square, in metres")
     goal_group.add_argument("--waypoint", type=float, nargs=2, metavar=("FWD", "LEFT"),
