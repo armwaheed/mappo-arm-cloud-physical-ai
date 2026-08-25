@@ -86,12 +86,64 @@ Three things it gets right that a naive generator does not:
 publishes no matching description, and `arm-mhs-unitree-go2` ships no URDF at all. About
 60-90 usable frames exist today, all from one corridor.
 
-### ⚠️ `--focal-px` and `--camera-height-m` are deployment parameters
+### ⚠️ A background is a picture PLUS the camera that took it
 
-They default to the Go2 Walk's measured 1290.2 px and 0.32 m because that is the camera
-the backgrounds came from. **A Lite3 Venture is a different lens at a different height**,
-and every apparent size scales linearly on the focal length. Render at the wrong one and
-the detector learns a scale prior wrong by exactly that ratio.
+The sprite is stood on the floor of the background frame, which needs that frame's focal
+length, camera height and camera pitch. Those are properties of the FRAME. Get them wrong
+and nothing looks broken — the composite is still a photograph of a corridor, the box is
+still tight on the robot, and the robot is simply standing at the wrong depth.
+
+So geometry travels with the frames. `--backgrounds` is repeatable, and each directory may
+carry a `geometry.json`. That file is deliberately the format `calibrate_camera.py` already
+writes, so a new environment is calibrated and copied in rather than retyped:
+
+```sh
+cp robot-stack/unitree/go2/visual_nav/go2_front_camera.json bg_lab/geometry.json
+```
+
+A directory without one falls back to the command line **and says so loudly**. A frame
+whose pixel size disagrees with its declared geometry is refused rather than rescaled:
+`focal_px` is pixels per radian at a particular capture size, and from the pixels alone a
+downscale, a crop and a different lens are indistinguishable. Declaring that directory's
+own `width`/`height`/`focal_px` makes its frames legal — what is refused is the assumption,
+not the size.
+
+Generated backgrounds, if they are ever supplied, are just files in a directory and arrive
+the same way; nothing here knows where a background came from. But a generated frame has no
+camera, so somebody must decide what geometry to claim for it, and `geometry.json` is where
+that claim becomes reviewable instead of implicit.
+
+**Recorded frames carry the debug overlay.** `visual_nav` writes its MP4 from the annotated
+canvas — detection rectangles, the plan-view inset, the status plate. Composite onto those
+and the detector learns that a peer comes with an orange rectangle. Use raw camera frames.
+
+### ⚠️ Posture is part of the geometry
+
+The Go2 rests **prone** and stands only to walk: it initialises prone, acquires its goal
+prone, and lies down again whenever the path stays blocked for `--rest-after`. A dry run
+never enables the legs at all, so it is prone start to finish whatever its status line
+says. Prone is a recurring run state and prone frames are legitimate training data — from
+a different camera:
+
+| posture | `height_m` | `pitch_rad` | source |
+| --- | --- | --- | --- |
+| standing | 0.32 | 0.0 | `go2_front_camera.json` |
+| prone | **0.1540** | **-0.0227** (1.3° nose-**up**) | tape, 2026-08-24 |
+
+Neither prone number was recorded anywhere before. Applying the standing pair to a prone
+frame puts the ground line **320 px high at 0.5 m** — a third of the frame, at the range
+where avoidance happens.
+
+**Sign convention:** `pitch_rad` is `camera_model.py`'s — tilt below the body's forward
+axis, **positive = nose-down**. A nose-up lens is therefore negative. `--posture prone`
+supplies the measured value already signed, which is the safe way to get it.
+
+### ⚠️ `--focal-px` is a deployment parameter
+
+It defaults to the Go2 Walk's measured 1290.2 px because that is the camera the backgrounds
+came from. **A Lite3 Venture is a different lens at a different height**, and every apparent
+size scales linearly on the focal length. Render at the wrong one and the detector learns a
+scale prior wrong by exactly that ratio.
 
 The same split applies to the model itself: a detector outputs boxes and transfers across
 cameras, but **ranging does not**. Ship weights, never a calibration — each unit runs
@@ -125,7 +177,13 @@ protoc --python_out=. caffe.proto
 # 2. synthetic Lite3, composited onto peer-free frames from the deployment camera
 python3 render_lite3.py --mjcf .../Lite3/mjcf/Lite3.xml \
         --backgrounds frames/ --out lite3_ds --count 2000 \
-        --focal-px 1290.2 --camera-height-m 0.32
+        --focal-px 1290.2 --posture standing
+
+# 2b. several environments at once; each directory states its own camera in
+#     geometry.json, so a prone clip and a standing clip can share one run
+python3 render_lite3.py --mjcf .../Lite3/mjcf/Lite3.xml \
+        --backgrounds corridor/ --backgrounds lab/ --backgrounds atrium/ \
+        --out lite3_ds --count 4000
 
 # 3. grow the shipped weights; person is preserved by construction
 python3 add_class.py --in-proto MobileNetSSD_deploy.prototxt \
