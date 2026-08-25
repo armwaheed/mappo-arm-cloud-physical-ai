@@ -5,7 +5,9 @@ SPDX-License-Identifier: Apache-2.0
 
 # Teaching the perception stack to see a peer robot
 
-Nothing in this stack can see another quadruped. That is measured, not assumed:
+No off-the-shelf detector has a **name** for another quadruped. That much is measured,
+not assumed — though the first row is wrong, and why it is wrong turned out to be the
+whole story:
 
 | detector | best response to a Go2 Wheel filling half the frame |
 | --- | --- |
@@ -15,9 +17,30 @@ Nothing in this stack can see another quadruped. That is measured, not assumed:
 
 The open-vocabulary row is the one that settles it. That model, on the same frames, with
 the same code path, scores `person` **0.932** — so the pipeline is verified and the null
-result is real. There is no off-the-shelf model that knows what a Lite3 is. Across 148
-ticks of two runs staged specifically to record a crossing peer, the telemetry contains
-`bin` and `person` and nothing else.
+result is real. There is no off-the-shelf model that knows what a Lite3 is.
+
+### ⚠️ Two of the sentences above were wrong, and finding out ended the fine-tune
+
+**"Nothing at any score down to 0.02" was never measured, and the claim it stands for is
+false.** The deployed prototxt carries `confidence_threshold: 0.25` in its
+`detection_output_param`, and `DetectionOutput` applies it before `forward()` returns — so
+0.02 was 0.25 wearing another number, and no sub-0.25 box has ever left this network. Asked
+the same question over 1,903 labelled peer frames rather than one, the shipped 21-class model
+puts a box **on** the peer in **64%** of them, at 0.25, under names like `motorbike` and
+`chair`. It sees the robot. It has no word for it, and it never needed one.
+
+**"The telemetry contains `bin` and `person` and nothing else" is a fact about the
+configuration, not about the model.** `PersonDetector` is constructed with
+`classes=DYNAMIC_CLASSES`, which is `("person",)`, at confidence 0.45; `bin` comes from
+`colour_detector.py`. Those 148 ticks could not have contained a third label whatever the
+network emitted. Four instruments agreeing here was one filter, counted four times.
+
+Both corrections point the same way, and
+[`FROZEN-FEATURE-CEILING.md`](FROZEN-FEATURE-CEILING.md) now ends with the measurement rather
+than with a training plan: **do not fine-tune this detector — read the stock one
+class-agnostically.** [`eval_class_agnostic.py`](eval_class_agnostic.py) is the check.
+Everything below this line is still accurate about *how* to add a class, and remains the
+route if one ever has to be added for a reason a stock label cannot serve.
 
 ## What binds, and why it is not the training
 
