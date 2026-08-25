@@ -66,6 +66,12 @@ SSD_SCALE, SSD_MEAN = 1.0 / 127.5, 127.5
 #: editing the deployed prototxt would report zeros and call them a result.
 THRESHOLDS = (0.25, 0.50, 0.70, 0.90, 0.99)
 
+#: The confidence the navigator actually runs ``person`` at, from the telemetry headers of
+#: every Aug-20 run: ``"classes": ["person"], "confidence": 0.45``. The SSD's only job in
+#: the deployed stack is that one class -- ``bin`` comes from ``colour_detector.py`` -- so
+#: this is the number a fine-tune has to leave people above.
+PERSON_FLOOR = 0.45
+
 #: Fixed overlay regions, as fractions of the frame, measured off the Aug-20 stills:
 #: the plan-view radar inset (top-right) and the status plate (bottom-left).
 RADAR_REGION = (0.834, 0.0, 1.0, 0.287)
@@ -165,13 +171,18 @@ def table(scored: dict, thresholds=THRESHOLDS) -> list:
     return rows
 
 
-def person_shift(reference: dict, candidate: dict, floor: float = 0.5) -> dict:
+def person_shift(reference: dict, candidate: dict, floor: float = PERSON_FLOOR) -> dict:
     """How far ``person`` moved, on the frames where the REFERENCE model still sees one.
 
     ``person`` is the one class on this robot's stop path and the one class MobileNet-SSD is
     actually good at (0.93-0.97 on this robot's own footage). Unfreezing the backbone moves
     every class at once, so "the new class works" is only half a result: the other half is
     whether a fine-tune has quietly cost the robot its ability to stop for people.
+
+    ``floor`` is the DEPLOYED threshold, not a round number: the navigator runs the detector
+    with ``classes: ["person"]`` at ``confidence: 0.45``, as every Aug-20 telemetry header
+    records. A person scored at 0.44 by a fine-tuned model is a person the robot does not
+    stop for, however healthy the mean looks.
 
     Frames where the reference scores below ``floor`` are excluded rather than counted as
     agreement -- averaging over frames with no person in them dilutes the answer with
@@ -268,7 +279,7 @@ def main(argv: list | None = None) -> int:
         print(f"person, on the {shift['frames']} frames the reference still detects one: "
               f"{shift.get('reference_mean', 0):.3f} -> {shift.get('candidate_mean', 0):.3f}, "
               f"worst drop {shift.get('worst_drop', 0):.3f}, "
-              f"lost below 0.5 on {shift.get('lost', 0)}")
+              f"lost below {PERSON_FLOOR} on {shift.get('lost', 0)}")
     if args.out:
         args.out.write_text(json.dumps(dump, indent=2))
     return 0

@@ -21,6 +21,24 @@ assumption that the six `*_mbox_conf` heads can be re-fitted on their own.
 > backbone"*, is struck through below and replaced by that measurement. The diagnosis on
 > this page is still correct; the prescription was not.
 
+## ⚠️ Two corrections, both found later, neither of which changes the conclusion
+
+**The recall column below is measured against a denominator that is wrong.** Nine of the
+fifteen "held-out peer frames" contain no peer — see [`labels/CROSSDAY.md`](labels/CROSSDAY.md).
+Six do. So "8 of 15" is 8 fires over a set of which 6 held a robot, against this model's own
+38% false-positive rate; firing at random would have scored about 6 of 15. Scored against a
+box on the six frames that carry one, this head localised **1**. The ceiling is deeper than
+this page claimed, not shallower.
+
+**And the ceiling has since been cleared.** Unfreezing the backbone — item 1 of "What would
+work", below — reaches **70% recall at 1% false positives and 97% precision** on a corrected,
+tenfold larger cross-day set. See [`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md), including
+the part where it costs `person`.
+
+Everything else on this page stands. The three falsified hypotheses are still falsified, and
+the reason they were falsified is still the right one: a linear probe on frozen VOC features
+cannot separate this class.
+
 ## The result
 
 Trained on **1,343 labelled frames** of a Go2 Wheel from nine staged positions, against

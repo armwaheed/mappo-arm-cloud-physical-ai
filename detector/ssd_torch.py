@@ -184,7 +184,7 @@ def verify_against_cv2(model: CaffeMirror, proto: str, weights: str,
     wanted += [f"{s}_mbox_conf" for s in HEAD_SOURCES]
     wanted += [f"{s}_mbox_loc" for s in HEAD_SOURCES]
     net.setInput(blob)
-    theirs = dict(zip(wanted, net.forward(wanted)))
+    theirs = dict(zip(wanted, net.forward(wanted), strict=True))
 
     model.eval()
     with torch.no_grad():
