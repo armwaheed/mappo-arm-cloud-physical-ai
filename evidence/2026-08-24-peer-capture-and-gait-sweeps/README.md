@@ -90,6 +90,20 @@ repeats every condition, and runs the null control **between every trial**. It n
 robot: this session ended at 48 °C against a 50 °C ceiling, with the D1 having crept out of
 its 3.0° stow gate twice.
 
+It is written up as **[`PROTOCOL.md`](PROTOCOL.md)** and implemented as
+`tools/gait_sweep.py --sweep p` — 64 trials, ~250 s of standing, runnable by somebody who
+was not here. Three things in it are worth carrying elsewhere. **The null control is only
+half of a control**: a robot whose legs were never enabled records a perfect 0.000 m, so
+each end of the session also carries a positive *anchor* at a speed that has always walked,
+and nothing measured after a failed anchor means anything. **Position is held by the
+outcome itself** — a stall does not move the robot, and `vy` may be signed, so alternating
+the strafe direction makes the robot oscillate about a mark instead of walking away from
+it. And **three nuisances rose monotonically through this session** — motor temperature,
+arm sway, battery charge — all three perfectly confounded with "first trial after
+standing", so cold legs walking at 0.100 m/s fits this data exactly as well as the state
+hypothesis does. The protocol counterbalances against them and repeats one cold cell hot to
+separate the two.
+
 ## One more correction
 
 `Go2Locomotion` warns that motion mode `'mcf'` is "not a sport mode — Move commands may be
