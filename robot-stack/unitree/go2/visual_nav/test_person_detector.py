@@ -244,16 +244,35 @@ def test_a_person_shaped_box_holds_even_when_voc_calls_it_furniture():
     assert upright.person_shaped(FRAME_W, FRAME_H) is True
 
 
-def test_a_clipped_box_is_unclassifiable_and_must_hold():
-    """A person whose head leaves the frame gives a short wide box indistinguishable
-    from a quadruped, and that happens at CLOSE range where being wrong costs most.
-    39% of the peer corpus is clipped, so this is the common path, not an edge case."""
-    # Peer-shaped by aspect, but running off the right edge.
-    clipped = _ranged(1600, 410, 1920, 790, label="person")
-    assert clipped.person_shaped(FRAME_W, FRAME_H) is True, "clipped must fail safe"
-    # And off the top, which is the person-with-head-cut-off case.
+def test_a_vertically_clipped_box_is_unclassifiable_and_must_hold():
+    """A person whose head leaves the frame gives a SHORTER box, so the aspect falls and
+    they start to look like a quadruped — the dangerous direction, at close range where
+    being wrong costs most. Vertical clipping must fail safe."""
     topped = _ranged(900, 0, 1240, 380, label="person")
     assert topped.person_shaped(FRAME_W, FRAME_H) is True
+    bottomed = _ranged(900, 700, 1240, 1080, label="person")
+    assert bottomed.person_shaped(FRAME_W, FRAME_H) is True
+
+
+def test_a_horizontally_clipped_peer_still_reaches_the_policy():
+    """THE OPPOSITE CASE, AND IT COST US A LIVE RUN. Cutting width RAISES height/width,
+    so a partly-out-of-frame object drifts towards the person verdict by itself and
+    needs no separate branch. The first cut of this rule refused on horizontal clipping
+    too: on the first live run the peer clipped the right edge as the robot swerved past
+    it, flipped to person_shaped, and froze the robot beside it.
+
+    Re-add `or horizontal` to the guard and this fails.
+    """
+    beside = _ranged(1600, 410, 1920, 790, label="person")   # 320 x 380 -> aspect 1.19
+    assert beside.person_shaped(FRAME_W, FRAME_H) is False
+
+
+def test_a_sliver_at_the_frame_edge_holds_on_aspect_alone():
+    """The safety this keeps despite the above: an object cut down to a narrow strip has
+    an aspect over the threshold and holds, without the rule needing to know it was
+    clipped. A peer must lose roughly two thirds of its width to get here."""
+    sliver = _ranged(1830, 300, 1920, 800, label="person")   # 90 x 500 -> aspect 5.6
+    assert sliver.person_shaped(FRAME_W, FRAME_H) is True
 
 
 def test_the_threshold_sits_between_the_two_measured_populations():

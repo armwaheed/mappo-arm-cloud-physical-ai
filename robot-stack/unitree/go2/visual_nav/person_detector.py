@@ -279,18 +279,30 @@ class RangedDetection:
         geometric mean of the two, so it clears the peer's worst observed case by 2x and
         sits 1.7x below a person.
 
-        ⚠️ A CLIPPED BOX IS NOT CLASSIFIABLE AND MUST HOLD. A person whose head leaves
-        the frame produces a short wide box that looks exactly like a quadruped, and
-        that happens at close range — precisely where being wrong costs the most. 39% of
-        the corpus is clipped, so this branch is the common case, not an edge case. It
-        fails to ``person``, which is the stopping side.
+        ⚠️ VERTICAL CLIPPING HOLDS; HORIZONTAL CLIPPING DOES NOT, AND THE ASYMMETRY IS
+        THE WHOLE POINT. A person whose head leaves the frame gives a SHORTER box, so
+        the aspect falls and they start to look like a quadruped — the dangerous
+        direction, at close range, where being wrong costs the most. That branch must
+        fail to ``person``, and it does.
 
-        The consequence to understand before relying on this: the peer routes to the
-        policy at MID range and holds at close range, so a swerve has to be committed
-        early or not at all.
+        Horizontal clipping does the opposite. Cutting width RAISES ``height/width``, so
+        a partly-out-of-frame object drifts towards the person-shaped verdict on its own.
+        The rule is already conservative there and needs no separate branch: a peer at
+        0.8 m is 1129 px wide against 829 px tall (aspect 0.73), and has to lose roughly
+        two thirds of its width before the aspect reaches 2.0 and it holds. Refusing on
+        horizontal clipping as well was the first cut of this rule, and it cost the
+        close-range window for nothing: measured on the first live run, the peer clipped
+        the right edge as the robot swerved past it, flipped to ``person_shaped`` and
+        froze the robot beside it. 39% of the 2026-08-24 corpus is clipped on SOME edge;
+        only the vertical share is genuinely unclassifiable.
+
+        The consequence to understand before relying on this: a peer that is vertically
+        cut off — closer than about 0.61 m, where its 0.514 m fills the 1080-pixel frame
+        — holds the robot rather than being swerved around. That is the intended floor,
+        not a bug.
         """
-        vertical, horizontal = self.detection.clipped(width, height)
-        if vertical or horizontal:
+        vertical, _horizontal = self.detection.clipped(width, height)
+        if vertical:
             return True
         if self.detection.width_px <= 0.0:
             return True
