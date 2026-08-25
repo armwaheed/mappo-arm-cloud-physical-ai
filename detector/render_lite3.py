@@ -33,27 +33,85 @@ Venture has a different lens, and every apparent size scales linearly on this nu
 render at the wrong focal length and the detector learns a scale prior that is wrong by
 exactly that ratio. Calibrate the deployment unit and pass its value.
 
-## What this deliberately does NOT model
+## A BACKGROUND IS A PICTURE PLUS THE CAMERA THAT TOOK IT
 
-The pasted sprite is rendered through a PINHOLE camera at a narrow field of view, while
-the real camera is an equidistant fisheye. Over a small sprite that difference is slight,
-but a robot filling the frame near the edge is genuinely distorted in a way this does not
-reproduce. Treat the close-range end of the distribution as the weakest part of the set,
-and keep recorded frames for it. The background is unaffected — it was imaged by the real
-lens.
+The sprite is stood on the floor, and the floor it is stood on is the one in the
+background frame. Placing it needs that frame's focal length, camera height and camera
+pitch — see :meth:`BackgroundGeometry.ground_row`. Those are properties of the FRAME, not
+global constants, and a background shot from a different height, with a different lens, or
+with the robot in a different posture breaks the placement silently: the composite still
+looks like a picture of a corridor, the box is still tight on the sprite, and the robot is
+simply standing at the wrong depth. Nothing downstream can detect it.
+
+So geometry travels WITH the frames. ``--backgrounds`` may be given more than once, and
+each directory may carry a ``geometry.json`` describing its camera. That file is
+deliberately the format ``calibrate_camera.py`` already writes, so the honest recipe for a
+new environment is to calibrate it and copy the result in::
+
+    cp robot-stack/unitree/go2/visual_nav/go2_front_camera.json bg_lab/geometry.json
+
+A directory with no ``geometry.json`` falls back to the command line and says so loudly,
+which is the pre-existing behaviour and is right for the one corridor the flags describe.
+A frame whose pixel dimensions disagree with its declared geometry is REFUSED rather than
+rescaled: ``focal_px`` is expressed in pixels of a particular image size, and from the
+pixels alone a downscale, a crop and a different lens are indistinguishable. Declare the
+directory's own ``width``/``height``/``focal_px`` and the frames become legal — the
+refusal is of the ASSUMPTION, not of the size.
+
+Generated backgrounds, if they ever arrive, are just files in a directory and reach this
+module the same way. Nothing here knows or cares where a background came from — but a
+generated frame has no camera, so somebody has to decide what geometry to claim for it,
+and writing that claim into ``geometry.json`` is where that decision becomes reviewable.
+
+⚠️ RECORDED FRAMES CARRY THE DEBUG OVERLAY. ``visual_nav`` writes its MP4 from the
+ANNOTATED canvas — detection rectangles, the top-right plan-view inset, the bottom-left
+status plate. Composite onto those and the detector is taught that a peer comes with an
+orange rectangle and a black radar square. Use the raw camera frames, or crop the insets,
+before pointing ``--backgrounds`` at a recording.
+
+## Posture is part of the geometry
+
+The Go2 rests PRONE and stands only to walk: it initialises prone, acquires its goal
+prone, and lies back down whenever the path stays blocked for ``--rest-after`` seconds. A
+dry run never enables the legs at all, so it is prone start to finish whatever its status
+line says. Prone is a recurring RUN STATE, not a startup transient, and prone frames are
+legitimate training data — but they are shot from a different camera:
+
+===========  ==========  ============================  =====================
+posture      height_m    pitch_rad                     source
+===========  ==========  ============================  =====================
+standing     0.32        0.0                           ``go2_front_camera.json``
+prone        0.1540      -0.0227 (1.3 deg NOSE-UP)     tape, 2026-08-24
+===========  ==========  ============================  =====================
+
+Measured on the robot with a tape: 6 and 1/16 inches floor to lens centre when prone, and
+the lens 1.3 degrees nose-up. Neither number was recorded anywhere before — the deployed
+calibration's ``height_m: 0.32`` and ``pitch_rad: 0.0`` are the STANDING values, and
+applying them to a prone frame puts the ground line 160 px high at 0.5 m, which is 15% of
+frame height at the range where avoidance happens.
+
+⚠️ SIGN CONVENTION. ``pitch_rad`` is ``camera_model.FisheyeCamera``'s: tilt below the
+body's forward axis, **positive = nose-DOWN**. A nose-UP lens is therefore NEGATIVE. That
+is the trap in this module, and the reason the field is not called something friendlier:
+the only file that will ever hand these numbers to this script is a calibration written by
+``FisheyeCamera.save()``, and a differently-signed field name here would put a hand
+negation with no test behind it on that path. Use ``--posture prone`` and the measured
+value arrives already signed.
 
 Usage:
 
     render_lite3.py --backgrounds FRAMES_DIR --out DATASET_DIR --count 2000
+    render_lite3.py --backgrounds corridor/ --backgrounds lab/ --out DS --count 4000
 """
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import math
 import random
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 import cv2
@@ -62,8 +120,50 @@ import numpy as np
 
 #: Measured focal length of the Go2 Walk's front camera, pixels. See the module
 #: docstring: this is the camera the BACKGROUNDS were shot with, and it is wrong for any
-#: other unit.
+#: other unit. The committed calibration carries it to full precision
+#: (``go2_front_camera.json``, ``focal_px: 1290.1637909789656``); the 0.03% difference is
+#: far inside the 3.13 deg RMS residual that fit reports.
 DEFAULT_FOCAL_PX = 1290.2
+
+#: Frame size the deployment camera delivers, pixels. ``focal_px`` is meaningless without
+#: it — the same lens is a different number of pixels per radian at a different capture
+#: size — so the two are always declared together.
+DEFAULT_FRAME_PX = (1920, 1080)
+
+#: Camera optical centre above the floor, metres, by posture. Standing matches the
+#: deployed calibration; prone is 6 and 1/16 inches, tape-measured 2026-08-24.
+STANDING_HEIGHT_M = 0.32
+PRONE_HEIGHT_M = 0.1540
+
+#: Camera pitch by posture, radians, in ``camera_model.FisheyeCamera``'s convention:
+#: tilt below the body's forward axis, POSITIVE = NOSE-DOWN. The prone lens measures 1.3
+#: degrees NOSE-UP, so it is negative here. Standing is 0.0 and that value is calibrated,
+#: not assumed — ``go2_front_camera.json`` records it.
+STANDING_PITCH_RAD = 0.0
+PRONE_PITCH_RAD = -math.radians(1.3)
+
+#: Spread of the per-frame pitch jitter, degrees. Standing is the trunk wobble of a
+#: trotting quadruped — ``camera_model``'s docstring sizes it at "a 2 deg trunk-pitch
+#: wobble (a trotting Go2 does more)". Prone the chassis is resting ON the floor and does
+#: not wobble at all, so the spread there stands for the uncertainty in the 1.3 deg tape
+#: reading rather than for any motion.
+STANDING_PITCH_JITTER_DEG = 2.0
+PRONE_PITCH_JITTER_DEG = 0.3
+
+#: Posture presets. Only the two quantities that actually change with posture — the lens
+#: does not move relative to the body, so ``focal_px`` is absent on purpose.
+POSTURES = {
+    "standing": {"height_m": STANDING_HEIGHT_M, "pitch_rad": STANDING_PITCH_RAD,
+                 "pitch_jitter_deg": STANDING_PITCH_JITTER_DEG},
+    "prone": {"height_m": PRONE_HEIGHT_M, "pitch_rad": PRONE_PITCH_RAD,
+              "pitch_jitter_deg": PRONE_PITCH_JITTER_DEG},
+}
+
+#: Per-directory geometry sidecar. Named for what it holds rather than for this script,
+#: because the file it is meant to be is a copy of a ``calibrate_camera.py`` output.
+GEOMETRY_MANIFEST = "geometry.json"
+
+IMAGE_SUFFIXES = (".jpg", ".jpeg", ".png")
 
 #: Vertical field of view the sprite is rendered through, degrees. Narrow on purpose —
 #: perspective distortion within the sprite grows with it, and the sprite is later scaled
@@ -84,9 +184,16 @@ RENDER_DISTANCE_M = 1.5
 #: upper is past where a 0.4 m object is worth ranging at all on this sensor.
 RANGE_M = (0.4, 4.0)
 
-#: Elevation band of the camera relative to the robot's centre, degrees. The deployment
-#: camera sits at ~0.32 m and the robot's body is ~0.30 m up, so the view is close to
-#: level and can tilt slightly either way as the robot pitches.
+#: Elevation band of the render camera relative to the peer's centre, degrees.
+#:
+#: ⚠️ This is a RANDOMISATION, not a derivation, and its premise is the STANDING camera:
+#: at ~0.32 m against a body ~0.30 m up the view is close to level and can tilt either
+#: way as the robot pitches. From the PRONE camera at 0.154 m the peer is above the lens
+#: and genuinely seen from below, which this band does not reproduce. Deriving it would
+#: need the peer's stance trunk height, and the vendor MJCF does not give one — it spawns
+#: the trunk at z=1.0 in free fall — so the honest move is to leave the band alone and
+#: record the gap here rather than fit a number to a guess. Listed again under "What this
+#: deliberately does NOT model".
 ELEVATION_DEG = (-12.0, 18.0)
 
 #: Fraction of samples deliberately pushed off the frame edge. Truncation is the
@@ -96,16 +203,186 @@ TRUNCATED_FRACTION = 0.35
 
 
 @dataclass(frozen=True)
-class DeploymentCamera:
-    """The camera the frames will be DEPLOYED against, not the one that renders.
+class BackgroundGeometry:
+    """The camera a background frame was taken with.
 
-    The two numbers travel together because they answer one question between them —
-    how big a robot at range r looks, and which row its feet land on — and passing them
-    separately is how a set ends up rendered for one unit and shipped to another.
+    The field names are ``camera_model.FisheyeCamera``'s, so a JSON file written by
+    :meth:`FisheyeCamera.save` — i.e. by ``calibrate_camera.py`` — loads here unchanged
+    and an ``annotations.json`` written here can be diffed against the calibration it
+    claims to describe. Sharing the names is the point: the alternative is a second
+    vocabulary for the same five quantities, and a hand translation between them.
+
+    ``pitch_rad`` is that module's convention too — tilt below the body's forward axis,
+    POSITIVE = NOSE-DOWN. See the module docstring; a nose-up lens is negative.
     """
 
+    width: int
+    height: int
     focal_px: float
     height_m: float
+    pitch_rad: float = STANDING_PITCH_RAD
+    pitch_jitter_deg: float = STANDING_PITCH_JITTER_DEG
+
+    def ground_row(self, range_m: float, pitch_rad: float) -> float:
+        """Image row where the floor at ``range_m`` lands, for a camera at ``pitch_rad``.
+
+        Under the equidistant fisheye the deployment camera actually is, a ray at angle
+        ``theta`` off the optical axis lands ``focal_px * theta`` from the principal
+        point. The contact point of something standing at horizontal range ``r`` is
+        ``atan(h / r)`` BELOW the horizontal; the optical axis is ``pitch_rad`` below it
+        as well, so the ray is ``atan(h / r) - pitch_rad`` below the AXIS::
+
+            row = cy + focal_px * (atan(h / r) - pitch_rad)
+
+        which is why nose-up (negative ``pitch_rad``) pushes the whole floor DOWN the
+        frame by ``focal_px * pitch_rad`` at every range — 29 px for the prone lens' 1.3
+        degrees, independent of range.
+
+        What that costs if the posture is wrong, at the committed f = 1290.16 px and
+        cy = 540 of ``go2_front_camera.json``::
+
+            range   standing (0.32, level)   prone (0.154, 1.3 up)   shift
+            0.5 m           1275                     955             -320
+            1.0 m            940                     766             -173
+            2.0 m            745                     668              -76
+
+        The standing row at 0.5 m is past the bottom of a 1080-row frame, which is not a
+        bug in the arithmetic: from a camera 0.32 m up, a peer that close has its feet
+        below the sensor and is truncated. Read the other way round, applying the
+        standing numbers to a PRONE frame lifts the sprite 320 px — a third of the frame
+        — at exactly the range where avoidance happens.
+
+        The principal point is taken as the frame centre, which the calibration supports
+        rather than assumes: ``go2_front_camera.json`` fits cx=960.0, cy=540.0 on a
+        1920x1080 frame.
+        """
+        return self.height / 2.0 + self.focal_px * (
+            math.atan2(self.height_m, range_m) - pitch_rad)
+
+    def sample_pitch(self, rng: random.Random) -> float:
+        """``pitch_rad`` for one frame, jittered for the trunk's own motion."""
+        return self.pitch_rad + math.radians(rng.gauss(0.0, self.pitch_jitter_deg))
+
+    def describe(self) -> str:
+        """One line naming the pitch in BOTH phrasings, because one of them is a trap."""
+        nose = "level" if self.pitch_rad == 0.0 else (
+            f"{abs(math.degrees(self.pitch_rad)):.2f} deg nose-"
+            f"{'down' if self.pitch_rad > 0 else 'UP'}")
+        return (f"{self.width}x{self.height} f={self.focal_px:.1f}px "
+                f"h={self.height_m:.4f}m pitch={self.pitch_rad:+.5f}rad ({nose})")
+
+
+@dataclass(frozen=True)
+class Placement:
+    """One composited frame and everything needed to audit where the sprite was put."""
+
+    frame: np.ndarray
+    box: tuple[int, int, int, int]
+    range_m: float
+    pitch_rad: float
+
+
+def geometry_from_mapping(mapping: dict, fallback: BackgroundGeometry, source: str
+                          ) -> BackgroundGeometry:
+    """One :class:`BackgroundGeometry` from a manifest entry, inheriting what it omits.
+
+    Inheritance is what makes the common cases short. A directory that is the same camera
+    in the other posture needs only ``{"posture": "prone"}``; a directory that is a
+    different capture size needs only its ``width``/``height``/``focal_px``. Keys this
+    class does not know are IGNORED, because the file is meant to be a copy of a
+    calibration and those carry provenance (``method``, ``residual_deg_rms``, ``samples``)
+    that is there to be read by a human, not by this.
+    """
+    fields = asdict(fallback)
+    posture = mapping.get("posture")
+    if posture is not None:
+        if posture not in POSTURES:
+            raise ValueError(f"{source}: unknown posture {posture!r}, "
+                             f"expected one of {sorted(POSTURES)}")
+        fields.update(POSTURES[posture])
+    # Explicit values win over the posture preset, so a manifest can say "prone, but this
+    # unit's lens measured 0.9 deg up" without having to restate the height as well.
+    fields.update({k: v for k, v in mapping.items() if k in fields})
+    try:
+        return replace(fallback, **{k: type(getattr(fallback, k))(v)
+                                    for k, v in fields.items()})
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{source}: {exc}") from exc
+
+
+def load_manifest(directory: Path, fallback: BackgroundGeometry
+                  ) -> tuple[BackgroundGeometry, dict[str, BackgroundGeometry]] | None:
+    """``(default, per-pattern overrides)`` for a directory, or ``None`` if it has none.
+
+    Two shapes are accepted, because the two cases are genuinely different sizes. A
+    directory that is ONE camera is a bare calibration object. A directory whose frames
+    differ — a recording that starts prone, stands to walk and lies back down inside a
+    single clip, which is what these actually do — needs per-frame statements::
+
+        {"default": {"posture": "standing"},
+         "frames": {"gs-*.jpg": {"posture": "prone"}, "chair1_*.jpg": "prone"}}
+
+    A bare string where a geometry object is expected is read as a posture name, since
+    that is the only thing that varies frame to frame within one recording.
+    """
+    path = directory / GEOMETRY_MANIFEST
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"{path}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path}: expected a JSON object, got {type(payload).__name__}")
+
+    if "default" in payload or "frames" in payload:
+        default = geometry_from_mapping(payload.get("default", {}), fallback, str(path))
+        overrides = {
+            pattern: geometry_from_mapping(
+                {"posture": entry} if isinstance(entry, str) else entry,
+                default, f"{path}[{pattern}]")
+            for pattern, entry in payload.get("frames", {}).items()
+        }
+        return default, overrides
+    return geometry_from_mapping(payload, fallback, str(path)), {}
+
+
+def collect_backgrounds(directories: list[Path], fallback: BackgroundGeometry
+                        ) -> list[tuple[Path, BackgroundGeometry]]:
+    """Every background frame paired with the geometry of the camera that took it.
+
+    Warns, once per directory, when a directory has no manifest and therefore inherits
+    the command line. That is the pre-existing behaviour and it is correct for the one
+    corridor the flags were measured against — but it is an ASSUMPTION about someone
+    else's pictures, and the same class of unstated assumption is what
+    ``FROZEN-FEATURE-CEILING.md`` records costing a day: a gate whose negatives silently
+    shared their conditions with the training set reported 0% where another day measured
+    38%. Say it out loud instead.
+    """
+    entries: list[tuple[Path, BackgroundGeometry]] = []
+    for directory in directories:
+        if not directory.is_dir():
+            raise ValueError(f"{directory} is not a directory")
+        manifest = load_manifest(directory, fallback)
+        if manifest is None:
+            print(f"[render_lite3] ⚠️ {directory}/{GEOMETRY_MANIFEST} absent — assuming "
+                  f"every frame in it was shot with: {fallback.describe()}")
+            print("[render_lite3]    A background from another camera, another capture "
+                  "size or the other posture breaks the ground line silently.")
+            default, overrides = fallback, {}
+        else:
+            default, overrides = manifest
+            print(f"[render_lite3] {directory}/{GEOMETRY_MANIFEST}: {default.describe()}")
+            for pattern, geometry in overrides.items():
+                print(f"[render_lite3]   {pattern}: {geometry.describe()}")
+
+        for path in sorted(directory.iterdir()):
+            if path.suffix.lower() not in IMAGE_SUFFIXES:
+                continue
+            match = next((g for pattern, g in overrides.items()
+                          if fnmatch.fnmatch(path.name, pattern)), default)
+            entries.append((path, match))
+    return entries
 
 
 def robot_geoms(model: mujoco.MjModel) -> list[int]:
@@ -226,9 +503,8 @@ def fisheye_tangential_stretch(column: float, row: float, width: int, height: in
 
 
 def compose(background: np.ndarray, sprite: np.ndarray, mask: np.ndarray,
-            camera: DeploymentCamera, rng: random.Random
-            ) -> tuple[np.ndarray, tuple[int, int, int, int]] | None:
-    """Paste one scaled sprite; returns the frame and its CLIPPED box, or ``None``.
+            geometry: BackgroundGeometry, rng: random.Random) -> Placement | None:
+    """Paste one scaled sprite; returns the placement and its CLIPPED box, or ``None``.
 
     The box is clipped to the frame because that is what an annotator would draw and what
     the detector must regress. The sprite's own extent decides the physical size, so a
@@ -236,12 +512,12 @@ def compose(background: np.ndarray, sprite: np.ndarray, mask: np.ndarray,
     published width would introduce.
 
     THE ROBOT IS STOOD ON THE FLOOR, not pasted at a free height. Range and image row are
-    not independent for an object resting on the ground: at range ``r`` a camera ``h``
-    above the floor sees the contact point ``focal * atan(h / r)`` pixels below the
-    optical axis. Sampling the row freely produces robots near the ceiling and robots
-    below the floor, and a detector trained on those learns that apparent size carries no
-    information about position — discarding the one prior that makes a monocular range
-    estimate believable in the first place.
+    not independent for an object resting on the ground: the contact point at range ``r``
+    lands on the row :meth:`BackgroundGeometry.ground_row` gives, which needs the camera's
+    height AND its pitch. Sampling the row freely produces robots near the ceiling and
+    robots below the floor, and a detector trained on those learns that apparent size
+    carries no information about position — discarding the one prior that makes a
+    monocular range estimate believable in the first place.
     """
     height, width = background.shape[:2]
     # The renderer's focal length, in pixels of the FULL render buffer — not of the
@@ -250,16 +526,15 @@ def compose(background: np.ndarray, sprite: np.ndarray, mask: np.ndarray,
 
     range_m = rng.uniform(*RANGE_M)
     physical_h = sprite.shape[0] * RENDER_DISTANCE_M / render_focal_px
-    target_h = round(physical_h * camera.focal_px / range_m)
+    target_h = round(physical_h * geometry.focal_px / range_m)
     target_w = round(target_h * sprite.shape[1] / sprite.shape[0])
     if target_h < 12 or target_w < 12 or target_h > height * 3:
         return None
 
-    # Where the floor at this range lands, in image rows. Jittered by a couple of degrees
-    # for the trunk pitch a walking quadruped actually carries.
-    feet_row = height / 2.0 + camera.focal_px * (
-        np.arctan2(camera.height_m, range_m) + np.radians(rng.gauss(0.0, 2.0)))
-    y = round(feet_row - target_h)
+    # Where the floor at this range lands. The pitch is jittered per frame: standing, for
+    # the trunk wobble a walking quadruped carries; prone, for the tape's own resolution.
+    pitch_rad = geometry.sample_pitch(rng)
+    y = round(geometry.ground_row(range_m, pitch_rad) - target_h)
     if rng.random() < TRUNCATED_FRACTION:
         x = rng.randint(-target_w // 2, width - target_w // 2)
     else:
@@ -268,7 +543,7 @@ def compose(background: np.ndarray, sprite: np.ndarray, mask: np.ndarray,
     # Now that the sprite's position is known, apply the lens' tangential stretch. It
     # depends on WHERE the sprite sits, so it cannot be folded into the scale above.
     stretch = fisheye_tangential_stretch(x + target_w / 2.0, y + target_h / 2.0,
-                                         width, height, camera.focal_px)
+                                         width, height, geometry.focal_px)
     # Tangential means perpendicular to the radius from the principal point. Resolving
     # that exactly needs a rotation; at these magnitudes the dominant component is
     # horizontal for a sprite standing on the floor near the vertical centre, so the
@@ -299,31 +574,62 @@ def compose(background: np.ndarray, sprite: np.ndarray, mask: np.ndarray,
     if rng.random() < 0.4:
         k = rng.choice((3, 5))
         frame = cv2.GaussianBlur(frame, (k, k), 0)
-    return frame, (x0, y0, x1, y1)
+    return Placement(frame=frame, box=(x0, y0, x1, y1), range_m=range_m,
+                     pitch_rad=pitch_rad)
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     parser.add_argument("--mjcf", type=Path, required=True,
                         help="Lite3.xml from DeepRoboticsLab/deep_robotics_model")
-    parser.add_argument("--backgrounds", type=Path, required=True,
-                        help="directory of PEER-FREE frames from the deployment camera")
+    parser.add_argument("--backgrounds", type=Path, required=True, action="append",
+                        metavar="DIR",
+                        help="directory of PEER-FREE frames from the deployment camera. "
+                             "Repeatable, so several environments can be mixed; each may "
+                             f"carry a {GEOMETRY_MANIFEST} describing its own camera")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--count", type=int, default=2000)
     parser.add_argument("--label", default="lite3")
     parser.add_argument("--focal-px", type=float, default=DEFAULT_FOCAL_PX,
                         help="focal length of the DEPLOYMENT camera — see the module "
                              "docstring, every apparent size scales on it")
-    parser.add_argument("--camera-height-m", type=float, default=0.32,
+    parser.add_argument("--frame-px", type=int, nargs=2, default=list(DEFAULT_FRAME_PX),
+                        metavar=("W", "H"),
+                        help="capture size --focal-px is expressed in. Backgrounds that "
+                             "are not this size are refused rather than rescaled")
+    parser.add_argument("--posture", choices=sorted(POSTURES), default="standing",
+                        help="posture of the robot that shot the backgrounds. Sets the "
+                             "camera height and pitch from the tape measurements, which "
+                             "is the safe way to get a NOSE-UP pitch signed correctly")
+    parser.add_argument("--camera-height-m", type=float, default=None,
                         help="deployment camera's optical centre above the floor. Sets "
-                             "where a robot's feet land in the frame at a given range")
+                             "where a robot's feet land in the frame at a given range. "
+                             f"Default from --posture ({STANDING_HEIGHT_M} standing, "
+                             f"{PRONE_HEIGHT_M} prone)")
+    parser.add_argument("--camera-pitch-deg", type=float, default=None,
+                        help="deployment camera tilt, POSITIVE = NOSE-DOWN (the "
+                             "convention camera_model.py uses). A nose-UP lens is "
+                             "NEGATIVE — the prone Go2 measures -1.3. Default from "
+                             "--posture")
     parser.add_argument("--seed", type=int, default=0)
     args = parser.parse_args(argv)
 
-    backgrounds = sorted(p for p in args.backgrounds.iterdir()
-                         if p.suffix.lower() in (".jpg", ".jpeg", ".png"))
-    if not backgrounds:
-        parser.error(f"no images in {args.backgrounds}")
+    preset = POSTURES[args.posture]
+    fallback = BackgroundGeometry(
+        width=args.frame_px[0], height=args.frame_px[1], focal_px=args.focal_px,
+        height_m=(preset["height_m"] if args.camera_height_m is None
+                  else args.camera_height_m),
+        pitch_rad=(preset["pitch_rad"] if args.camera_pitch_deg is None
+                   else math.radians(args.camera_pitch_deg)),
+        pitch_jitter_deg=preset["pitch_jitter_deg"])
+    print(f"[render_lite3] command-line geometry ({args.posture}): {fallback.describe()}")
+
+    try:
+        pool = collect_backgrounds(args.backgrounds, fallback)
+    except ValueError as exc:
+        parser.error(str(exc))
+    if not pool:
+        parser.error(f"no images in {', '.join(str(d) for d in args.backgrounds)}")
 
     # The vendored MJCF caps its offscreen framebuffer at 640x480, which is a property
     # of Deep Robotics' asset and not ours to edit — a re-pull would revert it and the
@@ -335,14 +641,17 @@ def main(argv: list[str] | None = None) -> int:
     model = spec.compile()
     data = mujoco.MjData(model)
     geoms = robot_geoms(model)
-    camera = DeploymentCamera(focal_px=args.focal_px, height_m=args.camera_height_m)
     renderer = mujoco.Renderer(model, height=RENDER_HEIGHT_PX, width=RENDER_HEIGHT_PX)
     rng = random.Random(args.seed)
 
     images = args.out / "images"
     images.mkdir(parents=True, exist_ok=True)
     records, attempts = [], 0
-    while len(records) < args.count and attempts < args.count * 6:
+    #: Geometries actually used, de-duplicated, so a record can name one instead of
+    #: repeating six floats and so the set's whole geometry fits on one screen.
+    used: list[BackgroundGeometry] = []
+    refused: dict[str, int] = {}
+    while len(records) < args.count and attempts < args.count * 6 and pool:
         attempts += 1
         _randomise_pose(model, data, rng)
         _recolour(model, geoms, rng)
@@ -351,23 +660,52 @@ def main(argv: list[str] | None = None) -> int:
                        geoms=geoms)
         if made is None:
             continue
-        background = cv2.imread(str(rng.choice(backgrounds)))
+        index = rng.randrange(len(pool))
+        path, geometry = pool[index]
+        background = cv2.imread(str(path))
         if background is None:
+            pool.pop(index)
+            refused["unreadable"] = refused.get("unreadable", 0) + 1
             continue
-        placed = compose(background, made[0], made[1], camera, rng)
+        # focal_px is pixels per radian AT A PARTICULAR CAPTURE SIZE, so a frame of some
+        # other size is a different camera until someone says otherwise. From the pixels
+        # alone a downscale, a crop and a different lens cannot be told apart, and two of
+        # those three would put the sprite at the wrong scale AND the wrong row. Drop it
+        # from the pool so the refusal is counted once, not once per attempt.
+        if background.shape[:2] != (geometry.height, geometry.width):
+            pool.pop(index)
+            actual = f"{background.shape[1]}x{background.shape[0]}"
+            key = (f"{actual} but its geometry declares "
+                   f"{geometry.width}x{geometry.height}")
+            refused[key] = refused.get(key, 0) + 1
+            continue
+
+        placed = compose(background, made[0], made[1], geometry, rng)
         if placed is None:
             continue
-        frame, box = placed
+        if geometry not in used:
+            used.append(geometry)
         name = f"{args.label}_{len(records):06d}.jpg"
-        cv2.imwrite(str(images / name), frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
-        records.append({"image": f"images/{name}", "label": args.label, "box": list(box)})
+        cv2.imwrite(str(images / name), placed.frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+        records.append({"image": f"images/{name}", "label": args.label,
+                        "box": list(placed.box), "background": str(path),
+                        "geometry": used.index(geometry),
+                        "range_m": round(placed.range_m, 4),
+                        "pitch_rad": round(placed.pitch_rad, 6)})
 
+    for reason, n in sorted(refused.items()):
+        print(f"[render_lite3] ⚠️ refused {n} background(s): {reason}")
+
+    # Per-record geometry, not one global camera. A set may now be composited from
+    # several environments and both postures, and the number that placed each sprite is
+    # the only thing that makes a frame re-checkable afterwards.
     (args.out / "annotations.json").write_text(json.dumps(
-        {"label": args.label, "focal_px": args.focal_px,
-         "camera_height_m": args.camera_height_m,
+        {"label": args.label,
+         "geometries": [asdict(g) for g in used],
          "asset": "DeepRoboticsLab/deep_robotics_model (BSD-3-Clause)",
          "records": records}, indent=1))
-    print(f"{len(records)} frames -> {args.out}  ({attempts} attempts)")
+    print(f"{len(records)} frames -> {args.out}  ({attempts} attempts, "
+          f"{len(used)} geometr{'y' if len(used) == 1 else 'ies'})")
     return 0 if records else 1
 
 
