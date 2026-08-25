@@ -31,6 +31,14 @@ on its last velocity, its covariance inflating, until :data:`COAST_TIMEOUT_S`.
 Measurement noise is anisotropic and range-dependent — the size-prior range is far
 noisier than the bearing — so ``R`` is built in the sensor frame and rotated into odom
 rather than being a single scalar. Pure numpy; no robot required.
+
+An optional :class:`expansion.ExpansionConsistency` rides on the lifecycle above
+without changing any of it: every accepted measurement is forwarded to it and every
+deleted track is swept out of it, and no decision here reads its verdict. It exists
+because a CLASS-AGNOSTIC detector no longer knows what it is looking at, so
+``estimate_range``'s size prior can be wrong by a factor and the range with it. See
+that module for what the check can and cannot establish.
+
 Tests: ``python3 test_tracker.py``.
 """
 
@@ -38,10 +46,17 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from geometry import hidden_by, wrap_pi
+
+if TYPE_CHECKING:
+    # Type-only, and deliberately so: `expansion` imports UNMEASURED_SOURCES from
+    # here, so a runtime import in this direction would be a cycle. The gate is used
+    # through two method calls and nothing here depends on its type.
+    from expansion import ExpansionConsistency
 
 # ── Noise model ─────────────────────────────────────────────────────────────
 # Range from a size prior carries a roughly PROPORTIONAL error: the box-height error
@@ -96,12 +111,20 @@ class Observation:
     sigma_cross: float         # 1-sigma perpendicular to it (bearing error)
     world_bearing: float       # line-of-sight direction in odom, for rotating R
     label: str = "person"
+    # The raw measurement this was built from, carried rather than re-derived. The
+    # filter itself needs neither: it works in odom and reads only the sigmas. The
+    # expansion gate needs both, and `sigma_along` cannot stand in for `range_m` —
+    # the same sigma comes from a near target on a good source and a far one on a
+    # weak source, so recovering the range from it would silently pick the wrong one.
+    range_m: float = 0.0
+    source: str = "height"
 
     @classmethod
     def from_bearing_range(cls, bearing_rad: float, range_m: float,
                            robot_x: float, robot_y: float, robot_yaw: float,
                            label: str = "person",
-                           range_sigma_scale: float = 1.0) -> Observation:
+                           range_sigma_scale: float = 1.0,
+                           source: str = "height") -> Observation:
         """Build from a body-frame measurement plus the frame-associated robot pose.
 
         ``bearing_rad`` is positive to the robot's left. ``range_sigma_scale``
@@ -116,6 +139,8 @@ class Observation:
             sigma_cross=max(range_m, 0.1) * BEARING_SIGMA_RAD,
             world_bearing=world_bearing,
             label=label,
+            range_m=range_m,
+            source=source,
         )
 
     def covariance(self) -> np.ndarray:
@@ -155,7 +180,7 @@ def observation_from(bearing_rad: float, range_m: float, source: str, label: str
     return Observation.from_bearing_range(
         bearing_rad=bearing_rad, range_m=range_m,
         robot_x=pose[0], robot_y=pose[1], robot_yaw=pose[2], label=label,
-        range_sigma_scale=_range_sigma_scale(source))
+        range_sigma_scale=_range_sigma_scale(source), source=source)
 
 
 @dataclass
@@ -212,12 +237,21 @@ class ObstacleTracker:
             coast on their last estimate through a flickering detection rather than
             being repeatedly created and destroyed. The coast timeout still bounds
             how long they survive unseen.
+        expansion: optional :class:`expansion.ExpansionConsistency`. Given one, every
+            accepted measurement is also fed to it, and every deleted track is swept
+            out of it. It NEVER changes what this tracker does — no association, no
+            correction, no lifecycle decision reads its verdict. It accumulates an
+            opinion that ``visual_nav._obstacles`` acts on, which keeps a rejected
+            track alive and re-tested instead of destroying the evidence that would
+            restore it.
     """
 
     def __init__(self, fov_rad: float = math.radians(120.0),
-                 max_range_m: float = 6.0) -> None:
+                 max_range_m: float = 6.0,
+                 expansion: ExpansionConsistency | None = None) -> None:
         self._fov_rad = fov_rad
         self._max_range_m = max_range_m
+        self._expansion = expansion
         self._tracks: list[Track] = []
         self._next_id = 1
 
@@ -260,16 +294,18 @@ class ObstacleTracker:
                occluders: tuple = ()) -> None:
         """Associate ``observations`` to tracks, correct, spawn, and prune.
 
-        The robot pose is needed only for the visibility test that decides whether an
-        unmatched track was absent or merely out of shot. ``occluders`` are the angular
-        shadows of known static obstacles — see :meth:`is_visible`.
+        The robot pose is needed for the visibility test that decides whether an
+        unmatched track was absent or merely out of shot, and — where an ``expansion``
+        gate is fitted — as the second half of that gate's input. ``occluders`` are the
+        angular shadows of known static obstacles — see :meth:`is_visible`.
         """
         pairs = self._associate(observations)
         matched_tracks = {track_index for track_index, _ in pairs}
         matched_obs = {obs_index for _, obs_index in pairs}
 
         for track_index, obs_index in pairs:
-            self._correct(self._tracks[track_index], observations[obs_index], now)
+            self._correct(self._tracks[track_index], observations[obs_index], now,
+                          (robot_x, robot_y))
 
         # Score misses BEFORE spawning, so a track created by this very call is not
         # immediately marked as having been missed by it.
@@ -325,7 +361,8 @@ class ObstacleTracker:
             assignments.append((track_index, obs_index))
         return assignments
 
-    def _correct(self, track: Track, obs: Observation, now: float) -> None:
+    def _correct(self, track: Track, obs: Observation, now: float,
+                 robot_xy: tuple) -> None:
         measurement_matrix = np.zeros((2, 4))
         measurement_matrix[0, 0] = 1.0
         measurement_matrix[1, 1] = 1.0
@@ -350,6 +387,15 @@ class ObstacleTracker:
         track.misses = 0
         track.last_seen = now
 
+        # AFTER the correction and unconditionally on a match, so the gate sees every
+        # measurement the filter accepted and only those. Feeding it the raw detections
+        # instead would include ones the association gate rejected — a different
+        # object's box, credited to this track's approach.
+        if self._expansion is not None:
+            self._expansion.observe(track.track_id, time_s=now, range_m=obs.range_m,
+                                    source=obs.source, odom_xy=(obs.x, obs.y),
+                                    robot_xy=robot_xy)
+
     def _spawn(self, obs: Observation, now: float) -> None:
         covariance = np.zeros((4, 4))
         covariance[:2, :2] = obs.covariance()
@@ -369,6 +415,8 @@ class ObstacleTracker:
         self._tracks = [t for t in self._tracks
                         if t.misses <= MAX_MISSES
                         and now - t.last_seen <= COAST_TIMEOUT_S]
+        if self._expansion is not None:
+            self._expansion.retain(t.track_id for t in self._tracks)
 
     # ── Visibility ──────────────────────────────────────────────────────────
     def is_visible(self, track: Track, robot_x: float, robot_y: float,

@@ -332,6 +332,120 @@ def test_a_constant_is_still_an_observation():
     assert math.isclose(constant.x, 0.719), "it still reports where it thinks the bin is"
 
 
+# ── The expansion-gate hook ─────────────────────────────────────────────────
+class _RecordingGate:
+    """Records what the tracker feeds it, and what it sweeps out."""
+
+    def __init__(self):
+        self.observed = []
+        self.retained = []
+
+    def observe(self, track_id, *, time_s, range_m, source, odom_xy, robot_xy):
+        self.observed.append((track_id, round(time_s, 4), round(range_m, 4), source,
+                              tuple(round(v, 4) for v in odom_xy),
+                              tuple(round(v, 4) for v in robot_xy)))
+
+    def retain(self, track_ids):
+        self.retained.append(sorted(track_ids))
+
+
+def test_an_observation_carries_its_raw_range_and_source():
+    """The filter itself uses neither — it works in odom off the sigmas. The gate needs
+    both, and `sigma_along` cannot stand in for the range: a near target on a good
+    source and a far one on a weak source produce the SAME sigma, so recovering the
+    range from it would silently pick whichever the caller happened to mean."""
+    good = observation_from(0.2, 3.0, "height", "person", ORIGIN)
+    # 0.7 m on the width prior is the range at which the two sigmas COINCIDE:
+    # (0.18*0.7 + 0.15) * 2.5 == 0.18*3.0 + 0.15 == 0.69. A 4.3x difference in range,
+    # one number. That is the collision the carried fields exist to avoid.
+    weak = observation_from(0.2, 0.7, "width", "person", ORIGIN)
+    assert (good.range_m, good.source) == (3.0, "height")
+    assert (weak.range_m, weak.source) == (0.7, "width")
+    assert abs(good.sigma_along - weak.sigma_along) < 1e-12, (
+        f"{good.sigma_along} vs {weak.sigma_along}")
+
+
+def test_the_gate_is_fed_only_the_measurements_the_filter_accepted():
+    """Not the raw detections. A detection outside the association gate belongs to some
+    other object, and crediting it to this track's approach is a fit across two things.
+    Feeding the gate from `_correct` is what guarantees the two agree."""
+    gate = _RecordingGate()
+    tracker = ObstacleTracker(expansion=gate)
+    now = 0.0
+    for _ in range(6):
+        tracker.predict(DT)
+        now += DT
+        real = observation_from(0.0, 3.0, "height", "person", ORIGIN)
+        # A second detection 8 m off to the side: too far to associate, so the filter
+        # spawns a separate track rather than correcting this one.
+        far = observation_from(1.2, 8.0, "height", "person", ORIGIN)
+        tracker.update([real, far], now, 0.0, 0.0, 0.0)
+    fed = {track_id for track_id, *_ in gate.observed}
+    assert len(fed) == 2, f"the gate saw {len(fed)} tracks, expected one per object"
+    for _, _, range_m, source, _, robot_xy in gate.observed:
+        assert range_m in (3.0, 8.0) and source == "height"
+        assert robot_xy == (0.0, 0.0)
+
+
+def test_the_gate_is_told_where_the_robot_was_not_just_where_the_track_is():
+    """Both halves. The odom point is what the track CLAIMS; the robot pose is the
+    ruler the claim is measured against. With only one of them the gate has nothing to
+    compare and would silently abstain forever."""
+    gate = _RecordingGate()
+    tracker = ObstacleTracker(expansion=gate)
+    now = 0.0
+    for step in range(6):
+        robot_x = 0.05 * step
+        tracker.predict(DT)
+        now += DT
+        tracker.update([observation_from(0.0, 3.0 - robot_x, "height", "person",
+                                         (robot_x, 0.0, 0.0))],
+                       now, robot_x, 0.0, 0.0)
+    poses = [robot_xy[0] for *_, robot_xy in gate.observed]
+    assert poses == sorted(poses) and poses[-1] > poses[0], poses
+    anchors = [odom_xy[0] for *_, odom_xy, _ in gate.observed]
+    assert all(abs(a - 3.0) < 1e-9 for a in anchors), anchors
+
+
+def test_a_deleted_track_is_swept_out_of_the_gate():
+    """The tracker prunes by rebuilding its list, so there is no per-track deletion
+    hook to hang a `forget` on. Sweeping against the survivors after every prune is
+    what stops the gate growing without bound over a long run — and what stops a reused
+    id inheriting a dead track's window."""
+    gate = _RecordingGate()
+    tracker = ObstacleTracker(expansion=gate)
+    now = 0.0
+    for _ in range(4):
+        tracker.predict(DT)
+        now += DT
+        tracker.update([observation_from(0.0, 3.0, "height", "person", ORIGIN)],
+                       now, 0.0, 0.0, 0.0)
+    assert gate.retained[-1] == [1]
+    now += COAST_TIMEOUT_S + DT
+    tracker.predict(DT)
+    tracker.update([], now, 0.0, 0.0, 0.0)
+    assert not tracker.tracks, "the track should have timed out"
+    assert gate.retained[-1] == [], gate.retained[-1]
+
+
+def test_no_gate_means_no_behaviour_change():
+    """The default. Every lifecycle decision above must be identical with the gate
+    absent, because that is the deployed configuration."""
+    plain, hooked = ObstacleTracker(), ObstacleTracker(expansion=_RecordingGate())
+    now = 0.0
+    for _ in range(8):
+        for tracker in (plain, hooked):
+            tracker.predict(DT)
+            tracker.update([observation_from(0.1, 2.5, "height", "person", ORIGIN)],
+                           now + DT, 0.0, 0.0, 0.0)
+        now += DT
+    for a, b in zip(plain.tracks, hooked.tracks):
+        assert a.track_id == b.track_id and a.hits == b.hits
+        assert abs(float(a.state[0]) - float(b.state[0])) < 1e-12
+        assert abs(a.position_sigma - b.position_sigma) < 1e-12
+    assert len(plain.tracks) == len(hooked.tracks) == 1
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
