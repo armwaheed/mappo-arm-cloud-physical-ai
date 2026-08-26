@@ -14,6 +14,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -272,6 +273,86 @@ def test_prepare_motion_checks_the_vendor_state_before_the_axis_transport_moves(
     udp = _Loco()
     binding.prepare_motion(_args(), udp)
     assert udp.calls == ["prepare_motion"]
+
+
+class _BatteryLoco:
+    """A locomotion stub that reports a battery, or refuses the way a dead link does."""
+
+    def __init__(self, battery):
+        self._battery = battery
+
+    def battery_level(self):
+        from deep_robotics.lite3.locomotion.lite3_udp_locomotion import Lite3LinkLost
+
+        if self._battery is None:
+            raise Lite3LinkLost("the Lite3 state stream has been silent for 3.20s")
+        return self._battery
+
+
+def test_the_bindings_carry_the_battery_from_the_locomotion_to_the_health_monitor():
+    """The seam, not the combinator. This is the hop the live run actually broke.
+
+    ``test_lite3_locomotion.py`` covers the combinator's ``battery_level`` well, but
+    nothing called ``Lite3Bindings.create_health_monitor`` at all. Renaming the call it
+    makes -- ``battery_level()`` to ``battery()``, the exact production bug -- left the
+    three Lite3 suites at 308/308.
+    """
+    binding = Lite3Bindings()
+    monitor = binding.create_health_monitor(
+        _args("--accept-no-motor-temperatures"), live=True)
+    monitor.start(wait_s=0.0)
+    try:
+        # The source is late-bound: the navigator builds this monitor before the
+        # locomotion exists, and it returns None until it does. That is "nothing yet",
+        # not a fault, and must not be counted or reported as one.
+        time.sleep(0.3)
+        assert monitor.latest() is None
+        assert monitor._battery_source_raises == 0, \
+            "a not-yet-connected locomotion was reported as a broken source"
+
+        binding._locomotion = _BatteryLoco(76.5)
+        deadline = time.monotonic() + 3.0
+        while monitor.latest() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        health = monitor.latest()
+        assert health is not None, "the battery never reached the monitor"
+        assert abs(health.battery_soc_pct - 76.5) < 1e-9
+        assert monitor.abort_reason() is None
+    finally:
+        monitor.stop()
+
+
+def test_a_live_run_refuses_when_the_locomotion_reports_no_battery():
+    """``required=live`` is the master switch on the live gate, and nothing pinned it.
+
+    Turning it into ``required=False`` also left the three suites at 308/308: a live run
+    would then proceed with no battery reading at all. The refusal must also name the
+    feed that is actually in play -- a ROS topic name here sent the live investigation
+    to a subscription this path never makes.
+    """
+    binding = Lite3Bindings()
+    binding._locomotion = _BatteryLoco(None)  # the link is silent
+    args = _args("--accept-no-motor-temperatures")
+
+    monitor = binding.create_health_monitor(args, live=True)
+    monitor.start(wait_s=0.3)
+    try:
+        reason = monitor.abort_reason()
+        assert reason is not None, "a live run was cleared with no battery reading"
+        assert "battery" in reason
+        assert "locomotion state stream" in reason, reason
+        assert args.battery_topic not in reason, \
+            f"the refusal names a ROS topic this path never subscribes to: {reason}"
+    finally:
+        monitor.stop()
+
+    # A dry run has no legs to protect and must not be blocked by the same absence.
+    monitor = binding.create_health_monitor(args, live=False)
+    monitor.start(wait_s=0.0)
+    try:
+        assert monitor.abort_reason() is None
+    finally:
+        monitor.stop()
 
 
 def test_telemetry_does_not_persist_camera_source_credentials():
