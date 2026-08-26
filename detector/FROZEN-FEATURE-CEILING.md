@@ -20,6 +20,14 @@ assumption that the six `*_mbox_conf` heads can be re-fitted on their own.
 > obstacle. The section this page used to end with, *"What would work: unfreeze the
 > backbone"*, is struck through below and replaced by that measurement. The diagnosis on
 > this page is still correct; the prescription was not.
+>
+> ⚠️ **That reversal is itself half-reversed, 2026-08-26.** Both numbers in it are the Aug-24
+> capture — the day the fine-tunes were trained on — and the stock model had never been scored on
+> the held-out Aug-20 day at all. On Aug-20, with one rule applied to every model, the stock
+> weights read **68% recall at 57% false alarms** and every fine-tune beats them on the peer. The
+> 18% was measured against staged empty corridor. What survives is `person`: the stock weights
+> keep all 15 people the navigator sees, and every fine-tune loses between 2 and 11 of them, so
+> nothing is deployable either way. See *The bar was measured on the wrong day*, below.
 
 ## ⚠️ Two corrections, both found later, neither of which changes the conclusion
 
@@ -37,6 +45,13 @@ lifts it. Scored against the stock model on the same 2,800 frames, that same che
 **53% at 38%** and loses on both axes. See [`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md),
 including the part where it costs `person` and the part where 47 held-out positives could not
 rank anything.
+
+⚠️ **"It did not matter" was the wrong conclusion, and the last clause of that paragraph is why.**
+The 53%-at-38% row is the fine-tune's own training day; the 72%-at-4% row is the held-out day; the
+page below knows the two cannot be ranked against each other and rules on the training-day row
+anyway. Scored on the held-out day against a stock model finally measured there too, the ceiling
+being cleared *does* matter — on the peer. It still does not produce anything deployable, because
+of `person`. *The bar was measured on the wrong day*, below.
 
 Everything else on this page stands. The three falsified hypotheses are still falsified, and
 the reason they were falsified is still the right one: a linear probe on frozen VOC features
@@ -174,9 +189,10 @@ reaches the policy, and neither is a training problem:
 * **18% of peer-free frames fire on something.** Some of that is real furniture, which is a
   static obstacle the map should hold rather than a track. `kind` and the tracker decide
   whether that is a false alarm or a correct one, and that is the piece of work this replaces
-  the fine-tune with.
+  the fine-tune with. ⚠️ *18% is the staged-negative number.* Cross-day, on furnished corridor,
+  it is **57%** — the work is the same work, three times the size.
 
-### The bar every fine-tune failed to clear
+### ⛔ The bar every fine-tune failed to clear — superseded 2026-08-26, wrong day
 
 **64% recall at 18% false alarms, on these frames, from a model that costs nothing and is
 already installed.** Nothing on this page was ever measured against it — the tables above are
@@ -198,6 +214,71 @@ seen any of them. See [`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md).
 Reproduce the bar with [`eval_class_agnostic.py`](eval_class_agnostic.py); it is the script
 that produced the two rows above, and it needs no training run and no `.caffemodel` that is
 not already on the robot.
+
+## ⛔ The bar was measured on the wrong day — corrected 2026-08-26
+
+**"64% recall at 18% false alarms" is a real number and it is not a bar.** Both rows of the table
+above are the Aug-24 capture. That is the day the fine-tunes were trained on — 1,343 of the 1,903
+positives and 705 of the 897 negatives are in the fine-tune's training set, which the section above
+states plainly and then rules on anyway. The fine-tune's honest out-of-sample number is the Aug-20
+split, and **the stock model had never been scored on Aug-20.** The comparison that closed this
+work had a training-day row for both models, a cross-day row for one, and no cross-day row for the
+model it recommended.
+
+Scored now, on the **Aug-20 held-out split — 47 peer-present frames and 134 peer-free** — with one
+rule applied identically to every model: a frame counts as a fire if any detection at >= 0.25 has
+box aspect **h/w < 2.0**, i.e. it is not person-shaped, so `mappo_bridge` hands it to the policy as
+an obstacle rather than holding (`person_detector.PERSON_ASPECT_MIN`). `people kept` counts, of the
+15 frames where the **shipped** network sees a person at >= 0.45 — the confidence the navigator
+runs at — how many the candidate still sees.
+
+| model | peer recall | false alarms | precision | people kept |
+| --- | ---: | ---: | ---: | ---: |
+| **stock 21-class, as shipped** | **68%** (32/47) | **57%** (76/134) | 30% | **15/15** |
+| `l_full_bb02` ep015 | 70% | 19% | 56% | 13/15 |
+| `j_full_distil03` ep015 | 66% | 6% | 79% | 11/15 |
+| `i_full_pseudo` ep020 | 74% | 8% | 76% | 8/15 |
+| `f_full_distil01` ep020 | 74% | 1% | 95% | 4/15 |
+
+**On the peer, every fine-tune beats the shipped weights.** Recall 70, 66, 74 and 74 against 68 —
+three of the four above it, the fourth two points under. False alarms 19, 6, 8 and 1 against
+**57**. So "do not fine-tune this detector" is wrong on the axis it was argued, and the section
+above is superseded on that axis.
+
+### ⚠️ The 18% was staged empty corridor
+
+The stock model did not get worse. **705 of the 897 Aug-24 peer-free frames are `neg_prone` and
+`neg_standing`** — corridor deliberately cleared and shot as training negatives, which is exactly
+what they were made for. The Aug-20 negatives are the same corridor furnished and in use, ArUco
+office chair and all. Same weights, same 0.25, same `cv2.dnn` path: **18% on the staged set, 57% on
+the furnished one.**
+
+This page already carries that lesson, one level up, about the refusal gate that scored 0 of 705:
+*a test that shares its conditions with the thing it is testing measures nothing.* The 18% is the
+same error pointed the other way — an empty-room false-alarm rate quoted as if it described a room.
+
+### What did not change, and it is the part that blocks deployment
+
+`⚠️ Fine-tuning on a one-class corpus teaches the network that people are background` — the warning
+in [`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md) — was right, and it was understated. It was
+written from one checkpoint losing 2 of 15 people. Across the four checkpoints above the loss runs
+**2, 4, 7 and 11 of 15**, and the checkpoint with the best peer precision on the table is the one
+that loses eleven. The shipped weights lose none, by construction: they are the model that defines
+`person`.
+
+**So nothing here is deployable, on either route.** The open objective is the combination no run has
+produced: hold **15/15** people while keeping the peer gains. A sweep testing exactly that is
+running as this is written, and no conclusion about it belongs on this page until it has numbers.
+
+### ⚠️ 47 and 134 are small, and this repository has been burned three times
+
+The refusal gate (0 of 705 same-session negatives), the fifteen stills (nine of which held no
+peer), and the 47-positive ranking in `UNFROZEN-FINE-TUNE.md` were each an evidence set too small
+and too like itself, and each flattered the thing being tested. The table above is one corridor,
+one held-out day, 47 positives and 134 negatives. It is good for the comparison it makes — every
+row scored the same way on the same frames — and it is not a claim about buildings in general.
+Note also that the manifest's test split holds **136** peer-free frames and this sweep scored
+**134**; two frames are unaccounted for, which is 1.5 points of false-alarm rate.
 
 ## What survives
 
