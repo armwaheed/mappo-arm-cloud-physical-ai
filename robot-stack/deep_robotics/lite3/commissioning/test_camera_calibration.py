@@ -313,6 +313,61 @@ def test_a_dry_run_prints_the_delegated_command_and_opens_no_camera():
     assert "DRY RUN" in buffer.getvalue()
 
 
+def _runbook() -> str:
+    return (Path(__file__).resolve().parent / "RUNBOOK.md").read_text(encoding="utf-8")
+
+
+def undescribed_renderings(runbook: str) -> list:
+    """Strings ``describe_replaced`` can emit that the operator's document never shows.
+
+    The population comes from ``describe_replaced`` itself rather than from a list here, so
+    a change to what it emits fails the test until RUNBOOK.md catches up. ``None`` and
+    ``0.32`` are the two states a calibration's ``height_m`` can arrive in -- unset, or
+    carrying the Go2 default -- and which one turns up is a property of where the file was
+    fitted, not of this directory.
+    """
+    return [describe_replaced(value) for value in (None, 0.32)
+            if describe_replaced(value) not in runbook]
+
+
+def test_the_runbook_tells_the_operator_to_look_for_text_the_tool_can_actually_print():
+    """The operator's document and the string this tool emits, checked against each other.
+
+    RUNBOOK.md task 3 told the operator, in both languages, that the shared fitter writes
+    ``height_m: 0.32`` into every calibration and that the paste line would read
+    ``replaced the fitter's 0.32``. True when the harness shipped. #96 gave
+    ``FisheyeCamera.height_m`` no default and made the shared model write an unset height
+    as ``null`` -- explicitly so this wrapper could read the absence back out -- and #107
+    taught ``describe_replaced`` to render the two differently. Neither touched the
+    RUNBOOK. So the document promised a line this tool would not print, and called the
+    line it does print a fault, on the one line the operator is asked to act on.
+
+    Derived rather than remembered, and BOTH renderings are checked. ``unset (null)`` is
+    what the shared model in this repository writes today; a calibration produced through
+    a copy of that model which still carries the Go2 default arrives as ``0.32``, and
+    which one turns up is a property of where the file was fitted rather than of this
+    directory.
+    """
+    missing = undescribed_renderings(_runbook())
+    assert missing == [], (
+        "camera_calibration.py can print " + ", ".join(repr(m) for m in missing) + " on "
+        "the one line the operator is asked to act on, and RUNBOOK.md never mentions it. "
+        "An operator who has not seen it described reads it as a fault in the script.")
+
+
+def test_the_runbook_check_fails_on_the_section_as_it_actually_read():
+    """Prove the check can fire, against the real text with one rendering removed.
+
+    RUNBOOK.md described only ``0.32`` and told the operator to expect it. Deleting
+    ``unset (null)`` from the live text reconstructs that state, and it has to be a
+    finding. Written against the live text rather than a fixture so that a restructuring
+    which made the passage unfindable breaks this proof instead of quietly making the test
+    above vacuous.
+    """
+    as_it_read = _runbook().replace(describe_replaced(None), "")
+    assert undescribed_renderings(as_it_read) == [describe_replaced(None)]
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
