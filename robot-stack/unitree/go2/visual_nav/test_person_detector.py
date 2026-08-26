@@ -22,7 +22,12 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
 
-from camera_model import PERSON_HEIGHT_M, PERSON_WIDTH_M, FisheyeCamera
+from camera_model import (
+    GO2_CAMERA_HEIGHT_M,
+    PERSON_HEIGHT_M,
+    PERSON_WIDTH_M,
+    FisheyeCamera,
+)
 from person_detector import (
     FILLS_FRAME_RANGE_M,
     PERSON_ASPECT_MIN,
@@ -35,7 +40,10 @@ from person_detector import (
 )
 
 WIDTH, HEIGHT = 1920, 1080
-MODEL = FisheyeCamera.from_hfov(WIDTH, HEIGHT, 120.0)
+# The lens height is NAMED, not defaulted: `FisheyeCamera.height_m` has no default, so a
+# fixture that wants the Go2's geometry has to say so. Everything below that touches
+# `object_fit_range` is a statement about a Go2-shaped camera.
+MODEL = FisheyeCamera.from_hfov(WIDTH, HEIGHT, 120.0, height_m=GO2_CAMERA_HEIGHT_M)
 
 
 def _box_for(distance_m: float, height_m: float = PERSON_HEIGHT_M) -> Detection:
@@ -123,8 +131,29 @@ def test_object_fit_range_matches_the_geometry():
 
 
 def test_fit_range_grows_with_a_narrower_lens():
-    narrow = FisheyeCamera.from_hfov(WIDTH, HEIGHT, 70.0)
+    narrow = FisheyeCamera.from_hfov(WIDTH, HEIGHT, 70.0,
+                                     height_m=GO2_CAMERA_HEIGHT_M)
     assert object_fit_range(narrow) > object_fit_range(MODEL)
+
+
+def test_the_fit_range_refuses_a_camera_that_states_no_lens_height():
+    """The cap this function computes is proportional to the lens height, and there is no
+    safe number to assume.
+
+    `FisheyeCamera.height_m` used to default to the Go2's 0.32 m. Any Lite3 calibration
+    that did not pass one inherited it in silence, and this is the function it reaches: it
+    caps a width-derived range, which `estimate_range` applies to the 39% of peer boxes
+    that touch a frame edge. Neither fallback is available — `inf` disables the cap, and
+    0.0 reports every object as standing inside the robot — so it refuses.
+    """
+    unmeasured = FisheyeCamera.from_hfov(WIDTH, HEIGHT, 120.0)
+    assert unmeasured.height_m is None, "the model must not supply a platform's number"
+    with pytest.raises(ValueError) as refusal:
+        object_fit_range(unmeasured)
+    message = str(refusal.value)
+    assert "no lens height" in message, message
+    assert "height_m=" in message, "the refusal has to say what to pass"
+    assert str(GO2_CAMERA_HEIGHT_M) in message, "and whose number 0.32 is"
 
 
 def test_clipped_flags():

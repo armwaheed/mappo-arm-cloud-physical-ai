@@ -59,4 +59,5 @@ def main() -> None:
     np.save(WORK + "plate_corridor.npy", plate)
 
 
-main()
+if __name__ == "__main__":
+    main()

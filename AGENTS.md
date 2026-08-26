@@ -41,8 +41,8 @@ directories are nested and a bare `cd` would run the next line from inside the l
 (cd policy && for t in test_*.py; do python3 "$t"; done)                                         #   33
 (cd integration && for t in test_*.py; do python3 "$t"; done)                                    #  196
 (cd detector/labels && for t in test_*.py; do python3 "$t"; done)                                #   13
-(cd detector/labels/pipeline && for t in test_*.py; do python3 "$t"; done)                       #   10
-(cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 "$t"; done)             #  329
+(cd detector/labels/pipeline && for t in test_*.py; do python3 "$t"; done)                       #   14
+(cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 "$t"; done)             #  336
 (cd robot-stack/unitree/go2/controller && for t in test_*.py; do python3 "$t"; done)             #    6
 (cd robot-stack/unitree/go2/d1_arm && for t in test_*.py; do python3 "$t"; done)                 #   15
 (cd robot-stack/unitree/go2/lidar_sight && for t in test_*.py; do python3 "$t"; done)            #    7
@@ -50,7 +50,7 @@ directories are nested and a bare `cd` would run the next line from inside the l
 (cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)     #   58
 (cd robot-stack/deep_robotics/lite3/commissioning && for t in test_*.py; do python3 "$t"; done)  #  188
 (cd dashboard && for t in test_*.py; do python3 "$t"; done)                                      #  110
-#                                                                                          total 1025
+#                                                                                          total 1036
 ```
 
 Then `ruff check .` from inside **every** directory that holds a `ruff.toml` — there are

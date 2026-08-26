@@ -11,6 +11,8 @@ longer looks like its anchor and the box should be distrusted.
 Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
 refuses with that list when it is not set.
 """
+from __future__ import annotations
+
 import glob
 import json
 import sys
@@ -51,4 +53,5 @@ def main() -> None:
     print(f"{tag:38s} n={len(res):4d} min peak={min(peaks):.3f} max shift={max(shifts)} px")
 
 
-main()
+if __name__ == "__main__":
+    main()

@@ -6,6 +6,8 @@
 Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
 refuses with that list when it is not set.
 """
+from __future__ import annotations
+
 import json
 import os
 
@@ -94,4 +96,5 @@ def main() -> None:
     print("TOTAL", len(recs))
 
 
-main()
+if __name__ == "__main__":
+    main()

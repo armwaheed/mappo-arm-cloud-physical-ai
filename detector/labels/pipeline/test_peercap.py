@@ -15,9 +15,13 @@ The other tests are about refusing well. A tool that cannot find its corpus used
 `IndexError` on `f[0]` twenty lines after an empty glob, which reads as a broken script
 rather than as a corpus that is somewhere else.
 
-These tests do not import the nine scripts. They cannot: every one resolves its paths at
-import and refuses when `PEERCAP_FRAMES` is unset, which is the behaviour being tested.
-They are read and parsed as source instead.
+These tests do not import the nine scripts: every one resolves its paths at import and
+refuses when `PEERCAP_FRAMES` is unset, which is the behaviour being tested here, so they
+are read and parsed as source instead. That left a gap, and it cost this directory five
+modules that could not run on the robot's Python at all -- nothing here ever executed a
+`def` in them, so nobody found out. `test_pipeline_imports.py` is the other half: it
+points `PEERCAP_FRAMES` at a temporary capture and imports every module in this
+directory. Both halves are needed; neither replaces the other.
 
 Run: ``python3 test_peercap.py``. Needs neither cv2 nor numpy.
 """
@@ -35,13 +39,15 @@ import peercap
 
 HERE = Path(os.path.dirname(os.path.abspath(__file__)))
 
-SELF = os.path.basename(__file__)
+#: Every runnable script here, i.e. everything but peercap.py and the test modules.
+#: Excluded BY SHAPE, not by name: this list used to exclude only `peercap.py` and this
+#: file's own basename, so the day a second test module appeared beside it, that module
+#: became a "script" and was required to import peercap and bind SRC/WORK/OUT.
+SCRIPTS = sorted(p for p in HERE.glob("*.py")
+                 if p.name != "peercap.py" and not p.name.startswith("test_"))
 
-#: Every runnable script here, i.e. everything but peercap.py and this file.
-SCRIPTS = sorted(p for p in HERE.glob("*.py") if p.name not in {"peercap.py", SELF})
-
-#: Everything this directory ships, scripts and support alike.
-EVERY_MODULE = [*SCRIPTS, HERE / "peercap.py", HERE / SELF]
+#: Everything this directory ships, scripts, support and tests alike.
+EVERY_MODULE = sorted(HERE.glob("*.py"))
 
 #: A rooted path, ASSEMBLED rather than written, so the scan below does not flag its own
 #: positive control. That control is what stops the scan degrading into a gate that never

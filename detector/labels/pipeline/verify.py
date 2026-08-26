@@ -40,4 +40,5 @@ def main() -> None:
     print(out, len(recs), "records")
 
 
-main()
+if __name__ == "__main__":
+    main()

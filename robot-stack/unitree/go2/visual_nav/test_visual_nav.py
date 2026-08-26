@@ -19,6 +19,8 @@ Run: ``python3 test_visual_nav.py``
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import math
 import os
@@ -54,7 +56,7 @@ from avoidance import (
     PlannerConfig,
 )
 from camera import Frame
-from camera_model import FisheyeCamera
+from camera_model import GO2_CAMERA_HEIGHT_M, FisheyeCamera
 from colour_detector import PROFILES
 from goal import ArucoGoal, OdomWaypoint
 from person_detector import PERSON_ASPECT_MIN, Detection, RangedDetection
@@ -71,6 +73,7 @@ from visual_nav import (
     PerceptionResult,
     PerceptionWorker,
     VisualNavigator,
+    build_camera_model,
     build_parser,
 )
 
@@ -1173,6 +1176,77 @@ def test_a_rejected_track_is_withheld_from_the_planner_but_only_when_asked():
     navigator = _navigator(tracker, now)
     assert navigator._expansion is None, "the shipped default fits no gate"
     assert len(navigator._obstacles(now + LATENCY_S)) == 1
+
+
+# ── the camera model's lens height ──────────────────────────────────────────
+def _calibration_file(directory, name="cal.json", **overrides):
+    """A calibration of the shape `FisheyeCamera.save` writes, with fields overridden.
+
+    An override of `None` DELETES the key, so both shapes of "this file states no lens
+    height" — the null the fitter now writes, and a key nobody ever wrote — come from one
+    helper rather than from two hand-built dicts that could drift apart.
+    """
+    data = {"width": 1920, "height": 1080, "focal_px": 1290.1637909789656,
+            "cx": 960.0, "cy": 540.0, "pitch_rad": 0.0,
+            "height_m": GO2_CAMERA_HEIGHT_M, "method": "spin"}
+    for key, value in overrides.items():
+        if value is _DELETED:
+            data.pop(key, None)
+        else:
+            data[key] = value
+    path = os.path.join(directory, name)
+    Path(path).write_text(json.dumps(data))
+    return path
+
+
+#: Sentinel for `_calibration_file`: leave the key out entirely rather than set it null.
+_DELETED = object()
+
+
+def test_a_calibration_without_a_lens_height_is_refused_before_the_run_starts():
+    """`object_fit_range` refuses without a lens height, and the first horizontally
+    clipped detection can be several metres into a live run. A refusal that can only fire
+    mid-run is a robot that stops walking because the process died, so the field is read
+    at start-up. `calibrate_camera.py` fits a focal length and cannot measure a lens
+    height, so the file it writes carries none until somebody adds it."""
+    with tempfile.TemporaryDirectory() as directory:
+        null = _calibration_file(directory, "null.json", height_m=None)
+        omitted = _calibration_file(directory, "omitted.json", height_m=_DELETED)
+        for path in (null, omitted):
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    build_camera_model(1920, 1080, path)
+            except SystemExit as refusal:
+                message = str(refusal)
+            else:
+                raise AssertionError(f"{path} states no lens height and must be refused")
+            assert "REFUSING TO RUN" in message, message
+            assert path in message, "the refusal has to name the file"
+            assert str(GO2_CAMERA_HEIGHT_M) in message, "and the Go2's number"
+            assert "--lens-height" in message, "and how a Lite3 gets one"
+
+
+def test_a_calibration_that_states_a_lens_height_is_accepted_and_reported():
+    with tempfile.TemporaryDirectory() as directory:
+        path = _calibration_file(directory, height_m=0.31)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            model = build_camera_model(1920, 1080, path)
+        assert model.height_m == 0.31
+        assert "lens height 0.310m" in out.getvalue(), out.getvalue()
+
+
+def test_the_uncalibrated_fallback_names_the_go2s_lens_height_rather_than_inheriting_it():
+    """Every intrinsic on this path is already the Go2's published nominal spec, so the
+    Go2's lens height belongs with it — but it is passed at the call site, not taken from
+    a default, and the run says whose numbers they are."""
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        model = build_camera_model(1920, 1080, None)
+    assert model.height_m == GO2_CAMERA_HEIGHT_M
+    printed = out.getvalue()
+    assert "NOMINAL" in printed and "GO2" in printed, printed
+    assert "un-calibrated" in printed, printed
 
 
 if __name__ == "__main__":
