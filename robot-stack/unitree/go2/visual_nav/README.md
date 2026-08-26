@@ -400,6 +400,7 @@ Other limits worth stating plainly:
 | `camera_model.py` | equidistant fisheye: pixel ↔ bearing, angular-size range |
 | `person_detector.py` | MobileNet-SSD + the truncation-aware ranger |
 | `tracker.py` | multi-target constant-velocity KF in the odom frame |
+| `expansion.py` | ego-motion consistency gate: drops a track whose range does not fall as odometry demands |
 | `avoidance.py` | dynamic-window planner over predicted obstacle motion |
 | `goal.py` | ArUco beacon / detected object / dead-reckoned waypoint, latched in odom |
 | `colour_detector.py` | HSV segmentation of a known-coloured prop the detector cannot see |
@@ -409,10 +410,76 @@ Other limits worth stating plainly:
 | `calibrate_camera.py` | focal-length measurement, three methods (spin / marker / object) |
 | `replay.py` | run the detector + tracker over any video, no robot needed |
 | `telemetry.py` | machine-readable JSONL record of every control tick — the downstream interface |
-| `test_*.py` | **246 offline tests**, no robot: `for t in test_*.py; do python3 $t; done` |
+| `test_*.py` | **329 offline tests**, no robot: `for t in test_*.py; do python3 $t; done` |
 | `ruff.toml` | this directory's lint contract (line length, py38 target) |
 | `go2_front_camera.json` | the measured camera model for THIS unit |
 | `images/` | live-run and calibration GIFs, measured-data charts, setup photo |
+
+## `--expansion-filter` — checking a size prior against the robot's own odometry
+
+⚠️ **Off by default, and it should stay off until a walking run says what it catches.**
+
+Every range this pipeline produces comes from a size prior, so a detector that no longer
+knows what it is looking at produces ranges that are wrong by whatever factor the prior
+is wrong by. MEASURED on the 2026-08-24 peer corpus, read class-agnostically: a Go2 Wheel
+filling the frame is ranged at **2.05 m** by the 1.70 m person prior, and the same peer
+at mid-corridor at **6.05 m**. Both are out by about 4x, and no single frame can tell.
+
+Ego-motion can. Range from a size prior is exactly proportional to true range, so the
+LOGARITHMIC rate is prior-free: `d(ln R)/dt = -v_closing / R_true`. Hold the odom point a
+track claims to occupy fixed, walk the robot's own poses past it, and compare the rate
+that predicts with the rate observed. A box drawn around the far wall does not shrink the
+way a thing at 2 m has to.
+
+`--expansion-filter` withholds a confirmed track from the planner when its range falls
+**more slowly** than odometry demands, by 4 sigma, *and* the observed rate puts contact
+beyond 8 s. It is one-sided by construction: a track shrinking FASTER than predicted —
+nearer than reported, or walking at the robot — raises no verdict at all, so the gate can
+only ever discard a threat it had over-estimated. A withheld track is NOT deleted; it
+keeps being tracked and can be restored.
+
+What it costs and what it reaches, from the measured noise floor
+(`sigma(ln R) = 3.07%` per sample with the ranging source held):
+
+| reported range | drops when really this many times further, at 0.35 m/s | at 0.8 m/s |
+| --- | --- | --- |
+| 1.5 m | 2.75x | never |
+| 2.0 m | 2.05x | 6.35x |
+| 3.0 m | 1.35x | 3.25x |
+| 4.0 m | 1.20x | 2.35x |
+
+Read down the "really this far away, in metres" column instead and it is nearly flat: the
+gate starts dropping when the object is really about **4.1 m** off at the gait floor and
+**9.4 m** at 0.8 m/s. It looks like a test of the size prior and behaves like a test of
+true range.
+
+**It has never run against a moving robot.** The corpus that set its threshold is 2,800
+frames of a PARKED one — net camera motion at most 14.7 px at 480-wide over an entire
+clip — so it measures the noise and says nothing about the signal. See
+`evidence/2026-08-25-expansion-as-a-false-positive-filter/` for what that corpus did and
+did not settle, including that the 18% class-agnostic false-alarm rate it was built to
+reduce turned out to be 192 mislabelled frames and is 0 of 705 on that capture. ⚠️ That
+0 of 705 is one corridor, cleared and shot for the purpose, in the same session as the
+positives; scored cross-day on a furnished room the same read fires on **57%**
+(`detector/README.md`, 2026-08-26). The motivation is gone either way — the number the
+filter was built to reduce was never measured on the frames it claimed — but "the
+class-agnostic detector is clean" is not what replaces it.
+
+Two limits worth knowing before switching it on:
+
+* **A mis-scaled ghost and a retreating real obstacle are the same measurement.** One
+  monocular range series cannot separate them. Bearing parallax could — it is immune to
+  radial target motion — and is degenerate straight ahead, which is where obstacles are.
+* **The dangerous half of the error is untouched.** A person prior on a small robot
+  reports it too FAR, and this gate is deliberately silent on that.
+* ⛔ **A withheld track is withheld from the HOLD path as well.** Shape routing
+  (`person_detector.person_shaped`, PR #73) landed after this gate was written, and the
+  two compose in a way neither was designed for: `_obstacles` is the single place a
+  person-shaped track becomes the hold that stops the robot, and it is the same place
+  this gate subtracts. A real person whose range fails to fall as odometry demands — one
+  crossing laterally at close range is the case to worry about — would be dropped rather
+  than held. Nothing measured here says how often that is, which is one more reason the
+  switch is off.
 
 ## Telemetry — the interface for anything downstream
 

@@ -35,7 +35,7 @@ current, and it documents three mappings that are *not* the obvious ones.
 ```bash
 cd policy      && python3 test_physical_ai_mappo.py                                #  33
 cd integration && for t in test_*.py; do python3 $t; done                          # 189
-cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 265
+cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 329
 cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
 cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 39
 cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py # 16

@@ -27,10 +27,23 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+_HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, _HERE)
+# The routing seam has two halves in two directories: this package decides
+# `person_shaped` and writes it, and `integration/mappo_bridge.holds_the_robot` acts on
+# it. Nothing else in this suite reaches across, and it is deliberate here — see
+# `test_a_peer_reaches_the_policy_and_a_person_holds_end_to_end` for what a test on one
+# side alone failed to catch. ⚠️ Both inserts must stay ABOVE the sibling imports below:
+# `ruff --fix` will hoist them under it if they are separated (AGENTS.md).
+sys.path.insert(0, os.path.join(_HERE, "..", "..", "..", "..", "integration"))
 import inspect
 
 import numpy as np
+
+# Not a sibling of this directory — it lives in `integration/`, which the second
+# sys.path line above puts on the path. Its own block because that is where ruff's
+# isort puts a non-first-party import, and this file is linted, not auto-fixed.
+from mappo_bridge import holds_the_robot
 
 import person_detector
 import visual_nav
@@ -44,8 +57,15 @@ from camera import Frame
 from camera_model import FisheyeCamera
 from colour_detector import PROFILES
 from goal import ArucoGoal, OdomWaypoint
+from person_detector import PERSON_ASPECT_MIN, Detection, RangedDetection
 from static_map import StaticObstacleMap
-from tracker import PROCESS_ACCEL_SIGMA, Observation, ObstacleTracker
+from telemetry import TelemetryWriter
+from tracker import (
+    PROCESS_ACCEL_SIGMA,
+    Observation,
+    ObstacleTracker,
+    observation_from,
+)
 from visual_nav import (
     NavConfig,
     PerceptionResult,
@@ -108,7 +128,7 @@ def _coast(tracker: ObstacleTracker, filter_time: float, seconds: float) -> floa
 
 
 def _navigator(tracker: ObstacleTracker, filter_time: float,
-               static_map=None) -> VisualNavigator:
+               static_map=None, expansion=None) -> VisualNavigator:
     """A navigator wired to nothing but the planner and tracker ``_obstacles`` reads.
 
     ``_tracker_time`` is set directly because the loop that normally maintains it is
@@ -118,7 +138,7 @@ def _navigator(tracker: ObstacleTracker, filter_time: float,
         loco=None, perception=None,
         planner=DynamicWindowPlanner(config=PlannerConfig()),
         tracker=tracker, goal_source=None, health=None, config=NavConfig(),
-        static_map=static_map)
+        static_map=static_map, expansion=expansion)
     navigator._tracker_time = filter_time
     return navigator
 
@@ -184,6 +204,65 @@ def test_obstacles_are_only_the_confirmed_tracks():
     navigator = _navigator(tracker, filter_time)
     assert tracker.tracks, "a track should exist"
     assert navigator._obstacles(filter_time + LATENCY_S) == []
+
+
+class _RejectAll:
+    """Stand-in for ``ExpansionConsistency`` that rejects whatever it is asked about.
+
+    A real gate needs a walking robot to say anything, and this test is about the
+    WIRING: does a rejection reach the planner's obstacle list, and does the track
+    survive it? ``expansion.py``'s own suite covers whether the verdict is right.
+    """
+
+    def __init__(self, rejected=None):
+        self.rejected = rejected
+        self.asked = []
+
+    def rejects(self, track_ids):
+        ids = list(track_ids)
+        self.asked.append(ids)
+        return set(ids) if self.rejected is None else set(self.rejected) & set(ids)
+
+
+def test_a_rejected_track_is_withheld_from_the_planner():
+    """The one behaviour the gate buys. Without it the whole module is an opinion
+    nothing reads."""
+    tracker, filter_time = _tracked_person()
+    gate = _RejectAll()
+    navigator = _navigator(tracker, filter_time, expansion=gate)
+    assert tracker.confirmed_tracks(), "there is a confirmed track to withhold"
+    assert navigator._obstacles(filter_time + LATENCY_S) == []
+    assert gate.asked and gate.asked[0], "the gate was never consulted"
+
+
+def test_a_rejected_track_is_withheld_and_NOT_deleted():
+    """⚠️ Withholding and deleting are different, and only one of them is safe.
+
+    A deleted track loses its hits, its velocity and its window, and the very next
+    detection of the same box spawns a NEW id with a clean sheet — which re-confirms in
+    CONFIRM_HITS frames and is planned against again. That create/destroy loop is the
+    bug ``static_map``'s MAX_MISSES was written to break. Keeping the track means the
+    evidence keeps accumulating and a wrong rejection can be undone."""
+    tracker, filter_time = _tracked_person()
+    before = [t.track_id for t in tracker.confirmed_tracks()]
+    navigator = _navigator(tracker, filter_time, expansion=_RejectAll())
+    navigator._obstacles(filter_time + LATENCY_S)
+    after = [t.track_id for t in tracker.confirmed_tracks()]
+    assert after == before, f"the tracker lost {set(before) - set(after)}"
+
+
+def test_without_a_gate_nothing_changes():
+    """The flag is off by default, so the no-gate path is the deployed one and has to
+    be byte-for-byte the behaviour that shipped."""
+    tracker, filter_time = _tracked_person()
+    plain = _navigator(tracker, filter_time)._obstacles(filter_time + LATENCY_S)
+    tracker2, filter_time2 = _tracked_person()
+    kept = _navigator(tracker2, filter_time2,
+                      expansion=_RejectAll(rejected=[]))._obstacles(
+                          filter_time2 + LATENCY_S)
+    assert len(plain) == 1 and len(kept) == 1
+    assert plain[0].object_id == kept[0].object_id
+    assert abs(plain[0].radius_m - kept[0].radius_m) < 1e-12
 
 
 def _coast_budget_s(range_m: float, bearing_deg: float = 20.0) -> float:
@@ -915,6 +994,185 @@ def test_raw_recorder_is_the_last_parameter_so_the_vendored_call_still_works():
     assert parameters[-1] == "raw_recorder", parameters
     assert parameters.index("static_map") < parameters.index("raw_recorder")
     assert parameters.index("telemetry") < parameters.index("raw_recorder")
+
+# ── The routing seam: shape decides, and it has to survive the whole chain ──
+FRAME_W, FRAME_H = 1920, 1080
+
+#: A Go2 Wheel broadside at mid range: 460 x 360 px, aspect 0.78, which is the MEDIAN of
+#: the 1,159 unclipped boxes of the 2026-08-24 peer corpus. Unclipped on every edge.
+PEER_BOX = Detection(x1=700.0, y1=560.0, x2=1160.0, y2=920.0, score=0.62,
+                     label="motorbike")
+#: A standing adult at the same sort of range: 150 x 510 px, aspect 3.40, which is the
+#: repo's own 1.70/0.50 prior. Labelled `motorbike` ON PURPOSE — that is the mislabel
+#: that made the old label-based rule hand a person to the policy.
+PERSON_BOX = Detection(x1=880.0, y1=300.0, x2=1030.0, y2=810.0, score=0.55,
+                       label="motorbike")
+
+
+def _obstacle_for(box: Detection, sightings: int = 3):
+    """Drive one box through the WHOLE producer chain and return what comes out.
+
+    Detector shape verdict -> Observation -> spawn -> correct -> Track -> _obstacles.
+    Every step is the real one; nothing is constructed with `person_shaped=` by hand,
+    because hand-setting it is exactly what a broken chain would still let a test do.
+    """
+    ranged = RangedDetection(detection=box, range_m=3.0,
+                             bearing_rad=math.radians(12.0), source="height")
+    verdict = ranged.person_shaped(FRAME_W, FRAME_H)
+    tracker = ObstacleTracker(fov_rad=math.radians(85.27))
+    now = 0.0
+    for _ in range(sightings):
+        tracker.predict(PERCEPTION_DT)
+        tracker.update([observation_from(ranged.bearing_rad, ranged.range_m,
+                                         ranged.source, ranged.label, (0.0, 0.0, 0.0),
+                                         person_shaped=verdict)],
+                       now, 0.0, 0.0, 0.0)
+        now += PERCEPTION_DT
+    obstacles = _navigator(tracker, now)._obstacles(now + LATENCY_S)
+    assert len(obstacles) == 1, "the fixture must produce exactly one confirmed track"
+    return verdict, obstacles[0]
+
+
+def _telemetry_record(obstacle) -> dict:
+    """The obstacle dict `mappo_bridge` actually reads, written by the real writer."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "t.jsonl"
+        writer = TelemetryWriter(str(path))
+        writer.write_tick(elapsed_s=0.0, pose=(0.0, 0.0, 0.0), goal_xy=(4.0, 0.0),
+                          goal_distance_m=4.0, command=None, obstacles=[obstacle],
+                          frame_age_s=0.1, perception_seq=1, detect_ms=131.0,
+                          standing=True, live=False)
+        writer.close()
+        line = json.loads(path.read_text().strip().splitlines()[-1])
+    return line["obstacles"][0]
+
+
+def test_a_peer_reaches_the_policy_and_a_person_holds_end_to_end():
+    """⛔ THE PROPERTY THAT A CLEAN MERGE CAN SILENTLY BREAK.
+
+    `person_shaped` is carried BESIDE `label` through five hand-offs — the detector's
+    shape verdict, `observation_from`, `_spawn`, `_correct`, and `_obstacles` — and every
+    one of them defaults it to True, which is the stopping side. Drop it at any single
+    hand-off and the chain still type-checks, still writes telemetry, and quietly routes
+    EVERY peer to the hold path: the policy is handed nothing and the robot stands in
+    front of the obstacle the whole integration exists to steer around.
+
+    Measured: deleting `person_shaped=` from `_obstacles`, from `_spawn`, or from
+    `_correct` each leaves all 315 tests in this directory green. This is the test that
+    goes red instead, and it is written against `holds_the_robot` — the real read site in
+    `integration/` — rather than against the flag, so a rename on either side of the seam
+    fails it too.
+    """
+    peer_verdict, peer = _obstacle_for(PEER_BOX)
+    person_verdict, person = _obstacle_for(PERSON_BOX)
+
+    # The premise: the two boxes sit either side of the threshold, and the LABEL is the
+    # same on both, so nothing below can be passing on the label.
+    assert PEER_BOX.height_px / PEER_BOX.width_px < PERSON_ASPECT_MIN
+    assert PERSON_BOX.height_px / PERSON_BOX.width_px >= PERSON_ASPECT_MIN
+    assert PEER_BOX.label == PERSON_BOX.label == "motorbike"
+    assert (peer_verdict, person_verdict) == (False, True)
+
+    # The chain carried it, all the way to the dict the bridge reads.
+    assert peer.person_shaped is False and person.person_shaped is True
+    peer_record = _telemetry_record(peer)
+    person_record = _telemetry_record(person)
+    assert peer_record["person_shaped"] is False
+    assert person_record["person_shaped"] is True
+
+    # And the read site routes on it: the peer reaches the policy, the person holds.
+    assert holds_the_robot(peer_record) is False, "a peer must reach the policy"
+    assert holds_the_robot(person_record) is True, "a person must hold the robot"
+
+
+def test_the_expansion_filter_is_off_unless_asked_for_and_cannot_route():
+    """Two separate properties, both of which have to hold for this PR to be inert.
+
+    OFF BY DEFAULT: `--expansion-filter` is a store_true, so a navigator built the way
+    every run builds one has `_expansion is None` and `_obstacles` subtracts nothing.
+
+    AND IT DOES NOT TOUCH ROUTING: with a gate fitted that rejects nothing, the same peer
+    and the same person come out with the same verdicts. The gate can only ever REMOVE a
+    track from the planner; it must never flip one from the policy path to the hold path
+    or the other way, because those two are decided by shape and it does not see shape.
+    """
+    assert build_parser().parse_args([]).expansion_filter is False
+
+    class _RejectsNothing:
+        def observe(self, *args, **kwargs) -> None:
+            self.observed = True
+
+        def retain(self, ids) -> None:
+            list(ids)
+
+        def rejects(self, ids) -> set:
+            list(ids)
+            return set()
+
+    for box, expected_hold in ((PEER_BOX, False), (PERSON_BOX, True)):
+        ranged = RangedDetection(detection=box, range_m=3.0,
+                                 bearing_rad=math.radians(12.0), source="height")
+        gate = _RejectsNothing()
+        tracker = ObstacleTracker(fov_rad=math.radians(85.27), expansion=gate)
+        now = 0.0
+        for _ in range(3):
+            tracker.predict(PERCEPTION_DT)
+            tracker.update([observation_from(
+                ranged.bearing_rad, ranged.range_m, ranged.source, ranged.label,
+                (0.0, 0.0, 0.0),
+                person_shaped=ranged.person_shaped(FRAME_W, FRAME_H))],
+                now, 0.0, 0.0, 0.0)
+            now += PERCEPTION_DT
+        navigator = _navigator(tracker, now)
+        navigator._expansion = gate
+        obstacle = navigator._obstacles(now + LATENCY_S)[0]
+        assert gate.observed, "a fitted gate must actually be fed the measurements"
+        assert holds_the_robot(_telemetry_record(obstacle)) is expected_hold
+
+
+def test_a_rejected_track_is_withheld_from_the_planner_but_only_when_asked():
+    """The gate's one effect, pinned in both directions.
+
+    Fitted and rejecting, the track leaves the obstacle set. NOT fitted — the shipped
+    default — the identical tracker state still yields the obstacle. If the second half
+    ever fails, the filter has become on-by-default, which is what this PR must not do.
+    """
+    ranged = RangedDetection(detection=PEER_BOX, range_m=3.0,
+                             bearing_rad=math.radians(12.0), source="height")
+
+    def _tracker_with(gate):
+        tracker = ObstacleTracker(fov_rad=math.radians(85.27), expansion=gate)
+        now = 0.0
+        for _ in range(3):
+            tracker.predict(PERCEPTION_DT)
+            tracker.update([observation_from(
+                ranged.bearing_rad, ranged.range_m, ranged.source, ranged.label,
+                (0.0, 0.0, 0.0),
+                person_shaped=ranged.person_shaped(FRAME_W, FRAME_H))],
+                now, 0.0, 0.0, 0.0)
+            now += PERCEPTION_DT
+        return tracker, now
+
+    class _RejectsEverything:
+        def observe(self, *args, **kwargs) -> None:
+            pass
+
+        def retain(self, ids) -> None:
+            list(ids)
+
+        def rejects(self, ids) -> set:
+            return set(ids)
+
+    gate = _RejectsEverything()
+    tracker, now = _tracker_with(gate)
+    navigator = _navigator(tracker, now)
+    navigator._expansion = gate
+    assert navigator._obstacles(now + LATENCY_S) == []
+
+    tracker, now = _tracker_with(None)
+    navigator = _navigator(tracker, now)
+    assert navigator._expansion is None, "the shipped default fits no gate"
+    assert len(navigator._obstacles(now + LATENCY_S)) == 1
 
 
 if __name__ == "__main__":

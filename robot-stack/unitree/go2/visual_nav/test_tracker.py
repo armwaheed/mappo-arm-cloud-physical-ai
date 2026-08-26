@@ -332,6 +332,191 @@ def test_a_constant_is_still_an_observation():
     assert math.isclose(constant.x, 0.719), "it still reports where it thinks the bin is"
 
 
+# ── The expansion-gate hook ─────────────────────────────────────────────────
+class _RecordingGate:
+    """Records what the tracker feeds it, and what it sweeps out."""
+
+    def __init__(self):
+        self.observed = []
+        self.retained = []
+
+    def observe(self, track_id, *, time_s, range_m, source, odom_xy, robot_xy):
+        self.observed.append((track_id, round(time_s, 4), round(range_m, 4), source,
+                              tuple(round(v, 4) for v in odom_xy),
+                              tuple(round(v, 4) for v in robot_xy)))
+
+    def retain(self, track_ids):
+        self.retained.append(sorted(track_ids))
+
+
+def test_an_observation_carries_its_raw_range_and_source():
+    """The filter itself uses neither — it works in odom off the sigmas. The gate needs
+    both, and `sigma_along` cannot stand in for the range: a near target on a good
+    source and a far one on a weak source produce the SAME sigma, so recovering the
+    range from it would silently pick whichever the caller happened to mean."""
+    good = observation_from(0.2, 3.0, "height", "person", ORIGIN)
+    # 0.7 m on the width prior is the range at which the two sigmas COINCIDE:
+    # (0.18*0.7 + 0.15) * 2.5 == 0.18*3.0 + 0.15 == 0.69. A 4.3x difference in range,
+    # one number. That is the collision the carried fields exist to avoid.
+    weak = observation_from(0.2, 0.7, "width", "person", ORIGIN)
+    assert (good.range_m, good.source) == (3.0, "height")
+    assert (weak.range_m, weak.source) == (0.7, "width")
+    assert abs(good.sigma_along - weak.sigma_along) < 1e-12, (
+        f"{good.sigma_along} vs {weak.sigma_along}")
+
+
+def test_the_gate_is_fed_only_the_measurements_the_filter_accepted():
+    """Not the raw detections. A detection outside the association gate belongs to some
+    other object, and crediting it to this track's approach is a fit across two things.
+    Feeding the gate from `_correct` is what guarantees the two agree."""
+    gate = _RecordingGate()
+    tracker = ObstacleTracker(expansion=gate)
+    now = 0.0
+    for _ in range(6):
+        tracker.predict(DT)
+        now += DT
+        real = observation_from(0.0, 3.0, "height", "person", ORIGIN)
+        # A second detection 8 m off to the side: too far to associate, so the filter
+        # spawns a separate track rather than correcting this one.
+        far = observation_from(1.2, 8.0, "height", "person", ORIGIN)
+        tracker.update([real, far], now, 0.0, 0.0, 0.0)
+    fed = {track_id for track_id, *_ in gate.observed}
+    assert len(fed) == 2, f"the gate saw {len(fed)} tracks, expected one per object"
+    for _, _, range_m, source, _, robot_xy in gate.observed:
+        assert range_m in (3.0, 8.0) and source == "height"
+        assert robot_xy == (0.0, 0.0)
+
+
+def test_the_gate_is_told_where_the_robot_was_not_just_where_the_track_is():
+    """Both halves. The odom point is what the track CLAIMS; the robot pose is the
+    ruler the claim is measured against. With only one of them the gate has nothing to
+    compare and would silently abstain forever."""
+    gate = _RecordingGate()
+    tracker = ObstacleTracker(expansion=gate)
+    now = 0.0
+    for step in range(6):
+        robot_x = 0.05 * step
+        tracker.predict(DT)
+        now += DT
+        tracker.update([observation_from(0.0, 3.0 - robot_x, "height", "person",
+                                         (robot_x, 0.0, 0.0))],
+                       now, robot_x, 0.0, 0.0)
+    poses = [robot_xy[0] for *_, robot_xy in gate.observed]
+    assert poses == sorted(poses) and poses[-1] > poses[0], poses
+    anchors = [odom_xy[0] for *_, odom_xy, _ in gate.observed]
+    assert all(abs(a - 3.0) < 1e-9 for a in anchors), anchors
+
+
+def test_a_deleted_track_is_swept_out_of_the_gate():
+    """The tracker prunes by rebuilding its list, so there is no per-track deletion
+    hook to hang a `forget` on. Sweeping against the survivors after every prune is
+    what stops the gate growing without bound over a long run — and what stops a reused
+    id inheriting a dead track's window."""
+    gate = _RecordingGate()
+    tracker = ObstacleTracker(expansion=gate)
+    now = 0.0
+    for _ in range(4):
+        tracker.predict(DT)
+        now += DT
+        tracker.update([observation_from(0.0, 3.0, "height", "person", ORIGIN)],
+                       now, 0.0, 0.0, 0.0)
+    assert gate.retained[-1] == [1]
+    now += COAST_TIMEOUT_S + DT
+    tracker.predict(DT)
+    tracker.update([], now, 0.0, 0.0, 0.0)
+    assert not tracker.tracks, "the track should have timed out"
+    assert gate.retained[-1] == [], gate.retained[-1]
+
+
+def test_no_gate_means_no_behaviour_change():
+    """The default. Every lifecycle decision above must be identical with the gate
+    absent, because that is the deployed configuration."""
+    plain, hooked = ObstacleTracker(), ObstacleTracker(expansion=_RecordingGate())
+    now = 0.0
+    for _ in range(8):
+        for tracker in (plain, hooked):
+            tracker.predict(DT)
+            tracker.update([observation_from(0.1, 2.5, "height", "person", ORIGIN)],
+                           now + DT, 0.0, 0.0, 0.0)
+        now += DT
+    for a, b in zip(plain.tracks, hooked.tracks):
+        assert a.track_id == b.track_id and a.hits == b.hits
+        assert abs(float(a.state[0]) - float(b.state[0])) < 1e-12
+        assert abs(a.position_sigma - b.position_sigma) < 1e-12
+    assert len(plain.tracks) == len(hooked.tracks) == 1
+
+
+# ── The shape verdict's two hand-offs inside the tracker ────────────────────
+def _shape_observation(person_shaped: bool, now: float = 0.0) -> Observation:
+    """One measurement of the SAME object at the SAME place, verdict as given.
+
+    Same bearing and range each time, so the association gate always matches and the
+    only thing under test is which verdict the track ends up carrying.
+    """
+    return observation_from(math.radians(10.0), 3.0, "height", "motorbike", ORIGIN,
+                            person_shaped=person_shaped)
+
+
+def test_a_new_track_carries_the_shape_verdict_of_its_first_observation():
+    """`_spawn` must copy it, even though `_obstacles` cannot see the difference.
+
+    CONFIRM_HITS is 2, so a track is corrected at least once before anything plans
+    against it, and the refresh in `_correct` masks a `_spawn` that dropped the flag —
+    deleting it there leaves the whole 315-test directory green. The value is still
+    wrong for the track's first frame, and anything that later reads an unconfirmed
+    track would read a peer as person-shaped. Pinned at the spawn, where it is visible.
+    """
+    tracker = ObstacleTracker(fov_rad=math.radians(85.27))
+    tracker.update([_shape_observation(person_shaped=False)], 0.0, *ORIGIN)
+    assert len(tracker.tracks) == 1 and not tracker.confirmed_tracks()
+    assert tracker.tracks[0].person_shaped is False
+
+
+def test_the_shape_verdict_is_refreshed_by_every_match_and_never_latches():
+    """Not sticky in EITHER direction, which is what `_correct` is for.
+
+    A peer that clips the frame edge reads person-shaped and holds the robot; when it
+    comes back whole it must stop holding. Latching True would park the robot for the
+    rest of the run on one clipped frame, and latching False would let a person through
+    on one bad box. Freezing the verdict at spawn — deleting the refresh — is invisible
+    to every other test in this directory.
+    """
+    tracker = ObstacleTracker(fov_rad=math.radians(85.27))
+    now = 0.0
+    # Spawns CLIPPED, so the flag starts on the stopping side.
+    tracker.update([_shape_observation(person_shaped=True)], now, *ORIGIN)
+    assert tracker.tracks[0].person_shaped is True
+
+    # Seen whole: the verdict must follow the measurement, not the history.
+    now += DT
+    tracker.predict(DT)
+    tracker.update([_shape_observation(person_shaped=False)], now, *ORIGIN)
+    assert len(tracker.tracks) == 1, "the verdict must not split the track"
+    assert tracker.confirmed_tracks()[0].person_shaped is False
+
+    # And back again, so this cannot pass by simply never being True.
+    now += DT
+    tracker.predict(DT)
+    tracker.update([_shape_observation(person_shaped=True)], now, *ORIGIN)
+    assert tracker.confirmed_tracks()[0].person_shaped is True
+
+
+def test_a_flipped_verdict_does_not_spawn_a_second_track():
+    """WHY THE FLAG IS NOT FOLDED INTO `label`. `_associate` gates on label equality, so
+    a verdict carried in the label would fail to associate the moment it flipped: the
+    peer would spawn a second track and leave the first coasting with an inflating
+    radius, which is a HOLD for a ghost. Carried beside the label, the flip costs
+    nothing — one track throughout, and the label unchanged."""
+    tracker = ObstacleTracker(fov_rad=math.radians(85.27))
+    now = 0.0
+    for shaped in (False, True, False, True):
+        tracker.predict(DT)
+        tracker.update([_shape_observation(person_shaped=shaped)], now, *ORIGIN)
+        now += DT
+    assert len(tracker.tracks) == 1, "one object must stay one track across four flips"
+    assert tracker.tracks[0].label == "motorbike"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
