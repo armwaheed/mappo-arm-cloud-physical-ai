@@ -1441,6 +1441,19 @@ class _SlowPlanner(_FakePlanner):
         return super().plan(*args, **kwargs)
 
 
+class _SlowTracker(ObstacleTracker):
+    """The OTHER thing gated on `result.seq > <last>`, made expensive on purpose.
+
+    `_record` and the tracker update fire on exactly the same ticks, so a recorded file
+    cannot tell them apart within one run — which is the confound both #112 and #116
+    named — and they are the whole reason `record` and `tracker` are separate names.
+    """
+
+    def update(self, *args, **kwargs):
+        _burn()
+        return super().update(*args, **kwargs)
+
+
 class _ImagePerception(_FakePerception):
     """One perception cycle carrying pixels, so the recorder has something to encode.
 
@@ -1461,14 +1474,15 @@ class _ImagePerception(_FakePerception):
                                 cycle_ms=311.0, wait_ms=104.0)
 
 
-def _profiled_run(directory, *, planner=None, recorder=None, perception=None, ticks=4):
+def _profiled_run(directory, *, planner=None, recorder=None, perception=None, ticks=4,
+                  tracker=None):
     """Run the real loop with a real telemetry writer; return the tick records."""
     path = os.path.join(directory, "profiled.jsonl")
     writer = TelemetryWriter(path)
     writer.write_header(control_hz=100.0)
     navigator = VisualNavigator(
         loco=_FakeLoco(), perception=perception or _ImagePerception(),
-        planner=planner or _FakePlanner(), tracker=ObstacleTracker(),
+        planner=planner or _FakePlanner(), tracker=tracker or ObstacleTracker(),
         goal_source=_FakeGoal(), health=_FakeHealth(ticks),
         config=NavConfig(live=True, control_hz=100.0),
         recorder=recorder, telemetry=writer)
@@ -1494,11 +1508,12 @@ def test_every_tick_carries_a_stage_profile():
 
 
 def test_the_recorder_lands_in_the_record_stage_and_the_other_ticks_stay_cheap():
-    """THE FINDING THIS EXISTS TO CONFIRM ON A REAL RUN. Across the 21 committed runs,
-    every tick that wrote a video frame took 173-299 ms and every tick that did not took
-    100.2-103.7 ms — the configured period. Nothing recorded could say whether that was
-    the overlay, the encode or the tracker update, because the recording gate and the
-    perception-consumption gate are the same gate. This separates them.
+    """THE FINDING THIS EXISTS TO CONFIRM ON A REAL RUN. Across the committed runs, every
+    tick that wrote a video frame took 173-299 ms and every tick that did not took
+    100.3-104.0 ms — the configured period. The corpus already attributes that to the
+    recorder rather than to the tracker, because the two runs with no `--record` still
+    consume results and still update the tracker and their new-result ticks measure
+    100.6 ms (see `telemetry.TickProfiler`). This is the on-robot confirmation of it.
     """
     with tempfile.TemporaryDirectory() as directory:
         ticks = _profiled_run(directory, recorder=_SlowWriter())
@@ -1509,6 +1524,39 @@ def test_the_recorder_lands_in_the_record_stage_and_the_other_ticks_stay_cheap()
     assert recording[0]["profile"]["tick_ms"] >= SLOW_MS * 0.8
     for tick in rest:
         assert tick["profile"]["stages"]["record"] < SLOW_MS * 0.4, tick
+
+
+def test_the_tracker_is_timed_apart_from_the_recorder_they_share_a_gate_with():
+    """THE CONFOUND, SEPARATED. `_record` and the tracker update fire on the same predicate
+    — `result.seq > <last>` — so within one recorded run they are one indicator for two
+    candidates. Offline the dry runs settle it (their new-result ticks cost 100.6 ms with
+    the tracker running and no recorder). On the robot this is what settles it: a slow
+    tracker must show up as `tracker` and not as `record`.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory, tracker=_SlowTracker(), recorder=_FakeWriter())
+    consuming = [t for t in ticks if t["perception"]["video_frame"] is not None]
+    rest = [t for t in ticks if t["perception"]["video_frame"] is None]
+    assert len(consuming) == 1 and rest, [t["perception"]["video_frame"] for t in ticks]
+    assert consuming[0]["profile"]["stages"]["tracker"] >= SLOW_MS * 0.8, consuming[0]
+    assert consuming[0]["profile"]["stages"]["record"] < SLOW_MS * 0.4, consuming[0]
+    # `other_ms` is deliberately not asserted here: the tick that consumes the first result
+    # is also the one that stands the robot up, and that is ~3 s of posture change which
+    # `other_ms` reports correctly. See `test_the_planner_lands_in_the_plan_stage...`.
+    for tick in rest:
+        # Timed INSIDE the gate, so a tick that consumed nothing shows a zero rather than
+        # a median halfway between an update and a no-op.
+        assert tick["profile"]["stages"]["tracker"] == 0.0, tick
+
+
+def test_a_slow_recorder_does_not_land_in_the_tracker_stage():
+    """The other direction of the same confound, and the one that would have kept issue #18
+    open: an encode charged to `tracker` reads as "the filter is the problem"."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory, recorder=_SlowWriter())
+    recording = [t for t in ticks if t["perception"]["video_frame"] is not None]
+    assert len(recording) == 1, ticks
+    assert recording[0]["profile"]["stages"]["tracker"] < SLOW_MS * 0.4, recording[0]
 
 
 def test_the_planner_lands_in_the_plan_stage_and_not_in_the_remainder():
