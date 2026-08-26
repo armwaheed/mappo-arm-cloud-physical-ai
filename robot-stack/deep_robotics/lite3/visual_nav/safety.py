@@ -162,9 +162,11 @@ class Lite3HealthMonitor:
                 # self._polling stays True -- a monitor that has silently stopped
                 # sampling and will never resume.
                 #
-                # None stays a legitimate "nothing yet" rather than a conversion error:
-                # the late-bound source in Lite3Bindings returns it for every poll
-                # between this monitor starting and locomotion connecting.
+                # None stays a legitimate "nothing yet" rather than a conversion
+                # error. A source is entitled to say it has nothing without that being
+                # a fault, and Lite3Bindings' does exactly that while its locomotion is
+                # unset -- the distinction this branch has to preserve is "no reading"
+                # against "the reader is broken", and float(None) collapses the two.
                 value = self._battery_source()
                 if value is not None:
                     value = float(value)

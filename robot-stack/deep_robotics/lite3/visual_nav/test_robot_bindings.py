@@ -302,9 +302,10 @@ def test_the_bindings_carry_the_battery_from_the_locomotion_to_the_health_monito
         _args("--accept-no-motor-temperatures"), live=True)
     monitor.start(wait_s=0.0)
     try:
-        # The source is late-bound: the navigator builds this monitor before the
-        # locomotion exists, and it returns None until it does. That is "nothing yet",
-        # not a fault, and must not be counted or reported as one.
+        # The source returns None while the binding's locomotion is unset. Both shipped
+        # entry points (visual_nav.py:1239-1240, calibrate_camera.py:601-602) build the
+        # locomotion first, so that guard never fires there -- but it is what decides
+        # whether "no reading" is reported as a broken reader, and it must not be.
         time.sleep(0.3)
         assert monitor.latest() is None
         assert monitor._battery_source_raises == 0, \
