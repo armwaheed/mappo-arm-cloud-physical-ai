@@ -315,11 +315,21 @@ diagnoses itself.
 
 **The two platforms are not interchangeable, and the page says so per robot.** `lie_down` on
 a Go2 issues `StandDown`; on a Lite3 it only *stops*, because posture there is
-operator-controlled through the vendor app. Speeds below a measured gait floor are refused
-(0.35 m/s forward on both; 0.20 m/s lateral on the Lite3). **The Go2's lateral floor has
-never been measured** — issue #42 is about exactly that conflation — so a Go2 strafe is
-allowed and carries a warning on every press that it may produce no gait at all, which would
-not be a fault.
+operator-controlled through the vendor app.
+
+Speeds below a **measured** gait floor are refused: 0.35 m/s forward and 0.20 m/s lateral on
+the **Go2**, both measured on that robot (issue #42's table — vy 0.15 travelled 0.010 m in
+1.5 s, vy 0.20 walked 3 of 3). The Go2's **yaw** floor has never been measured, so a Go2 turn
+is allowed and carries a warning on every press that it may produce no gait at all, which
+would not be a fault.
+
+**Nothing has been measured on a Lite3, on any axis**, and every motion command to one is
+therefore refused rather than warned about. Neither Venture has moved under this stack; issue
+[#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13)'s measurement boxes
+are all still open, and its first instruction is *"do not copy values between units"*. Until
+this PR the table gave the Lite3 the Go2's pair verbatim and told the Go2 its own lateral
+floor did not exist. `--force` is the way past the refusal, and it says on the result that it
+was forced.
 
 **Reverse is open-loop into unobserved space.** Neither platform has rear sensing and the
 planner never samples that direction; issue #40 caught the policy commanding it. The button
