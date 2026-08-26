@@ -34,6 +34,8 @@ from deep_robotics.lite3.visual_nav.camera import (
     parse_camera_source,
 )
 from deep_robotics.lite3.visual_nav.safety import Lite3HealthMonitor
+from preflight.venv_guard import describe as describe_venv_guard
+from preflight.venv_guard import require_virtualenv
 
 #: Ceiling on a single run whose motor temperatures are unmonitored. A 3x3 m booth run is
 #: about twenty seconds; two minutes is generous for one. This bounds one run and nothing
@@ -284,6 +286,15 @@ class Lite3Bindings:
                 "envelope ceilings finite and not negative: " + ", ".join(invalid)
             )
         if args.live:
+            # FIRST, before the missing-measurement list. Both are refusals, but this one
+            # is about whether the process can import a vendor SDK at all, and answering
+            # "you are missing --gait-floor" to somebody whose real problem is that
+            # `unitree_sdk2py` is not on this interpreter's path sends them to measure a
+            # robot instead of to `source bin/activate`. It prints on every live run --
+            # including when it decides NOT to enforce -- because this binding's own robot
+            # has no measured host marker and a silent gate is one nobody can audit.
+            print("[lite3] " + describe_venv_guard(
+                require_virtualenv("lite3 visual_nav --live", reaching_hardware=True)))
             missing = []
             if args.calibration is None:
                 missing.append("--calibration from this Lite3 camera")

@@ -61,6 +61,7 @@ last one:
 (cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 "$t"; done)
 (cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)
 (cd robot-stack/deep_robotics/lite3/commissioning && for t in test_*.py; do python3 "$t"; done)
+(cd robot-stack/preflight && for t in test_*.py; do python3 "$t"; done)
 (cd dashboard && for t in test_*.py; do python3 "$t"; done)
 ```
 
@@ -145,6 +146,40 @@ unpowered arm is perfectly still, so the check could never fail.
 - The human is your only sensor for the room. Ask where the goal and the obstacles are, and
   ask them to confirm the lane is clear, before a run.
 - Return absolute filepaths for any recording you produce, so they can be opened.
+
+## Never install anything on a robot
+
+You are the reader this rule is written for. An operator following a runbook is *less*
+likely to make this mess than an agent improvising against an `ImportError` at 11pm, and
+two agents were SSH'd into a live robot on 2026-08-26.
+
+- **Never `pip install` on a robot outside a virtualenv, and never into the system Python.**
+  The vendor stack lives inside a venv on these machines; the system interpreter is shared
+  by every other user, every vendor tool and every ROS node on the robot, and no
+  `uninstall` puts a shadowed vendor package back. A venv can be deleted and rebuilt.
+- **If an import fails on a robot, that is a finding to report, not a dependency to add.**
+  Activate the venv and re-run the same command. If it still fails inside the venv, say so
+  in the issue, with the output. Do not make it go away.
+- **Never install a newer Python on a robot, and never reach for a virtualenv to get one.**
+  A venv is built *from* an interpreter and cannot supply a version the machine does not
+  have. `device-connect-edge` runs off-robot for exactly this reason, and the split is
+  deliberate rather than a packaging bug waiting to be fixed.
+- **This now refuses rather than warns.** `visual_nav --live` and `dashboard/drive_bridge.py`
+  call [`robot-stack/preflight/venv_guard.py`](robot-stack/preflight/venv_guard.py) before
+  they open a transport, and it raises rather than printing. Do not route around it, and do
+  not set `MAPPO_ROBOT_HOST=0` on a machine that is a robot.
+- **Nothing on a robot reports its own staleness.** None of the deployed trees is a git
+  checkout — no `.git`, so no branch and no commit — and on 2026-08-26 the Go2's `~/mappo-run`
+  matched *no single commit* on `main`: most of it was 34–36 commits behind, its `README.md`
+  older still, and its `dashboard/` a different lineage again. **A live run does not tell you
+  which code produced it.** Copy a fresh tree, record what you copied, and do not report a
+  robot observation as evidence about `main` without saying what was actually on the robot.
+
+The paths, the interpreters, the venv-creation command and the measurements behind all of
+this are in **[`deploy/README.md`](deploy/README.md)** (Go2, and the Device Connect split)
+and **[`robot-stack/deep_robotics/lite3/DEPLOYMENT-SOP.md`](robot-stack/deep_robotics/lite3/DEPLOYMENT-SOP.md)**
+(Lite3, bilingual). They are not repeated here — this section is what you must not do, those
+are how to do it.
 
 ## Never commit, log, or put in an issue
 

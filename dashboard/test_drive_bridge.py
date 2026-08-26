@@ -37,6 +37,7 @@ from drive_bridge import (
     check_gait_floor,
     command_lie_down,
     command_pose_stream,
+    load_platform,
     main,
     plan_nudge,
     run_nudge,
@@ -484,6 +485,99 @@ def test_the_pose_stream_runs_without_allow_motion():
     rather than the behaviour it produces — that is where the decision actually lives."""
     assert "pose-stream" not in MOTION_COMMANDS
     assert "pose-stream" in build_parser().parse_args(["pose-stream"]).command
+
+
+# ── the virtualenv guard ─────────────────────────────────────────────────────────────────
+#
+# What the guard DECIDES is tested in robot-stack/preflight/test_venv_guard.py against an
+# injected environment and filesystem. These test that this worker calls it on the two
+# platforms that open a vendor transport, that it does NOT call it for the bench double,
+# and that a refusal comes back as JSON rather than as a stack trace — because the driver
+# reads the last line of stdout and would otherwise surface only 400 characters of stderr.
+
+def _guarded_load(platform, decision_refuses, message="[venv-guard] REFUSING TO RUN: x"):
+    """Drive load_platform with the guard's verdict forced, and record that it was asked."""
+    import drive_bridge
+
+    calls = []
+
+    class _Decision:
+        refuse = decision_refuses
+        message = None
+
+    def fake_evaluate(component, reaching_hardware, **kwargs):
+        calls.append((component, reaching_hardware))
+        verdict = _Decision()
+        verdict.message = message
+        return verdict
+
+    # The worker imports `evaluate` inside _require_virtualenv, so the module it resolves
+    # is patched rather than a name already bound in drive_bridge's namespace.
+    sys.path.insert(0, os.path.join(
+        os.path.dirname(os.path.abspath(drive_bridge.__file__)), "..", "robot-stack",
+        "preflight"))
+    import venv_guard
+
+    original = venv_guard.evaluate
+    venv_guard.evaluate = fake_evaluate
+    try:
+        error = None
+        try:
+            load_platform(platform)
+        except BridgeError as exc:
+            error = str(exc)
+        except Exception as exc:  # an SDK import failure on a machine with no robot
+            error = f"{type(exc).__name__}: {exc}"
+        return calls, error
+    finally:
+        venv_guard.evaluate = original
+
+
+def test_a_real_platform_asks_the_virtualenv_guard_before_importing_the_vendor_sdk():
+    for platform in ("go2", "lite3"):
+        calls, _error = _guarded_load(platform, decision_refuses=False)
+        assert calls == [(f"drive_bridge --platform {platform}", True)], (platform, calls)
+
+
+def test_the_bench_double_never_asks_because_it_opens_no_transport():
+    calls, error = _guarded_load("sim", decision_refuses=False)
+    assert calls == []
+    assert error is None
+
+
+def test_a_refused_interpreter_comes_back_as_a_bridge_error_not_a_traceback():
+    """BridgeError is what `main` turns into {"ok": false, "refused": true, ...}.
+
+    A bare SystemExit would exit with no JSON on stdout at all, and robot_driver reports
+    that as "worker exited 1 with no JSON result" plus the last 400 characters of stderr —
+    which truncates the refusal from the front, losing the line that says what happened.
+    """
+    calls, error = _guarded_load("go2", decision_refuses=True)
+    assert calls == [("drive_bridge --platform go2", True)]
+    assert error is not None
+    assert "REFUSING TO RUN" in error
+
+
+def test_the_refusal_survives_the_json_round_trip_main_puts_it_through():
+    import drive_bridge
+
+    original = drive_bridge.load_platform
+
+    def refuse(*_a, **_k):
+        raise BridgeError("[venv-guard] REFUSING TO RUN: system Python on a robot")
+
+    drive_bridge.load_platform = refuse
+    buffer = io.StringIO()
+    try:
+        with redirect_stdout(buffer):
+            code = main(["status", "--platform", "go2"])
+    finally:
+        drive_bridge.load_platform = original
+    result = json.loads(buffer.getvalue().strip().splitlines()[-1])
+    assert code == 1
+    assert result["ok"] is False
+    assert result["refused"] is True
+    assert "REFUSING TO RUN" in result["error"]
 
 
 if __name__ == "__main__":

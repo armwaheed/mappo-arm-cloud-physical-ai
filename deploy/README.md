@@ -40,6 +40,137 @@ It removes **only** paths the manifest records as created by an install run — 
 SDK clone that was already there is left alone — and it never touches the repository, the
 telemetry or the recordings.
 
+## 🛑 Python on a robot runs in a virtualenv — and the robot now refuses if it does not
+
+A live run that reaches real hardware from the **system** Python raises `SystemExit` before
+it opens a transport. It is a refusal, not a warning, and the message names the venv to
+activate and the exact command to build one. The check lives in
+[`../robot-stack/preflight/venv_guard.py`](../robot-stack/preflight/venv_guard.py) and is
+wired into `visual_nav --live` on the Lite3 binding and into `drive_bridge.py` for the
+`go2` and `lite3` platforms. Run it by hand to see this machine's verdict:
+
+```bash
+python3 robot-stack/preflight/venv_guard.py
+```
+
+### The reason is package isolation, not version isolation — and the difference matters
+
+The tempting argument, *"use the venv so you get the right Python"*, is **false here**, and
+a rule with a false premise gets discarded by the first person who checks it. Measured on
+the lab Go2 (Orin NX, Ubuntu 20.04.5 LTS, aarch64) on 2026-08-26:
+
+| | |
+| --- | --- |
+| pythons present | `/usr/bin/python3.8` (3.8.10), `/usr/bin/python3.9` (3.9.5) — **all of them** |
+| `~/robotics-connect-envs/armwaheed/pyvenv.cfg` | `home = /usr/bin`, `version = 3.8.10`, `include-system-site-packages = true` |
+
+The venv is **3.8 on a 3.8 system**. It supplies no version isolation whatsoever, and
+because it inherits system site-packages it is not even a clean room. What it supplies is
+*package* isolation for the one thing that matters, and that half is total:
+
+| module | `/usr/bin/python3` (system) | `~/robotics-connect-envs/armwaheed` (venv) |
+| --- | --- | --- |
+| `cyclonedds` | `ModuleNotFoundError` | **0.10.2** |
+| `unitree_sdk2py` | `ModuleNotFoundError` | **editable install** (egg-link) |
+| `numpy` | OK | OK — inherited from the system |
+| `cv2` | OK | OK — inherited from the system |
+
+**The vendor DDS stack exists only inside the venv.** So a `pip install` aimed at the system
+Python writes to an interpreter that every other user, every vendor tool and every ROS node
+on that robot shares, and no `uninstall` puts a shadowed vendor package back the way it was.
+A `pip install` inside the venv can, at worst, break one directory that can be deleted and
+rebuilt. That asymmetry is the whole argument, and it is why the refusal exists rather than
+a sentence somebody might read.
+
+**`--system-site-packages` is not optional and it removes the last objection.** It is what
+the deployed venv already uses, it is why `numpy` and `cv2` stay importable, and it means a
+machine whose vendor stack genuinely *does* live in the system Python still sees it from
+inside a venv. There is therefore always a correct action, which is why the guard ships
+with no bypass flag: an escape hatch printed next to a refusal is an instruction to use it.
+
+### 🛑 Why `device-connect-edge` runs OFF the robot — do not spend a demo morning on this
+
+**`device-connect-edge` requires Python >= 3.11. This robot has 3.8.10 and 3.9.5 and no way
+to get a third.** Measured on the same Go2, the same day:
+
+```
+apt-cache policy python3.11     ->  (no output at all — no such package)
+apt-cache policy python3.10     ->  libpython3.10-stdlib  Candidate: (none)
+```
+
+**A virtualenv cannot supply a Python the machine does not have.** `python3 -m venv` builds
+an environment *from* an interpreter; `python3.8 -m venv` produces a 3.8 environment and
+there is no flag that changes that. Nothing about the venv rule above is a route to 3.11,
+and reading the two rules together is the mistake this section exists to prevent.
+
+So the split is deliberate, not a workaround waiting to be tidied up:
+
+| half | interpreter | where it runs | why |
+| --- | --- | --- | --- |
+| the Device Connect driver (`dashboard/robot_driver.py`) | >= 3.11 | **off-robot** — a workstation on the same LAN | `device-connect-edge` requires it and the Jetson cannot provide it |
+| `dashboard/drive_bridge.py` | 3.8, stdlib only | **on the robot**, in the SDK venv | `unitree_sdk2py` and CycloneDDS live there and nowhere else |
+
+The driver reaches the robot by running `drive_bridge.py` as a subprocess over the SDK
+env's interpreter — that is what `--bridge-python` is, and it is why getting it wrong makes
+every command fail with an import error.
+
+**It was proven end to end on the Go2 on 2026-08-26, read-only, with no motion.** From
+inside the venv the bridge path returned live odometry — position `(2.797, 2.048, 0.049)`,
+yaw `3.071` rad, velocity `(0, 0, 0)` — and the motion-service mode came back as
+
+```
+CheckMode -> {'form': '0', 'name': 'mcf'}
+```
+
+`mcf` is **not** a sport mode. `Go2Locomotion.connect()` only accepts `SportClient` commands
+in `normal` or `ai`, so a `Move` issued in this state would have been **silently ignored** —
+no fall, no fault, no error code, exactly the failure shape as the gait floor above. The
+two-env bridge is what surfaced it before a demo did; a driver that could not run on the
+robot at all would have surfaced nothing.
+
+### What to do when an import fails on a robot
+
+Activate the venv the install recorded, and re-run the same command:
+
+```bash
+grep '^env_dir' ~/.mappo-go2-deploy.manifest | tail -1     # what the install actually used
+source ~/robotics-connect-envs/$USER/bin/activate          # or whatever that prints
+```
+
+If there is genuinely no venv, build one from the interpreter the vendor stack was
+installed for — the one that can import it:
+
+```bash
+/usr/bin/python3.8 -m venv --system-site-packages ~/robotics-connect-envs/$USER
+source ~/robotics-connect-envs/$USER/bin/activate
+```
+
+**If an import still fails inside the venv, that is a finding to report, not a dependency
+to add.** Do not `pip install` into the system Python, and do not try to install a newer
+Python on the robot — the table above is why.
+
+⚠️ **The guard's detection is positive-only, so it can fail to fire and never falsely
+fires.** It looks for `/etc/nv_tegra_release` or a Tegra device-tree model — both measured
+on the Go2 — and treats CI as never-a-robot. **No marker has been measured on a Lite3**, so
+the Lite3 SOP exports `MAPPO_ROBOT_HOST=1` and the guard fires there by declaration rather
+than by inference. Every live run prints the verdict it reached, including `venv-guard: not
+enforced`, so a gate that is not firing says so instead of being invisible.
+
+### ⚠️ The robot's deployed tree is not a checkout and does not report its own staleness
+
+Measured on the Go2 2026-08-26: **none of the nine `~/mappo-*` directories is a git
+checkout** — no `.git`, so no `git status`, no branch, no commit. `~/mappo-run` was
+reconstructed from file hashes against `main`:
+
+- everything except `README.md` matches a commit **34–36 behind `main`**;
+- its `README.md` matches a commit **39–44 behind** — an older one still.
+
+Those ranges do not overlap, so **the deployed tree corresponds to no single commit**: it is
+a mixture, and "which commit is the robot running" has no answer. `~/mappo-run/dashboard/
+drive_bridge.py` is from a different lineage again and fails with
+`ModuleNotFoundError: No module named 'arm_dc_robotkit'`. Copy a fresh tree for a run whose
+result you intend to quote, and record what you copied.
+
 ## 🛑 THE FIRST NUMBER: the Go2 will not walk below ~0.35 m/s
 
 **Commanded top speed must be at or above `MIN_GAIT_COMMAND_M_S` (0.35 m/s), or the robot
@@ -314,6 +445,10 @@ does not produce. See `../evidence/2026-08-21-device-connect-dashboard/`.
 | a policy config is refused at load | it disagrees with the checkpoint's own recorded training constants. The message names the field; do not "fix" it by editing the checkpoint. |
 | `REFUSING TO RUN — the policy's scale was calibrated for a different robot size` | `--robot-radius` and `meters_per_vmas_unit` disagree. Pass `--robot-radius 0.25`, or pass `--policy-scale` to match the radius you meant and **re-run the simulation** — the numbers above do not transfer. Nothing moved; the robot is still prone. Every refusal is also appended to `~/.mappo-refusals.jsonl` (`--refusal-log`), because a refused run writes no telemetry and would otherwise leave no trace of why the demo did not start. |
 | RPC segfault on any DDS call | `setup_env.sh` was not sourced. `LD_LIBRARY_PATH` is load-bearing — see `robot-stack/unitree/go2/install/setup_env.sh`. |
+| `[venv-guard] REFUSING TO RUN` | you are on a robot in the system Python. The message names the venv to activate and the command to build one — **do not `pip install` past it**, and do not set `MAPPO_ROBOT_HOST=0` unless the machine really is not a robot. See "Python on a robot" above. |
+| `ModuleNotFoundError: cyclonedds` / `unitree_sdk2py` on the robot | the same thing one step earlier — the vendor stack is in the venv and this interpreter is not. `source <env>/bin/activate`. It is never a reason to install anything. |
+| `venv-guard: not enforced` on a live run | the guard found no robot-host marker on this machine. Expected on a Lite3 unless the SOP's `MAPPO_ROBOT_HOST=1` is exported; on a Go2 it means something is wrong with the detection and is worth reporting. |
+| every dashboard command fails and you are about to install Python 3.11 on the Jetson | **stop.** `device-connect-edge` runs off-robot by design and no venv can supply 3.11 here. Read "Why `device-connect-edge` runs OFF the robot" above. |
 | the dashboard shows "no robots found" | the driver is running but not announcing. Check it is on the same LAN segment (D2D is multicast), then that no `@rpc` was added whose name collides with a `DeviceDriver` member — that stops presence silently, with no error in any log. `dashboard/test_robot_driver.py` catches the second case. |
 | every dashboard command fails with an import error | `--bridge-python` points at the driver's interpreter instead of the SDK env's. `get_capabilities` reports the path in use. |
 | the motion keys are greyed out | the driver was started without `--allow-motion`. That is the default and it is deliberate. |

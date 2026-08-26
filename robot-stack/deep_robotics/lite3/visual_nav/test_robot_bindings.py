@@ -742,6 +742,78 @@ def test_blocked_rest_does_not_claim_an_undocumented_ros_lie_down_verb():
     assert Lite3Bindings.rest_when_blocked is False
 
 
+# --------------------------------------------------------- the virtualenv guard is wired
+#
+# What the guard DECIDES is tested in robot-stack/preflight/test_venv_guard.py against an
+# injected environment and an injected filesystem. What these two test is that this binding
+# actually calls it on the live path, and calls it first -- the wiring is the half that a
+# refactor silently drops, and a guard nobody calls passes every test it has.
+
+def _patched_guard(monkeypatched, raises=None):
+    import deep_robotics.lite3.visual_nav.robot_bindings as bindings_module
+
+    calls = []
+
+    def fake(component, reaching_hardware, **kwargs):
+        calls.append((component, reaching_hardware))
+        if raises is not None:
+            raise SystemExit(raises)
+        return monkeypatched
+
+    original = bindings_module.require_virtualenv
+    bindings_module.require_virtualenv = fake
+    return bindings_module, original, calls
+
+
+def test_a_live_run_asks_the_virtualenv_guard_and_says_what_it_decided():
+    from preflight.venv_guard import Decision
+
+    decision = Decision(False, None, "no robot-host evidence on this machine")
+    module, original, calls = _patched_guard(decision)
+    buffer = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buffer):
+            try:
+                Lite3Bindings().preflight_navigation(_live_args(), None, _Health())
+            except SystemExit as exc:
+                raise AssertionError(
+                    f"a complete live namespace was refused: {exc}") from exc
+    finally:
+        module.require_virtualenv = original
+    assert calls == [("lite3 visual_nav --live", True)], calls
+    assert "venv-guard: not enforced" in buffer.getvalue(), (
+        "a guard that decided NOT to enforce has to say so; this binding's robot has no "
+        "measured host marker, and an invisible gate is one nobody can audit")
+
+
+def test_the_virtualenv_refusal_precedes_the_missing_measurement_list():
+    """Answering '--gait-floor is missing' to a system-Python problem sends an operator
+    to measure a robot when what they needed was `source bin/activate`."""
+    module, original, calls = _patched_guard(None, raises="[venv-guard] REFUSING TO RUN")
+    try:
+        # _args("--live") alone is missing every measurement, so without the guard this
+        # raises "REFUSING TO WALK: missing ...". The guard has to win.
+        try:
+            Lite3Bindings().preflight_navigation(_args("--live"), None, _Health())
+        except SystemExit as exc:
+            assert "[venv-guard] REFUSING TO RUN" in str(exc), str(exc)
+        else:
+            raise AssertionError("preflight_navigation accepted a refused interpreter")
+    finally:
+        module.require_virtualenv = original
+    assert calls == [("lite3 visual_nav --live", True)], calls
+
+
+def test_an_offline_run_never_reaches_the_virtualenv_guard():
+    """Parsing telemetry, printing --help and a shadow pass touch no leg and no SDK."""
+    module, original, calls = _patched_guard(None, raises="should not have been called")
+    try:
+        Lite3Bindings().preflight_navigation(_args(), None, _Health())
+    finally:
+        module.require_virtualenv = original
+    assert calls == []
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
