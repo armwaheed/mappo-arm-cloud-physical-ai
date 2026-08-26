@@ -1,6 +1,13 @@
 {
  "label": "go2wheel",
- "source_dir": "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/peercap/",
+ "source": {
+  "what": "1,903 hand-labelled peer frames of the 2026-08-24 staged capture. The frames themselves are NOT in this repository — only the boxes below are.",
+  "working_copy": "arm-seattle-spark-02:~/go2-peer-dataset-20260824/ — 2,800 jpg, of which these 1,903 carry the peer. Reported in issue #77; not verified from this repository.",
+  "archive": "Hugging Face dataset armwaheed/go2-peer-detection — reported in issue #77. It is NOT public, so it could not be verified from outside this repository.",
+  "was": "/private/tmp/.../scratchpad/peercap/ — a scratchpad directory that no longer exists. Recorded here as the source_dir until 2026-08-26, when reading it as the only location led to the corpus being declared lost in issue #77. It was not lost. Do not record a scratchpad path as a source again.",
+  "verified": "2026-08-26 — manifest internally consistent: 1,903 records, 1,903 unique image names, 1,903 boxes, all with positive extent (check_manifest.py). The images were NOT checked: they are not reachable from this repository."
+ },
+ "check": "python3 check_manifest.py peer_go2wheel_20260824.json --frames-dir IMAGES",
  "count": 1903,
  "records": [
   {

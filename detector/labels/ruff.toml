@@ -1,0 +1,28 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint settings for detector/labels/. Deliberately identical to integration/ruff.toml and
+# robot-stack/unitree/go2/visual_nav/ruff.toml — a second style across directories that
+# are read together would be noise, and the repo has no root config to inherit.
+#
+#   ruff check . --config ruff.toml
+#
+# Scoped to labels/ rather than to detector/ only because this change does not own the
+# files above it. Measured 2026-08-26: `ruff check . --config labels/ruff.toml` from
+# detector/ is ALSO clean, so widening it later costs nothing — it is a one-line move, not
+# a cleanup. It is left narrow here so that a config does not appear over files another
+# change is mid-edit on.
+line-length = 100
+
+# The robot's Jetson runs Python 3.8 (Ubuntu 20.04 / JetPack 5). Nothing in this directory
+# runs on the robot, but the labelling pipeline and the eval tooling move between here and
+# detector/, and splitting the target by directory is a trap the first time a helper moves.
+target-version = "py38"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
+
+[lint.per-file-ignores]
+# The test module puts this directory on sys.path before importing check_manifest, so its
+# imports genuinely are not at the top of the file. Same idiom as the repo's other suites.
+"test_*.py" = ["E402"]

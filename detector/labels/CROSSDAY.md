@@ -16,9 +16,27 @@ the denominator was wrong and at least two of the eight fires were on frames wit
 detect. The same model's false-positive rate over the same session was 38%, which is where
 most of that "recall" came from.
 
-## Provenance
+## Provenance — where the video actually is
 
-Every frame is in this repository already, as video. Nothing new was recorded.
+Nothing new was recorded; every frame below is a frame of one of seven clips shot on
+2026-08-20. **The clips are not on the default branch.** They were committed to
+`evidence/2026-08-24-peer-capture-and-gait-sweeps` and that branch was never merged, so
+`evidence/2026-08-20-peer-avoidance/` does not exist in a fresh checkout of `main`. This
+file said "every frame is in this repository already, as video" for two days, and against
+`main` that was false.
+
+Recover them by commit, not by path:
+
+```
+git show f7b158f3bf18ba9868a40305985f75dc42374a7b:evidence/2026-08-20-peer-avoidance/scene-captures/_raw/<clip>.mp4 > <clip>.mp4
+```
+
+Two other copies are reported to exist and **neither was verifiable from here**: a working
+copy at `arm-seattle-spark-02:~/ssdft/eval/xday/`, and a Hugging Face dataset
+`armwaheed/go2-peer-detection`. Both come from the correction comment on issue #77. The
+dataset is not public — an unauthenticated request cannot tell it apart from one that does
+not exist — so it is not the location to check first. The commit above is, because anyone
+with this repository can check it in one command.
 
 | clip | frames | peer present | split |
 | --- | --- | --- | --- |
@@ -29,6 +47,30 @@ Every frame is in this repository already, as video. Nothing new was recorded.
 | `peer_cross5` | 82 | 23–69 (47) | test |
 | `peer_baseline` | 45 | none | test |
 | `smoke1` | 58 | none | test |
+
+### Checked on 2026-08-26
+
+All seven clips were recovered from that commit, decoded frame by frame, and the result
+compared against this manifest with `check_manifest.py`:
+
+```
+whole manifest: 284 rows — present 60, absent 221, null 3, boxes 6
+xday: 0 named-but-absent, 0 present-but-unnamed
+OK
+```
+
+**Every frame this manifest names exists, and nothing else is in the directory.** The
+second half matters as much as the first: `eval_class_agnostic.py` builds its negative set
+as every JPEG the manifest does *not* name, so one stray file would silently join the
+false-alarm denominator.
+
+⚠️ **The indices are 0-based and the last one is not the count.** `peer_baseline` is 45
+frames, `peer_baseline_000.jpg` … `peer_baseline_044.jpg`; `smoke1` is 58 frames, `_000`
+… `_057`. `peer_baseline_045.jpg` and `smoke1_058.jpg` do not exist and are not named
+here. A check that compares a count against the highest index reports two missing
+negatives and lowers the test-split denominator from 136 to 134; that reading is wrong and
+was made once already. The denominators are **47 present / 136 absent / 2 null** on
+`test`, and 13 / 85 / 1 on `select`.
 
 Three frames are `null` and scored as neither: `peer_cross1` 29, `peer_cross5` 22 and 70.
 In each the only visible part of the robot is its lit LED bar against a shadowed pillar,
@@ -79,11 +121,18 @@ tight enough to compare two detectors that both localise well.
 ## Reproducing
 
 ```
+CLIPS=f7b158f3bf18ba9868a40305985f75dc42374a7b:evidence/2026-08-20-peer-avoidance/scene-captures/_raw
+mkdir -p _raw xday
+for clip in peer_cross1 peer_cross5 chair1 gs-0.6-300-0.35 \
+            gs-1.0-300-0.50 peer_baseline smoke1; do
+  git show "$CLIPS/$clip.mp4" > "_raw/$clip.mp4"
+done
+
 python3 - <<'EOF'
 import cv2
 for clip in ("peer_cross1", "peer_cross5", "chair1", "gs-0.6-300-0.35",
              "gs-1.0-300-0.50", "peer_baseline", "smoke1"):
-    cap = cv2.VideoCapture(f"evidence/2026-08-20-peer-avoidance/scene-captures/_raw/{clip}.mp4")
+    cap = cv2.VideoCapture(f"_raw/{clip}.mp4")
     index = 0
     while True:
         ok, frame = cap.read()
@@ -92,6 +141,10 @@ for clip in ("peer_cross1", "peer_cross5", "chair1", "gs-0.6-300-0.35",
         cv2.imwrite(f"xday/{clip}_{index:03d}.jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
         index += 1
 EOF
+
+# Check the extraction BEFORE scoring against it. Non-zero exit means do not score.
+python3 detector/labels/check_manifest.py \
+        detector/labels/peer_crossday_20260820.json --frames-dir xday --split test
 
 eval_detector.py --proto M.prototxt --model M.caffemodel \
                  --manifest detector/labels/peer_crossday_20260820.json \
