@@ -106,6 +106,8 @@ class Lite3HealthMonitor:
         self._we_inited_ros = False
         self._polling = False
         self._poll_thread: threading.Thread | None = None
+        self._battery_source_raises = 0
+        self._battery_source_error: str | None = None
 
     def start(self, wait_s: float = 3.0) -> None:
         """Subscribe and wait briefly for a complete sample when health is required."""
@@ -155,15 +157,40 @@ class Lite3HealthMonitor:
     def _poll(self) -> None:
         while self._polling:
             try:
+                # float() belongs INSIDE the try. Outside it, a source that returns a
+                # non-number raises out of the thread body, killing the poller while
+                # self._polling stays True -- a monitor that has silently stopped
+                # sampling and will never resume.
+                #
+                # None stays a legitimate "nothing yet" rather than a conversion error:
+                # the late-bound source in Lite3Bindings returns it for every poll
+                # between this monitor starting and locomotion connecting.
                 value = self._battery_source()
-            except Exception:
+                if value is not None:
+                    value = float(value)
+            except Exception as error:
                 # The link is not up yet, or has dropped. Reporting nothing is correct:
                 # the sample then goes stale and the staleness gate does its job.
+                #
+                # Silence is not. A source that raises on EVERY poll is a defect, not a
+                # link warming up, and the two are indistinguishable from the outside:
+                # an AttributeError on every poll is exactly what went unnoticed until a
+                # robot refused to move. Say the first one out loud, and keep the count
+                # so the refusal can name it.
                 value = None
+                with self._lock:
+                    self._battery_source_raises += 1
+                    first = self._battery_source_raises == 1
+                    if first:
+                        self._battery_source_error = repr(error)
+                if first:
+                    print(f"[lite3-health] the battery source raised: {error!r}. "
+                          f"Treating it as no sample; further raises are counted, "
+                          f"not printed.")
             if value is not None:
                 # The stream reports a percentage, so say so. Left on "auto", a genuine
                 # 1% reading would be read as a full battery and fail open.
-                self.update_battery(float(value), scale="percent")
+                self.update_battery(value, scale="percent")
             time.sleep(0.1)
 
     def _spin(self) -> None:
@@ -254,11 +281,27 @@ class Lite3HealthMonitor:
             sample_time=min(battery[1], temperature_time),
         )
 
+    def _battery_feed(self) -> str:
+        """Name the feed the missing battery would have come from. Caller holds the lock.
+
+        The poller path subscribes to nothing, so naming ``battery_topic`` there sends
+        the reader to a ROS topic that is not in play -- which is what happened, and it
+        is where the live investigation went first. Report the source, and what it did.
+        """
+        if self._battery_source is None:
+            return f"on {self._battery_topic!r}"
+        if self._battery_source_raises:
+            return (f"from the locomotion state stream, whose reader raised on "
+                    f"{self._battery_source_raises} "
+                    f"poll{'' if self._battery_source_raises == 1 else 's'}: "
+                    f"{self._battery_source_error}")
+        return "from the locomotion state stream, which has not reported one yet"
+
     def missing_reason(self) -> str | None:
         with self._lock:
             missing = []
             if self._battery is None:
-                missing.append(f"battery on {self._battery_topic!r}")
+                missing.append(f"battery {self._battery_feed()}")
             if self._temperatures is None and not self._accept_missing_temperatures:
                 missing.append(f"motor temperatures on {self._temperature_topic!r}")
         return None if not missing else "no " + " or ".join(missing)

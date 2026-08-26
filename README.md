@@ -236,7 +236,7 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Offline regression suite | **1,027 checks**: policy 33, integration 196, detector 23, Go2 357, Lite3 308, dashboard 110 — re-measured 2026-08-26, and now enforced by CI against `AGENTS.md` rather than quoted from it. The 772 this row used to claim predated `detector/labels`, `detector/labels/pipeline` and three Go2 directories being run at all |
+| ✅ Offline regression suite | **1,046 checks**: policy 33, integration 196, detector 27, Go2 364, Lite3 316, dashboard 110 — enforced by CI against `AGENTS.md` rather than quoted from it. CI never reads this row, though, which is how it came to claim 1,027 against an enforced 1,038: the total was consistent with its own parts, and the detector (23, measured 27) and Go2 (357, measured 364) parts were wrong |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; six silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
