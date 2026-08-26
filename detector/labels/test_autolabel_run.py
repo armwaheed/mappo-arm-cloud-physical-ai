@@ -86,8 +86,10 @@ class _Video:
 
 def _extract(wanted, video, frames_dir, prefix="run", frames=8):
     video_io = _Video(frames)
-    found = autolabel_run.extract(wanted, Path(video), Path(frames_dir), prefix,
-                                  decoder=video_io.decode, writer=video_io.write)
+    # `extract` returns (indices found, frames decoded) — the second is what
+    # `check_frame_count` needs to tell this run's recording from another file.
+    found, _decoded = autolabel_run.extract(wanted, Path(video), Path(frames_dir), prefix,
+                                            decoder=video_io.decode, writer=video_io.write)
     return found, video_io
 
 
@@ -306,6 +308,113 @@ def test_a_frame_the_telemetry_names_but_the_video_lacks_fails_the_run():
         assert "[9]" in out.getvalue(), out.getvalue()
         manifest = json.loads((Path(directory) / "m.json").read_text())
         assert [r["image"] for r in manifest["records"]] == ["run_0000.jpg"]
+
+
+# ── A video that is not this run's own recording ────────────────────────────
+# 🔴 FOUND BY RUNNING THIS SCRIPT AGAINST FILES ALREADY IN THIS REPOSITORY. Before the
+# check these tests pin:
+#
+#   python3 autolabel_run.py evidence/2026-08-25-peer-runs/hero-run-telemetry.jsonl \
+#       --video evidence/2026-08-25-peer-runs/hero-clears-peer-on-right.mp4 ...
+#
+# wrote 32 auto-labels, exited 0, and passed `check_manifest.py` in BOTH directions. That
+# run recorded 58 frames; that file holds 423, because the committed hero videos are edited
+# cuts and not the recorder's output. Every index resolved, every box landed on a frame, and
+# every frame was the wrong one.
+def test_a_video_longer_than_the_run_recorded_is_refused():
+    """The silent direction. Too SHORT already fails with the indices named; too LONG left
+    a manifest that was self-consistent, checkable, and meaningless."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()]), _tick(1, [_sighting()])])
+        video = _Video(40)                       # the run recorded 2
+        argv = [str(path), "--video", RAW, "--frames-dir", str(Path(directory) / "f"),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+        except autolabel_run.Refused as refusal:
+            assert "holds 40 frames and this run recorded 2" in str(refusal), refusal
+        else:
+            raise AssertionError("it joined against a video with the wrong frame count")
+        assert not (Path(directory) / "m.json").exists(), (
+            "a manifest was written beside pixels that are not this run's")
+
+
+def test_the_expected_count_is_the_highest_index_and_not_the_tick_count():
+    """⚠️ THE TRAP IN THE OBVIOUS SPELLING, and it would have broken the case above it.
+
+    A truncated telemetry file has FEWER recorded ticks than the recording has frames, so
+    counting ticks would call a perfectly good recording "too long". The recorder advances
+    one contiguous index per written frame, so the file holds `max(video_frame) + 1` frames
+    and that is the only number to compare against. Here two ticks name indices 0 and 5 —
+    what a lost tail looks like — and a six-frame video is exactly right.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()]), _tick(5, [_sighting()])])
+        video = _Video(6)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(Path(directory) / "f"),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+        assert code == 0, out.getvalue()
+        assert [r["video_frame"] for r in
+                json.loads((Path(directory) / "m.json").read_text())["records"]] == [0, 5]
+
+
+def test_a_short_video_still_fails_the_old_way_rather_than_being_refused():
+    """The new check adds ONE direction and must not take over the other. A recording that
+    stopped early leaves a manifest that is short rather than wrong, exits 1, and names the
+    frames it could not reach — which is more useful than a refusal, because the frames it
+    did write are real."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()]), _tick(9, [_sighting()])])
+        video = _Video(4)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(Path(directory) / "f"),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+        assert code == 1, out.getvalue()
+        assert "[9]" in out.getvalue(), out.getvalue()
+        assert (Path(directory) / "m.json").exists()
+
+
+def test_the_override_is_stamped_into_the_manifest():
+    """A truncated telemetry file with a complete video is a real case, so the escape hatch
+    is real — and a reader of the manifest must not have to know which flag was passed."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()])])
+        video = _Video(40)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(Path(directory) / "f"),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run",
+                "--allow-frame-count-mismatch"]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+        assert code == 0, out.getvalue()
+        assert "holds 40 frames" in out.getvalue(), out.getvalue()
+        source = json.loads((Path(directory) / "m.json").read_text())["source"]
+        assert "frame_count_unverified" in source, source
+
+
+def test_a_correct_recording_is_not_stamped():
+    """The positive control for the test above. A stamp that is always there says nothing,
+    and this repository has shipped a gate that could never fire."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()]), _tick(1, [_sighting()])])
+        video = _Video(2)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(Path(directory) / "f"),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run",
+                "--allow-frame-count-mismatch"]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            assert autolabel_run.main(argv, decoder=video.decode,
+                                      writer=video.write) == 0, out.getvalue()
+        source = json.loads((Path(directory) / "m.json").read_text())["source"]
+        assert "frame_count_unverified" not in source, source
+        assert "holds" not in out.getvalue()
 
 
 if __name__ == "__main__":
