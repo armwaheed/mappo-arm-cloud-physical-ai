@@ -602,8 +602,11 @@ class MappoRobotDriver(DeviceDriver):
 
         Args:
             seconds: how long to hold the command, capped at 5 s.
-            speed_mps: commanded lateral speed. The Lite3's lateral floor is 0.20 m/s; the
-                Go2's has never been measured, so a Go2 strafe may produce no gait.
+            speed_mps: commanded lateral speed. ⚠️ 0.20 m/s is the **Go2's** measured
+                lateral floor (issue #42, 2026-08-19: vy 0.15 moved 0.010 m with no gait,
+                vy 0.20 walked 3/3). The **Lite3's** has never been measured, so a Lite3
+                strafe may produce no gait. This docstring said the opposite until
+                2026-08-26, and Device Connect publishes it.
             force: command a speed below the measured gait floor anyway.
         """
         seconds = self._clamp_seconds(seconds)
