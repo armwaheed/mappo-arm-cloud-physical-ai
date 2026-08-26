@@ -125,6 +125,22 @@ GO2_MAX_VY_M_S = 0.20
 #: saturates at 0.55-0.58. Nothing was run at 0.70. See ``SKILL.md``.
 GO2_MAX_WZ_RAD_S = 0.70
 
+#: Value of :attr:`Command.feasible` / :attr:`Command.evaluated` when the producer did
+#: not state them. NOT ``0``, and that is the whole point: ``0`` is a REAL answer this
+#: planner gives — ``feasible=0`` is the hold branch reporting that nothing cleared the
+#: hard gap, i.e. the robot is boxed in — so defaulting to it makes "nobody said" and
+#: "boxed in" the same bytes in the telemetry, and the second is an alarm.
+#:
+#: That is not hypothetical. `evidence/2026-08-17-corridor-and-room-runs/` records
+#: ``feasible=0 evaluated=0`` on all 58 policy-driven ticks of the successful run, beside
+#: vetoed ticks reading ``330 of 330``, because one branch of ``MappoPlanner.plan`` did
+#: not forward what the planner had already counted. Issue #20 fixed those branches; this
+#: constant is what makes the NEXT one visible rather than plausible, and
+#: ``test_avoidance.test_every_branch_that_returns_a_command_states_its_search`` is what
+#: makes it fail. Negative because no count can be, so a consumer needs no convention
+#: beyond ``< 0``.
+COUNT_NOT_RECORDED = -1
+
 
 @dataclass(frozen=True)
 class Limits:
@@ -288,12 +304,26 @@ class Command:
     wz: float
     reason: str            # "goal" | "avoid" | "hold" | "arrived"
     gap_m: float           # predicted worst free gap over the horizon (inf if clear)
-    feasible: int = 0      # how many sampled commands cleared the hard gap
-    evaluated: int = 0     # how many were sampled
+    #: How many sampled commands cleared the hard gap, and how many were sampled. They
+    #: describe the PLANNER's search, so a wrapper that returns a command of its own has
+    #: to forward the search it wrapped rather than let these default —
+    #: :data:`COUNT_NOT_RECORDED` says "not stated", and ``0`` says "boxed in".
+    feasible: int = COUNT_NOT_RECORDED
+    evaluated: int = COUNT_NOT_RECORDED
 
     @property
     def is_stop(self) -> bool:
         return self.vx == 0.0 and self.vy == 0.0 and self.wz == 0.0
+
+    @property
+    def search_recorded(self) -> bool:
+        """Whether this command states the search that produced it.
+
+        ``False`` means the producer did not forward the counts, NOT that the search
+        found nothing — see :data:`COUNT_NOT_RECORDED`.
+        """
+        return (self.feasible != COUNT_NOT_RECORDED
+                and self.evaluated != COUNT_NOT_RECORDED)
 
 
 class DynamicWindowPlanner:

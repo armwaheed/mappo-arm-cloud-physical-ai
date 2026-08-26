@@ -14,18 +14,21 @@ Run: ``python3 test_avoidance.py``
 """
 from __future__ import annotations
 
+import ast
 import math
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from avoidance import (
+    COUNT_NOT_RECORDED,
     GO2_MAX_VX_M_S,
     GO2_MAX_VY_M_S,
     GO2_MAX_WZ_RAD_S,
     MIN_GAIT_COMMAND_M_S,
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
+    Command,
     DynamicWindowPlanner,
     Limits,
     Obstacle,
@@ -619,6 +622,181 @@ def test_a_moving_obstacle_is_advanced_over_the_horizon():
     assert planner.is_feasible(ORIGIN, (0.30, 0.0, 0.0), [crosser], horizon_s=0.25), \
         "they are still well clear over the next quarter second"
     assert not planner.is_feasible(ORIGIN, (0.30, 0.0, 0.0), [crosser])
+
+
+# ── Issue #20: the counts a producer forgot to forward ──────────────────────────────
+#
+# The defect this guards was NOT in this file. `MappoPlanner.plan` in
+# `integration/mappo_drive.py` wraps this planner and returns `Command`s of its own, and
+# three of its four branches let `feasible`/`evaluated` fall back to the dataclass
+# default. The default was `0`, which is a real answer — the hold branch below returns
+# `feasible=0` to mean "nothing cleared the hard gap" — so 58 policy-driven ticks of a
+# successful run recorded "boxed in" and nobody could tell. Those four branches were
+# fixed; a FIFTH added later would reproduce it, and until this test nothing said so.
+#
+# So the guard is a scan, not a scenario. A behavioural test can only exercise branches
+# that exist when it is written, which is precisely the case that was already covered.
+
+
+def _repository_root():
+    """The directory holding ``AGENTS.md``, walking up from this file.
+
+    Anchored on a marker rather than on ``parents[N]`` because this directory is vendored
+    from the upstream control stack and the depth differs between the two trees. Returns
+    ``None`` when there is no marker above us, which the caller turns into a narrower
+    scan and a loud message rather than a pass.
+    """
+    directory = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        if os.path.exists(os.path.join(directory, "AGENTS.md")):
+            return directory
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+
+
+def _command_bindings(tree):
+    """Local names that refer to THIS dataclass: ``(direct names, module aliases)``.
+
+    Matching the call name alone would also catch ``VelocityCommand`` lookalikes and any
+    unrelated class called ``Command``; resolving the binding first keeps the scan
+    pointed at this one. All three spellings count, because a guard that sees only the
+    spelling in use today is a guard the next author walks past without meaning to:
+    ``Command(...)``, ``avoidance.Command(...)``, and ``Command`` imported under another
+    name. Both sets are empty for a module that does not have it, which is the signal to
+    skip the file entirely.
+    """
+    direct, modules = set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == "Command":
+            direct.add("Command")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.split(".")[-1] == "avoidance":
+                    modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if (node.module or "").endswith("avoidance") and alias.name == "Command":
+                    direct.add(alias.asname or alias.name)
+                elif alias.name == "avoidance":
+                    modules.add(alias.asname or alias.name)
+    return direct, modules
+
+
+def _is_command_call(node, direct, modules):
+    """A call that constructs this dataclass, under any of its three spellings."""
+    if not isinstance(node, ast.Call):
+        return False
+    if isinstance(node.func, ast.Name):
+        return node.func.id in direct
+    return (isinstance(node.func, ast.Attribute) and node.func.attr == "Command"
+            and isinstance(node.func.value, ast.Name) and node.func.value.id in modules)
+
+
+def _command_construction_sites():
+    """Every ``Command(...)`` call in non-test Python that binds this dataclass.
+
+    ``(relative path, line number, set of keyword names)``. Test files are excluded on
+    purpose: a fixture command is not a producer, nobody reads its counts out of a
+    telemetry file, and requiring the keywords there would make every future test carry
+    two numbers it does not use.
+    """
+    root = _repository_root()
+    scanned_root = root or os.path.dirname(os.path.abspath(__file__))
+    sites = []
+    for directory, subdirs, files in os.walk(scanned_root):
+        subdirs[:] = [d for d in subdirs
+                      if d not in (".git", "__pycache__", "node_modules")]
+        for name in sorted(files):
+            if not name.endswith(".py") or name.startswith("test_"):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    tree = ast.parse(handle.read(), filename=path)
+            except (OSError, SyntaxError):
+                continue
+            direct, modules = _command_bindings(tree)
+            if not direct and not modules:
+                continue
+            for node in ast.walk(tree):
+                if _is_command_call(node, direct, modules):
+                    sites.append((os.path.relpath(path, scanned_root), node.lineno,
+                                  {k.arg for k in node.keywords if k.arg}))
+    return root, sites
+
+
+def test_every_branch_that_returns_a_command_states_its_search():
+    """⚠️ THE GUARD FOR ISSUE #20. Add a branch that returns a ``Command`` without
+    forwarding ``feasible``/``evaluated`` and this test names the file and the line.
+
+    Demonstrated by doing exactly that: a fifth ``return Command(...)`` added to
+    ``DynamicWindowPlanner.plan`` without the two keywords fails here with
+    ``avoidance.py:NNN constructs a Command without stating ['evaluated', 'feasible']``,
+    and the same edit made in ``integration/mappo_drive.py`` fails the same way. Neither
+    is caught by any behavioural test, because a branch nobody has written yet cannot be
+    driven by a scenario.
+    """
+    root, sites = _command_construction_sites()
+    assert root is not None, (
+        "no AGENTS.md above this file, so the scan only covered this directory and "
+        "would not have seen a wrapper elsewhere in the tree")
+
+    # Anti-vacuity, and it is the point: a scan that stops finding anything must go red
+    # rather than green. Seven sites today — three in this planner, four in
+    # `MappoPlanner.plan` — across two files.
+    assert len(sites) >= 5, f"the scan found only {len(sites)} construction sites: {sites}"
+    files = {path for path, _, _ in sites}
+    assert len(files) >= 2, f"only one file constructs a Command; the wrapper is missing: {files}"
+    assert any(path.endswith("avoidance.py") for path in files), (
+        f"this planner is not among the scanned producers: {sorted(files)}")
+
+    required = {"feasible", "evaluated"}
+    missing = [(path, line, sorted(required - keywords))
+               for path, line, keywords in sites if required - keywords]
+    assert not missing, "\n".join(
+        f"{path}:{line} constructs a Command without stating {sorted(names)} — "
+        f"they describe the planner's search and default to COUNT_NOT_RECORDED, "
+        f"so a consumer reads 'not stated' rather than a count"
+        for path, line, names in missing)
+
+
+def test_an_unstated_count_is_not_the_same_value_as_a_real_zero():
+    """``feasible=0`` is an ANSWER — the hold branch returns it to say nothing cleared
+    the hard gap. So the default cannot be 0, or "nobody said" and "the robot is boxed
+    in" are the same bytes in the telemetry, and one of them is an alarm."""
+    assert COUNT_NOT_RECORDED < 0, "no count can be negative; that is what makes it safe"
+
+    unstated = Command(0.0, 0.0, 0.0, reason="hold", gap_m=1.0)
+    assert unstated.feasible == COUNT_NOT_RECORDED
+    assert unstated.evaluated == COUNT_NOT_RECORDED
+    assert not unstated.search_recorded
+
+    boxed_in = Command(0.0, 0.0, 0.0, reason="hold", gap_m=1.0, feasible=0, evaluated=330)
+    assert boxed_in.search_recorded, "0 of 330 is a stated result, not an absent one"
+    assert boxed_in.feasible != unstated.feasible
+
+
+def test_the_planners_own_branches_state_a_search_that_actually_ran():
+    """The scan proves the keywords are PRESENT. This proves they carry the search rather
+    than a literal: every branch of ``plan`` must report the window it really sampled."""
+    planner = _planner()
+    blocked = [Obstacle(x=0.45, y=0.0, vx=0.0, vy=0.0, radius_m=0.6)]
+    outcomes = {
+        "hold": planner.plan(ORIGIN, GOAL, CRUISING, blocked),
+        "clear": planner.plan(ORIGIN, GOAL, CRUISING, []),
+        "avoid": planner.plan(ORIGIN, GOAL, CRUISING,
+                              [Obstacle(x=1.6, y=0.45, vx=0.0, vy=0.0, radius_m=0.35)]),
+    }
+    window = planner.config.samples_vx * planner.config.samples_vy * planner.config.samples_wz
+    for name, command in outcomes.items():
+        assert command.reason == name.replace("clear", "goal"), (name, command)
+        assert command.search_recorded, (name, command)
+        assert command.evaluated == window, (name, command, window)
+        assert 0 <= command.feasible <= command.evaluated, (name, command)
+    assert outcomes["hold"].feasible == 0, "a hold IS zero feasible; that is the answer"
+    assert outcomes["clear"].feasible > 0, outcomes["clear"]
 
 
 if __name__ == "__main__":

@@ -51,8 +51,9 @@ otherwise written down anywhere.
 Every change to the delivered files is listed here and marked `CORRECTION` in the source.
 The first three were agreed with @spsagar13 in AIDP-567; the fourth and fifth were found
 while writing tests for the first three; the sixth was found by drawing the observation
-instead of reading it. **All six were silent failures** — nothing raised, nothing logged,
-and the delivered `basic_test.py` passed with every one of them in place.
+instead of reading it; the seventh by measuring the goal overrun of issue #25. **All seven
+were silent failures** — nothing raised, nothing logged, and the delivered `basic_test.py`
+passed with every one of them in place.
 
 | # | file | delivered | vendored | why it was invisible |
 | --- | --- | --- | --- | --- |
@@ -62,6 +63,7 @@ and the delivered `basic_test.py` passed with every one of them in place.
 | 4 | `physical_ai_mappo.py` | positional association ran on **every** obstacle | only on ones that are anonymous or already this id | Two objects 0.2 m apart merged even when the producer had told them apart — which is exactly what `id` was added to the telemetry to prevent. The merged disc takes the larger radius, so the range vector still looks plausible. |
 | 5 | `physical_ai_mappo.py` | `Config.load` is `cls(**json.load(...))` | unknown keys named, values range-checked | A **misspelled** key is worse than an unknown one: the field it was meant to set keeps its default and the file reads as though it took effect. |
 | 6 | `physical_ai_mappo.py` | `match.radius = max(match.radius, radius)` on every re-observation | a **named** re-observation takes the reported radius; only an anonymous merge still takes `max` | The control stack's radius is `radius_m + position_sigma`, an estimate that starts large and CONVERGES — so `max` froze every obstacle at the map's least certain moment for the whole run. Over the four two-bin runs of 2026-08-18 the telemetry converged to 0.230 m while the controller held 0.379–0.472 m, which shrank the aperture between two bins by 3.4x in angular terms and turned three runs' mean commanded `vx` negative. Invisible because an over-large disc yields a perfectly well-formed range vector; it just reports a gap the robot cannot fit through. |
+| 7 | `physical_ai_mappo.py` | `STOP_GOAL_REACHED` zeroes the command and says nothing | it also warns on stderr, once a run, naming the failure it is about to cause | `goal_stop_distance_m` is only reachable when it is LARGER than the stack's `--arrive` tolerance, and `visual_nav` does not end a run on this status — so the first run staged tight enough to reach it stands still until `--max-seconds` and reports a **timeout**, not an arrival. It has fired on zero ticks of the seven arriving runs recorded here, so nothing else would have named it. See issue #25. |
 
 Two further changes are calibration and packaging rather than corrections:
 
@@ -82,8 +84,9 @@ Two further changes are calibration and packaging rather than corrections:
   inference and two range assertions; it is a fine *install* check and it is what
   `deploy/install.sh` runs on the target machine, so it keeps its name and its `PASS`.
   It is not a test of the policy — it would pass with the weights replaced by noise — and
-  the README no longer implies otherwise. The 31-test suite beside it fails if any delta
-  above is reverted.
+  the README no longer implies otherwise. The suite beside it fails if any delta above is
+  reverted; its size is in `.github/test-inventory.tsv`, which is generated, rather than
+  typed here where it goes stale (it read 31 across three later additions).
 
 `README.md` is rewritten rather than diffed: the delivered one documents the delivered
 behaviour, and leaving `velocity_frame="odom"` in a copy-pasteable example is how a
@@ -103,7 +106,7 @@ correction gets undone.
 
 ## If the adapter is re-delivered
 
-Diff it against this copy and re-apply the five deltas — they are marked `CORRECTION` in
-the source for exactly this reason. A whole-file overwrite silently reverts all five and
+Diff it against this copy and re-apply the seven deltas — they are marked `CORRECTION` in
+the source for exactly this reason. A whole-file overwrite silently reverts all seven and
 **no test in `integration/` fails**, because they are failures in the policy package's own
 behaviour rather than in the mapping into it. Run `policy/test_physical_ai_mappo.py`.

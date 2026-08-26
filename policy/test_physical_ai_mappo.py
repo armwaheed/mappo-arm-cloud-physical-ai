@@ -19,6 +19,8 @@ Needs numpy and the checkpoint. Run: ``python3 test_physical_ai_mappo.py``
 """
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import math
 import sys
@@ -46,6 +48,19 @@ from physical_ai_mappo import (
 )
 
 CONFIG = ROOT / "config.json"
+
+
+@contextlib.contextmanager
+def _stderr():
+    """Capture stderr, and hand back a callable returning what was written.
+
+    ``MappoController`` warns on stderr the first time :data:`STOP_GOAL_REACHED` fires.
+    That is signal on a live run and noise in a suite that drives the branch on purpose,
+    and a warning a reader learns to scroll past is a warning that is not there.
+    """
+    buffer = io.StringIO()
+    with contextlib.redirect_stderr(buffer):
+        yield buffer.getvalue
 
 
 def _controller(**overrides) -> MappoController:
@@ -347,8 +362,9 @@ def test_the_run_local_frame_is_fixed_at_the_reset_not_re_derived_each_tick():
     controller = _controller()
     controller.step(_input(x_m=5.0, y_m=-3.0, yaw_rad=1.1, reset_run=True))
     assert np.allclose(controller.last_observation[:2], 0.0)
-    controller.step(_input(x_m=5.0, y_m=-3.0, yaw_rad=1.1, reset_run=False,
-                           goal_x_m=5.0, goal_y_m=-3.0))
+    with _stderr():                       # the second step is AT the goal; see below
+        controller.step(_input(x_m=5.0, y_m=-3.0, yaw_rad=1.1, reset_run=False,
+                               goal_x_m=5.0, goal_y_m=-3.0))
     assert np.allclose(controller.last_observation[:2], 0.0)
 
 
@@ -469,7 +485,8 @@ def test_an_obstacle_is_forgotten_once_its_ttl_expires():
 
 # ── The stop conditions ─────────────────────────────────────────────────────
 def test_arriving_stops_and_says_which_authority_stopped_it():
-    result = _controller().step(_input(goal_x_m=0.1, goal_y_m=0.0))
+    with _stderr():
+        result = _controller().step(_input(goal_x_m=0.1, goal_y_m=0.0))
     assert result.status == STOP_GOAL_REACHED
     assert (result.vx_mps, result.vy_mps) == (0.0, 0.0)
 
@@ -524,6 +541,204 @@ def test_a_malformed_detection_is_dropped_rather_than_mapped_to_a_ghost():
         StationaryObject(distance_m=-1.0, bearing_rad=0.0, radius_m=0.1),
         StationaryObject(distance_m=0.3, bearing_rad=float("inf"), radius_m=0.1)]))
     assert not controller._obstacles
+
+
+# ── Issue #25: what the goal overrun actually is ────────────────────────────
+#
+# MEASURED, from the seven arriving runs this repository has recorded, across four
+# sessions and two `--arrive` tolerances:
+#
+#   | run                          | arrive | stopped | over   | that tick moved |
+#   | 2026-08-14 hero              |  0.80  | 0.7680  | 0.0320 | 0.0509          |
+#   | 2026-08-17 run0 baseline     |  0.80  | 0.7959  | 0.0041 | 0.0159          |
+#   | 2026-08-18 runA veto-on      |  0.80  | 0.7503  | 0.0497 | 0.0536          |
+#   | 2026-08-18 runB veto-off     |  0.80  | 0.7471  | 0.0529 | 0.0530          |
+#   | 2026-08-18 run11 two bins    |  0.80  | 0.7713  | 0.0287 | 0.0337          |
+#   | 2026-08-25 contrast          |  0.30  | 0.2976  | 0.0024 | 0.0050          |
+#   | 2026-08-25 hero              |  0.30  | 0.2595  | 0.0405 | 0.0616          |
+#
+# The overrun is SMALLER THAN THE DISTANCE THAT TICK TRAVELLED in 7 of 7. It correlates
+# with that distance at r=+0.92 and with the tick interval at r=+0.80; a braking distance
+# would not be bounded by a tick's travel at all, and would not depend on the interval.
+# It is a threshold sampled once per tick, and nothing else — the commanded speed over
+# the four ticks before the stop is FLAT in every run (0.340 -> 0.343, 0.352 -> 0.352,
+# 0.339 -> 0.336, 0.350 -> 0.350), so there is no deceleration to attribute it to.
+#
+# The two tests below pin that in the policy's own code, because the same mechanism sets
+# the residual past `goal_stop_distance_m`.
+
+#: Commanded speed on the tick before the threshold was crossed, m/s — the median of the
+#: seven runs above. Used to drive a synthetic approach at a realistic pace.
+MEASURED_APPROACH_M_S = 0.34
+#: Median tick interval of those runs, seconds. The loop is nominally 10 Hz and holds
+#: 3.8-4.1 Hz live; that gap is issue #18 and it is what sizes the residual below.
+MEASURED_TICK_S = 0.26
+
+
+def _approach(controller, start_distance_m, speed_m_s, tick_s):
+    """Walk straight at a goal 2 m along +x and return the distance at the first stop.
+
+    A grid of samples along a line, which is what a control loop is: the stop test sees
+    the pose at tick boundaries and nothing in between.
+    """
+    distance = start_distance_m
+    reset = True
+    while distance > 0.0:
+        result = controller.step(_input(x_m=2.0 - distance, y_m=0.0,
+                                        vx_mps=speed_m_s, goal_x_m=2.0, goal_y_m=0.0,
+                                        reset_run=reset))
+        reset = False
+        if result.status == STOP_GOAL_REACHED:
+            return distance
+        distance -= speed_m_s * tick_s
+    return None
+
+
+def test_the_overrun_past_the_goal_stop_is_one_ticks_travel_not_the_thresholds_value():
+    """🔴 THE MEASUREMENT ISSUE #25 ASKED FOR. Moving the stop distance does not move the
+    overrun; the tick interval does.
+
+    Issue #25 attributes ~5 cm to "deceleration plus perception lag" and proposes backing
+    the stack's ``--arrive`` off by 10 cm. Backing it off moves where the robot stops, and
+    this shows it leaves the overrun exactly where it was: the residual past a threshold
+    tested once per tick is bounded by that tick's travel and is independent of the
+    threshold's value. Halving the interval halves it. That is a loop-rate property —
+    issue #18 — and no value of ``goal_stop_distance_m`` or ``--arrive`` can reach it.
+
+    Swept over eight sub-tick start offsets so the result is the shape of the residual
+    rather than one lucky alignment of the sample grid with the threshold.
+    """
+    def residuals(stop_m, tick_s):
+        step_m = MEASURED_APPROACH_M_S * tick_s
+        out = []
+        for k in range(8):
+            controller = _controller(goal_stop_distance_m=stop_m)
+            with _stderr():
+                stopped = _approach(controller, 1.30 + k * step_m / 8.0,
+                                    MEASURED_APPROACH_M_S, tick_s)
+            assert stopped is not None, (stop_m, tick_s, k)
+            out.append(stop_m - stopped)
+        return out
+
+    one_tick = MEASURED_APPROACH_M_S * MEASURED_TICK_S
+    worst = {}
+    for stop_m in (0.20, 0.50, 0.90):
+        measured = residuals(stop_m, MEASURED_TICK_S)
+        assert all(0.0 <= r < one_tick for r in measured), (stop_m, measured)
+        worst[stop_m] = max(measured)
+
+    # The bound is reached, so "smaller than one tick" is not vacuous...
+    assert min(worst.values()) > 0.9 * one_tick, worst
+    # ...and it is the SAME bound at 0.20 m and at 0.90 m. A 4.5x change in the threshold
+    # moves the worst case by less than a tenth of a tick's travel.
+    assert max(worst.values()) - min(worst.values()) < 0.1 * one_tick, worst
+
+    # The one thing that does move it. Half the interval, half the residual.
+    half = max(residuals(0.20, MEASURED_TICK_S / 2.0))
+    assert half < 0.6 * worst[0.20], (half, worst[0.20])
+
+
+def test_the_goal_stop_is_a_hard_zero_and_there_is_no_ramp_to_shorten():
+    """Why raising the threshold trades a 5 cm overrun for a failed run.
+
+    On the last tick outside the stop radius the policy is still commanding most of its
+    forward envelope; on the first tick inside it, zero. There is no deceleration in
+    between — so a bigger stop radius does not make the approach gentler, it just stops
+    the robot further out, and ``visual_nav`` does not end a run on this status.
+
+    The Go2 could not use a ramp anyway: ``avoidance.MIN_GAIT_COMMAND_M_S`` is 0.35 and
+    equals this robot's forward ceiling, so ``mappo_drive._at_least_walking_pace`` scales
+    any slower command back UP to the envelope. This robot has one approach speed.
+    """
+    controller = _controller()
+    last_moving = None
+    distance = 1.30
+    reset = True
+    while distance > 0.0:
+        with _stderr():
+            result = controller.step(_input(x_m=2.0 - distance, y_m=0.0,
+                                            vx_mps=MEASURED_APPROACH_M_S,
+                                            goal_x_m=2.0, goal_y_m=0.0, reset_run=reset))
+        reset = False
+        if result.status == STOP_GOAL_REACHED:
+            break
+        last_moving = result
+        distance -= MEASURED_APPROACH_M_S * MEASURED_TICK_S
+
+    assert result.status == STOP_GOAL_REACHED
+    assert (result.vx_mps, result.vy_mps) == (0.0, 0.0)
+    assert last_moving is not None
+    # Most of the envelope, one tick before a full stop. `max_vx_mps` is 0.35.
+    assert last_moving.vx_mps > 0.6 * controller.cfg.max_vx_mps, last_moving
+    # And the action itself never ramped to nothing — the stop is the `if`, not the net.
+    assert abs(last_moving.action_x) > 0.5, last_moving
+
+
+def test_the_distance_the_goal_stop_tests_is_the_one_the_caller_already_tested():
+    """Why ``goal_stop_distance_m`` has fired on zero ticks of seven arriving runs, and
+    why that is structural rather than lucky.
+
+    ``_local_state`` maps odom into the run-local frame by a rotation about the reset
+    pose and a translation — a rigid transform, which preserves distance. So the scalar
+    this stop compares is the SAME one ``visual_nav`` compares against ``--arrive``, from
+    the same pose on the same tick, and the stack breaks its loop first whenever
+    ``--arrive`` is the larger of the two. Reachable only by making it larger, which
+    ``test_the_goal_stop_is_a_hard_zero_...`` shows is worse.
+
+    Pinned by giving the controller a start pose that is translated and rotated: if the
+    stop were testing a frame-dependent quantity, these would disagree.
+    """
+    stop_m = _controller().cfg.goal_stop_distance_m
+    inside, outside = stop_m * 0.9, stop_m * 1.1
+
+    for x0, y0, yaw0 in [(0.0, 0.0, 0.0), (7.5, -3.25, 2.4), (-1.0, 12.0, -0.7)]:
+        for offset, expected in ((inside, STOP_GOAL_REACHED), (outside, COMMAND)):
+            controller = _controller()
+            controller.step(_input(x_m=x0, y_m=y0, yaw_rad=yaw0,
+                                   goal_x_m=x0 + 4.0, goal_y_m=y0, reset_run=True))
+            # Placed at `offset` from the goal along a direction unrelated to the reset
+            # heading, so a frame-dependent test would land somewhere else entirely.
+            with _stderr():
+                result = controller.step(_input(
+                    x_m=x0 + 4.0 - offset * math.cos(0.9),
+                    y_m=y0 - offset * math.sin(0.9), yaw_rad=yaw0 + 1.3,
+                    goal_x_m=x0 + 4.0, goal_y_m=y0, reset_run=False))
+            assert result.status == expected, (x0, y0, yaw0, offset, result.status)
+
+
+def test_the_goal_stop_says_so_on_stderr_the_first_time_it_fires_and_only_then():
+    """The loud half of issue #25's third proposal, at the only place this module can be
+    loud: a refusal at load would need ``--arrive``, which is a per-run CLI flag on the
+    other side of the adapter and is not in :class:`Config`.
+
+    It has to fire on the branch and not on the config, and it has to fire ONCE — the
+    condition holds for every remaining tick of the run.
+    """
+    controller = _controller()
+    with _stderr() as written:
+        controller.step(_input(goal_x_m=0.05, goal_y_m=0.0))
+        first = written()
+    assert "STOP_GOAL_REACHED" in first
+    assert "goal_stop_distance_m" in first
+    assert "timeout" in first, "the failure a reader has to recognise is a timeout"
+    assert first.count("STOP_GOAL_REACHED") == 1
+
+    with _stderr() as written:
+        for _ in range(5):
+            controller.step(_input(goal_x_m=0.05, goal_y_m=0.0, reset_run=False))
+        assert written() == "", "five more held ticks must not print five more lines"
+
+    # A NEW RUN re-arms it. Two runs in one process are two runs, and the second
+    # operator is owed the same sentence the first got.
+    with _stderr() as written:
+        controller.step(_input(goal_x_m=0.05, goal_y_m=0.0, reset_run=True))
+        assert "STOP_GOAL_REACHED" in written()
+
+    # And it stays silent on a run that never reaches the threshold, which is every run
+    # this repository has recorded.
+    with _stderr() as written:
+        _controller().step(_input(goal_x_m=2.0, goal_y_m=0.0))
+        assert written() == ""
 
 
 if __name__ == "__main__":
