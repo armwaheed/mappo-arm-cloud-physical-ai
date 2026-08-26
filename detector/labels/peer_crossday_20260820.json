@@ -1,8 +1,20 @@
 {
  "label": "go2wheel",
  "day": "2026-08-20",
- "source": "evidence/2026-08-20-peer-avoidance/scene-captures/_raw/<clip>.mp4",
- "extract": "python3 -c \"import cv2,sys;c=cv2.VideoCapture(sys.argv[1]);i=0\nwhile True:\\n ok,f=c.read()\\n if not ok: break\\n cv2.imwrite('%s_%03d.jpg'%(sys.argv[2],i),f,[cv2.IMWRITE_JPEG_QUALITY,95]);i+=1\" CLIP.mp4 OUTDIR/CLIP",
+ "frame_key": "{clip}_{index:03d}.jpg",
+ "source": {
+  "what": "seven clips recorded 2026-08-20; every frame of each is one row below",
+  "clips": "evidence/2026-08-20-peer-avoidance/scene-captures/_raw/<clip>.mp4",
+  "on_default_branch": false,
+  "git_branch": "evidence/2026-08-24-peer-capture-and-gait-sweeps",
+  "git_commit": "f7b158f3bf18ba9868a40305985f75dc42374a7b",
+  "recover": "git show f7b158f3bf18ba9868a40305985f75dc42374a7b:evidence/2026-08-20-peer-avoidance/scene-captures/_raw/<clip>.mp4 > <clip>.mp4",
+  "verified": "2026-08-26 — all seven clips recovered from git_commit and decoded: 284 frames, 0 named-but-absent, 0 present-but-unnamed (check_manifest.py --frames-dir)",
+  "working_copy": "arm-seattle-spark-02:~/ssdft/eval/xday/ — reported in issue #77; not reachable from this repository and not verified here",
+  "archive": "Hugging Face dataset armwaheed/go2-peer-detection — reported in issue #77. It is NOT public, so it could not be verified from outside and must not be the location a reader checks first; git_commit above is the one that can be."
+ },
+ "extract": "python3 -c \"import cv2,sys\ncap = cv2.VideoCapture(sys.argv[1]); i = 0\nwhile True:\n    ok, frame = cap.read()\n    if not ok: break\n    cv2.imwrite(\\\"%s_%03d.jpg\\\" % (sys.argv[2], i), frame, [cv2.IMWRITE_JPEG_QUALITY, 95]); i += 1\n\" CLIP.mp4 OUTDIR/CLIP",
+ "check": "python3 check_manifest.py peer_crossday_20260820.json --frames-dir OUTDIR",
  "present_true": 60,
  "present_false": 221,
  "present_null": 3,
