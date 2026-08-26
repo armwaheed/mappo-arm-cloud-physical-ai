@@ -75,7 +75,7 @@ MIN_BEARING_DEG = 5.0
 
 
 def _gate(name: str, ok: bool, detail: str) -> bool:
-    print("  %-22s %-4s %s" % (name, "PASS" if ok else "FAIL", detail))
+    print(f"  {name:<22} {'PASS' if ok else 'FAIL':<4} {detail}")
     return ok
 
 
@@ -103,20 +103,18 @@ def main(argv=None) -> int:
 
     import cv2
     import numpy as np
+    from locomotion.go2_locomotion import Go2Locomotion
+    from unitree_sdk2py.core.channel import ChannelFactoryInitialize
+    from unitree_sdk2py.go2.video.video_client import VideoClient
 
     from camera_model import FisheyeCamera
     from person_detector import (
         PERSON_ASPECT_MIN,
-        Detection,
         PersonDetector,
         RangedDetection,
         SizePrior,
         estimate_range,
     )
-    from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-    from unitree_sdk2py.go2.video.video_client import VideoClient
-
-    from locomotion.go2_locomotion import Go2Locomotion
     from safety import lie_down, stand_up
 
     ChannelFactoryInitialize(0, args.iface)
@@ -137,7 +135,7 @@ def main(argv=None) -> int:
         stand_up(loco)
         camera = None
         for _ in range(args.frames):
-            code, data = video.GetImageSample()
+            _code, data = video.GetImageSample()
             image = cv2.imdecode(np.frombuffer(bytes(data), dtype=np.uint8),
                                  cv2.IMREAD_COLOR)
             if image is None:
@@ -170,11 +168,11 @@ def main(argv=None) -> int:
 
     seen = [r for r in rows if r]
     print()
-    print("PEER SCENE CHECK — %d frames, robot STANDING" % len(rows))
+    print(f"PEER SCENE CHECK — {len(rows)} frames, robot STANDING")
     ok = True
     ok &= _gate("detected", len(seen) >= MIN_DETECTION_RATE * len(rows),
-                "%d/%d  labels %s" % (len(seen), len(rows),
-                                      dict(collections.Counter(r["label"] for r in seen))))
+                f"{len(seen)}/{len(rows)}  labels "
+                f"{dict(collections.Counter(r['label'] for r in seen))}")
     if not seen:
         print("\n  Nothing to measure. Beyond ~2.7 m this peer is found in 0 of 315 "
               "frames — move it closer.")
@@ -183,32 +181,29 @@ def main(argv=None) -> int:
     sources = collections.Counter(r["source"] for r in seen)
     degraded = sum(sources[s] for s in DEGRADED_SOURCES)
     ok &= _gate("ranged by height", degraded == 0,
-                "%s%s" % (dict(sources),
-                          "   <- clipped: range and person_shaped are both wrong"
-                          if degraded else ""))
+                f"{dict(sources)}"
+                + ("   <- clipped: range and person_shaped are both wrong" if degraded else ""))
     clipped = sum(1 for r in seen if r["vertical_clip"])
     ok &= _gate("not vertically clipped", clipped == 0,
-                "%d/%d clipped   (standing clip boundary is 0.72 m)"
-                % (clipped, len(seen)))
+                f"{clipped}/{len(seen)} clipped   (standing clip boundary is 0.72 m)")
     held = sum(1 for r in seen if r["person_shaped"])
     ok &= _gate("reaches the policy", held == 0,
-                "%d/%d would HOLD the robot instead" % (held, len(seen)))
+                f"{held}/{len(seen)} would HOLD the robot instead")
     rng = statistics.median(r["range_m"] for r in seen)
     ok &= _gate("range in band", RANGE_MIN_M <= rng <= RANGE_MAX_M,
-                "%.2f m   (band %.2f-%.2f)" % (rng, RANGE_MIN_M, RANGE_MAX_M))
+                f"{rng:.2f} m   (band {RANGE_MIN_M:.2f}-{RANGE_MAX_M:.2f})")
     bearing = statistics.median(r["bearing_deg"] for r in seen)
     ok &= _gate("offset from the nose", abs(bearing) >= MIN_BEARING_DEG,
-                "%+.0f deg (%s)   dead ahead cannot tell you which way it chose"
-                % (bearing, "LEFT" if bearing > 0 else "RIGHT"))
+                f"{bearing:+.0f} deg ({'LEFT' if bearing > 0 else 'RIGHT'})"
+                "   dead ahead cannot tell you which way it chose")
     aspect = statistics.median(r["aspect"] for r in seen)
     ok &= _gate("aspect below threshold", aspect < PERSON_ASPECT_MIN,
-                "%.2f  (holds at >= %.1f)" % (aspect, PERSON_ASPECT_MIN))
+                f"{aspect:.2f}  (holds at >= {PERSON_ASPECT_MIN:.1f})")
 
     half = math.degrees(math.asin(min(1.0, 0.35 / max(rng, 0.36))))
     window = camera.hfov_deg / 2.0 - half
     ok &= _gate("open window exists", window > 0,
-                "peer subtends %.0f deg, leaving %.0f deg each side (issue #72)"
-                % (2 * half, window))
+                f"peer subtends {2 * half:.0f} deg, leaving {window:.0f} deg each side (issue #72)")
 
     print()
     print("VERDICT: %s" % ("READY — run it" if ok else "NOT READY — see the FAILs above"))
