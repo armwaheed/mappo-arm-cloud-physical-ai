@@ -14,7 +14,16 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mappo_policy import HeadingServo, PolicyRunner, tick_from_state
+from mappo_policy import (
+    DEFAULT_PACKAGE,
+    GOAL,
+    SERVO_MODES,
+    TRAVEL,
+    HeadingServo,
+    PolicyRunner,
+    goal_bearing_body,
+    tick_from_state,
+)
 
 #: Inside the 0.875 m sensing horizon, which is measured to the SURFACE: 0.90 - 0.23 =
 #: 0.67 m. Put it at 1.2 m instead and the fan reads all-zero, which looks exactly like a
@@ -26,34 +35,173 @@ WALKER = {"label": "person", "kind": "tracked", "id": "track-1",
 
 
 # ── The heading servo ───────────────────────────────────────────────────────
-def test_the_servo_turns_towards_the_direction_of_travel():
-    servo = HeadingServo()
+def test_the_travel_law_turns_towards_the_direction_of_travel():
+    servo = HeadingServo(mode=TRAVEL)
     assert servo.yaw_rate(0.2, 0.2) > 0.0, "travel to the LEFT should turn left"
     assert servo.yaw_rate(0.2, -0.2) < 0.0
+
+
+def test_the_goal_law_turns_towards_the_goal():
+    servo = HeadingServo(mode=GOAL)
+    assert servo.yaw_rate(0.2, 0.0, math.radians(40.0)) > 0.0, "goal LEFT, turn left"
+    assert servo.yaw_rate(0.2, 0.0, math.radians(-40.0)) < 0.0
+
+
+def test_a_reversing_command_swings_the_travel_law_half_a_turn_and_not_the_goal_law():
+    """Issue #16's trigger, at one tick.
+
+    ``atan2`` of a command whose ``vx`` has gone negative is near 180 degrees, so the
+    travel law demands a half turn. Over 30 ``closed_loop_sim`` episodes the policy's
+    command was backwards on 367 of 6123 moving ticks — 6.0%, or about once a second at
+    10 Hz — and every one of those 367 carried a heading error past 90 degrees.
+    """
+    # A real tick: closed_loop_sim seed 19 at t=6.0, the one that then spun for 16.2 s.
+    backwards = (-0.086, -0.034)
+    assert math.hypot(*backwards) > HeadingServo().min_speed_mps, (
+        "min_speed_mps must not be what makes this pass: it gates on SPEED, and a "
+        "backwards command is not a slow one — that is the whole defect")
+
+    travel = HeadingServo(mode=TRAVEL, max_wz=0.7)
+    assert abs(travel.yaw_rate(*backwards)) == 0.7, "saturated by a 158-degree error"
+
+    # Same command, goal dead ahead. The goal law has nothing to correct.
+    assert HeadingServo(mode=GOAL, max_wz=0.7).yaw_rate(*backwards, 0.0) == 0.0
+
+
+def test_the_goal_law_does_not_care_which_way_the_command_points():
+    """The property the travel law lacks, stated directly.
+
+    The goal law's reference is a bearing in odom, so the yaw it asks for is the same
+    whatever the policy just emitted. The travel law's reference IS what the policy just
+    emitted, which is how the robot's own yaw got onto both sides of the loop.
+    """
+    servo = HeadingServo(mode=GOAL)
+    commands = ((0.30, 0.0), (-0.30, 0.0), (0.0, 0.30), (0.21, -0.21))
+    assert len({servo.yaw_rate(vx, vy, math.radians(30.0)) for vx, vy in commands}) == 1
+    # Not an exact count: two of these four saturate at the same ceiling. The claim is
+    # only that the travel law's answer is a function of the command — if it were not,
+    # there would be nothing here to fix.
+    travelling = HeadingServo(mode=TRAVEL)
+    assert len({travelling.yaw_rate(vx, vy) for vx, vy in commands}) > 1
+
+
+def test_the_goal_law_holds_when_there_is_no_goal_to_face():
+    """A robot that has lost its goal should not also start turning."""
+    assert HeadingServo(mode=GOAL).yaw_rate(0.3, 0.3, None) == 0.0
+    # The travel law reads its reference off the command and needs no goal, so this is
+    # not simply "None means hold" — the two laws differ here on purpose.
+    assert HeadingServo(mode=TRAVEL).yaw_rate(0.3, 0.3, None) != 0.0
+
+
+def test_an_unknown_servo_mode_is_refused_rather_than_silently_steering():
+    """Falling through to the travel law would re-arm issue #16 in a configuration whose
+    author believed they had asked for the other one."""
+    for bad in ("goal-bearing", "TRAVEL", "", None):
+        try:
+            HeadingServo(mode=bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"mode={bad!r} must be refused")
 
 
 def test_the_servo_holds_still_inside_its_deadband():
     """Without a deadband a heading error of a couple of degrees becomes a permanent
     twitch, and a rolling-shutter camera pays for every one of them."""
-    servo = HeadingServo(deadband_rad=math.radians(8.0))
-    assert servo.yaw_rate(0.3, 0.3 * math.tan(math.radians(5.0))) == 0.0
-    assert servo.yaw_rate(0.3, 0.3 * math.tan(math.radians(20.0))) != 0.0
+    travel = HeadingServo(mode=TRAVEL, deadband_rad=math.radians(8.0))
+    assert travel.yaw_rate(0.3, 0.3 * math.tan(math.radians(5.0))) == 0.0
+    assert travel.yaw_rate(0.3, 0.3 * math.tan(math.radians(20.0))) != 0.0
+    goal = HeadingServo(mode=GOAL, deadband_rad=math.radians(8.0))
+    assert goal.yaw_rate(0.3, 0.0, math.radians(5.0)) == 0.0
+    assert goal.yaw_rate(0.3, 0.0, math.radians(20.0)) != 0.0
 
 
-def test_the_servo_does_not_chase_the_heading_of_a_stopped_robot():
-    """A zeroed command has no direction of travel. Spinning on the spot because the
-    residual is 0.001 m/s to the left is the failure this prevents."""
-    assert HeadingServo().yaw_rate(0.0, 0.0) == 0.0
-    assert HeadingServo().yaw_rate(0.001, 0.001) == 0.0
+def test_no_law_chases_a_heading_while_the_robot_is_stopped():
+    """A zeroed command is not going anywhere. Spinning on the spot because the residual
+    is 0.001 m/s to the left is the failure this prevents — and with the goal law, so is
+    a parked robot slowly turning to face a goal it is not driving to."""
+    for mode in SERVO_MODES:
+        servo = HeadingServo(mode=mode)
+        assert servo.yaw_rate(0.0, 0.0, math.radians(90.0)) == 0.0
+        assert servo.yaw_rate(0.001, 0.001, math.radians(90.0)) == 0.0
 
 
 def test_the_servo_is_capped_below_the_planner_own_yaw_rate():
     """This turn is a convenience. A fast one smears the frames the policy is fed, and
     perception is already 0.31 s behind."""
     servo = HeadingServo(max_wz=0.4)
-    assert abs(servo.yaw_rate(0.1, 5.0)) <= 0.4
-    assert abs(servo.yaw_rate(0.1, -5.0)) <= 0.4
+    assert abs(servo.yaw_rate(0.1, 0.0, math.radians(120.0))) <= 0.4
+    assert abs(servo.yaw_rate(0.1, 0.0, math.radians(-120.0))) <= 0.4
+    assert abs(HeadingServo(mode=TRAVEL, max_wz=0.4).yaw_rate(0.1, 5.0)) <= 0.4
     assert servo.max_wz < 0.70
+
+
+def test_the_goal_bearing_is_taken_in_odom_and_returned_in_the_body_frame():
+    """Both halves matter. Drop the yaw term and the servo reads a compass bearing as a
+    heading error, and turns the robot to a fixed heading instead of towards the goal."""
+    assert math.isclose(goal_bearing_body(0.0, 0.0, 0.0, 2.0, 0.0), 0.0, abs_tol=1e-9)
+    assert math.isclose(goal_bearing_body(0.0, 0.0, 0.0, 0.0, 2.0), math.pi / 2,
+                        abs_tol=1e-9)
+    # Turn the robot to face the goal and the error goes away without the goal moving.
+    # That is the property the whole fix rests on: the reference is not a function of
+    # the robot's own yaw, so yawing closes the error instead of chasing it.
+    assert math.isclose(goal_bearing_body(0.0, 0.0, math.pi / 2, 0.0, 2.0), 0.0,
+                        abs_tol=1e-9)
+    # Wrapped, not 358 degrees of error.
+    assert abs(goal_bearing_body(0.0, 0.0, math.radians(179.0), -2.0, 0.0)) < 0.04
+
+
+def test_the_goal_law_does_not_saturate_the_yaw_rate_the_way_the_travel_law_does():
+    """Issue #16's defect and its absence, in the loop the robot closes.
+
+    The unit tests above pin the two laws one tick at a time; this one runs the
+    checkpoint against ``closed_loop_sim``'s fitted actuator, yaw gain, noise, 0.31 s
+    perception latency and 85-degree cone, and measures what the issue actually
+    complains about — how long ``wz`` stays pinned at its ceiling. Twenty seeds is where
+    the pathological scenario (seed 19) first appears; it costs about 0.4 s.
+
+    Both bounds are asserted, so the test fails in both directions: revert the default
+    law and the goal figure blows up, neuter ``yaw_rate`` to a constant zero and the
+    travel figure collapses.
+    """
+    import random
+
+    import closed_loop_sim as sim
+    from replay_mappo import derived_config
+
+    def longest_saturation_s(mode: str) -> float:
+        config, worst = sim.SimConfig(), 0.0
+        scenes = sim.scenarios(random.Random(20260813), 20)
+        with derived_config(DEFAULT_PACKAGE / "config.json", meters_per_vmas_unit=2.5,
+                            command_scale=1.0) as policy_config:
+            controller = sim.PolicyController(
+                config, package=DEFAULT_PACKAGE, policy_config=policy_config,
+                servo=HeadingServo(max_wz=config.limits.max_wz, mode=mode))
+            planned, inner = [], controller.command
+
+            def record(t, pose, goal, obstacles, measured):
+                out = inner(t, pose, goal, obstacles, measured)
+                planned.append(out[0][2])
+                return out
+
+            controller.command = record
+            for seed, scene in enumerate(scenes):
+                planned.clear()
+                sim.run_once(scene, controller, config, seed)
+                longest = run = 0
+                for wz in planned:
+                    run = run + 1 if abs(wz) >= config.limits.max_wz - 1e-9 else 0
+                    longest = max(longest, run)
+                worst = max(worst, longest / config.control_hz)
+        return worst
+
+    travel = longest_saturation_s(TRAVEL)
+    goal = longest_saturation_s(GOAL)
+    assert travel > 5.0, (
+        f"the travel law must still reproduce issue #16 for this comparison to mean "
+        f"anything; longest saturated wz was only {travel:.1f} s")
+    assert goal < 1.0, (
+        f"the goal law held wz at its ceiling for {goal:.1f} s continuously, against "
+        f"{travel:.1f} s for the travel law — the loop is closing again")
 
 
 # ── The runner ──────────────────────────────────────────────────────────────

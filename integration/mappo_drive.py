@@ -86,6 +86,9 @@ from pathlib import Path
 
 from mappo_policy import (
     DEFAULT_PACKAGE,
+    GOAL,
+    SERVO_MODES,
+    TRAVEL,
     VETO_HORIZON_S,
     HeadingServo,
     PolicyRunner,
@@ -639,11 +642,21 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                             f"the same blindness as a camera that has. Raising it does "
                             f"not make a peer's position better known, it makes the robot "
                             f"act for longer on a position it no longer has")
-    group.add_argument("--no-heading-servo", action="store_true",
-                       help="do not turn the nose towards the direction of travel. The "
-                            "policy commands no yaw at all, so without the servo the "
-                            "robot crabs and its 85-degree camera never looks anywhere "
-                            "new")
+    group.add_argument("--heading-servo", choices=("off", *SERVO_MODES), default="off",
+                       help="turn the nose towards something the policy does not steer "
+                            "for. The policy commands no yaw at all, so with the servo "
+                            "OFF — the default — the robot crabs and its 85-degree "
+                            f"camera never looks anywhere new. {GOAL!r} faces the goal "
+                            f"bearing; {TRAVEL!r} faces the direction of travel and is "
+                            "the law that put the robot into a wall three times on "
+                            "2026-08-17 (issue #16). Default is off because no robot has "
+                            f"yet been driven with {GOAL!r}")
+    # The old spelling, kept working rather than broken: it appears in operator command
+    # lines and in deploy/. It always meant "off", and off is now what you get anyway, so
+    # it is a no-op that costs nothing to honour. Hidden from --help so the new flag is
+    # the one people copy.
+    group.add_argument("--no-heading-servo", dest="heading_servo",
+                       action="store_const", const="off", help=argparse.SUPPRESS)
     return parser
 
 
@@ -690,7 +703,8 @@ def main(argv=None, bindings=None) -> int:
     with derived_config(base, **overrides) as config:
         runner = PolicyRunner(
             args.package, config,
-            servo=None if args.no_heading_servo else HeadingServo())
+            servo=(None if args.heading_servo == "off"
+                   else HeadingServo(mode=args.heading_servo)))
         cfg = runner.config
         print(f"[mappo_drive] policy {args.policy_mode}, scale "
               f"{cfg.meters_per_vmas_unit} m/unit, horizon {cfg.lidar_range_m:.3f} m, "
@@ -710,9 +724,15 @@ def main(argv=None, bindings=None) -> int:
         if args.policy_mode == "raw":
             print("[mappo_drive] ⚠️  NO VETO. In the closed-loop simulation the raw "
                   "policy collided and the supervised one did not. Empty arena only.")
-        if args.no_heading_servo:
-            print("[mappo_drive] ⚠️  heading servo off: the robot will crab and will "
-                  "not turn to look where it is going.")
+        if args.heading_servo == "off":
+            print("[mappo_drive] heading servo off (the default): the robot will crab "
+                  "and will not turn to look where it is going. --heading-servo "
+                  f"{GOAL} faces the goal instead; it is simulated, not yet driven.")
+        elif args.heading_servo == TRAVEL:
+            print("[mappo_drive] ⚠️  --heading-servo travel is issue #16's control law. "
+                  "It saturated the yaw rate and put this robot into a cubicle panel or "
+                  "a cabinet on three runs out of four on 2026-08-17. It is here so "
+                  "those runs stay reproducible. Empty arena only.")
 
         planners: list = []
 
