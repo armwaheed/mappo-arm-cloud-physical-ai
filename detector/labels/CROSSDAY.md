@@ -68,9 +68,32 @@ false-alarm denominator.
 frames, `peer_baseline_000.jpg` … `peer_baseline_044.jpg`; `smoke1` is 58 frames, `_000`
 … `_057`. `peer_baseline_045.jpg` and `smoke1_058.jpg` do not exist and are not named
 here. A check that compares a count against the highest index reports two missing
-negatives and lowers the test-split denominator from 136 to 134; that reading is wrong and
-was made once already. The denominators are **47 present / 136 absent / 2 null** on
-`test`, and 13 / 85 / 1 on `select`.
+negatives and lowers the test-split denominator from 136 to 134; that reading is wrong
+about *this* manifest and was made once already. The denominators are **47 present /
+136 absent / 2 null** on `test`, and 13 / 85 / 1 on `select`.
+
+⚠️ **A SECOND MANIFEST EXISTS, AND IT REALLY DID HAVE THE OFF-BY-ONE.** The scoring runs
+do not read this file. They read a derived split, `eval/remote_xday_test.json`, which
+lives on the training host and was generated from it — and that file named
+`peer_baseline_045.jpg` and `smoke1_058.jpg` while omitting `peer_baseline_000.jpg` and
+`smoke1_000.jpg`. Two phantoms in, two real negatives out: the clip indices were shifted
+by one. So the 134 reading was **right about the file the evaluator actually opens** and
+wrong about this one, and "that reading is wrong" on its own would have sent the next
+person to check the correct manifest and find nothing.
+
+**What it cost, measured rather than assumed.** The derived split was repaired by mapping
+each phantom onto the real frame its clip omitted, and every model rescored: **all
+numerators are identical**. Neither recovered frame fires on any model. Only the
+denominator moved — the shipped weights' cross-day false-alarm rate goes from 76/134
+(57%) to 76/136 (56%), and every other rate by at most one point. No conclusion in any
+document changes.
+
+**Why the blast radius was that small, and do not count on it next time.** Both affected
+clips — `peer_baseline` and `smoke1` — are entirely peer-free, so a one-frame shift could
+not put a positive's label on a negative's pixels. On `peer_cross1` or `peer_cross5`, both
+of which contain a peer for part of their length, the same shift would have mislabelled
+the frames at each boundary and nothing here would have caught it. `check_manifest.py`
+validates this file; the derived split had no such check, which is why it drifted.
 
 Three frames are `null` and scored as neither: `peer_cross1` 29, `peer_cross5` 22 and 70.
 In each the only visible part of the robot is its lit LED bar against a shadowed pillar,
