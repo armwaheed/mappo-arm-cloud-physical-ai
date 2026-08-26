@@ -442,6 +442,41 @@ def test_a_batch_is_reordered_by_the_devices_timestamp():
                      ("motion_started", "11"), ("motion_completed", "15")], order
 
 
+def test_two_robots_with_unsynchronised_clocks_cannot_be_interleaved():
+    """⚠️ CHARACTERISATION, NOT AN ENDORSEMENT: the sort key is the EMITTING DEVICE's clock.
+
+    Every robot stamps its own ``ts``, so ordering a batch across two devices assumes they
+    agree about the time. Measured on hardware 2026-08-26: the Go2 at 192.168.123.18 has no
+    RTC battery and NTP had not synchronised, so ``date`` on it read **1970-01-16** while
+    the workstation read 2026-08-26 — a skew of 56 years. The key is a string compare, so
+    every event that robot emits sorts before every event from a correctly-clocked robot,
+    permanently and regardless of when it happened.
+
+    The 2026-08-21 bring-up run could not have caught this: all three drivers ran on ONE
+    workstation and therefore shared one clock. Neither can the test above, for the same
+    reason — it uses one date throughout.
+
+    This pins the behaviour so a change to the key is a deliberate act with a test to
+    update. It is NOT a claim that this ordering is correct. ``peer_link``/``peer_source``
+    already refuse to trust a peer's clock and send a DURATION instead; the event stream
+    still trusts one. See evidence/2026-08-26-dashboard-local-trial/.
+    """
+    batch = [
+        {"method": "motion_completed", "params": {"ts": "2026-08-26T20:44:04Z"}},   # laptop
+        {"method": "motion_started", "params": {"ts": "1970-01-16T19:20:58Z"}},     # the Go2
+    ]
+    order = [m["method"] for m in _in_time_order(batch)]
+    assert order == ["motion_started", "motion_completed"], order
+    # ...and the hazard, stated as an assertion rather than only in prose: the 1970 event
+    # wins even when it is the LATER of the two in wall-clock reality.
+    reversed_reality = [
+        {"method": "the_go2_event_second", "params": {"ts": "1970-01-16T19:20:58Z"}},
+        {"method": "the_laptop_event_first", "params": {"ts": "2026-08-26T20:44:04Z"}},
+    ]
+    first = _in_time_order(reversed_reality)[0]["method"]
+    assert first == "the_go2_event_second", first
+
+
 def test_an_event_with_no_timestamp_does_not_kill_the_batch():
     """A malformed event must cost that event's position, not every other event with it."""
     batch = [

@@ -1,0 +1,449 @@
+==============================================================================
+Device Connect dashboard — local trial transcript
+==============================================================================
+
+### GET /api/devices  (D2D discovery)
+HTTP 200
+{
+  "ok": true,
+  "devices": [
+    {
+      "device_id": "mappo-go2-sim",
+      "device_type": "mappo_quadruped",
+      "location": null,
+      "function_count": 18,
+      "function_names": [
+        "delete_model",
+        "download_model",
+        "get_capabilities",
+        "get_status",
+        "lie_down",
+        "list_cloud_models",
+        "list_models",
+        "select_model",
+        "stand",
+        "stop",
+        "stop_camera",
+        "strafe_left",
+        "strafe_right",
+        "turn_left",
+        "turn_right",
+        "walk_back",
+        "walk_forward",
+        "watch_camera"
+      ],
+      "functions": [
+        {
+          "name": "delete_model",
+          "description": "Remove a checkpoint from the robot.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "name": {
+                "type": "string",
+                "description": "the checkpoint filename, as reported by list_models."
+              }
+            },
+            "required": [
+              "name"
+            ]
+          }
+        },
+        {
+          "name": "download_model",
+          "description": "Pull a checkpoint from Cloud AI onto the robot.",
+          "parameters": {
+            "type": "object",
+            "properties": {
+              "source": {
+                "type": "string",
+                "description": "an ``s3://bucket/key`` URI, or an ``http(s)://`` address \u2014 a presigned bucket URL or a server on the LAN both work."
+              },
+              "name": {
+                "type": "string",
+                "descri
+
+### GET /api/fleet
+HTTP 200
+{
+  "ok": true,
+  "fleet": [
+    {
+      "device_id": "mappo-go2-sim",
+      "device_type": "mappo_quadruped",
+      "present": true,
+      "last_seen": 1787777771.346903,
+      "capabilities": {
+        "platform": "go2",
+        "simulated": true,
+        "motion_enabled": true,
+        "gait_floors_m_s": {
+          "forward": 0.35,
+          "lateral": 0.2,
+          "yaw": null
+        },
+        "unmeasured_axes": [
+          "yaw"
+        ],
+        "lie_down_changes_posture": true,
+        "posture_note": "Go2 lie_down issues StandDown.",
+        "reverse_supported": true,
+        "reverse_note": "no rear sensing on either platform; reverse is open-loop into unobserved space and is capped at 2 s",
+        "camera": {
+          "available": true,
+          "synthetic": false,
+          "replay": false,
+          "default_fps": 6.0,
+          "max_fps": 15.0,
+          "error": "",
+          "note": "the Go2 video service is shared, so a run and this can both read"
+        },
+        "cloud": {
+          "sources": [
+            {
+              "label": "Arm AGI CPU server",
+              "location": "this laptop (stand-in)",
+              "index_url": "http://127.0.0.1:8800/index.json",
+              "default_model": "http://127.0.0.1:8800/models/mappo_actor_3agent_1910000.npz"
+            }
+          ],
+          "resolved_by": "the robot, not the browser"
+        },
+        "max_seconds": 5.0,
+        "bridge_python": "/private/tmp/mappo-venv/bin/python",
+        "package_dir": "/private/tmp/mappo-trial/package"
+      },
+      "age_s": 0.0,
+      "pose": {
+        
+
+### get_capabilities  (identity, rules, cloud sources)
+HTTP 200
+{
+  "platform": "sim",
+  "simulated": false,
+  "motion_enabled": true,
+  "gait_floors_m_s": {
+    "forward": 0.0,
+    "lateral": 0.0,
+    "yaw": 0.0
+  },
+  "unmeasured_axes": [],
+  "cloud": {
+    "sources": [
+      {
+        "label": "Arm AGI CPU server",
+        "location": "this laptop (stand-in)",
+        "index_url": "http://127.0.0.1:8800/index.json",
+        "default_model": "http://127.0.0.1:8800/models/mappo_actor_3agent_1910000.npz"
+      }
+    ],
+    "resolved_by": "the robot, not the browser"
+  },
+  "camera": {
+    "available": true,
+    "synthetic": true,
+    "replay": false,
+    "default_fps": 6.0,
+    "max_fps": 15.0,
+    "error": "",
+    "note": "synthetic frames; there is no camera on this platform"
+  }
+}
+
+### get_status
+HTTP 200
+{
+  "ok": true,
+  "platform": "sim",
+  "pose": {
+    "x": 0.0,
+    "y": 0.0,
+    "yaw": 0.0
+  },
+  "velocity": [
+    0.0,
+    0.0,
+    0.0
+  ],
+  "mode": "sim",
+  "error": null,
+  "active_model": "baseline_zeros.npz",
+  "motion_enabled": true,
+  "busy": false
+}
+
+### list_models  (before)
+HTTP 200
+{
+  "ok": true,
+  "models": [
+    {
+      "name": "baseline_zeros.npz",
+      "size_bytes": 289432,
+      "sha256": "fd0683f525259aba59274e1ee6f919b03eca11d3efc773a8e4480b09c1fd54be",
+      "loadable": true,
+      "problems": [],
+      "trained_lidar_range_vmas": 0.35,
+      "trained_agent_radius_vmas": null,
+      "rays": 12,
+      "training_frames": null,
+      "training_n_agents": null,
+      "active": true,
+      "compatible_with_config": true
+    }
+  ],
+  "active": "baseline_zeros.npz",
+  "config_path": "/private/tmp/mappo-trial/package/config.json",
+  "free_bytes": 19212533760
+}
+
+==============================================================================
+CLOUD AI: browse -> download -> arm -> unload
+==============================================================================
+
+### list_cloud_models  (browse the model server)
+HTTP 200
+{
+  "ok": true,
+  "objects": [
+    {
+      "key": "mappo_actor_3agent_1910000.npz",
+      "uri": "http://127.0.0.1:8800/models/mappo_actor_3agent_1910000.npz",
+      "size_bytes": 268063,
+      "last_modified": "2026-08-26T20:53:27.824363+00:00",
+      "sha256": "7327f72401adfdfa1931a516e85aeee62b5bee0e06e976c13600515ca2d2ca11",
+      "served_by": "mappo-model-server"
+    }
+  ],
+  "source": "http://127.0.0.1:8800/index.json",
+  "kind": "server"
+}
+
+### download_model  http://127.0.0.1:8800/models/mappo_actor_3agent_1910000.npz
+HTTP 200
+{
+  "ok": true,
+  "model": {
+    "name": "mappo_actor_3agent_1910000.npz",
+    "size_bytes": 268063,
+    "sha256": "7327f72401adfdfa1931a516e85aeee62b5bee0e06e976c13600515ca2d2ca11",
+    "loadable": true,
+    "problems": [],
+    "trained_lidar_range_vmas": 0.35,
+    "trained_agent_radius_vmas": 0.1,
+    "rays": 12,
+    "training_frames": 1910000,
+    "training_n_agents": 3,
+    "active": false,
+    "compatible_with_config": true
+  },
+  "source": "http://127.0.0.1:8800/models/mappo_actor_3agent_1910000.npz",
+  "downloaded_bytes": 268063
+}
+
+### list_models  (after download)
+HTTP 200
+{
+  "ok": true,
+  "models": [
+    {
+      "name": "baseline_zeros.npz",
+      "size_bytes": 289432,
+      "sha256": "fd0683f525259aba59274e1ee6f919b03eca11d3efc773a8e4480b09c1fd54be",
+      "loadable": true,
+      "problems": [],
+      "trained_lidar_range_vmas": 0.35,
+      "trained_agent_radius_vmas": null,
+      "rays": 12,
+      "training_frames": null,
+      "training_n_agents": null,
+      "active": true,
+      "compatible_with_config": true
+    },
+    {
+      "name": "mappo_actor_3agent_1910000.npz",
+      "size_bytes": 268063,
+      "sha256": "7327f72401adfdfa1931a516e85aeee62b5bee0e06e976c13600515ca2d2ca11",
+      "loadable": true,
+      "problems": [],
+      "trained_lidar_range_vmas": 0.35,
+      "trained_agent_radius_vmas": 0.1,
+      "rays": 12,
+      "training_frames": 1910000,
+      "training_n_agents": 3,
+      "active": false,
+      "compatible_with_config": true
+    }
+  ],
+  "active": "baseline_zeros.npz",
+  "config_path": "/private/tmp/mappo-trial/package/config.json",
+  "free_bytes": 19212247040
+}
+
+### select_model  (checkpoint swap)
+HTTP 200
+{
+  "active": "mappo_actor_3agent_1910000.npz",
+  "previous": "baseline_zeros.npz",
+  "takes_effect": "next run \u2014 a live run holds its weights in memory",
+  "ok": true
+}
+
+### delete_model  ARMED -> must be REFUSED
+HTTP 200
+{
+  "ok": false,
+  "error": "mappo_actor_3agent_1910000.npz is armed for the next run; arm a different checkpoint first, otherwise config.json would point at a file that is not there"
+}
+
+### delete_model  unarmed -> unload
+HTTP 200
+{
+  "removed": "baseline_zeros.npz",
+  "freed_bytes": 289432,
+  "ok": true
+}
+
+### list_models  (after unload)
+HTTP 200
+{
+  "ok": true,
+  "models": [
+    {
+      "name": "mappo_actor_3agent_1910000.npz",
+      "size_bytes": 268063,
+      "sha256": "7327f72401adfdfa1931a516e85aeee62b5bee0e06e976c13600515ca2d2ca11",
+      "loadable": true,
+      "problems": [],
+      "trained_lidar_range_vmas": 0.35,
+      "trained_agent_radius_vmas": 0.1,
+      "rays": 12,
+      "training_frames": 1910000,
+      "training_n_agents": 3,
+      "active": true,
+      "compatible_with_config": true
+    }
+  ],
+  "active": "mappo_actor_3agent_1910000.npz",
+  "config_path": "/private/tmp/mappo-trial/package/config.json",
+  "free_bytes": 19212517376
+}
+
+==============================================================================
+REFUSALS
+==============================================================================
+
+### download_model  file:// scheme
+HTTP 200
+{
+  "ok": false,
+  "error": "'file:///etc/passwd' uses scheme 'file'; only s3://, https:// and http:// are supported. A local path is not a cloud source \u2014 copy the file to the models directory instead."
+}
+
+### download_model  traversal in the path
+HTTP 200
+{
+  "ok": false,
+  "error": "'passwd' must end in .npz"
+}
+
+### list_cloud_models  dead address
+HTTP 200
+{
+  "ok": false,
+  "error": "http://127.0.0.1:9/index.json could not be reached: [Errno 61] Connection refused"
+}
+
+### invoke a function outside the allow-list
+HTTP 403
+{
+  "ok": false,
+  "error": "'os.system' is not one of this dashboard's functions"
+}
+
+==============================================================================
+MOTION (bench double — no robot attached)
+==============================================================================
+
+### walk_forward 0.35 m/s x 1.0 s  (above the Go2 floor)
+HTTP 200
+{
+  "ok": true,
+  "accepted": true,
+  "action": "walk_forward",
+  "seconds": 1.0,
+  "note": "the nudge is running; its measured outcome arrives as a motion_completed event"
+}
+
+### stop
+HTTP 200
+{
+  "ok": true,
+  "stopped": true,
+  "action": "stop",
+  "interrupted_motion": false
+}
+
+### strafe_left 0.15 m/s  (BELOW the 0.20 lateral floor -> refusal)
+HTTP 200
+{
+  "ok": true,
+  "accepted": true,
+  "action": "strafe_left",
+  "seconds": 1.0,
+  "note": "the nudge is running; its measured outcome arrives as a motion_completed event"
+}
+
+### POST /api/stop-all
+HTTP 200
+{
+  "ok": true,
+  "stopped": [
+    "mappo-sim",
+    "mappo-go2-sim"
+  ],
+  "failed": [],
+  "matched": 2
+}
+
+==============================================================================
+PLATFORM RULES: the same page against a simulated Go2
+==============================================================================
+
+### get_capabilities  (simulated go2)
+HTTP 200
+{
+  "platform": "go2",
+  "simulated": true,
+  "gait_floors_m_s": {
+    "forward": 0.35,
+    "lateral": 0.2,
+    "yaw": null
+  },
+  "unmeasured_axes": [
+    "yaw"
+  ],
+  "lie_down_changes_posture": true,
+  "posture_note": "Go2 lie_down issues StandDown."
+}
+
+### strafe_left 0.15 on a simulated go2  (0.20 lateral floor -> REFUSED)
+HTTP 200
+{
+  "ok": false,
+  "refused": true,
+  "error": "0.150 is below this go2's measured lateral gait floor of 0.200. Below it the robot does not walk: it stands still with no fault and every instrument agreeing it is fine. Raise the speed or pass --force."
+}
+
+### turn_left on a simulated go2  (yaw floor never measured -> WARNED, not refused)
+HTTP 200
+{
+  "ok": true,
+  "accepted": true,
+  "action": "turn_left",
+  "seconds": 1.0,
+  "note": "the nudge is running; its measured outcome arrives as a motion_completed event"
+}
+
+DONE

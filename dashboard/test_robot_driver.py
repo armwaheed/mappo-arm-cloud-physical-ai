@@ -34,6 +34,9 @@ from device_connect_edge.drivers import DeviceDriver
 
 from robot_driver import PEER_FOOTPRINT_M, MappoRobotDriver
 
+#: The checkpoint this repository actually ships, served as-is by the model-server tests.
+DELIVERED_MODELS = Path(__file__).resolve().parent.parent / "policy" / "models"
+
 
 def _package(tmp):
     """A minimal policy package the driver's ModelStore will accept."""
@@ -499,6 +502,72 @@ def test_a_malformed_sources_file_fails_at_startup_rather_than_advertising_nothi
         except ValueError:
             return
         raise AssertionError("an unparseable sources file was accepted")
+
+
+def test_the_emitted_sources_file_is_one_the_driver_loads_and_advertises():
+    """``model_server --emit-sources`` writes the address; ``_load_sources`` reads it.
+
+    The two halves are in different files and the address is the thing they must agree
+    about, so the writer is checked against the real reader rather than against a copy of
+    its schema. A key rename on either side fails here.
+    """
+    from model_server import ModelServer, sources_document
+    from robot_driver import _load_sources
+    with tempfile.TemporaryDirectory() as tmp:
+        server = ModelServer(DELIVERED_MODELS, port=0).start()
+        try:
+            path = Path(tmp) / "sources.json"
+            path.write_text(json.dumps(sources_document(
+                server.index_url, label="workstation", location="this laptop")))
+            driver = _driver(tmp, model_sources=_load_sources(str(path)))
+            advertised = _run(driver.get_capabilities())["cloud"]["sources"]
+        finally:
+            server.stop()
+    assert len(advertised) == 1, advertised
+    assert advertised[0]["label"] == "workstation"
+    assert advertised[0]["index_url"] == server.index_url
+
+
+def test_a_checkpoint_is_browsed_downloaded_and_armed_from_a_real_model_server():
+    """The whole Cloud AI path against a real HTTP server, with nothing stubbed.
+
+    ``test_cloud_models.py`` proves the fetch refuses what it should and
+    ``test_model_store.py`` proves the store arms what it should, but neither runs the two
+    through the driver's own RPCs against a server that is really listening. The three
+    steps here are the three the operator takes, in order, and each asserts on the reply the
+    dashboard would render.
+
+    It is deliberately the DELIVERED 268 063-byte checkpoint rather than a synthetic one:
+    a fixture built by the test cannot catch the delivered file drifting out of the shapes
+    this adapter can drive.
+    """
+    from model_server import ModelServer
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp)
+        server = ModelServer(DELIVERED_MODELS, port=0).start()
+        try:
+            listing = _run(driver.list_cloud_models(index_url=server.index_url))
+            assert listing["ok"] is True, listing
+            assert listing["kind"] == "server", listing
+            entry = listing["objects"][0]
+            assert entry["key"] == "mappo_actor_3agent_1910000.npz", entry
+
+            downloaded = _run(driver.download_model(source=entry["uri"]))
+            assert downloaded["ok"] is True, downloaded
+            assert downloaded["downloaded_bytes"] == entry["size_bytes"], downloaded
+            assert downloaded["model"]["sha256"] == entry["sha256"], downloaded
+            # Downloading must NOT arm it; arming is a separate, deliberate click.
+            assert driver.store.active_model() == "armed.npz"
+        finally:
+            server.stop()
+
+        names = [m["name"] for m in _run(driver.list_models())["models"]]
+        assert entry["key"] in names, names
+
+        armed = _run(driver.select_model(name=entry["key"]))
+        assert armed["ok"] is True, armed
+        assert driver.store.active_model() == entry["key"]
+        assert armed["previous"] == "armed.npz", armed
 
 
 # ── bounds and plumbing ──────────────────────────────────────────────────────
