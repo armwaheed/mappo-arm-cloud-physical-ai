@@ -119,7 +119,7 @@ import sys
 import threading
 import time
 from collections import Counter, deque
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Sequence
 
@@ -248,6 +248,14 @@ class PerceptionResult:
     #: — 317 ms per cycle against 202 ms of detect — and nothing said where.
     cycle_ms: float = 0.0
     wait_ms: float = 0.0
+    #: ``detect_ms`` SPLIT INTO THE THREE PASSES IT SPANS — ``goal``, ``detect``,
+    #: ``colour``. One number for three passes cannot answer the question issue #18 ends
+    #: on: if perception is 202 ms and detection dominates, the 300x300 SSD input is the
+    #: lever; if the throttled goal pass is half of it, the lever is its cadence. The
+    #: module docstring quotes 114 / 10 / 69 ms for the three from a measurement nothing in
+    #: the tree reproduces, and those sum to 193 against this field's measured median of
+    #: 194-202 — consistent, and not a substitute for measuring it.
+    pass_ms: dict = field(default_factory=dict)
 
 
 class PerceptionWorker:
@@ -352,15 +360,25 @@ class PerceptionWorker:
         # module docstring. The adapters do not claim a sensor shutter timestamp.
         pose = frame.stamp if frame.stamp is not None else self._pose_fn()
 
+        # EACH PASS SEPARATELY, and `detect_ms` still the sum of the three so no consumer
+        # of that field sees a different number under the same name. Written out with
+        # explicit marks rather than three `with` blocks because this is the hottest
+        # function in the process and the marks are what the sum has to be built from.
         started = time.monotonic()
         goal_fix = self._goal.update(frame.image, pose)
+        after_goal = time.monotonic()
         detections, static_detections = self._detector.detect_tiered(frame.image)
+        after_detect = time.monotonic()
         # Colour segmentation costs 10.2 ms against the person detector's 114 ms, so
         # the static props ride along with the mover pass rather than earning a cadence
         # of their own. The GOAL pass is the expensive one and throttles itself.
         colour_detections = ([] if self._colour is None
                              else self._colour.detect(frame.image))
-        detect_ms = (time.monotonic() - started) * 1000.0
+        finished = time.monotonic()
+        detect_ms = (finished - started) * 1000.0
+        pass_ms = {"goal": round((after_goal - started) * 1000.0, 2),
+                   "detect": round((after_detect - after_goal) * 1000.0, 2),
+                   "colour": round((finished - after_detect) * 1000.0, 2)}
 
         ranged = range_detections(detections, self._model, self._prior)
         # SHAPE RIDES ALONGSIDE THE LABEL, it does not replace it. What must stop the
@@ -423,7 +441,7 @@ class PerceptionWorker:
             observations=observations,
             ranged=ranged + static_ranged + neural_ranged,
             static_observations=static_observations, goal_fix=goal_fix,
-            image=frame.image, detect_ms=detect_ms, wait_ms=wait_ms,
+            image=frame.image, detect_ms=detect_ms, wait_ms=wait_ms, pass_ms=pass_ms,
             cycle_ms=(time.monotonic() - cycle_started) * 1000.0)
         with self._lock:
             self._result = result
@@ -657,7 +675,7 @@ class VisualNavigator:
                 if elapsed > 5.0:
                     outcome = "no perception result"
                     break
-                time.sleep(period)
+                self._sleep_out_the_period(tick_start, period)
                 continue
 
             # A second `perceive` block rather than one around both: the `result is None`
@@ -707,7 +725,7 @@ class VisualNavigator:
                     None if latched is None else
                     math.hypot(latched[0] - pose[0], latched[1] - pose[1]),
                     obstacles, frame_age, result, stale=True)
-                time.sleep(period)
+                self._sleep_out_the_period(tick_start, period)
                 continue
 
             goal_xy = self._goal.goal_xy()
@@ -719,7 +737,7 @@ class VisualNavigator:
                 frame = self._record(result, pose, None, obstacles)
                 self._telemetry_tick(elapsed, pose, None, None, obstacles,
                                      frame_age, result, video_frame=frame)
-                time.sleep(max(0.0, period - (time.monotonic() - tick_start)))
+                self._sleep_out_the_period(tick_start, period)
                 continue
 
             distance = math.hypot(goal_xy[0] - pose[0], goal_xy[1] - pose[1])
@@ -792,7 +810,7 @@ class VisualNavigator:
                                  frame_age, result, command=command,
                                  video_frame=frame)
 
-            time.sleep(max(0.0, period - (time.monotonic() - tick_start)))
+            self._sleep_out_the_period(tick_start, period)
 
         # How much the run actually perceived, so a short or empty run can be told
         # apart from a long blind one when reading the log afterwards.
@@ -805,6 +823,26 @@ class VisualNavigator:
                 perception_errors=self._perception.errors,
                 elapsed_s=round(time.monotonic() - started, 3))
         return outcome
+
+    def _sleep_out_the_period(self, tick_start: float, period: float) -> None:
+        """Sleep whatever is left of this tick's period. Every path through the loop.
+
+        🔴 TWO OF THE FOUR SLEEPS USED TO BE A FLAT ``period``. The stale-perception hold
+        and the no-result skip slept a whole one; the goal-search and walking paths slept
+        ``max(0, period - elapsed)``. On a tick that has already spent 250 ms — the median
+        of the two 2026-08-25 runs — the two normal paths sleep 0 and the two hold paths add
+        another 100 ms on top. So the branch that fires BECAUSE the loop is slow cost a
+        period more than the branch that does not, which is a small positive feedback on
+        exactly the ticks issue #18 is about.
+
+        ⚠️ Not a fix for the rate, and not offered as one: staleness fired on 0 of the 150
+        ticks of those two runs, so on them this changes nothing measurable. On 2026-08-17,
+        where 16-33% of ticks were stale, it removes up to a period from each of those. What
+        it removes for certain is a tick cost that depended on which ``if`` it came through
+        — and now that ``TickProfiler`` reports ``tick_ms``, that difference would have been
+        attributed to the hold rather than to the sleep.
+        """
+        time.sleep(max(0.0, period - (time.monotonic() - tick_start)))
 
     def _blocked_reason(self, command, now: float, pose) -> str | None:
         """``None``, or why the run should stop because the robot is going nowhere.
@@ -886,7 +924,7 @@ class VisualNavigator:
             measured=self._measured_velocity(), health=self._health.latest(),
             sightings=result.ranged, goal_crop=self._goal_crop(),
             profile=self._profiler.snapshot(), cycle_ms=result.cycle_ms,
-            wait_ms=result.wait_ms)
+            wait_ms=result.wait_ms, pass_ms=result.pass_ms)
         self._profiler.wrote((time.monotonic() - started) * 1000.0)
 
     def _goal_crop(self) -> float | None:

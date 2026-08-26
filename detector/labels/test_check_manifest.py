@@ -94,8 +94,9 @@ def test_a_records_manifest_checks_its_own_count():
     assert "header says count=7, records give 2" in text
 
 
-def test_a_frame_named_twice_is_reported():
-    """Two records for one file double-count it in every rate computed from them."""
+def test_a_frame_named_twice_in_the_frames_shape_is_reported():
+    """In THAT shape presence is declared per frame, so two rows can declare it two
+    different ways — and `denominators` would count both."""
     manifest = _frames_manifest()
     manifest["frames"].append(dict(manifest["frames"][0]))
     manifest["present_true"] = 2
@@ -191,6 +192,77 @@ def test_the_crossday_test_split_denominators_are_the_reported_ones():
     whole = check_manifest.denominators(rows, None)
     assert whole["rows"] == 284 and whole["boxes"] == 6
 
+
+# ── The records shape allows a second object in a frame; the frames shape does not ──
+# 🔴 This check used to reject both, on the stated grounds that "a repeated key is two
+# records scoring one file, which double-counts it". That is false for the records shape:
+# `eval_class_agnostic.load_frames` builds `boxes[image].append(box)` — a LIST per image —
+# and scores recall per frame with `max(iou(box, t) for t in truth)`. The checker was
+# stricter than the script it protects, and it would have forced the auto-labelling join
+# of issue #77 to throw away every second peer in a frame.
+def test_two_boxes_on_one_image_are_a_second_object_and_not_an_error():
+    """The consumer handles it correctly, so the checker must not reject it."""
+    manifest = _records_manifest()
+    manifest["records"].append(
+        {"image": "a_0000.jpg", "label": "go2wheel", "box": [40, 50, 60, 70]})
+    manifest["count"] = 3
+    code, text = _run(manifest)
+    assert code == 0, text
+    assert "3 rows" in text
+
+
+def test_the_consumer_really_does_collect_a_list_per_image():
+    """The pin for the test above, against the real read site rather than against a belief
+    about it. `check_unique` was relaxed BECAUSE of this line; if it ever becomes
+    `boxes[image] = box` the relaxation is wrong and this fails."""
+    text = (HERE.parent / "eval_class_agnostic.py").read_text()
+    assert 'boxes[record["image"]].append(' in text, (
+        "eval_class_agnostic no longer accumulates a list of boxes per image, so a "
+        "repeated image in a records manifest is no longer safe")
+    assert "max(iou(box, t) for t in truth)" in text, (
+        "recall is no longer scored per frame over every truth box")
+
+
+def test_one_frame_declared_two_different_ways_is_an_error_in_the_frames_shape():
+    """The reason the two shapes are checked differently, in one case.
+
+    A `records` row is one BOX, so a repeat with a different box is a second object. A
+    `frames` row declares that frame's PRESENCE, so a repeat with a different verdict is a
+    contradiction — and `denominators`, which is what a reader quotes, would count it
+    twice under two answers. Relaxing this shape the way the records shape was relaxed
+    would let that through.
+    """
+    manifest = _frames_manifest()
+    manifest["frames"].append({"clip": "c", "index": 0, "present": False,
+                               "box": None, "split": "test"})
+    manifest["present_false"] = 2
+    code, text = _run(manifest)
+    assert code == 1, text
+    assert "named more than once" in text and "c_000.jpg" in text
+
+
+def test_the_same_box_twice_on_one_image_is_still_an_error():
+    """A copy is a copy in either shape. It does duplicate IoU work and it inflates the
+    label tally `eval_class_agnostic` prints beside the rate."""
+    manifest = _records_manifest()
+    manifest["records"].append(dict(manifest["records"][0]))
+    manifest["count"] = 3
+    code, text = _run(manifest)
+    assert code == 1, text
+    assert "duplicated box" in text and "a_0000.jpg" in text
+
+
+def test_the_shape_is_named_rather_than_inferred_twice():
+    """`rows_of` and `check_unique` must agree about which shape they are looking at, and
+    a manifest carrying neither list is a refusal, not a silent empty check."""
+    assert check_manifest.shape_of(_frames_manifest()) == "frames"
+    assert check_manifest.shape_of(_records_manifest()) == "records"
+    try:
+        check_manifest.shape_of({"label": "go2wheel"})
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("a manifest with no rows at all was accepted")
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

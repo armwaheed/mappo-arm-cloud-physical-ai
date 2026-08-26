@@ -19,6 +19,7 @@ import io
 import json
 import math
 import os
+import re
 import statistics
 import sys
 import tempfile
@@ -627,6 +628,45 @@ def test_the_committed_dry_run_holds_the_design_rate_with_the_higher_detect_ms()
     assert round(statistics.median(summary["interval_ms"]), 1) == 100.7
     assert round(statistics.median(summary["detect_ms"]), 1) == 262.4
     assert summary["recorded_ms"] == [], "this run recorded no video"
+
+
+def test_every_ranging_source_is_named_here():
+    """⚠️ THE COMMENT BESIDE `sightings[].source` ENUMERATES A SET THAT KEEPS GROWING.
+
+    `estimate_range`'s own docstring has said "height", "width" or "frame-fill" since it was
+    written, while its code also returns "width-capped"; then `GroundRanger` added four more
+    in one PR. The value matters to a consumer — "frame-fill" and "width-capped" are
+    CONSTANTS and not measurements — so a new one appearing with nothing saying so is a
+    consumer silently weighting a constant as a reading.
+
+    So this walks the producer rather than trusting prose. The positive control is the
+    literal count: with a broken pattern the assertion below would pass over an empty set
+    forever, which is the shape of gate this repository has already shipped once.
+    """
+    source = (Path(os.path.dirname(os.path.abspath(__file__))) / "person_detector.py"
+              ).read_text()
+    produced = set(re.findall(r'return\s+[^,\n]+,\s*"([a-z][a-z-]*)"', source))
+    assert len(produced) >= 8, f"the pattern found only {sorted(produced)}"
+    comment = telemetry_source_comment()
+    missing = sorted(name for name in produced if f'"{name}"' not in comment)
+    assert not missing, (
+        f"person_detector returns ranging source(s) {missing} that the comment beside "
+        f"`sightings[].source` in telemetry.py does not name. A consumer cannot tell a "
+        f"constant from a measurement without that list.")
+
+
+def telemetry_source_comment() -> str:
+    """The comment block above ``"sightings"`` in ``write_tick``, as text."""
+    lines = (Path(os.path.dirname(os.path.abspath(__file__))) / "telemetry.py"
+             ).read_text().splitlines()
+    end = next(i for i, line in enumerate(lines) if '"sightings": [{' in line)
+    block = []
+    for line in reversed(lines[:end]):
+        if not line.strip().startswith("#"):
+            break
+        block.append(line)
+    assert len(block) > 5, "the comment block above `sightings` has gone"
+    return "\n".join(block)
 
 
 if __name__ == "__main__":

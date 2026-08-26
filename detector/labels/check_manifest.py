@@ -23,7 +23,9 @@ Three classes of error it catches, all of which move a reported number:
 
 Two manifest shapes are read, because the repo has two:
 
-* ``{"records": [{"image", "label", "box"}]}``  — one file name per record, boxes only.
+* ``{"records": [{"image", "label", "box"}]}``  — one BOX per record, so a frame with two
+  objects in it is two records naming the same image. ``eval_class_agnostic.py`` collects
+  them into a list per image and scores recall per frame, which is why that is legal here.
 * ``{"frames":  [{"clip", "index", "present", "box", "split"}]}`` — presence over whole
   clips; the frame file is ``<clip>_<index>03d.jpg``, which is what ``eval_detector.py``
   builds and therefore what this must build too.
@@ -76,6 +78,14 @@ class Row:
         return f"Row({self.key!r}, present={self.present!r}, split={self.split!r})"
 
 
+def shape_of(manifest: dict) -> str:
+    """``"frames"`` or ``"records"``. The two are checked differently for duplicates."""
+    for shape in ("frames", "records"):
+        if shape in manifest:
+            return shape
+    raise SystemExit("manifest has neither a 'frames' nor a 'records' list")
+
+
 def rows_of(manifest: dict) -> list[Row]:
     """Normalise either manifest shape into ``Row`` objects.
 
@@ -83,16 +93,14 @@ def rows_of(manifest: dict) -> list[Row]:
     being there — that is exactly what ``eval_class_agnostic.load_frames`` does with them,
     and inventing a different rule here would validate a set nothing scores.
     """
-    if "frames" in manifest:
+    if shape_of(manifest) == "frames":
         rows = []
         for entry in manifest["frames"]:
             key = FRAME_KEY.format(clip=entry["clip"], index=entry["index"])
             rows.append(Row(key, entry.get("present"), entry.get("box"), entry.get("split")))
         return rows
-    if "records" in manifest:
-        return [Row(entry["image"], entry.get("box") is not None, entry.get("box"), None)
-                for entry in manifest["records"]]
-    raise SystemExit("manifest has neither a 'frames' nor a 'records' list")
+    return [Row(entry["image"], entry.get("box") is not None, entry.get("box"), None)
+            for entry in manifest["records"]]
 
 
 def check_counts(manifest: dict, rows: list[Row]) -> list[str]:
@@ -107,17 +115,43 @@ def check_counts(manifest: dict, rows: list[Row]) -> list[str]:
     return problems
 
 
-def check_unique(rows: list[Row]) -> list[str]:
-    """A repeated key is two records scoring one file, which double-counts it."""
+def check_unique(rows: list[Row], shape: str = "frames") -> list[str]:
+    """A frame declared twice — but what counts as twice depends on the shape.
+
+    🔴 THIS CHECK USED TO BE STRICTER THAN THE SCRIPT IT PROTECTS, and it would have
+    rejected an honest manifest. ``eval_class_agnostic.load_frames`` builds
+    ``boxes[image].append(box)`` — a LIST per image — and scores recall per frame with
+    ``max(iou(box, t) for t in truth)``. Two records for one image are therefore two
+    objects in that frame, handled correctly and counted once. Rejecting them is what
+    forced ``autolabel_run.record_for`` (issue #77) to pick one "highest-scoring" box per
+    frame and hide the rest under a ``sightings`` key neither reader looks at — that
+    docstring names this check as the reason. The two manifests in this directory are
+    one-object-per-frame captures that never exercised it.
+
+    So, by shape:
+
+    * ``frames``: any repeated ``(clip, index)`` is a problem. Presence is declared per
+      frame there, and two rows can declare it two different ways.
+    * ``records``: a repeat is a problem only when the whole row repeats — same image AND
+      the same box. That is a copy, and it does double-count IoU work; a repeat with a
+      different box is a second object.
+    """
     seen, repeated = set(), []
     for row in rows:
-        if row.key in seen:
+        identity = row.key if shape == "frames" else (row.key, _box_key(row.box))
+        if identity in seen:
             repeated.append(row.key)
-        seen.add(row.key)
+        seen.add(identity)
     if not repeated:
         return []
     shown = ", ".join(sorted(set(repeated))[:5])
-    return [f"{len(set(repeated))} frame(s) named more than once: {shown}"]
+    what = "named more than once" if shape == "frames" else "carry a duplicated box"
+    return [f"{len(set(repeated))} frame(s) {what}: {shown}"]
+
+
+def _box_key(box):
+    """A hashable box. ``None`` and a list both appear, and a list is not hashable."""
+    return None if box is None else tuple(box)
 
 
 def check_boxes(rows: list[Row]) -> list[str]:
@@ -168,7 +202,9 @@ def denominators(rows: list[Row], split: str | None) -> dict:
 def report(manifest: dict, rows: list[Row], frames_dir: Path | None,
            split: str | None, out=sys.stdout) -> int:
     """Run every check. Returns the process exit code."""
-    problems = check_counts(manifest, rows) + check_unique(rows) + check_boxes(rows)
+    problems = (check_counts(manifest, rows)
+                + check_unique(rows, shape_of(manifest))
+                + check_boxes(rows))
     missing: list[str] = []
     extra: list[str] = []
     if frames_dir is not None:

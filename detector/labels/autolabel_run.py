@@ -145,13 +145,20 @@ def sightings_by_frame(ticks: list[dict], classes: frozenset | None = None,
     and returns ``None`` on every other tick — so it is refused rather than merged.
     """
     kept: dict = {}
-    counts = {"ticks": len(ticks), "recorded": 0, "dropped_class": 0,
-              "dropped_score": 0, "dropped_box": 0, "frames_without_a_box": 0}
+    # `highest_frame` is the largest index the recorder wrote, which is one less than the
+    # number of frames in this run's own recording — `_record` advances one shared counter
+    # per perception cycle and never skips. `recorded` counts TICKS, and the two differ when
+    # the telemetry tail was lost, so they are not interchangeable. See check_frame_count.
+    counts = {"ticks": len(ticks), "recorded": 0, "highest_frame": None,
+              "dropped_class": 0, "dropped_score": 0, "dropped_box": 0,
+              "frames_without_a_box": 0}
     for tick in ticks:
         index = tick.get("perception", {}).get("video_frame")
         if index is None:
             continue
         counts["recorded"] += 1
+        if counts["highest_frame"] is None or index > counts["highest_frame"]:
+            counts["highest_frame"] = index
         if index in kept:
             raise Refused(
                 f"video_frame {index} appears on two ticks. The recorder advances that "
@@ -182,10 +189,20 @@ def sightings_by_frame(ticks: list[dict], classes: frozenset | None = None,
 def record_for(prefix: str, index: int, sightings: list[dict], label: str) -> dict:
     """One manifest record: the ``records`` shape, plus everything the join recovered.
 
-    ``box`` is the HIGHEST-SCORING surviving sighting and there is exactly one per frame,
-    because both readers of this shape assume that — ``check_manifest.check_unique`` fails
-    a repeated key and ``eval_class_agnostic.load_frames`` keys its boxes by image name.
+    ``box`` is the HIGHEST-SCORING surviving sighting and there is exactly one per frame.
     The rest are kept under ``sightings`` so nothing measured is thrown away.
+
+    ⚠️ THE PREMISE FOR THAT HAS HALF GONE. It was that "both readers of this shape assume
+    one per frame — ``check_manifest.check_unique`` fails a repeated key and
+    ``eval_class_agnostic.load_frames`` keys its boxes by image name". Only the first half
+    was ever true, and it is no longer: ``load_frames`` builds
+    ``boxes[record["image"]].append(box)`` — a LIST per image — and scores recall per frame
+    with ``max(iou(box, t) for t in truth)``, so two records for one image are two objects,
+    read correctly. ``check_unique`` was the stricter of the two and has been made
+    shape-aware. Emitting one record per SIGHTING is now possible and would put every box on
+    a multi-object frame in front of the scorer instead of one; it is left alone here
+    because it changes what every existing consumer of this manifest reads, and that is a
+    call for whoever needs the second box.
     """
     best = sightings[0]
     return {
@@ -213,19 +230,28 @@ RUN_KEYS = ("wall_time", "live", "goal", "classes", "confidence", "control_hz",
 
 def build_manifest(records: list[dict], *, label: str, run_path: Path, video: Path,
                    header: dict, counts: dict, filters: dict, manifest_path: Path,
-                   frames_dir: Path) -> dict:
+                   frames_dir: Path, frame_count_unverified: bool = False) -> dict:
     """The manifest, with its own provenance and the command that checks it.
 
     ``count`` and ``boxes`` are the two ``check_manifest.COUNTERS`` keys this shape can
     declare, and they are recomputed there rather than trusted — which is the whole reason
     they are declared at all.
     """
+    source_extra = {}
+    if frame_count_unverified:
+        # A reader must not have to know which flag was passed. This is the one condition
+        # under which the pixels are not certainly the pixels the boxes were measured on.
+        source_extra["frame_count_unverified"] = (
+            "the video's frame count is not the number of frames this run recorded, and "
+            "--allow-frame-count-mismatch was passed. Correct only if the TELEMETRY is "
+            "the truncated half; otherwise every box is on the wrong frame.")
     return {
         "label": label,
         "source": {
             "what": (f"{len(records)} frames auto-labelled from one recorded run. Every "
                      f"box is detector output joined to the raw video by "
                      f"perception.video_frame; see autolabel_run.py."),
+            **source_extra,
             "provenance": PROVENANCE,
             "telemetry": str(run_path),
             "video": str(video),
@@ -277,23 +303,76 @@ def write_jpeg(path: Path, image) -> None:
         raise Refused(f"cannot write {path}")
 
 
+def check_frame_count(video: Path, decoded: int, expected: int, allow: bool) -> None:
+    """🔴 REFUSE A VIDEO WITH MORE FRAMES THAN THIS RUN RECORDED.
+
+    ONE DIRECTION ONLY, deliberately. A video that is too SHORT is already handled: ``main``
+    reports the frames the telemetry names and the decode never reached, exits 1, and leaves
+    a manifest that is short rather than wrong. Too LONG was caught by nothing, and it is
+    the dangerous direction because it is silent — every index still resolves, so every
+    frame is written, every box lands on a picture, and every picture is the wrong one.
+
+    Measured against this script as it stood, on files committed to this repository:
+
+        python3 autolabel_run.py evidence/2026-08-25-peer-runs/hero-run-telemetry.jsonl \
+            --video evidence/2026-08-25-peer-runs/hero-clears-peer-on-right.mp4 ...
+
+    wrote **32 auto-labels, exited 0, and passed ``check_manifest.py`` in both
+    directions**. That run recorded **58** frames and that file holds **423**, because the
+    committed videos are edited hero cuts and not the recorder's output. Nothing in the
+    manifest said so, and nothing could have: the frames it names all exist.
+
+    A recording written by ``--record``/``--record-raw`` holds exactly one frame per
+    recorded index, because ``VisualNavigator._record`` advances one shared counter and
+    ``visual_nav.main``'s ``finally`` releases the writer. So the file holds exactly
+    ``max(video_frame) + 1`` frames, and more than that is a different file — or a telemetry
+    file whose tail was lost, which is what ``--allow-frame-count-mismatch`` is for.
+
+    ⚠️ ``expected`` is ``max(video_frame) + 1`` and NOT the number of recorded ticks. The two
+    are equal for any file the recorder wrote, and they diverge exactly when the telemetry
+    is the incomplete half — which is the case this must not misdiagnose as a wrong video.
+    """
+    if decoded <= expected:
+        return
+    if allow:
+        print(f"⚠️  {video.name} holds {decoded} frames and this run recorded {expected}. "
+              f"--allow-frame-count-mismatch was passed, so the pixels may not be the "
+              f"pixels these boxes were measured on.")
+        return
+    raise Refused(
+        f"REFUSING: {video.name} holds {decoded} frames and this run recorded {expected}. "
+        f"A recording written by --record/--record-raw holds exactly one frame per "
+        f"recorded index, so this is a different file: an edited cut, a re-encode, or "
+        f"another run. Every index would still resolve and every box would land on the "
+        f"wrong frame — measured, on this repository's own committed hero video, as 32 "
+        f"auto-labels that passed check_manifest.py in both directions and meant nothing. "
+        f"Pass --allow-frame-count-mismatch if the TELEMETRY is the truncated half; it is "
+        f"recorded in the manifest.")
+
+
 def extract(wanted: dict, video: Path, frames_dir: Path, prefix: str,
-            decoder=decode_frames, writer=write_jpeg) -> list[int]:
-    """Write every wanted frame out of ``video``; return the indices actually found.
+            decoder=decode_frames, writer=write_jpeg) -> tuple[list, int]:
+    """Write every wanted frame out of ``video``; return ``(indices found, frames decoded)``.
 
     Decoded in one forward pass rather than seeking per frame: ``CAP_PROP_POS_FRAMES`` on a
     B-frame codec lands on the wrong picture often enough that the index in the filename
     would stop meaning the index in the telemetry, and that is the only thing holding this
     join together.
+
+    The decoded count comes back because it is the only honest measure of how long the file
+    is — a container's declared count is a header field a re-encode can leave wrong — and
+    :func:`check_frame_count` needs it to tell this run's recording from another file.
     """
     frames_dir.mkdir(parents=True, exist_ok=True)
     found = []
+    decoded = 0
     for index, image in decoder(video):
+        decoded = index + 1
         if index not in wanted:
             continue
         writer(frames_dir / FRAME_KEY.format(prefix=prefix, index=index), image)
         found.append(index)
-    return found
+    return found, decoded
 
 
 def check_video_choice(video: Path, header: dict, allow_annotated: bool) -> None:
@@ -351,6 +430,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="the class name written into the manifest, e.g. go2wheel")
     parser.add_argument("--min-score", type=float, default=0.0,
                         help="drop sightings below this detector score")
+    parser.add_argument("--allow-frame-count-mismatch", action="store_true",
+                        help="accept a video whose frame count is not the number of frames "
+                             "the run recorded. Only correct when the TELEMETRY is the "
+                             "truncated half; stamped into the manifest")
     parser.add_argument("--allow-annotated", action="store_true",
                         help="permit the --record video, which has boxes drawn on it")
     return parser
@@ -369,7 +452,13 @@ def main(argv: list[str] | None = None, decoder=decode_frames, writer=write_jpeg
     classes = None if args.classes is None else frozenset(args.classes)
 
     wanted, counts = sightings_by_frame(ticks, classes, args.min_score)
-    found = extract(wanted, video, args.frames_dir, prefix, decoder, writer)
+    found, decoded = extract(wanted, video, args.frames_dir, prefix, decoder, writer)
+    # AFTER the extraction, because the decoded count is the only trustworthy length — a
+    # container's declared count is a header field a re-encode can leave wrong — and BEFORE
+    # the manifest, because a directory of wrong JPEGs with no manifest beside it reads as a
+    # failed run rather than as a corpus.
+    expected = 0 if counts["highest_frame"] is None else counts["highest_frame"] + 1
+    check_frame_count(video, decoded, expected, args.allow_frame_count_mismatch)
     missing = sorted(set(wanted) - set(found))
 
     records = [record_for(prefix, index, wanted[index], args.label)
@@ -378,7 +467,8 @@ def main(argv: list[str] | None = None, decoder=decode_frames, writer=write_jpeg
         records, label=args.label, run_path=args.telemetry, video=video, header=header,
         counts=counts, manifest_path=args.manifest, frames_dir=args.frames_dir,
         filters={"classes": None if classes is None else sorted(classes),
-                 "min_score": args.min_score})
+                 "min_score": args.min_score},
+        frame_count_unverified=(args.allow_frame_count_mismatch and decoded > expected))
     args.manifest.parent.mkdir(parents=True, exist_ok=True)
     args.manifest.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 

@@ -246,7 +246,8 @@ class TelemetryWriter:
                    video_frame: int | None = None, stale: bool = False,
                    measured=None, health=None, sightings=(),
                    goal_crop: float | None = None, profile: dict | None = None,
-                   cycle_ms: float | None = None, wait_ms: float | None = None) -> None:
+                   cycle_ms: float | None = None, wait_ms: float | None = None,
+                   pass_ms: dict | None = None) -> None:
         """One control tick, whether or not it commanded motion.
 
         EVERY tick is written, including holds, stale-perception skips and the
@@ -290,9 +291,22 @@ class TelemetryWriter:
             # and could not be answered without it: whether the size-prior range scale is
             # right (compare `range_m` against odometry over an approach), and how a
             # detection ranged at 0.8 m became a landmark 0.18 m from the robot. `source`
-            # is which prior produced it — "height", "width" or "frame-fill" — because a
-            # frame-fill reading is a constant, not a measurement, and a consumer must be
-            # able to tell those apart.
+            # is which estimator produced it, because two of the values are CONSTANTS
+            # rather than measurements and a consumer must be able to tell those apart:
+            # "frame-fill" is a fixed near-range and "width-capped" is the fit-range cap,
+            # which deadlocked a live run against a number that could not move. Both
+            # appear in the committed 2026-08-25 runs: of 87 and 36 sightings,
+            # "frame-fill" 6 and 6, "width-capped" 4 and 2.
+            #
+            # ⚠️ THE FULL SET IS EIGHT AND GROWING, AND NO DOCSTRING HAS EVER LISTED IT.
+            # `person_detector.estimate_range` says "height", "width" or "frame-fill" and
+            # its own code returns "width-capped" too; `GroundRanger` added "ground",
+            # "ground-clipped", "ground-horizon" and "ground-far". Only five can reach this
+            # field — `range_detections` drops every non-finite range, which is the three
+            # `ground-*` refusals — leaving height, width, width-capped, frame-fill and
+            # ground. `test_telemetry.test_every_ranging_source_is_named_here` walks
+            # person_detector.py and fails if a ninth appears without this comment moving,
+            # because a rule enforced by a comment is worth nothing.
             "sightings": [{"label": item.detection.label, "range_m": _finite(item.range_m),
                            "bearing_rad": _finite(item.bearing_rad), "source": item.source,
                            "score": _finite(item.detection.score),
@@ -319,6 +333,14 @@ class TelemetryWriter:
                                         else round(float(cycle_ms), 2)),
                            "wait_ms": (None if wait_ms is None
                                        else round(float(wait_ms), 2)),
+                           # `detect_ms` SPLIT INTO THE THREE PASSES IT SPANS — goal,
+                           # detect, colour — because one number for three passes cannot
+                           # say which of them owns the 202 ms, and that is what decides
+                           # whether the 300x300 SSD input is the lever or the goal pass's
+                           # cadence is. Sums to `detect_ms` above, so a consumer of that
+                           # field is not handed a different number under the same name.
+                           # Null on a producer that does not measure the split.
+                           "pass_ms": (pass_ms or None),
                            "video_frame": video_frame,
                            # The robot is BLIND this tick and holding, but it has not
                            # forgotten its goal. Distinguishing the two matters: a null

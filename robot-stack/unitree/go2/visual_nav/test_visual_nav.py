@@ -19,6 +19,7 @@ Run: ``python3 test_visual_nav.py``
 """
 from __future__ import annotations
 
+import ast
 import contextlib
 import io
 import json
@@ -26,6 +27,7 @@ import math
 import os
 import sys
 import tempfile
+import textwrap
 import time
 from pathlib import Path
 
@@ -1585,6 +1587,256 @@ def test_the_camera_wait_is_kept_out_of_the_perception_cycle_time():
     assert result.wait_ms >= SLOW_MS * 0.8, result.wait_ms
     assert result.cycle_ms < SLOW_MS * 0.4, result.cycle_ms
     assert result.detect_ms <= result.cycle_ms
+
+
+# ── One sleep for every path, and the three passes priced apart ─────────────
+class _ClockSpy:
+    """Stands in for the ``time`` module inside ``visual_nav``, recording every sleep.
+
+    A shim object rather than a patch of ``time.sleep`` itself: this module's loop reads
+    ``time.monotonic`` on every tick and so does the profiler, and monkeypatching the stdlib
+    module in place would leak into the tracker and every other importer of it.
+    """
+
+    def __init__(self) -> None:
+        self.sleeps: list = []
+
+    def monotonic(self):
+        return time.monotonic()
+
+    def sleep(self, seconds):
+        self.sleeps.append(seconds)
+        time.sleep(min(seconds, 0.001))     # keep the suite fast; the VALUE is the point
+
+
+@contextlib.contextmanager
+def _clock_spy():
+    spy = _ClockSpy()
+    real, visual_nav.time = visual_nav.time, spy
+    try:
+        yield spy
+    finally:
+        visual_nav.time = real
+
+
+class _SlowPoseLoco(_FakeLoco):
+    """Odometry that costs more than a whole control period to read.
+
+    Something in the tick has to overrun the period, or every path sleeps ~a period and
+    "sleeps the remainder" is indistinguishable from "sleeps a period".
+    """
+
+    def __init__(self, cost_s: float) -> None:
+        super().__init__()
+        self._cost_s = cost_s
+
+    def pose(self):
+        time.sleep(self._cost_s)
+        return super().pose()
+
+
+class _StalePerception:
+    """One result, permanently older than ``perception_timeout_s``."""
+
+    cycles, errors = 3, 0
+
+    def __init__(self) -> None:
+        self._result = PerceptionResult(seq=1, capture_time=time.monotonic() - 5.0,
+                                        pose=(0.0, 0.0, 0.0), observations=[], ranged=[])
+
+    def alive(self):
+        return True
+
+    def latest(self):
+        return self._result
+
+
+def test_the_stale_hold_sleeps_the_remainder_and_not_a_whole_extra_period():
+    """🔴 THE BRANCH THAT FIRES BECAUSE THE LOOP IS SLOW USED TO MAKE IT SLOWER.
+
+    Four sleeps existed. The goal-search and walking paths slept
+    ``max(0, period - elapsed)``; the stale-perception hold and the no-result skip slept a
+    flat ``period``. On a tick that has already spent 250 ms — the median of the two
+    2026-08-25 runs — the first two sleep 0 and the other two add another 100 ms on top, so
+    the hold branch cost a whole period MORE than the walking branch, on exactly the ticks
+    issue #18 is about.
+
+    Here the pose read alone costs three periods, so the correct remainder is 0.0 and the
+    old code asked for the full 0.01 s. Staleness fired on 0 of those 150 ticks, so this is
+    not offered as a fix for the rate — what it removes is a tick cost that depended on
+    which ``if`` it came through, which ``TickProfiler.snapshot`` would now attribute to the
+    hold rather than to the sleep.
+    """
+    navigator = VisualNavigator(
+        loco=_SlowPoseLoco(cost_s=0.030), perception=_StalePerception(),
+        planner=_FakePlanner(), tracker=ObstacleTracker(), goal_source=_FakeGoal(),
+        health=_FakeHealth(ticks=4), config=NavConfig(live=True, control_hz=100.0))
+    with contextlib.redirect_stdout(io.StringIO()), _clock_spy() as spy:
+        navigator.run()
+    assert spy.sleeps, "the stale branch never slept, so this test proves nothing"
+    assert max(spy.sleeps) == 0.0, (
+        f"a tick that had already overrun still asked to sleep {max(spy.sleeps)} s; "
+        f"the period was 0.01 s")
+
+
+def test_no_path_through_the_loop_sleeps_a_bare_period():
+    """The pin for the above, against the whole method rather than one branch.
+
+    Four sleeps, two of them wrong, is the shape of defect that a test on one branch leaves
+    behind. Every path now delegates to ``_sleep_out_the_period``, so the property to pin is
+    that ``run`` contains no ``sleep`` call of its own at all.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(VisualNavigator.run)))
+    # `ast.unparse` is 3.9+ and CI runs a 3.8 leg over this directory, so the callee is read
+    # off the node rather than round-tripped through source.
+    called = [getattr(node.func, "attr", getattr(node.func, "id", None))
+              for node in ast.walk(tree) if isinstance(node, ast.Call)]
+    assert "sleep" not in called, called
+    body = inspect.getsource(VisualNavigator._sleep_out_the_period)
+    assert "period - (time.monotonic() - tick_start)" in body
+
+
+#: What each fake pass costs, in seconds. Deliberately unequal and in the same ORDER as the
+#: module docstring's measured 114 / 69 / 10 ms, so a test that mixed two of them up would
+#: have to disagree about which is biggest.
+_GOAL_COST_S, _DETECT_COST_S, _COLOUR_COST_S = 0.006, 0.024, 0.003
+
+
+class _SlowGoalSource:
+    def update(self, _image, _pose):
+        time.sleep(_GOAL_COST_S)
+
+
+class _SlowDetector:
+    def detect_tiered(self, _image):
+        time.sleep(_DETECT_COST_S)
+        return [], []
+
+
+class _SlowColour:
+    """A colour tier with a measured prior, so `static_ranged` runs as it would live."""
+
+    profile = PROFILES["bin"]
+
+    def detect(self, _image):
+        time.sleep(_COLOUR_COST_S)
+        return []
+
+
+def test_the_perception_cycle_prices_its_three_passes_separately():
+    """⛔ `detect_ms` IS ONE NUMBER FOR THREE PASSES, and the question issue #18 ends on
+    needs it split.
+
+    `_cycle` starts that clock before the goal pass and stops it after colour segmentation.
+    Its median over the two 2026-08-25 runs is 194 and 201 ms, and the module docstring's
+    own components — person 114 ms, colour 10 ms, goal 69 ms — sum to 193. Consistent, and
+    useless as a lever: if the detector owns the 202 ms then the 300x300 SSD input is the
+    thing to change, and if the throttled goal pass owns half of it then its cadence is.
+    Nothing in the tree could tell those apart.
+
+    This asserts both halves of the split: the three are priced separately, AND they still
+    sum to `detect_ms`, so a consumer parsing that field is not handed a different number
+    under the same name.
+    """
+    worker = PerceptionWorker(_OneFrame(), _SlowDetector(), CAMERA, _SlowGoalSource(),
+                              lambda: (0.0, 0.0, 0.0), colour_detector=_SlowColour())
+    worker._cycle(0)
+    result = worker.latest()
+    assert result is not None
+    split = result.pass_ms
+    assert set(split) == {"goal", "detect", "colour"}, split
+    assert split["detect"] > split["goal"] > split["colour"], split
+    assert abs(result.detect_ms - sum(split.values())) < 2.0, (
+        f"detect_ms {result.detect_ms:.2f} is not goal+detect+colour {split}; it has "
+        f"stopped being the sum of the three passes it has always spanned")
+    assert result.cycle_ms >= result.detect_ms
+
+
+class _SplitPerception:
+    """A fresh result every tick, carrying a split no control stage could have produced."""
+
+    cycles, errors = 1, 0
+    #: Values with no relation to anything this test does, so a line carrying them can only
+    #: have got them off the result the tick consumed. A tuple of pairs rather than a dict,
+    #: because a mutable class attribute is one shared object and this is handed out.
+    SPLIT = (("goal", 69.0), ("detect", 114.0), ("colour", 10.2))
+
+    def __init__(self) -> None:
+        self._seq = 0
+
+    def alive(self):
+        return True
+
+    def latest(self):
+        self._seq += 1
+        return PerceptionResult(seq=self._seq, capture_time=time.monotonic(),
+                                pose=(0.0, 0.0, 0.0), observations=[], ranged=[],
+                                detect_ms=193.2, pass_ms=dict(self.SPLIT))
+
+
+def test_the_split_travels_from_the_perception_thread_onto_the_line():
+    """The wiring, not the writer. Dropping `pass_ms=result.pass_ms` from the one call site
+    leaves `write_tick`'s own tests green and every telemetry file without the split — which
+    is exactly the state this change is fixing, so it has to be the thing that goes red."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "run.jsonl"
+        telemetry = TelemetryWriter(str(path))
+        navigator = VisualNavigator(
+            loco=_FakeLoco(), perception=_SplitPerception(), planner=_FakePlanner(),
+            tracker=ObstacleTracker(), goal_source=_FakeGoal(),
+            health=_FakeHealth(ticks=5), config=NavConfig(live=True, control_hz=100.0),
+            telemetry=telemetry)
+        with contextlib.redirect_stdout(io.StringIO()):
+            navigator.run()
+        telemetry.close()
+        ticks = [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+    ticks = [t for t in ticks if t["type"] == "tick"]
+    assert ticks, "no tick was written"
+    for tick in ticks:
+        assert tick["perception"]["pass_ms"] == dict(_SplitPerception.SPLIT), (
+            tick["perception"])
+
+
+def test_the_three_pass_split_reaches_the_telemetry_line():
+    """A split that stays in a dataclass answers nothing after the run is over."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "run.jsonl"
+        telemetry = TelemetryWriter(str(path))
+        telemetry.write_tick(
+            elapsed_s=0.0, pose=(0.0, 0.0, 0.0), goal_xy=(4.0, 0.0), goal_distance_m=4.0,
+            command=None, obstacles=[], frame_age_s=0.1, perception_seq=1,
+            detect_ms=193.2, standing=True, live=False,
+            pass_ms={"goal": 69.0, "detect": 114.0, "colour": 10.2})
+        telemetry.close()
+        tick = json.loads(path.read_text().strip().splitlines()[-1])
+    assert tick["perception"]["pass_ms"] == {"goal": 69.0, "detect": 114.0,
+                                            "colour": 10.2}
+
+
+def test_a_producer_that_does_not_split_writes_null_rather_than_an_empty_object():
+    """`{}` and `null` read differently: one is "measured nothing", the other is "did not
+    measure". Every run committed before this change is the second."""
+    with tempfile.TemporaryDirectory() as folder:
+        path = Path(folder) / "run.jsonl"
+        telemetry = TelemetryWriter(str(path))
+        telemetry.write_tick(
+            elapsed_s=0.0, pose=(0.0, 0.0, 0.0), goal_xy=(4.0, 0.0), goal_distance_m=4.0,
+            command=None, obstacles=[], frame_age_s=0.1, perception_seq=1,
+            detect_ms=193.2, standing=True, live=False)
+        telemetry.close()
+        tick = json.loads(path.read_text().strip().splitlines()[-1])
+    assert tick["perception"]["pass_ms"] is None
+    assert tick["perception"]["detect_ms"] == 193.2
+
+
+def test_no_committed_run_carries_the_split_yet():
+    """The gap this closes, asserted rather than assumed."""
+    runs = (Path(_HERE).resolve().parents[3] / "evidence" / "2026-08-25-peer-runs")
+    for name in ("hero-run-telemetry.jsonl", "contrast-run-telemetry.jsonl"):
+        ticks = [json.loads(line) for line in (runs / name).read_text().splitlines()
+                 if line.strip()]
+        ticks = [t for t in ticks if t["type"] == "tick"]
+        assert ticks and all("pass_ms" not in t["perception"] for t in ticks)
 
 
 if __name__ == "__main__":
