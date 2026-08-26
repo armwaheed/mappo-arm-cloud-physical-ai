@@ -305,6 +305,187 @@ def test_rejects_nonsense_hfov():
         raise AssertionError(f"hfov {bad} should raise")
 
 
+# ── the floor contact point as a ranger ─────────────────────────────────────
+#: A stated pitch wobble to gate against. NOT a measurement of this robot — nobody has
+#: recorded its trunk pitch under gait — it is the figure `camera_model`'s own docstring
+#: argues from, kept here so the tests pin the argument rather than a new number.
+WOBBLE_RAD = math.radians(2.0)
+
+
+def _go2() -> FisheyeCamera:
+    """The measured Go2 front camera: `calibrate_camera.py --spin`, 85.27 deg HFOV."""
+    return FisheyeCamera(width=1920, height=1080, focal_px=1290.1637909789656,
+                         cx=960.0, cy=540.0, height_m=GO2_CAMERA_HEIGHT_M)
+
+
+def test_ground_range_round_trips_a_floor_point_anywhere_in_frame():
+    """The property the whole class-agnostic ranger rests on, off-axis as well as on.
+
+    Project a known floor point, then range the pixel it landed on. Off-axis is the case
+    that matters: a homography would be exact on the centre-line and wrong at the frame
+    edge, and the frame edge is where an obstacle being swerved past sits.
+    """
+    camera = _go2()
+    for forward, lateral in ((1.0, 0.0), (1.5, 0.6), (0.9, -0.4), (2.0, 1.2)):
+        u, v = camera.project((forward, lateral, -GO2_CAMERA_HEIGHT_M))
+        assert 0.0 <= u < camera.width and 0.0 <= v < camera.height, (u, v)
+        recovered = camera.ground_range(u, v)
+        assert abs(recovered - math.hypot(forward, lateral)) < 1e-6, (forward, lateral,
+                                                                     recovered)
+
+
+def test_ground_range_is_the_plan_view_distance_not_the_slant_range():
+    """`tracker.Observation` places an obstacle at `robot + range·(cos, sin)` IN THE
+    FLOOR PLANE, so a slant range would put every landmark further out than it is —
+    by 5% at 1 m on this mount, in the direction that does not stop the robot."""
+    camera = _go2()
+    u, v = camera.project((1.0, 0.0, -GO2_CAMERA_HEIGHT_M))
+    assert abs(camera.ground_range(u, v) - 1.0) < 1e-9
+    slant = math.hypot(1.0, GO2_CAMERA_HEIGHT_M)
+    assert slant - 1.0 > 0.04, "the two must be far enough apart for this test to bite"
+
+
+def test_ground_range_is_none_above_the_horizon():
+    camera = _go2()
+    assert camera.ground_range(WIDTH / 2.0, HEIGHT / 2.0) is None
+    assert camera.ground_range(WIDTH / 2.0, 0.0) is None
+
+
+def test_the_near_wall_is_worse_off_axis_than_the_centre_line_figure_says():
+    """0.719 m is quoted repeatedly as THE distance below which the contact point leaves
+    the frame. It is the best case: it comes from `h / tan(half_vfov)` on the centre
+    column, and the bottom CORNER ray is shallower, so an obstacle at the frame edge
+    loses its contact point about 0.09 m earlier."""
+    camera = _go2()
+    centre = camera.ground_range(camera.cx, camera.height - 1.0)
+    corner = camera.ground_range(0.0, camera.height - 1.0)
+    assert abs(centre - 0.72) < 0.01, centre
+    assert corner > centre, (corner, centre)
+    assert corner - centre > 0.05, f"corner {corner:.3f} vs centre {centre:.3f}"
+
+
+def test_ground_range_bounds_reproduce_the_worked_example_in_the_docstring():
+    """The module argues its own case from "2 deg swings a 3 m estimate from 2.3 m to
+    4.4 m". That arithmetic is right, and this pins it: the premise survives, and what
+    this issue changed is the CONCLUSION drawn from it at ranges no detection arrives
+    from."""
+    nearest, farthest = _go2().ground_range_bounds(3.0, WOBBLE_RAD)
+    assert abs(nearest - 2.25) < 0.05, nearest
+    assert abs(farthest - 4.48) < 0.05, farthest
+
+
+def test_ground_range_bounds_are_asymmetric_and_far_is_the_unsafe_side():
+    """Nose-down error shortens the estimate and is harmless; nose-up lengthens it and is
+    what walks the robot into things. The far side is always the bigger error, so the
+    ceiling is sized off it."""
+    camera = _go2()
+    for range_m in (0.8, 1.2, 2.0, 3.0):
+        nearest, farthest = camera.ground_range_bounds(range_m, WOBBLE_RAD)
+        assert nearest < range_m < farthest, (range_m, nearest, farthest)
+        assert farthest - range_m > range_m - nearest, range_m
+
+
+def test_ground_range_error_grows_linearly_in_range():
+    """The one property that decides where this estimator is usable: a fixed wobble is a
+    fixed ANGLE, and `|dd/d| = delta·(d/h + h/d)`. Double the range, roughly double the
+    error — good exactly where the robot has to act, bad where the detector has already
+    stopped producing detections (0 of 315 beyond 2.7 m)."""
+    camera = _go2()
+    errors = []
+    for range_m in (1.0, 2.0, 4.0):
+        _, farthest = camera.ground_range_bounds(range_m, WOBBLE_RAD)
+        errors.append(farthest / range_m - 1.0)
+    assert errors[0] < errors[1] < errors[2], errors
+    assert 1.8 < errors[1] / errors[0] < 2.6, errors
+    assert abs(errors[0] - 0.135) < 0.01, errors[0]
+
+
+def test_ground_range_bounds_go_infinite_once_the_wobble_reaches_the_elevation():
+    """Not a numerical edge case — it is the geometry saying the ray no longer meets the
+    floor. `inf` is the honest answer and callers already drop it."""
+    camera = _go2()
+    _, farthest = camera.ground_range_bounds(20.0, WOBBLE_RAD)
+    assert farthest == math.inf
+    _, still_finite = camera.ground_range_bounds(3.0, WOBBLE_RAD)
+    assert math.isfinite(still_finite)
+
+
+def test_ground_range_limit_is_exactly_where_the_far_bound_meets_the_tolerance():
+    """The closed form and the bounds are two derivations of one statement, so they are
+    checked against each other. An algebra slip in either shows up here and nowhere
+    else."""
+    camera = _go2()
+    for wobble_deg in (1.0, 1.6, 2.0, 3.0):
+        for tolerance in (0.18, 0.25, 0.30, 0.50):
+            wobble = math.radians(wobble_deg)
+            limit = camera.ground_range_limit(wobble, tolerance)
+            if limit <= 0.0 or not math.isfinite(limit):
+                continue
+            _, farthest = camera.ground_range_bounds(limit, wobble)
+            assert abs(farthest / limit - 1.0 - tolerance) < 1e-9, (wobble_deg, tolerance)
+            _, past = camera.ground_range_bounds(limit * 1.05, wobble)
+            assert past / (limit * 1.05) - 1.0 > tolerance, "the limit must actually bind"
+
+
+def test_ground_range_limit_widens_with_tolerance_and_narrows_with_wobble():
+    camera = _go2()
+    widening = [camera.ground_range_limit(WOBBLE_RAD, eps)
+                for eps in (0.18, 0.25, 0.30, 0.50)]
+    assert widening == sorted(widening), widening
+    narrowing = [camera.ground_range_limit(math.radians(deg), 0.30)
+                 for deg in (1.0, 2.0, 3.0, 4.5)]
+    assert narrowing == sorted(narrowing, reverse=True), narrowing
+
+
+def test_a_tolerance_the_wobble_cannot_meet_gives_no_usable_range_at_all():
+    """Below roughly `2·tan(delta)` the wobble alone exceeds the budget at EVERY range,
+    and the answer is 0.0 rather than a small number. On this mount a 2 deg wobble needs
+    better than about 10% of tolerance before the band closes entirely — which is above
+    what the near wall already costs, and is why `GroundRanger` refuses at construction
+    rather than reporting nothing every frame."""
+    camera = _go2()
+    assert camera.ground_range_limit(WOBBLE_RAD, 0.05) == 0.0
+    assert camera.ground_range_limit(WOBBLE_RAD, 0.18) > 0.0
+    empty = camera.ground_range_limit(WOBBLE_RAD, 0.09)
+    nearest_floor = camera.ground_range(camera.cx, camera.height - 1.0)
+    assert empty < nearest_floor, (empty, nearest_floor)
+
+
+def test_a_stated_pitch_error_of_zero_is_a_claim_about_the_mount():
+    """It says the camera never moves, so the ceiling is infinite. Kept as a test because
+    it is the shape of an argument someone will make by leaving the knob at zero, and it
+    should be visible that that is what they did."""
+    assert _go2().ground_range_limit(0.0, 0.18) == math.inf
+
+
+def test_the_ground_ranger_refuses_without_a_lens_height():
+    """Same refusal as `ground_point`, on both new entry points — with no lens height
+    there is no floor, and `MODEL` is deliberately built without one."""
+    for call in (lambda: MODEL.ground_range_bounds(1.0, WOBBLE_RAD),
+                 lambda: MODEL.ground_range_limit(WOBBLE_RAD, 0.18)):
+        try:
+            call()
+        except ValueError as refusal:
+            assert "no lens height" in str(refusal), refusal
+        else:
+            raise AssertionError("a model with no lens height cannot bound a floor range")
+
+
+def test_ground_range_helpers_reject_nonsense():
+    camera = _go2()
+    for call in (lambda: camera.ground_range_bounds(0.0, WOBBLE_RAD),
+                 lambda: camera.ground_range_bounds(-1.0, WOBBLE_RAD),
+                 lambda: camera.ground_range_bounds(1.0, -0.01),
+                 lambda: camera.ground_range_limit(-0.01, 0.18),
+                 lambda: camera.ground_range_limit(WOBBLE_RAD, 0.0),
+                 lambda: camera.ground_range_limit(WOBBLE_RAD, -0.5)):
+        try:
+            call()
+        except ValueError:
+            continue
+        raise AssertionError("nonsense arguments should raise")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

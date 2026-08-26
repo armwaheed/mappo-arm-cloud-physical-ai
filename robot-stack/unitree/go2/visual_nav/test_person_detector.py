@@ -39,11 +39,13 @@ from person_detector import (
     STATIC_MAX_AREA_FRAC,
     STATIC_MIN_AREA_FRAC,
     Detection,
+    GroundRanger,
     RangedDetection,
     SizePrior,
     estimate_range,
     object_fit_range,
     prototxt_with_floor,
+    range_detections,
     static_shaped,
 )
 
@@ -489,6 +491,238 @@ def test_person_is_not_a_static_class():
     """A label saying `person` outright is a configuration error, not a shape question.
     The default set must never contain it, whatever else it holds."""
     assert "person" not in STATIC_CLASSES
+
+
+# ── ranging with no prior at all: the floor contact point ───────────────────
+#: The measured Go2 front camera — `calibrate_camera.py --spin`, 85.27 deg — rather than
+#: the 120 deg nominal `MODEL` above. The near wall and the accuracy ceiling are both
+#: statements about a real lens, and a nominal one would move both.
+GO2 = FisheyeCamera(width=WIDTH, height=HEIGHT, focal_px=1290.1637909789656,
+                    cx=WIDTH / 2.0, cy=HEIGHT / 2.0, height_m=GO2_CAMERA_HEIGHT_M)
+
+#: 1.6 deg is the MEDIAN of the upper bound two recorded runs support (71 unclipped
+#: sightings, six tracks, 2026-08-25), not a measurement of trunk pitch — see
+#: `GroundRanger`. 0.18 is `tracker.RANGE_SIGMA_FRACTION`, i.e. what the filter already
+#: budgets for the source it trusts most. Together they put the ceiling at ~1.70 m.
+STATED_WOBBLE_RAD = math.radians(1.6)
+STATED_TOLERANCE = 0.18
+
+
+def _standing(range_m: float, height_m: float, width_px: float = 180.0,
+              lateral_m: float = 0.0, camera: FisheyeCamera = GO2) -> Detection:
+    """A box for an object of ``height_m`` STANDING ON THE FLOOR at ``range_m``.
+
+    Built by projecting the object's real base and crown rather than by inverting the
+    ranger, so a test using it is not assuming the answer.
+    """
+    forward = math.sqrt(max(range_m ** 2 - lateral_m ** 2, 0.0))
+    base_u, base_v = camera.project((forward, lateral_m, -camera.height_m))
+    _top_u, top_v = camera.project((forward, lateral_m, height_m - camera.height_m))
+    # A fixture whose crown or base has left the frame is CLIPPED, and every ranger here
+    # refuses a clipped box — so it would test the refusal while reading as a test of the
+    # range. This robot's frame holds `0.32 + 0.4448·range` metres of object; refuse to
+    # build one that does not fit rather than let a later edit fall off the top.
+    assert top_v > 2.0, (f"a {height_m} m object at {range_m} m leaves the top of the "
+                         f"frame (v={top_v:.0f}); this fixture would be clipped")
+    assert base_v < camera.height - 2.0, (f"the base of a {range_m} m object is off the "
+                                          f"bottom (v={base_v:.0f})")
+    return Detection(x1=base_u - width_px / 2.0, y1=top_v,
+                     x2=base_u + width_px / 2.0, y2=base_v, score=0.2, label="chair")
+
+
+def _ranger(wobble_rad: float = STATED_WOBBLE_RAD,
+            tolerance: float = STATED_TOLERANCE) -> GroundRanger:
+    return GroundRanger(GO2, wobble_rad, tolerance)
+
+
+def test_the_ground_ranger_recovers_a_staged_range_with_no_size_prior():
+    """The property the whole class-agnostic route rests on. Nothing is told how big the
+    object is, at three different heights and off-axis, and the range comes back."""
+    ranger = _ranger()
+    for range_m, height_m, lateral_m in ((0.9, 0.30, 0.0), (1.2, 0.60, 0.0),
+                                         (1.5, 0.90, 0.0), (1.2, 0.60, 0.5)):
+        got, source = ranger(_standing(range_m, height_m, lateral_m=lateral_m))
+        assert source == "ground", (range_m, height_m, source)
+        assert abs(got - range_m) < 1e-6, (range_m, height_m, lateral_m, got)
+
+
+def test_the_ground_ranger_beats_a_size_prior_that_was_never_measured():
+    """THE ARGUMENT FOR THIS ISSUE, as a test. `estimate_range` divides apparent size by
+    an assumed one, so an unmeasured object is ranged by whatever prior happened to be
+    configured — and the error is the ratio of the two sizes, unbounded.
+
+    Not hypothetical: the two live runs of 2026-08-25 ranged every detection, including
+    the goal chair, with the peer robot's 0.514 m prior. Here a 0.60 m object at 1.20 m
+    is ranged with a 1.20 m prior and comes back at 2.40 m — a real obstacle reported at
+    twice its distance, which is the direction that walks into it. The contact point
+    needs no prior and is exact.
+    """
+    detection = _standing(1.20, 0.60)
+    too_far, source = estimate_range(detection, GO2, SizePrior(height_m=1.20, width_m=0.3))
+    assert source == "height"
+    assert abs(too_far - 2.40) < 0.02, too_far
+    from_ground, ground_source = _ranger()(detection)
+    assert ground_source == "ground"
+    assert abs(from_ground - 1.20) < 1e-6, from_ground
+
+
+def test_the_ground_ranger_refuses_at_the_near_wall_and_does_not_substitute_a_constant():
+    """Below ~0.72 m the contact point has left the frame. The two constants that already
+    exist for that band — `FILLS_FRAME_RANGE_M` and the width-prior fit cap — between them
+    deadlocked a live run for five seconds on 2026-08-19, because a planner cannot tell a
+    constant from a measurement. This returns `inf`, which `range_detections` drops."""
+    ranger = _ranger()
+    nearest = GO2.ground_range(GO2.cx, HEIGHT - 1.0)
+    assert 0.70 < nearest < 0.74, nearest
+    clipped = Detection(x1=800.0, y1=200.0, x2=1100.0, y2=HEIGHT - 1.0,
+                        score=0.2, label="chair")
+    range_m, source = ranger(clipped)
+    assert source == "ground-clipped"
+    assert range_m == math.inf
+    assert range_m != FILLS_FRAME_RANGE_M, "no fallback constant on this path"
+
+
+def test_a_box_that_is_not_vertically_clipped_is_already_past_the_near_wall():
+    """Why there is no separate minimum-range test: the vertical-clip refusal IS the near
+    wall. A box whose bottom edge is strictly inside the frame has its contact point
+    inside the frame too, so every range this reports is at least the near limit."""
+    ranger = _ranger()
+    nearest = GO2.ground_range(GO2.cx, HEIGHT - 1.0)
+    for range_m in (0.75, 0.9, 1.4):
+        got, source = ranger(_standing(range_m, 0.45))
+        assert source == "ground"
+        assert got >= nearest - 1e-9, (range_m, got, nearest)
+
+
+def test_the_ground_ranger_refuses_past_its_accuracy_ceiling():
+    """The far half of the tree's objection, enforced rather than argued. Beyond the
+    ceiling the wobble alone exceeds the stated tolerance, so there is no measurement to
+    report — and it is a refusal, not a widened radius."""
+    ranger = _ranger()
+    assert abs(ranger.range_limit_m - 1.696) < 0.01, ranger.range_limit_m
+    inside, source = ranger(_standing(ranger.range_limit_m * 0.95, 0.6))
+    assert source == "ground" and math.isfinite(inside)
+    outside, far_source = ranger(_standing(ranger.range_limit_m * 1.10, 0.6))
+    assert far_source == "ground-far"
+    assert outside == math.inf
+
+
+def test_the_ceiling_moves_with_the_two_numbers_the_caller_states():
+    """Neither knob has a default, and both have to bite. A tighter tolerance or a bigger
+    stated wobble must shrink the band."""
+    assert _ranger(tolerance=0.30).range_limit_m > _ranger(tolerance=0.18).range_limit_m
+    assert _ranger(wobble_rad=math.radians(3.0)).range_limit_m < _ranger().range_limit_m
+
+
+def test_a_ranger_with_no_usable_band_refuses_at_construction():
+    """A 2 deg wobble held to 5% has a ceiling of zero — inside the near wall, so it would
+    refuse every detection forever and look from outside like a detector that stopped
+    working. This repository has already shipped a gate that could never fire; a
+    configuration that can never succeed fails where it is written instead."""
+    with pytest.raises(ValueError) as refusal:
+        GroundRanger(GO2, math.radians(2.0), 0.05)
+    message = str(refusal.value)
+    assert "no usable range" in message, message
+    assert "max_error_frac" in message, "the refusal has to say what to change"
+    assert "raise the camera" in message, "and that the mount is the other lever"
+
+
+def test_the_ground_ranger_refuses_a_box_that_floats_above_the_horizon():
+    """A box whose bottom edge is above the skyline has no floor intersection at all.
+    That is junk rather than a near-field case, and it gets its own reason so a log can
+    tell the two apart."""
+    floating = Detection(x1=800.0, y1=100.0, x2=1000.0, y2=300.0, score=0.2, label="chair")
+    range_m, source = _ranger()(floating)
+    assert source == "ground-horizon"
+    assert range_m == math.inf
+
+
+def test_range_detections_is_byte_identical_without_a_ranger():
+    """The default-off pin. `ranger=None` is the signature this function has always had,
+    and every existing caller passes nothing."""
+    detections = [_box_for(3.0), _box_for(1.5), _box_for(0.9)]
+    with_default = range_detections(detections, MODEL)
+    explicit = [estimate_range(d, MODEL, PERSON_PRIOR) for d in detections]
+    assert len(with_default) == len(detections)
+    for ranged, (range_m, source) in zip(with_default, explicit):
+        assert ranged.range_m == range_m and ranged.source == source
+
+
+def test_range_detections_with_a_ranger_ignores_the_prior_entirely():
+    """A `ranger` replaces the size-prior estimator, so the prior must have NO effect.
+    If it leaked through, the class-agnostic route would still be class-bound and the
+    bug would be invisible — both answers look plausible."""
+    detections = [_standing(1.2, 0.6), _standing(1.5, 0.9)]
+    ranger = _ranger()
+    tiny = range_detections(detections, GO2, SizePrior(height_m=0.05, width_m=0.05),
+                            ranger=ranger)
+    huge = range_detections(detections, GO2, SizePrior(height_m=5.0, width_m=5.0),
+                            ranger=ranger)
+    assert [r.range_m for r in tiny] == [r.range_m for r in huge]
+    assert [round(r.range_m, 6) for r in tiny] == [1.2, 1.5]
+    assert {r.source for r in tiny} == {"ground"}
+
+
+def test_range_detections_drops_every_ground_refusal():
+    """`inf` is how this path says "no measurement", and the existing `isfinite` filter is
+    what makes that reach nothing downstream. A refusal that survived into the map would
+    be a landmark at infinity."""
+    ranger = _ranger()
+    usable = _standing(1.2, 0.6)
+    clipped = Detection(x1=800.0, y1=200.0, x2=1100.0, y2=HEIGHT - 1.0,
+                        score=0.2, label="chair")
+    too_far = _standing(ranger.range_limit_m * 1.5, 0.6)
+    kept = range_detections([clipped, usable, too_far], GO2, ranger=ranger)
+    assert len(kept) == 1, [(k.range_m, k.source) for k in kept]
+    assert abs(kept[0].range_m - 1.2) < 1e-6
+
+
+def test_implied_height_recovers_an_object_dimension_from_geometry_alone():
+    """The diagnostic that validated this estimator and would size the refusal it does not
+    have. Over the five sightings of the parked peer in the 2026-08-25 hero run that a
+    1.6 deg / 18% ceiling keeps, it implies 0.494 m against the 0.514 m the run was told.
+
+    Within a few per cent, not exact, and the residual is not noise: it is
+    `range_from_span`'s assumption that the extent is BISECTED by the line of sight,
+    which a short object standing below a 0.32 m lens is not. The bias is largest for the
+    shortest object here (0.30 m reads 0.29 m) and vanishes as the object's mid-height
+    approaches the lens. It is a bias on a diagnostic, not on the range.
+    """
+    ranger = _ranger()
+    for range_m, height_m in ((0.9, 0.30), (1.2, 0.60), (1.5, 0.90)):
+        implied = ranger.implied_height_m(_standing(range_m, height_m))
+        assert abs(implied - height_m) / height_m < 0.05, (range_m, height_m, implied)
+    # The bias has a direction and a cause; pin both so a real regression is separable.
+    short = ranger.implied_height_m(_standing(0.9, 0.30))
+    tall = ranger.implied_height_m(_standing(1.5, 0.90))
+    assert short < 0.30, short
+    assert abs(tall - 0.90) / 0.90 < abs(short - 0.30) / 0.30, (short, tall)
+
+
+def test_implied_height_is_none_for_anything_the_ranger_refused():
+    """A height read off a refusal would be a number with no measurement under it."""
+    ranger = _ranger()
+    clipped = Detection(x1=800.0, y1=200.0, x2=1100.0, y2=HEIGHT - 1.0,
+                        score=0.2, label="chair")
+    assert ranger.implied_height_m(clipped) is None
+    assert ranger.implied_height_m(_standing(ranger.range_limit_m * 1.5, 0.6)) is None
+
+
+def test_a_box_that_does_not_reach_the_floor_reads_far_and_nothing_here_catches_it():
+    """The residual risk, pinned so it cannot be forgotten. Something standing on a table,
+    or a box whose lower half the detector cut off, gives a shallower elevation and so a
+    LONGER range — the unsafe direction. No threshold is invented to guess at it; what
+    exists is `implied_height_m`, which reports an object taller than the thing could be,
+    and the `static_shaped` gates upstream."""
+    ranger = _ranger()
+    truthful = _standing(1.0, 0.5)
+    lifted = Detection(x1=truthful.x1, y1=truthful.y1, x2=truthful.x2,
+                       y2=truthful.y2 - 120.0, score=0.2, label="chair")
+    honest, _ = ranger(truthful)
+    optimistic, source = ranger(lifted)
+    assert source == "ground"
+    assert optimistic > honest * 1.3, (honest, optimistic)
+    assert ranger.implied_height_m(lifted) > 0.5, "the diagnostic is what would catch it"
 
 
 if __name__ == "__main__":
