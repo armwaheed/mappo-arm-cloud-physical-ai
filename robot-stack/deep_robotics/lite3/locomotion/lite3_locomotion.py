@@ -134,6 +134,15 @@ class Lite3Locomotion:
             raise RuntimeError("connect() first")
         return self._impl.velocity()
 
+    def battery_level(self) -> float:
+        """Return the battery percentage when the selected transport reports it."""
+        if self._impl is None:
+            raise RuntimeError("connect() first")
+        battery = getattr(self._impl, "battery_level", None)
+        if battery is None:
+            raise RuntimeError("selected Lite3 transport does not report battery level")
+        return battery()
+
     def mode(self) -> tuple:
         """Return the vendor state tuple when the selected transport exposes it."""
         if self._impl is None:
