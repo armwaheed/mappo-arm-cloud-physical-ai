@@ -446,6 +446,77 @@ def test_no_gate_means_no_behaviour_change():
     assert len(plain.tracks) == len(hooked.tracks) == 1
 
 
+# ── The shape verdict's two hand-offs inside the tracker ────────────────────
+def _shape_observation(person_shaped: bool, now: float = 0.0) -> Observation:
+    """One measurement of the SAME object at the SAME place, verdict as given.
+
+    Same bearing and range each time, so the association gate always matches and the
+    only thing under test is which verdict the track ends up carrying.
+    """
+    return observation_from(math.radians(10.0), 3.0, "height", "motorbike", ORIGIN,
+                            person_shaped=person_shaped)
+
+
+def test_a_new_track_carries_the_shape_verdict_of_its_first_observation():
+    """`_spawn` must copy it, even though `_obstacles` cannot see the difference.
+
+    CONFIRM_HITS is 2, so a track is corrected at least once before anything plans
+    against it, and the refresh in `_correct` masks a `_spawn` that dropped the flag —
+    deleting it there leaves the whole 315-test directory green. The value is still
+    wrong for the track's first frame, and anything that later reads an unconfirmed
+    track would read a peer as person-shaped. Pinned at the spawn, where it is visible.
+    """
+    tracker = ObstacleTracker(fov_rad=math.radians(85.27))
+    tracker.update([_shape_observation(person_shaped=False)], 0.0, *ORIGIN)
+    assert len(tracker.tracks) == 1 and not tracker.confirmed_tracks()
+    assert tracker.tracks[0].person_shaped is False
+
+
+def test_the_shape_verdict_is_refreshed_by_every_match_and_never_latches():
+    """Not sticky in EITHER direction, which is what `_correct` is for.
+
+    A peer that clips the frame edge reads person-shaped and holds the robot; when it
+    comes back whole it must stop holding. Latching True would park the robot for the
+    rest of the run on one clipped frame, and latching False would let a person through
+    on one bad box. Freezing the verdict at spawn — deleting the refresh — is invisible
+    to every other test in this directory.
+    """
+    tracker = ObstacleTracker(fov_rad=math.radians(85.27))
+    now = 0.0
+    # Spawns CLIPPED, so the flag starts on the stopping side.
+    tracker.update([_shape_observation(person_shaped=True)], now, *ORIGIN)
+    assert tracker.tracks[0].person_shaped is True
+
+    # Seen whole: the verdict must follow the measurement, not the history.
+    now += DT
+    tracker.predict(DT)
+    tracker.update([_shape_observation(person_shaped=False)], now, *ORIGIN)
+    assert len(tracker.tracks) == 1, "the verdict must not split the track"
+    assert tracker.confirmed_tracks()[0].person_shaped is False
+
+    # And back again, so this cannot pass by simply never being True.
+    now += DT
+    tracker.predict(DT)
+    tracker.update([_shape_observation(person_shaped=True)], now, *ORIGIN)
+    assert tracker.confirmed_tracks()[0].person_shaped is True
+
+
+def test_a_flipped_verdict_does_not_spawn_a_second_track():
+    """WHY THE FLAG IS NOT FOLDED INTO `label`. `_associate` gates on label equality, so
+    a verdict carried in the label would fail to associate the moment it flipped: the
+    peer would spawn a second track and leave the first coasting with an inflating
+    radius, which is a HOLD for a ghost. Carried beside the label, the flip costs
+    nothing — one track throughout, and the label unchanged."""
+    tracker = ObstacleTracker(fov_rad=math.radians(85.27))
+    now = 0.0
+    for shaped in (False, True, False, True):
+        tracker.predict(DT)
+        tracker.update([_shape_observation(person_shaped=shaped)], now, *ORIGIN)
+        now += DT
+    assert len(tracker.tracks) == 1, "one object must stay one track across four flips"
+    assert tracker.tracks[0].label == "motorbike"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

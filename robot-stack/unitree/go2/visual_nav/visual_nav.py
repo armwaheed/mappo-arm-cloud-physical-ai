@@ -410,8 +410,8 @@ class VisualNavigator:
                  static_map: StaticObstacleMap | None = None,
                  telemetry: TelemetryWriter | None = None,
                  stand_up_fn=None, lie_down_fn=None,
-                 raw_recorder: cv2.VideoWriter | None = None,
-                 expansion: ExpansionConsistency | None = None) -> None:
+                 expansion: ExpansionConsistency | None = None,
+                 raw_recorder: cv2.VideoWriter | None = None) -> None:
         self._loco = loco
         self._perception = perception
         self._planner = planner

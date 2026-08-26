@@ -98,6 +98,16 @@ What would actually separate them is bearing parallax, which is immune to radial
 motion — and degenerate straight ahead, which is where obstacles matter. That is a
 different piece of work and it is not this one.
 
+**A REJECTED TRACK LOSES ITS HOLD, NOT JUST ITS DISC.** This module was written before
+shape routing (:meth:`person_detector.RangedDetection.person_shaped`), and the two meet
+in ``visual_nav._obstacles``: that is both the only place this gate subtracts and the
+only place a person-shaped track becomes the hold that stops the robot. So withholding a
+track withholds a human-safety decision along with it, and the one-sidedness above does
+not cover this — a person crossing laterally at close range has a range that barely
+falls, which is exactly the shape of a verdict. Nothing in the corpus below measures how
+often that happens, because nothing in it moves. It is the strongest reason the switch
+stays off.
+
 Pure stdlib. ``python3 test_expansion.py``.
 """
 

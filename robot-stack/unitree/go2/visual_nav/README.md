@@ -410,7 +410,7 @@ Other limits worth stating plainly:
 | `calibrate_camera.py` | focal-length measurement, three methods (spin / marker / object) |
 | `replay.py` | run the detector + tracker over any video, no robot needed |
 | `telemetry.py` | machine-readable JSONL record of every control tick — the downstream interface |
-| `test_*.py` | **311 offline tests**, no robot: `for t in test_*.py; do python3 $t; done` |
+| `test_*.py` | **329 offline tests**, no robot: `for t in test_*.py; do python3 $t; done` |
 | `ruff.toml` | this directory's lint contract (line length, py38 target) |
 | `go2_front_camera.json` | the measured camera model for THIS unit |
 | `images/` | live-run and calibration GIFs, measured-data charts, setup photo |
@@ -458,7 +458,12 @@ frames of a PARKED one — net camera motion at most 14.7 px at 480-wide over an
 clip — so it measures the noise and says nothing about the signal. See
 `evidence/2026-08-25-expansion-as-a-false-positive-filter/` for what that corpus did and
 did not settle, including that the 18% class-agnostic false-alarm rate it was built to
-reduce turned out to be 192 mislabelled frames and is actually 0 of 705.
+reduce turned out to be 192 mislabelled frames and is 0 of 705 on that capture. ⚠️ That
+0 of 705 is one corridor, cleared and shot for the purpose, in the same session as the
+positives; scored cross-day on a furnished room the same read fires on **57%**
+(`detector/README.md`, 2026-08-26). The motivation is gone either way — the number the
+filter was built to reduce was never measured on the frames it claimed — but "the
+class-agnostic detector is clean" is not what replaces it.
 
 Two limits worth knowing before switching it on:
 
@@ -467,6 +472,14 @@ Two limits worth knowing before switching it on:
   radial target motion — and is degenerate straight ahead, which is where obstacles are.
 * **The dangerous half of the error is untouched.** A person prior on a small robot
   reports it too FAR, and this gate is deliberately silent on that.
+* ⛔ **A withheld track is withheld from the HOLD path as well.** Shape routing
+  (`person_detector.person_shaped`, PR #73) landed after this gate was written, and the
+  two compose in a way neither was designed for: `_obstacles` is the single place a
+  person-shaped track becomes the hold that stops the robot, and it is the same place
+  this gate subtracts. A real person whose range fails to fall as odometry demands — one
+  crossing laterally at close range is the case to worry about — would be dropped rather
+  than held. Nothing measured here says how often that is, which is one more reason the
+  switch is off.
 
 ## Telemetry — the interface for anything downstream
 
