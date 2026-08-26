@@ -6,3 +6,6 @@ venv/
 .DS_Store
 *.egg-info/
 .claude/worktrees/
+
+# Local dashboard virtualenv
+dashboard/.venv-device-connect-dashboard/
