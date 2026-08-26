@@ -39,7 +39,7 @@ from deep_robotics.lite3.locomotion.lite3_udp_locomotion import Lite3LinkLost
 _SIMPLE_COMMAND = struct.Struct("<3I")
 
 
-def _profile_data(**primitives):
+def _profile_data(*, measured_m_s=None, measured_rad_s=None, **primitives):
     return {
         "schema": AXIS_PROFILE_SCHEMA,
         "input_deadband": {
@@ -47,6 +47,8 @@ def _profile_data(**primitives):
             "yaw_rad_s": 0.10,
         },
         "allowed_gait_states": [0],
+        "measured_m_s": {} if measured_m_s is None else measured_m_s,
+        "measured_rad_s": {} if measured_rad_s is None else measured_rad_s,
         "evidence": {
             "forward_positive": "test-forward-positive",
             "forward_negative": "test-forward-negative",
@@ -175,6 +177,77 @@ def test_profile_maps_configured_primitives_and_preserves_input_deadbands():
     profile = _load_profile(_profile_data())
     assert profile.map_velocity(0.2, -0.2, 0.3) == AxisValues(7000, 13000, -10000)
     assert profile.map_velocity(0.01, 0.01, 0.01) == AxisValues()
+
+
+def test_the_linear_deadband_gates_the_vector_rather_than_each_axis():
+    """A per-axis gate drops the smaller component, which rotates the command."""
+    profile = _load_profile(_profile_data())  # linear deadband 0.05 m/s
+
+    # 0.071 m/s at 46 degrees. Both components straddle the gate; a per-axis gate passed
+    # only the lateral one and turned a near-diagonal into a full-scale 90 degree strafe.
+    axes = profile.map_velocity(0.049, 0.051, 0.0)
+    assert axes.forward == 7000 and axes.lateral == -13000
+
+    # 0.057 m/s at 45 degrees: neither component clears 0.05 on its own, the vector does.
+    assert profile.map_velocity(0.04, 0.04, 0.0) == AxisValues(7000, -13000, 0)
+
+    # 0.306 m/s at 11 degrees: nearly straight ahead, so it goes straight ahead.
+    assert profile.map_velocity(0.30, 0.06, 0.0) == AxisValues(7000, 0, 0)
+
+    # 0.346 m/s at 30 degrees: past halfway to the diagonal, so it takes the diagonal.
+    # The bearing is snapped to the NEAREST expressible direction, not down to the last
+    # one passed, and an exact 45 degrees stays on the diagonal rather than tipping to 90.
+    assert profile.map_velocity(0.30, 0.1732, 0.0) == AxisValues(7000, -13000, 0)
+    assert profile.map_velocity(0.20, 0.20, 0.0) == AxisValues(7000, -13000, 0)
+
+    # 0.042 m/s: below the gate as a vector, so neither axis moves.
+    assert profile.map_velocity(0.03, 0.03, 0.0) == AxisValues()
+
+    # Yaw is a third axis with its own vendor dead zone, not part of the linear vector.
+    assert profile.map_velocity(0.30, 0.0, 0.05) == AxisValues(7000, 0, 0)
+    assert profile.map_velocity(0.0, 0.0, 0.20) == AxisValues(0, 0, -10000)
+
+
+def test_the_mapping_is_sign_only_so_commanded_magnitude_never_reaches_the_wire():
+    """Pinned deliberately: this is the property that makes the preflight gate necessary.
+
+    ``Lite3Bindings._validate_axis_profile_speeds`` enforces ``--derate`` because
+    ``map_velocity`` cannot. If this ever starts scaling, that gate needs revisiting
+    rather than silently double-derating.
+    """
+    profile = _load_profile(_profile_data())
+    emitted = {profile.map_velocity(0.30 * derate, 0.0, 0.0).forward
+               for derate in (1.0, 0.6, 0.3, 0.2)}
+    assert emitted == {7000}
+
+
+def test_measured_primitive_speeds_must_name_a_real_primitive_and_be_positive():
+    """The measurement is what preflight compares against the derated envelope."""
+    profile = _load_profile(_profile_data(measured_m_s={"forward_positive": 0.729},
+                                          measured_rad_s={"yaw_positive": 0.55}))
+    assert profile.measured_speeds == {"forward_positive": 0.729, "yaw_positive": 0.55}
+    assert _load_profile(_profile_data()).measured_speeds == {}
+
+    cases = (
+        (_profile_data(forward_positive=None, measured_m_s={"forward_positive": 0.7}),
+         "has no primitive value"),
+        (_profile_data(measured_m_s={"yaw_positive": 0.5}), "expected one of"),
+        (_profile_data(measured_rad_s={"forward_positive": 0.5}), "expected one of"),
+        (_profile_data(measured_m_s={"forward_positive": 0.0}), "finite and positive"),
+        (_profile_data(measured_m_s={"forward_positive": float("inf")}),
+         "finite and positive"),
+        (_profile_data(measured_m_s=[["forward_positive", 0.7]]), "must be an object"),
+    )
+    for data, expected in cases:
+        try:
+            _load_profile(data)
+        except AxisProfileError as error:
+            assert expected in str(error), f"{error} does not mention {expected!r}"
+        else:
+            raise AssertionError(
+                f"accepted an unusable speed measurement: {data['measured_m_s']} "
+                f"{data['measured_rad_s']}"
+            )
 
 
 def test_profile_refuses_inside_deadzone_and_unavailable_primitives():
@@ -402,6 +475,41 @@ def test_axis_locomotion_refuses_undocumented_or_unhealthy_vendor_state():
             assert expected in str(error)
         else:
             raise AssertionError(f"accepted unsafe vendor state {(basic, gait, policy, motion)}")
+
+
+def test_set_velocity_checks_the_vendor_state_before_it_creates_a_streamer():
+    """``assert_axis_state_ready`` is well covered; that it is *called* was not.
+
+    Deleting the call in ``set_velocity`` left this suite at 10/10. The distinction
+    matters: everything else here is fresh and healthy, and the only thing wrong is a
+    gait the profile does not allow.
+    """
+    created = []
+
+    def streamer_factory(**_kwargs):
+        streamer = _Streamer()
+        created.append(streamer)
+        return streamer
+
+    clock = _Clock()
+    loco = Lite3AxisLocomotion(
+        axis_profile=_load_profile(_profile_data()),
+        motion_host="127.0.0.1",
+        command_port=43893,
+        state_port=0,
+        bind="127.0.0.1",
+        clock=clock,
+        streamer_factory=streamer_factory,
+    )
+    loco._state = SimpleNamespace(received_at=clock.now, error_state=0, mode=(6, 2, 0, 0))
+    try:
+        loco.set_velocity(0.2, 0.0, 0.0)
+    except Lite3LinkLost as error:
+        assert "gait_state=2" in str(error)
+    else:
+        raise AssertionError("commanded axis motion in a gait the profile does not allow")
+    assert created == []
+    assert loco._streamer is None
 
 
 def test_axis_connect_discards_legacy_command_socket_without_sending():

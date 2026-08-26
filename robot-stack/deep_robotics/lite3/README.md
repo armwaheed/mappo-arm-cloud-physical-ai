@@ -197,6 +197,55 @@ navigation command, emits 4 Hz heartbeat, zeros all axes after a 150 ms command 
 zeros on stop, failure, and shutdown. It neither changes control/moving mode nor falls back to
 legacy 320/325/321 velocity commands.
 
+#### ⚠️ The mapping is sign-only: commanded magnitude is discarded
+
+A profile holds one evidenced raw value per direction, so `map_velocity` reads the *sign* of the
+command and emits that primitive at full magnitude. It never scales. The consequence is that
+`--derate` and `--max-vx` do not reach the wire on this transport — every setting below emits the
+same raw axis value:
+
+| `--derate` | commanded `vx` | forward axis emitted |
+| ---: | ---: | ---: |
+| 1.0 | 0.300 m/s | `+32767` |
+| 0.6 | 0.180 m/s | `+32767` |
+| 0.3 | 0.090 m/s | `+32767` |
+| 0.2 | 0.060 m/s | `+32767` |
+
+That is the deliberate half of the design: this transport will not invent a raw value it has no
+physical evidence for, and interpolating between an evidenced `+32767` and an unevidenced zero is
+inventing one. The envelope is enforced somewhere else instead. A profile may declare the speed
+each primitive was measured to produce:
+
+```json
+"measured_m_s":   { "forward_positive": 0.729, "lateral_negative": 0.31 },
+"measured_rad_s": { "yaw_positive": 0.55 }
+```
+
+`--live` preflight then **refuses the run** when a declared speed exceeds `--max-vx × --derate`
+(or the `--max-vy` / `--max-wz` equivalent), so `--derate 0.2` against a primitive measured at
+0.729 m/s stops at the gate rather than walking 3.6× faster than the safety veto planned for.
+A primitive with no declared speed prints an unverified-envelope warning: it is not a claim that
+the envelope holds, only a record that nobody checked. Both fields are optional and both land in
+the run's telemetry alongside the profile's SHA-256.
+
+**The linear deadband applies to the vector, not to each axis.** `input_deadband.linear_m_s`
+gates `hypot(vx, vy)`, and the bearing is then snapped to the nearest of the eight `(forward,
+lateral)` sign pairs the mapping can express. A per-axis deadband instead drops the smaller
+component and rotates the command: at the shipped 0.05 m/s deadband, `(0.049, 0.051)` m/s is a
+46° command that clears only the lateral gate, so forward zeroes and the robot leaves as a
+full-scale 90° strafe — the same class of failure as the Go2 gait floor in #70. Snapping does
+not make a diagonal accurate; the executed bearing of one is set by the two primitives' measured
+speeds, not by the command. It does stop the direction depending on which of two independent
+thresholds a component happened to fall under. Yaw keeps its own scalar deadband — the vendor
+gives it its own dead zone, and it is not part of the linear vector.
+
+The counter-evidence, stated plainly: gating the vector rather than each axis makes *more*
+commands execute, not fewer. `(0.040, 0.040)` m/s — 0.057 m/s at 45° — used to fall under both
+per-axis gates and emit nothing; it now emits both primitives at full scale. Because the mapping
+is sign-only, `input_deadband.linear_m_s` is not a small-command filter: it is **the commanded
+magnitude at which a full-speed primitive fires**. Set it from that, not from what looks like a
+negligible velocity.
+
 Nonzero axes also require `error_state=0`, documented force-control `basic_state=6`,
 `policy_state=0`, a profile-allowed documented gait state, and `motion_state` 0 or 1. The
 operator establishes manual/moving state; the MAPPO process refuses an unexpected state rather

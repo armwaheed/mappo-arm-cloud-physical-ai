@@ -51,6 +51,15 @@ LATERAL_DEAD_ZONE = 12553
 YAW_DEAD_ZONE = 9553
 ALLOWED_MOVING_GAIT_STATES = frozenset((0, 2, 4, 5, 6, 13))
 
+_LINEAR_PRIMITIVES = ("forward_positive", "forward_negative",
+                      "lateral_positive", "lateral_negative")
+_YAW_PRIMITIVES = ("yaw_positive", "yaw_negative")
+
+#: The eight (forward, lateral) sign pairs this mapping can express, indexed by the
+#: commanded bearing in units of 45 degrees counter-clockwise from straight ahead.
+_LINEAR_DIRECTIONS = ((1, 0), (1, 1), (0, 1), (-1, 1),
+                      (-1, 0), (-1, -1), (0, -1), (1, -1))
+
 
 class AxisProfileError(ValueError):
     """An axis profile cannot safely convert a requested navigation component."""
@@ -96,6 +105,8 @@ class AxisProfile:
     yaw_deadband_rad_s: float
     allowed_gait_states: tuple[int, ...]
     evidence: tuple[tuple[str, str], ...] = ()
+    measured_m_s: tuple[tuple[str, float], ...] = ()
+    measured_rad_s: tuple[tuple[str, float], ...] = ()
 
     def __post_init__(self) -> None:
         """Reject unsafe direct construction as well as malformed JSON profiles."""
@@ -116,6 +127,8 @@ class AxisProfile:
             self._validate_primitive(name, value, dead_zone, evidence)
         self._validate_deadband("linear_m_s", self.linear_deadband_m_s)
         self._validate_deadband("yaw_rad_s", self.yaw_deadband_rad_s)
+        self._validate_measured("measured_m_s", self.measured_m_s, _LINEAR_PRIMITIVES)
+        self._validate_measured("measured_rad_s", self.measured_rad_s, _YAW_PRIMITIVES)
         if not self.allowed_gait_states:
             raise AxisProfileError("axis profile requires at least one allowed moving gait state")
         for gait_state in self.allowed_gait_states:
@@ -151,6 +164,11 @@ class AxisProfile:
         gait_states = data.get("allowed_gait_states")
         if not isinstance(gait_states, list):
             raise AxisProfileError("axis profile field 'allowed_gait_states' must be a list")
+        measured = {}
+        for field in ("measured_m_s", "measured_rad_s"):
+            measured[field] = data.get(field, {})
+            if not isinstance(measured[field], dict):
+                raise AxisProfileError(f"axis profile field {field!r} must be an object")
 
         return cls(
             forward_positive=primitives.get("forward_positive"),
@@ -163,6 +181,8 @@ class AxisProfile:
             yaw_deadband_rad_s=deadband.get("yaw_rad_s"),
             allowed_gait_states=tuple(gait_states),
             evidence=tuple(evidence.items()),
+            measured_m_s=tuple(measured["measured_m_s"].items()),
+            measured_rad_s=tuple(measured["measured_rad_s"].items()),
         )
 
     @staticmethod
@@ -190,6 +210,35 @@ class AxisProfile:
                 f"primitive {name} requires a non-empty evidence reference"
             )
 
+    def _validate_measured(self, field: str, entries: Any, allowed: tuple[str, ...]) -> None:
+        """Reject a speed measurement that names nothing, or measures an absent primitive."""
+        try:
+            items = dict(entries)
+        except (TypeError, ValueError) as error:
+            raise AxisProfileError(
+                f"axis profile {field} must contain primitive/speed pairs"
+            ) from error
+        for name, value in items.items():
+            if name not in allowed:
+                raise AxisProfileError(
+                    f"axis profile {field} names {name!r}; expected one of "
+                    + ", ".join(allowed)
+                )
+            if getattr(self, name) is None:
+                raise AxisProfileError(
+                    f"axis profile {field} measures {name}, which has no primitive value"
+                )
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not math.isfinite(float(value)) or value <= 0.0:
+                raise AxisProfileError(
+                    f"axis profile {field}.{name} must be finite and positive"
+                )
+
+    @property
+    def measured_speeds(self) -> dict[str, float]:
+        """Every measured primitive speed by name — m/s for linear, rad/s for yaw."""
+        return {**dict(self.measured_m_s), **dict(self.measured_rad_s)}
+
     @staticmethod
     def _validate_deadband(name: str, value: Any) -> None:
         if isinstance(value, bool) or not isinstance(value, (int, float)):
@@ -200,43 +249,74 @@ class AxisProfile:
     def map_velocity(self, vx: float, vy: float, yaw: float) -> AxisValues:
         """Map shared body-frame intent to explicitly evidenced vendor primitives.
 
+        **This mapping is sign-only: the commanded magnitude is discarded.** A profile
+        holds one evidenced raw value per direction, so every command past the deadband
+        leaves at whatever speed that one primitive was measured to produce. Nothing
+        here scales with ``vx``, which means nothing here honours ``--derate`` either:
+        the envelope is enforced at preflight instead, by refusing a profile whose
+        declared ``measured_m_s`` exceeds the derated ceiling. That is deliberate — a
+        raw axis value with no physical evidence behind it is not something this
+        transport will invent — but it has to be said out loud, because a filled-in
+        profile executes it silently.
+
+        Because only the sign survives, the linear pair is one vector rather than two
+        independent axes. Its magnitude gates both components together, and its bearing
+        is then snapped to the nearest of the eight directions in
+        :data:`_LINEAR_DIRECTIONS`. A per-axis deadband instead drops the smaller
+        component and *rotates the command*: at the shipped 0.05 m/s deadband,
+        ``(0.049, 0.051)`` m/s is a 46 degree command that clears only the lateral gate
+        and leaves as a 90 degree strafe. Snapping does not make a diagonal accurate —
+        the executed bearing of one is set by the two primitives' measured speeds, not
+        by the command — but it does stop the choice of direction depending on which of
+        two independent thresholds a component happened to fall under.
+
+        Yaw keeps its own scalar deadband. It is a third axis, not part of the linear
+        vector, and the vendor gives it its own dead zone.
+
+        Gating the vector makes *more* commands execute, not fewer: ``(0.040, 0.040)``
+        m/s used to fall under both per-axis gates and emit nothing. So
+        ``input_deadband.linear_m_s`` is not a small-command filter — it is the
+        commanded magnitude at which a full-speed primitive fires. Set it from that.
+
         The shared navigator uses positive lateral velocity and positive yaw for left. The
         vendor moving-mode axes use positive raw values for right, so those two axes invert.
         """
+        for name, value in (("forward", vx), ("lateral", vy), ("yaw", yaw)):
+            if not math.isfinite(value):
+                raise AxisProfileError(f"{name} navigation component must be finite")
+        forward_sign, lateral_sign = self._linear_direction(vx, vy)
+        yaw_sign = 0 if abs(yaw) < self.yaw_deadband_rad_s else (1 if yaw > 0.0 else -1)
         return AxisValues(
-            forward=self._map_component(
-                vx,
-                self.linear_deadband_m_s,
-                self.forward_positive,
-                self.forward_negative,
-                "forward",
+            forward=self._primitive(
+                forward_sign, self.forward_positive, self.forward_negative, "forward",
             ),
-            lateral=self._map_component(
-                vy,
-                self.linear_deadband_m_s,
-                self.lateral_negative,
-                self.lateral_positive,
-                "lateral",
+            lateral=self._primitive(
+                lateral_sign, self.lateral_negative, self.lateral_positive, "lateral",
             ),
-            yaw=self._map_component(
-                yaw,
-                self.yaw_deadband_rad_s,
-                self.yaw_negative,
-                self.yaw_positive,
-                "yaw",
+            yaw=self._primitive(
+                yaw_sign, self.yaw_negative, self.yaw_positive, "yaw",
             ),
         )
 
+    def _linear_direction(self, vx: float, vy: float) -> tuple[int, int]:
+        """Gate the linear pair on its magnitude, then snap it to the nearest of eight."""
+        if math.hypot(vx, vy) < self.linear_deadband_m_s:
+            return 0, 0
+        # Half-up, not round(): round() breaks ties to even, which resolves the boundary
+        # at 22.5 degrees clockwise and the one at 112.5 counter-clockwise. One rule at
+        # every boundary is worth one addition. (Which way a tie goes does not matter;
+        # a float landing exactly on one is not a case worth a test.)
+        octants = math.floor(math.atan2(vy, vx) / (math.pi / 4.0) + 0.5)
+        return _LINEAR_DIRECTIONS[octants % len(_LINEAR_DIRECTIONS)]
+
     @staticmethod
-    def _map_component(value: float, deadband: float, positive: int | None,
-                       negative: int | None, name: str) -> int:
-        if not math.isfinite(value):
-            raise AxisProfileError(f"{name} navigation component must be finite")
-        if abs(value) < deadband:
+    def _primitive(sign: int, positive: int | None, negative: int | None,
+                   name: str) -> int:
+        if sign == 0:
             return 0
-        primitive = positive if value > 0.0 else negative
+        primitive = positive if sign > 0 else negative
         if primitive is None:
-            direction = "positive" if value > 0.0 else "negative"
+            direction = "positive" if sign > 0 else "negative"
             raise AxisProfileError(
                 f"axis profile has no physically evidenced {direction} {name} primitive"
             )

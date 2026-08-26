@@ -82,6 +82,18 @@ def test_custom_colour_profile_requires_schema_and_evidence():
         assert profile.radius_m == 0.168
         assert dict(profile.evidence)["rtsp_frames"].startswith("green-marker")
 
+        # The schema half of this test's name. Every field below is valid, so only the
+        # version check can reject it — replacing that check with `if False:` used to
+        # leave the suite at 17/17.
+        for schema in ("colour-profile/v2", "", None):
+            path.write_text(json.dumps(_custom_profile_data(schema=schema)))
+            try:
+                load_colour_profile(path)
+            except ValueError as error:
+                assert "schema" in str(error) and COLOUR_PROFILE_SCHEMA in str(error)
+            else:
+                raise AssertionError(f"accepted a profile declaring schema {schema!r}")
+
         invalid = _custom_profile_data(evidence={})
         path.write_text(json.dumps(invalid))
         try:
