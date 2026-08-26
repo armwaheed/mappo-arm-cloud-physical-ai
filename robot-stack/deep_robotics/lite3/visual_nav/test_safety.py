@@ -202,6 +202,80 @@ def test_the_battery_poller_reads_the_udp_link_and_survives_it_being_down():
         monitor.stop()
 
 
+def test_a_source_that_returns_a_non_number_does_not_kill_the_poll_thread():
+    """``float()`` outside the ``try`` took the poller down while ``_polling`` stayed True.
+
+    The monitor then reports nothing for the rest of the run and never recovers, which
+    on a live run is indistinguishable from a link that never came up.
+    """
+    monitor = Lite3HealthMonitor(required=False, accept_missing_temperatures=True,
+                                 battery_source=lambda: "not a number")
+    monitor.start(wait_s=0.0)
+    try:
+        time.sleep(0.3)
+        assert monitor._poll_thread.is_alive(), "a bad reading killed the poller"
+        assert monitor.latest() is None  # and nothing was invented in its place
+    finally:
+        monitor.stop()
+
+
+def test_a_source_that_always_raises_is_reported_rather_than_swallowed_forever():
+    """An AttributeError on every poll is what went unnoticed until a robot would not move.
+
+    A raise still reads as "no sample" -- that part is right. What was missing is any
+    way to tell a link warming up from a source that is simply broken: the first raise
+    is now printed, and the count reaches the refusal so the operator is pointed at the
+    poller rather than at a ROS topic this path never subscribes to.
+    """
+    def always_raises():
+        raise AttributeError("'Lite3Locomotion' object has no attribute 'battery_level'")
+
+    monitor = Lite3HealthMonitor(required=True, accept_missing_temperatures=True,
+                                 battery_topic="/battery_state",
+                                 battery_source=always_raises)
+    monitor.start(wait_s=0.0)
+    try:
+        deadline = time.monotonic() + 3.0
+        while monitor._battery_source_raises < 2 and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert monitor._battery_source_raises >= 2, "raises are not counted"
+        reason = monitor.abort_reason()
+        assert "no attribute 'battery_level'" in reason, \
+            f"the refusal does not name what the source did: {reason}"
+        assert f"{monitor._battery_source_raises} polls" in reason, reason
+        assert "/battery_state" not in reason, \
+            f"the refusal names a ROS topic this path never subscribes to: {reason}"
+    finally:
+        monitor.stop()
+
+
+def test_the_poller_states_its_scale_so_a_genuine_low_reading_cannot_read_as_full():
+    """One word on the line this change touches reintroduces a fail-open.
+
+    ``scale="percent"`` -> ``"auto"`` survived the whole suite green. The state stream is
+    0..100, so a real 0.8% arrives as 0.8; guessed as a fraction it becomes 80% and the
+    20% abort floor never fires, on precisely the reading where it has to.
+    """
+    monitor = Lite3HealthMonitor(required=True, accept_missing_temperatures=True,
+                                 battery_source=lambda: 0.8)
+    monitor.start(wait_s=2.0)
+    try:
+        health = monitor.latest()
+        assert health is not None
+        assert abs(health.battery_soc_pct - 0.8) < 1e-9, \
+            f"0.8% was guessed as a fraction and read as {health.battery_soc_pct}%"
+        assert "battery 1%" in monitor.abort_reason()
+    finally:
+        monitor.stop()
+
+
+def test_the_ros_path_still_names_the_topic_it_actually_subscribes_to():
+    """The poller wording must not leak onto the path where a topic really is the feed."""
+    monitor, _clock = _monitor()
+    assert monitor.missing_reason() == (
+        "no battery on '/battery_state' or motor temperatures on '/motor_temperatures'")
+
+
 def test_the_poller_path_imports_no_ros():
     """The whole point of the UDP source is that a live Lite3 run needs no ROS runtime."""
     import sys as _sys

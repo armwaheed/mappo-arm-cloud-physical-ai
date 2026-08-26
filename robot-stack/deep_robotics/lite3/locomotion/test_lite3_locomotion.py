@@ -39,8 +39,14 @@ class _Implementation:
         self.calls.append("shutdown")
 
 
-def _loco(operator_ready=True):
-    implementation = _Implementation()
+class _BatteryImplementation(_Implementation):
+    def battery_level(self):
+        return 76.5
+
+
+def _loco(operator_ready=True, implementation=None):
+    if implementation is None:
+        implementation = _Implementation()
     captured = {}
 
     def factory(**kwargs):
@@ -89,6 +95,23 @@ def test_velocity_and_measured_state_delegate_to_the_shared_ros_binding():
     assert implementation.calls[-1] == (0.3, -0.1, 0.2)
     assert loco.pose() == "pose"
     assert loco.velocity() == (0.2, -0.1, 0.3)
+
+
+def test_battery_level_delegates_to_the_selected_transport():
+    loco, _implementation, _captured = _loco(implementation=_BatteryImplementation())
+    loco.connect()
+    assert loco.battery_level() == 76.5
+
+
+def test_battery_level_is_refused_clearly_when_the_transport_cannot_report_it():
+    loco, _implementation, _captured = _loco()
+    loco.connect()
+    try:
+        loco.battery_level()
+    except RuntimeError as exc:
+        assert "does not report battery level" in str(exc)
+        return
+    raise AssertionError("battery level was fabricated for a transport without one")
 
 
 def test_stop_repeats_zero_so_one_best_effort_sample_cannot_lose_the_stop():

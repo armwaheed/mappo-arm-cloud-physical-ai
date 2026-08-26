@@ -288,8 +288,14 @@ class Lite3UdpLocomotion:
         return self._require_state().reported_yaw_rate
 
     def battery_level(self) -> float:
-        """Battery percentage, which the vendor ROS bridge drops and this stream carries."""
-        return self._require_state().battery_level
+        """Battery percentage, which the vendor ROS bridge drops and this stream carries.
+
+        Freshness is enforced here, not left to the caller: the health poller reads this
+        at 10 Hz and re-stamps whatever it gets with its own clock, so a frozen snapshot
+        would keep the health gate green for the whole run. See
+        :meth:`_require_fresh_state`.
+        """
+        return self._require_fresh_state().battery_level
 
     def mode(self) -> tuple:
         """Documented vendor state tuple: basic state, gait, policy, and motion."""
@@ -310,6 +316,39 @@ class Lite3UdpLocomotion:
         state = self._state
         if state is None:
             raise Lite3LinkLost("no Lite3 state frame has arrived yet")
+        return state
+
+    def _require_fresh_state(self) -> _StateSnapshot:
+        """A snapshot proven current, rather than one that merely arrived at some point.
+
+        :meth:`_require_state` raises only when *no* frame has ever landed. After the
+        first one it returns the same frozen object forever, because ``_read_state``
+        stops publishing without clearing ``_state``: a dead link, a reader thread killed
+        by a raise on line ``self._publish(frame)``, and a robot sitting still are
+        indistinguishable through it.
+
+        That is safe for a reader whose caller can see the value is not moving, and
+        unsafe for one whose caller re-stamps it. ``Lite3HealthMonitor._poll`` does
+        exactly that, so without this bound ``HEALTH_STALE_S`` measures the age of the
+        poller's own stamp and can never elapse. The bound is the one
+        :meth:`set_velocity` already applies, for the same reason and from the same
+        field.
+
+        Used by :meth:`battery_level` and by the axis transport's vendor-state gate --
+        the two readers whose result authorises or continues motion. :meth:`pose`,
+        :meth:`velocity`, :meth:`mode` and :meth:`error_state` deliberately keep the
+        weaker :meth:`_require_state`: their callers either apply their own, tighter age
+        check first (``commissioning/robot_link.py`` at 0.3 s, ``set_velocity`` at
+        ``state_timeout_s``) or read them on the navigator's per-tick path, where an
+        unhandled raise would replace a diagnosed health abort with a traceback.
+        """
+        state = self._require_state()
+        age = self._clock() - state.received_at
+        if age > self._state_timeout_s:
+            raise Lite3LinkLost(
+                f"the Lite3 state stream has been silent for {age:.2f}s; the last "
+                f"snapshot is too old to report as a current reading."
+            )
         return state
 
     def _read_state(self) -> None:

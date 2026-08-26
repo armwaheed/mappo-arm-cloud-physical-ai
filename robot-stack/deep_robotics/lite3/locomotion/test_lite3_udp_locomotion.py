@@ -26,6 +26,7 @@ from deep_robotics.lite3.locomotion.lite3_locomotion import Lite3Locomotion
 from deep_robotics.lite3.locomotion.lite3_udp_locomotion import (
     FORWARD_VELOCITY_CODE,
     LATERAL_VELOCITY_CODE,
+    STATE_TIMEOUT_S,
     YAW_VELOCITY_CODE,
     Lite3LinkLost,
     Lite3UdpLocomotion,
@@ -226,6 +227,41 @@ def test_connect_then_decode_pose_velocity_and_battery():
     finally:
         stop_feeding.set()
         feeder.join(timeout=2.0)
+        loco.shutdown()
+        host.close()
+
+
+def test_a_frozen_snapshot_is_not_reported_as_a_current_battery_reading():
+    """A dead link must not read as a healthy battery.
+
+    ``_require_state`` raises only when *no* frame has ever arrived, so one frame used to
+    be enough for ``battery_level()`` to return that value forever.
+    ``Lite3HealthMonitor._poll`` re-stamps whatever it gets with its own clock at 10 Hz,
+    which makes ``HEALTH_STALE_S`` measure the age of the stamp rather than the age of
+    the frame. Measured before the fix: 5.01 s of silence -- ten times
+    ``STATE_TIMEOUT_S`` -- with ``abort_reason()`` still ``None`` on a frozen 50%.
+    """
+    host = _MotionHost()
+    clock = _Clock()
+    loco = _connected(host, clock=clock)
+    try:
+        loco._state = _Snapshot(loco)
+        assert abs(loco.battery_level() - 90.0) < 1e-9  # fresh, so it is reported
+
+        clock.now += STATE_TIMEOUT_S + 0.01  # the stream stopped; the snapshot did not
+        try:
+            loco.battery_level()
+        except Lite3LinkLost as error:
+            assert "silent for 0.51s" in str(error)
+        else:
+            raise AssertionError("a frozen snapshot was reported as a current battery")
+
+        # Deliberately unchanged. The navigator reads pose() on every tick with no
+        # handler, and the health gate above is what turns a dead link into a diagnosed
+        # abort rather than a traceback out of the control loop.
+        assert loco.pose().x == 0.0
+        assert loco.mode() == (3, 2, 1, 4)
+    finally:
         loco.shutdown()
         host.close()
 

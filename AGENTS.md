@@ -33,7 +33,9 @@ current, and it documents three mappings that are *not* the obvious ones.
 ## Before you say you are done
 
 Every suite prints one `  ok  <name>` line per test and a `<name>: N/N passed` summary.
-The counts below are those `ok` lines, measured on `main` at `526f0b0` on 2026-08-26.
+The counts below are those `ok` lines. CI re-measures every one of them on each push, so
+the block is the count for the commit you are reading rather than for a commit named here
+— which is what a fixed SHA stopped being the moment the next PR added a test.
 Run each line from the repository root; the parentheses are load-bearing, because the
 directories are nested and a bare `cd` would run the next line from inside the last one.
 
@@ -46,11 +48,11 @@ directories are nested and a bare `cd` would run the next line from inside the l
 (cd robot-stack/unitree/go2/controller && for t in test_*.py; do python3 "$t"; done)             #    6
 (cd robot-stack/unitree/go2/d1_arm && for t in test_*.py; do python3 "$t"; done)                 #   15
 (cd robot-stack/unitree/go2/lidar_sight && for t in test_*.py; do python3 "$t"; done)            #    7
-(cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 "$t"; done)     #   60
-(cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)     #   58
+(cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 "$t"; done)     #   64
+(cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)     #   64
 (cd robot-stack/deep_robotics/lite3/commissioning && for t in test_*.py; do python3 "$t"; done)  #  188
 (cd dashboard && for t in test_*.py; do python3 "$t"; done)                                      #  110
-#                                                                                          total 1036
+#                                                                                          total 1046
 ```
 
 Then `ruff check .` from inside **every** directory that holds a `ruff.toml` — there are
