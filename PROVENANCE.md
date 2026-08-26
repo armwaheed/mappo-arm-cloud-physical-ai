@@ -92,7 +92,8 @@ and empty this table again.
 | | files | what `rsync -a --delete` does |
 | --- | --- | --- |
 | **Edited here, fixed upstream in PR #37** | `visual_nav/`: `static_map.py`, `tracker.py`, `person_detector.py`, `goal.py`, `telemetry.py`, `visual_nav.py`, and the five matching `test_*.py` | **Silently reverts three live-run fixes and the instrumentation that found them.** No test fails: the tests are in the same files and go back with them. |
-| **Added here, absent upstream** | *(none)* | — |
+| **Edited here, NOT yet upstream — `--record-raw`** | `visual_nav/`: `visual_nav.py`, `test_visual_nav.py`, `README.md` | **Silently removes the only undecorated recording this stack can produce.** No test fails, for the same reason as the row above: the eight tests that pin it live in `test_visual_nav.py` and go back with it. Raised upstream as issue #52 in the repository named at the top of this file, in the same session it landed here. |
+| **Added here, absent upstream** | `visual_nav/`: `lateral_floor_probe.py`, `peer_scene_check.py` | `--delete` removes them outright. Neither has a `P` rule in the recipe below. |
 
 What is at stake if that happens, in one line each: the landmark lifetime that stops a
 converged landmark being deleted mid-approach (`MAX_MISSES` 8 → 25); the third trust tier

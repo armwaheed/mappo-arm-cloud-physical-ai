@@ -428,6 +428,23 @@ the goal in odom coordinates, the full obstacle list with positions, velocities 
 radii, the command with the planner's reason, and `perception.video_frame` — the index of
 the matching frame in `--record`, which is the join key to the footage.
 
+### `--record-raw`, for the half of the run that is data rather than evidence
+
+`--record` writes the frame **after** the HUD, the plan-view inset and a box around every
+detection are drawn on it. That is what makes it readable, and it is exactly what makes it
+useless as training data: the label is burned into the pixels a model would have to learn
+from, and the only frames without a box drawn on them are the ones the detector missed.
+
+```bash
+python3 visual_nav.py ... --record run.mp4 --record-raw run-raw.mp4 --telemetry run.jsonl
+```
+
+`--record-raw` writes the same frames **before** anything is drawn, at the same cadence —
+once per perception cycle — and with the same frame indices, so `perception.video_frame`
+addresses both files and the telemetry's `sightings` (box, label, score, range, bearing)
+become per-frame labels for the undecorated pixels. Off by default; either flag works
+without the other. See issue #77 for why the pixels are the irreplaceable half.
+
 This exists because the console log is prose and was measured not to carry what a
 consumer assumed. Across a 107-tick live run it printed the robot's pose **once**, in a
 start-up banner, and no camera data at all (`lat=235ms` is a frame's *age*). It is also

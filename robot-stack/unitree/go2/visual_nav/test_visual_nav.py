@@ -30,6 +30,9 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import inspect
 
+import numpy as np
+
+import person_detector
 import visual_nav
 from avoidance import (
     STATIC_SOFT_GAP_M,
@@ -773,6 +776,145 @@ def test_one_very_long_tick_cannot_authorise_the_whole_envelope():
     assert visual_nav.control_interval_s(0.0, 10.0, 0.1) == visual_nav.MAX_CONTROL_DT_S
     assert visual_nav.MAX_CONTROL_DT_S * 0.50 < 0.35, (
         "the cap must stay under a full-envelope jump in forward speed")
+
+
+# ── the raw recorder ─────────────────────────────────────────────────────────
+class _FakeWriter:
+    """Records what it was handed, and whether it was handed the same array twice."""
+
+    def __init__(self) -> None:
+        self.frames: list = []
+
+    def write(self, frame) -> None:
+        self.frames.append(frame.copy())
+
+    def release(self) -> None:
+        pass
+
+
+def _recording_navigator(recorder=None, raw_recorder=None) -> VisualNavigator:
+    return VisualNavigator(
+        loco=None, perception=None,
+        planner=DynamicWindowPlanner(config=PlannerConfig()),
+        tracker=ObstacleTracker(), goal_source=OdomWaypoint((0.0, 0.0, 0.0), 4.0),
+        health=_FakeHealth(ticks=999), config=NavConfig(),
+        recorder=recorder, raw_recorder=raw_recorder)
+
+
+def _perception_with_a_detection(seq: int = 1) -> PerceptionResult:
+    """A frame with one detection in it, so the annotated path has a box to draw."""
+    image = np.zeros((120, 160, 3), dtype=np.uint8)
+    image[:] = 30                                   # not black, so a drawn pixel shows
+    detection = person_detector.Detection(
+        x1=20.0, y1=20.0, x2=100.0, y2=90.0, score=0.8, label="person")
+    ranged = [person_detector.RangedDetection(
+        detection=detection, range_m=1.5, bearing_rad=0.0, source="height")]
+    return PerceptionResult(seq=seq, capture_time=time.monotonic(),
+                            pose=(0.0, 0.0, 0.0), observations=[], ranged=ranged,
+                            image=image, detect_ms=12.0)
+
+
+def test_the_raw_recording_has_nothing_drawn_on_it():
+    """The whole point. --record writes the label into the pixels; --record-raw does not.
+
+    Compared against the annotated frame from the SAME cycle rather than against a
+    hand-built expectation, so this cannot pass by agreeing with a stale idea of what
+    the overlay draws.
+    """
+    annotated, raw = _FakeWriter(), _FakeWriter()
+    navigator = _recording_navigator(recorder=annotated, raw_recorder=raw)
+    result = _perception_with_a_detection()
+    navigator._record(result, (0.0, 0.0, 0.0), Command(0.3, 0.0, 0.0, "goal", math.inf))
+
+    assert len(annotated.frames) == 1 and len(raw.frames) == 1
+    assert np.array_equal(raw.frames[0], result.image), "the raw frame was decorated"
+    assert not np.array_equal(annotated.frames[0], raw.frames[0]), (
+        "the annotated frame is identical to the raw one — the overlay drew nothing, "
+        "so this test would pass whatever _record did")
+    # and specifically: the box the detector drew is not in the raw frame
+    changed = np.argwhere(np.any(annotated.frames[0] != raw.frames[0], axis=2))
+    assert len(changed) > 50, f"only {len(changed)} pixels differ; expected an overlay"
+
+
+def test_the_source_frame_is_not_mutated_by_the_annotated_path():
+    """`result.image` is what the raw writer is handed, so the overlay must copy first.
+
+    If the annotated path ever drew in place, the raw file would silently become a
+    second copy of the annotated one — and the run would look fine.
+    """
+    raw = _FakeWriter()
+    navigator = _recording_navigator(recorder=_FakeWriter(), raw_recorder=raw)
+    result = _perception_with_a_detection()
+    before = result.image.copy()
+    navigator._record(result, (0.0, 0.0, 0.0), Command(0.3, 0.0, 0.0, "goal", math.inf))
+    assert np.array_equal(result.image, before), "the overlay drew on the source frame"
+
+
+def test_both_recorders_share_one_frame_index():
+    """Frame n of the raw file must be frame n of the annotated one, and of the telemetry.
+
+    Two counters would drift the moment one writer skipped a cycle, and the drift would
+    be invisible: both files would still play, and every join would be off by one.
+    """
+    annotated, raw = _FakeWriter(), _FakeWriter()
+    navigator = _recording_navigator(recorder=annotated, raw_recorder=raw)
+    indices = []
+    for seq in (1, 2, 3):
+        indices.append(navigator._record(_perception_with_a_detection(seq),
+                                         (0.0, 0.0, 0.0),
+                                         Command(0.3, 0.0, 0.0, "goal", math.inf)))
+    assert indices == [0, 1, 2], indices
+    assert len(annotated.frames) == len(raw.frames) == 3
+
+
+def test_the_raw_recorder_advances_on_perception_not_on_ticks():
+    """Same cadence rule as --record: once per perception cycle, not once per control tick.
+
+    A tick that consumes an already-recorded result must write nothing and return None,
+    or the video plays back faster than the run happened.
+    """
+    raw = _FakeWriter()
+    navigator = _recording_navigator(raw_recorder=raw)
+    result = _perception_with_a_detection(seq=4)
+    assert navigator._record(result, (0.0, 0.0, 0.0), None) == 0
+    assert navigator._record(result, (0.0, 0.0, 0.0), None) is None
+    assert navigator._record(result, (0.0, 0.0, 0.0), None) is None
+    assert len(raw.frames) == 1
+
+
+def test_the_raw_recorder_works_with_no_annotated_recorder():
+    """--record-raw alone still produces the join key, or the frames cannot be labelled.
+
+    The gate used to be `if self._recorder is None: return None`, which would have made
+    --record-raw on its own write frames that telemetry indexed as None.
+    """
+    raw = _FakeWriter()
+    navigator = _recording_navigator(raw_recorder=raw)
+    assert navigator._record(_perception_with_a_detection(), (0.0, 0.0, 0.0), None) == 0
+    assert len(raw.frames) == 1
+
+
+def test_neither_recorder_means_no_work_and_no_index():
+    navigator = _recording_navigator()
+    assert navigator._record(_perception_with_a_detection(), (0.0, 0.0, 0.0), None) is None
+
+
+def test_record_raw_is_off_by_default_and_is_its_own_flag():
+    parser = build_parser()
+    assert parser.parse_args([]).record_raw is None
+    assert parser.parse_args([]).record is None
+    args = parser.parse_args(["--record-raw", "raw.mp4"])
+    assert args.record_raw == "raw.mp4" and args.record is None
+
+
+def test_raw_recorder_is_the_last_parameter_so_the_vendored_call_still_works():
+    """`integration/mappo_drive.py` calls this constructor positionally through
+    `navigator_factory` and states that a new positional argument must not be added.
+    """
+    parameters = list(inspect.signature(VisualNavigator.__init__).parameters)
+    assert parameters[-1] == "raw_recorder", parameters
+    assert parameters.index("static_map") < parameters.index("raw_recorder")
+    assert parameters.index("telemetry") < parameters.index("raw_recorder")
 
 
 if __name__ == "__main__":
