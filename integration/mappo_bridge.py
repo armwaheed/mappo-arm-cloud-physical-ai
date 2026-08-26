@@ -199,18 +199,37 @@ def holds_the_robot(obstacle: dict) -> bool:
 
     Two tiers, and the boundary is deliberate.
 
-    A **person** always holds, by label — see :data:`HOLD_LABELS`. A **fast mover** always
-    holds, by speed, whatever it is — see :data:`POLICY_MAX_MOVER_SPEED_MPS`. Everything
-    else, including a parked or slowly-manoeuvring peer robot, goes to the policy as one
-    more disc in its ray cast, which is exactly how the policy already treats every mapped
-    landmark. It has never had a notion of what an obstacle *is*; only where it is and how
-    big it is.
+    A **person-shaped** obstacle always holds. A **fast mover** always holds, by speed,
+    whatever it is — see :data:`POLICY_MAX_MOVER_SPEED_MPS`. Everything else, including a
+    parked or slowly-manoeuvring peer robot, goes to the policy as one more disc in its
+    ray cast, which is exactly how the policy already treats every mapped landmark. It has
+    never had a notion of what an obstacle *is*; only where it is and how big it is.
 
     A mapped landmark never holds: that is the situation the policy exists to solve, and
     holding for it would make the integration a no-op in the one scene it was built for.
+
+    ⚠️ THE FIRST TIER IS SHAPE, NOT LABEL, AND THAT CHANGED FOR A REASON. It used to read
+    ``obstacle.get("label") in HOLD_LABELS``, which needed the detector to tell a person
+    from a robot. It cannot. On 12 consecutive live frames the Go2 Wheel was labelled
+    ``person`` every time, and across the 2026-08-24 corpus the same peer came back as
+    ``motorbike`` 613 times, ``chair`` 372, ``aeroplane`` 200 and ``person`` 109. So the
+    old rule failed in BOTH directions at once: it held for the peer this integration
+    exists to route, and it silently handed the policy anyone the detector called
+    ``motorbike``. The human-safety property it looked like it provided, it did not.
+
+    ``person_shaped`` is decided on box aspect by
+    ``person_detector.RangedDetection.person_shaped`` — scale-free, so it needs no range,
+    which matters because this robot has no independent one. It defaults to True here as
+    well as at every producer, so a telemetry tick from an older writer, or any obstacle
+    from a source that does not judge shape, lands on the stopping side.
+
+    :data:`HOLD_LABELS` is kept as a backstop rather than deleted: a producer that still
+    labels something ``person`` on purpose — the mesh, a future detector — keeps its hold.
     """
     if is_stationary(obstacle):
         return False
+    if obstacle.get("person_shaped", True):
+        return True
     if obstacle.get("label") in HOLD_LABELS:
         return True
     speed = math.hypot(obstacle.get("vx", 0.0) or 0.0, obstacle.get("vy", 0.0) or 0.0)

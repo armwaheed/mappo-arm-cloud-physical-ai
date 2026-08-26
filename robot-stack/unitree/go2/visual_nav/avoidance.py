@@ -197,6 +197,12 @@ class Obstacle:
     vy: float
     radius_m: float
     label: str = "person"      # for logs and the overlay; the planner ignores it
+    #: Whether this obstacle must STOP the robot rather than be routed to the MAPPO
+    #: policy. Judged on box SHAPE, not on ``label`` — see
+    #: ``person_detector.RangedDetection.person_shaped``. The PLANNER ignores this too;
+    #: it exists for ``mappo_bridge.holds_the_robot``. Defaults True so any producer
+    #: that does not set it lands on the stopping side.
+    person_shaped: bool = True
     #: Which subsystem produced this — ``"tracked"`` (a mover from the tracker) or
     #: ``"static"`` (a landmark from the map). The planner ignores it, but a consumer
     #: must not have to infer it. ``label`` cannot stand in: it is a CLASS name, and it

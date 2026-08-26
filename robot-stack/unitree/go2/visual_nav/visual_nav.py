@@ -326,9 +326,18 @@ class PerceptionWorker:
         detect_ms = (time.monotonic() - started) * 1000.0
 
         ranged = range_detections(detections, self._model, self._prior)
+        # SHAPE RIDES ALONGSIDE THE LABEL, it does not replace it. What must stop the
+        # robot is decided by `RangedDetection.person_shaped`, because this classifier
+        # cannot tell a person from a robot — the peer came back as `person` on 12 of 12
+        # live frames. But the label must stay the VOC class, because `_associate` gates
+        # on `obs.label != track.label`: a peer whose shape verdict flipped as it clipped
+        # the frame edge would fail to associate, spawn a second track, and leave the
+        # first coasting with an inflating radius, which is a HOLD for a ghost.
+        height, width = frame.image.shape[:2]
         observations = [
             observation_from(item.bearing_rad, item.range_m, item.source,
-                             item.label, pose)
+                             item.label, pose,
+                             person_shaped=item.person_shaped(width, height))
             for item in ranged
         ]
         # Ranged with the PROP's size prior, not the person's — the two detectors find
@@ -489,7 +498,7 @@ class VisualNavigator:
                      vx=float(track.state[2]), vy=float(track.state[3]),
                      radius_m=(self._planner.config.obstacle_radius_m
                                + track.position_sigma + extrapolation_sigma),
-                     label=track.label,
+                     label=track.label, person_shaped=track.person_shaped,
                      kind="tracked", object_id=f"track-{track.track_id}")
             for track in self._tracker.confirmed_tracks()
         ]
@@ -500,7 +509,7 @@ class VisualNavigator:
             obstacles.extend(
                 Obstacle(x=landmark.x, y=landmark.y, vx=0.0, vy=0.0,
                          radius_m=landmark.planning_radius_m, label=landmark.label,
-                         soft_gap_m=STATIC_SOFT_GAP_M,
+                         person_shaped=False, soft_gap_m=STATIC_SOFT_GAP_M,
                          hard_gap_m=STATIC_HARD_GAP_M,
                          kind="static", object_id=f"landmark-{landmark.landmark_id}")
                 for landmark in self._static_map.confirmed())
@@ -914,7 +923,8 @@ def build_goal_source(args, camera_model: FisheyeCamera, pose_fn) -> GoalSource:
                                   crop=args.goal_crop, refresh_s=args.goal_refresh,
                                   min_score=args.goal_confidence)
     return ArucoGoal(camera_model, marker_id=args.marker_id,
-                     marker_size_m=args.marker_size)
+                     marker_size_m=args.marker_size,
+                     detect_scale=args.goal_detect_scale)
 
 
 def warn_if_below_gait_floor(max_vx: float) -> bool:
@@ -968,6 +978,12 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
                          "is a person's; anything smaller wants its own number, because "
                          "inflating a small object to person-size is what turns a "
                          "passable gap into a local minimum")
+    ap.add_argument("--obstacle-width", type=float, default=None,
+                    help="obstacle width in metres. Without it the width is inferred "
+                         "from a standing adult's aspect ratio, which for a low wide "
+                         "robot is about half the truth and ranges a vertically "
+                         "clipped box about twice too NEAR — measured at 0.09-0.14 m, "
+                         "inside this robot's own footprint")
 
     static = ap.add_argument_group("static obstacles")
     static.add_argument("--static-prop", default=None, choices=sorted(PROFILES),
@@ -983,6 +999,13 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
     goal_group = ap.add_argument_group("goal")
     goal_group.add_argument("--marker-id", type=int, default=DEFAULT_MARKER_ID,
                             help="ArUco id to walk toward")
+    goal_group.add_argument("--goal-detect-scale", type=float, default=0.5,
+                            metavar="FRACTION",
+                            help="downscale the frame by this before ArUco detection. "
+                                 "0.5 is ~4x cheaper and is the default, but it costs "
+                                 "range: detection needs about 23.7 px of marker, so a "
+                                 "105 mm marker stops locking past roughly 3.0 m. Pass "
+                                 "1.0 to trade that latency back for range")
     goal_group.add_argument("--marker-size", type=float, default=DEFAULT_MARKER_SIZE_M,
                             help="printed marker's black square, in metres")
     goal_group.add_argument("--waypoint", type=float, nargs=2, metavar=("FWD", "LEFT"),
@@ -1113,7 +1136,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                                   confidence=args.confidence,
                                   classes=tuple(args.classes))
         if args.obstacle_height is not None:
-            prior = SizePrior.of_height(args.obstacle_height)
+            prior = SizePrior.of_height(args.obstacle_height, args.obstacle_width)
         else:
             prior = SizePrior()
             if set(args.classes) != set(DYNAMIC_CLASSES):

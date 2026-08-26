@@ -94,7 +94,13 @@ def test_a_peer_arrives_in_the_shape_visual_nav_already_emits():
         assert not link.holds, link.reason()
         peer = link.obstacles[0]
         # Exactly the fields `telemetry._obstacle_record` writes for a planner Obstacle.
-        assert set(peer) == {"label", "kind", "id", "x", "y", "vx", "vy", "radius_m"}
+        # `person_shaped` is in that set and must stay in both: it is the field
+        # `mappo_bridge.holds_the_robot` routes on, and it FAILS SAFE to True, so a peer
+        # that lost it here would silently stop the robot rather than reach the policy —
+        # the exact failure this test exists to catch, in its quietest form.
+        assert set(peer) == {"label", "kind", "id", "person_shaped",
+                             "x", "y", "vx", "vy", "radius_m"}
+        assert peer["person_shaped"] is False
         assert peer["id"] == f"peer-{PEER}"
 
 

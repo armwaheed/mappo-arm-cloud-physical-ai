@@ -22,10 +22,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mappo_bridge import (
+    HOLD_LABELS,
     VELOCITY_FRAME,
     BridgeReport,
     audit,
     external_hold,
+    holds_the_robot,
     is_stationary,
     policy_objects,
     robot_input,
@@ -40,10 +42,19 @@ BIN = {"label": "bin", "kind": "static", "id": "landmark-1",
 WALKER = {"label": "person", "kind": "tracked", "id": "track-7",
           "x": 3.0, "y": 1.0, "vx": 0.6, "vy": 0.0, "radius_m": 0.5}
 STOPPED_PERSON = {**WALKER, "vx": 0.0, "vy": 0.0}
-# A peer quadruped: a track, but not a person, and barely moving.
+# A peer quadruped: a track, but not person-SHAPED, and barely moving. Note the label
+# is deliberately a plausible-but-wrong one — routing must not depend on it. On live
+# frames this same peer came back labelled `person` 12 times out of 12.
 PARKED_PEER = {"label": "lite3", "kind": "tracked", "id": "track-3",
+               "person_shaped": False,
                "x": 2.5, "y": -0.4, "vx": 0.0, "vy": 0.0, "radius_m": 0.35}
 SHUFFLING_PEER = {**PARKED_PEER, "vx": 0.10, "vy": 0.05}
+# A PERSON the detector mislabelled. Across the 2026-08-24 corpus the peer came back as
+# `motorbike` 613 times, so the label lands on people too — and `motorbike` is not in
+# HOLD_LABELS. Shape is the only thing standing between this and the policy.
+MISLABELLED_PERSON = {"label": "motorbike", "kind": "tracked", "id": "track-9",
+                      "person_shaped": True,
+                      "x": 2.0, "y": 0.2, "vx": 0.05, "vy": 0.0, "radius_m": 0.5}
 CHARGING_PEER = {**PARKED_PEER, "vx": 0.60, "vy": 0.00}
 
 
@@ -345,3 +356,28 @@ if __name__ == "__main__":
         t()
         print(f"  ok  {t.__name__}")
     print(f"mappo_bridge: {len(tests)}/{len(tests)} passed")
+
+
+
+def test_a_person_shaped_obstacle_holds_even_when_its_label_is_not_in_hold_labels():
+    """THE HOLE THIS CLOSES. Every other fixture here has a label that agrees with its
+    shape, so deleting the shape check from `holds_the_robot` used to leave the whole
+    suite green — the routing rule was unpinned. This is a person the detector called
+    `motorbike`, which is not in HOLD_LABELS: under the old label-only rule the robot
+    would have handed them to the policy, silently, at 0.05 m/s.
+
+    Delete the `person_shaped` branch in `holds_the_robot` and this fails.
+    """
+    assert MISLABELLED_PERSON["label"] not in HOLD_LABELS, "the premise of the test"
+    assert holds_the_robot(MISLABELLED_PERSON) is True
+    assert [o["object_id"] for o in policy_objects(
+        _tick(obstacles=[MISLABELLED_PERSON]))] == [], "must never reach the policy"
+
+
+def test_shape_defaults_to_holding_when_a_producer_omits_it():
+    """An older telemetry writer, or any producer that does not judge shape, must land
+    on the STOPPING side rather than being waved through. `holds_the_robot` reads the
+    field with a default of True for exactly this."""
+    legacy = {k: v for k, v in PARKED_PEER.items() if k != "person_shaped"}
+    assert "person_shaped" not in legacy
+    assert holds_the_robot(legacy) is True

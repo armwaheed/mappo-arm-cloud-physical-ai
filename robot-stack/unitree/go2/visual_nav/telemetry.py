@@ -159,7 +159,11 @@ class TelemetryWriter:
             # happened to work only while the scene had exactly one mapped prop and one
             # detector class. `id` is the identity that lets a consumer follow one
             # object across ticks instead of re-associating by position.
+            # `person_shaped` is the ROUTING decision and is deliberately separate from
+            # `label`: the label is what VOC guessed, which on this peer was `person` on
+            # 12 of 12 live frames, and `mappo_bridge` must not route on it.
             "obstacles": [{"label": o.label, "kind": o.kind, "id": o.object_id,
+                           "person_shaped": bool(o.person_shaped),
                            "x": _finite(o.x), "y": _finite(o.y),
                            "vx": _finite(o.vx), "vy": _finite(o.vy),
                            "radius_m": _finite(o.radius_m)}
