@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import io
 import json
 import math
 import os
@@ -33,15 +34,18 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
                                 "visual_nav"))
-from avoidance import Limits, Obstacle, PlannerConfig
+from avoidance import MIN_GAIT_COMMAND_M_S, Command, Limits, Obstacle, PlannerConfig
 
 from mappo_bridge import external_hold
 from mappo_drive import (
     _STOP_REASONS,
+    SUB_FLOOR_PROGRESS_FRACTION,
+    SUB_FLOOR_WINDOW_S,
     MappoPlanner,
     _add_arguments,
     _record_refusal,
     peer_navigator,
+    platform_gait_floor,
     split_argv,
 )
 from mappo_policy import (
@@ -102,12 +106,47 @@ class _StubRunner:
 
 def _planner(supervised: bool = True, limits: Limits | None = None,
              servo: HeadingServo | None = None, runner=None,
-             gait_floor_m_s: float = 0.0) -> MappoPlanner:
-    planner = MappoPlanner(limits or Limits(), PlannerConfig(robot_radius_m=0.25),
-                           runner or PolicyRunner(DEFAULT_PACKAGE, servo=servo),
-                           supervised=supervised, gait_floor_m_s=gait_floor_m_s)
+             gait_floor_m_s: float = 0.0,
+             platform_floor_m_s: float = 0.0) -> MappoPlanner:
+    # Built with stdout swallowed: the constructor states how the floor and the envelope
+    # compose, which is a run-log line and would otherwise interleave with the `  ok  `
+    # lines this suite's output is read as. The announcement itself is asserted by
+    # `test_a_floor_above_the_envelope_is_announced_when_the_planner_is_built`, which
+    # constructs the planner directly for exactly that reason.
+    with contextlib.redirect_stdout(io.StringIO()):
+        planner = MappoPlanner(limits or Limits(), PlannerConfig(robot_radius_m=0.25),
+                               runner or PolicyRunner(DEFAULT_PACKAGE, servo=servo),
+                               supervised=supervised, gait_floor_m_s=gait_floor_m_s,
+                               platform_floor_m_s=platform_floor_m_s)
     planner.attach(_Loco())
     return planner
+
+
+def _drive_sub_floor(planner: MappoPlanner, speed: float, ticks: int,
+                     delivered: float, dt: float = 0.33) -> str:
+    """Feed ``ticks`` commands of ``speed`` m/s, moving the pose at ``delivered`` m/s.
+
+    Straight into :meth:`MappoPlanner._note_sub_floor` rather than through ``plan()``,
+    because what is under test is the JUDGEMENT and a scripted pose is the only way to
+    replay a measured run — the planner would otherwise re-decide the command from a
+    scene, which is the thing that has to be held constant. ``plan()``'s own arrival at
+    this method is pinned separately, on each of its branches, by the tests below.
+
+    Returns everything the planner printed while it was judging.
+    """
+    now, x = 100.0, 0.0
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        for _ in range(ticks):
+            # `plan()` counts the tick before it judges it, and `report()` prints the
+            # sub-floor count as a fraction of it. Counting here keeps that denominator
+            # true, so a report string asserted in a test is the one a run would print.
+            planner.counts["ticks"] += 1
+            planner._note_sub_floor(Command(speed, 0.0, 0.0, reason="veto-avoid",
+                                            gap_m=1.0), (x, 0.0, 0.0), now)
+            x += delivered * dt
+            now += dt
+    return out.getvalue()
 
 
 # ── The veto ────────────────────────────────────────────────────────────────
@@ -862,6 +901,372 @@ def test_the_transform_is_the_enabling_flag_so_it_can_never_be_absent():
     assert parser.parse_args([]).peer_odom_align is None
     assert parser.parse_args(["--peer-odom-align", "2,1,180"]).peer_odom_align == "2,1,180"
     assert parser.parse_args([]).peer_timeout == PEER_TIMEOUT_S
+
+
+# ── The floor is checked on the command, not just on the envelope (issue #26) ──
+def test_the_floor_is_checked_on_the_vetoed_command_and_not_only_on_the_policys():
+    """THE FINDING. ``_at_least_walking_pace`` lives inside ``plan()``'s POLICY branch,
+    so the command that gets issued when the veto fires — the planner's own — has never
+    been compared to the floor at all. That is the command issue #26 measured crawling
+    at a 0.137 m/s mean over 32 ticks through a 0.93 m gap while the stall gate blamed
+    the tether.
+
+    A 0.93 m gap between two bins, closed to the width that makes the policy's proposal
+    infeasible. The planner's own answer is 0.035 m/s — a tenth of the floor, and below
+    ``visual_nav.PROGRESS_MIN_COMMAND_M_S`` too, so the stall gate calls it "not asking
+    it to go anywhere" and NOTHING in the stack has an opinion about it.
+
+    Delete the ``_note_sub_floor`` call from ``plan()`` and this reads zero.
+    """
+    bins = [Obstacle(x=1.15, y=+0.50, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
+                     object_id="bin-left"),
+            Obstacle(x=1.15, y=-0.43, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
+                     object_id="bin-right")]
+    planner = _planner(supervised=True, runner=_StubRunner((0.35, 0.0, 0.0)),
+                       platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    command = planner.plan((0.0, 0.0, 0.0), (4.0, 0.0), (0.20, 0.0, 0.0), bins,
+                           control_dt=0.33)
+    assert command.reason.startswith("veto-"), command.reason
+    assert 0.0 < math.hypot(command.vx, command.vy) < MIN_GAIT_COMMAND_M_S, \
+        f"the scene must produce a sub-floor PLANNER command: {command}"
+    assert planner.counts["sub_floor"] == 1, planner.counts
+    assert planner.counts["speed_raised"] == 0, \
+        "the planner's command must be reported, never scaled — issue #26 measured that"
+
+
+def test_the_floor_is_checked_on_a_policy_driven_command_too():
+    """The other branch, so "on every path" is two observations rather than one. A
+    policy command below the floor with the raising knob OFF — the default, and what
+    every recorded run used — is still counted."""
+    planner = _planner(supervised=False, runner=_StubRunner((0.10, 0.0, 0.0)),
+                       platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+    assert command.reason == "policy" and command.vx == 0.10
+    assert planner.counts["sub_floor"] == 1, planner.counts
+
+
+def test_a_sub_floor_command_that_goes_nowhere_is_named_before_the_tether_can_be():
+    """The measured stall: ``commanded 0.13 m/s for 4.1s and moved 0.04 m of an expected
+    0.54 m``, and the stack then said *"Something is holding the robot — check the
+    tether"*. It was not the tether.
+
+    Two things are pinned. First that it fires at all on those numbers. Second that it
+    fires INSIDE ``visual_nav.PROGRESS_WINDOW_S`` (4.0 s), because that gate ENDS THE
+    RUN with the tether message and an explanation printed after the outcome line is an
+    explanation nobody reads.
+
+    Raise ``SUB_FLOOR_WINDOW_S`` to 4.0 or above and this fails on the ordering even
+    though the diagnosis is still right."""
+    planner = _planner(platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    printed = _drive_sub_floor(planner, speed=0.137, ticks=8, delivered=0.010)
+    assert planner.counts["sub_floor_stalled"] == 1, planner.counts
+    assert SUB_FLOOR_WINDOW_S < 4.0, \
+        "the stack's stall gate fires at 4.0 s and ends the run; this must precede it"
+    assert "NOT THE TETHER" in printed, printed
+    assert "0.137 m/s" in printed and "gait floor" in printed, printed
+    assert "8/8 ticks commanded below the gait floor" in planner.report(), \
+        planner.report()
+    assert "(1 2s window of it covering no ground — THE GAIT FLOOR, NOT THE TETHER)" \
+        in planner.report(), planner.report()
+
+
+def test_the_run_that_arrived_below_the_floor_is_counted_and_not_faulted():
+    """THE FALSIFIER, and it is in issue #26's own body. Run C of 2026-08-18 sustained a
+    mean of 0.295 m/s with **54 of 54 ticks below the 0.35 floor**, minimum 0.189, and
+    walked 3 m to the goal. Any rule that faulted on "sub-floor" alone would have killed
+    an arriving run, which is why this gate is not one: it triggers on *commanded to move
+    and not moving*, and uses the floor only to pick which explanation to print.
+
+    The count still rises to 54. That is the point of counting it separately — issue
+    #26's proposal 2 is to measure the real floor, and this pair of numbers across runs
+    is the measurement. 0.35 is "the lowest speed observed to work", not a threshold.
+
+    Drop the ``moved >= SUB_FLOOR_PROGRESS_FRACTION * travel`` test and this run is
+    faulted."""
+    planner = _planner(platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    # 0.240 m/s delivered of 0.295 commanded is the 0.70 ratio measured on this robot
+    # at full command; run C walked 3 m.
+    printed = _drive_sub_floor(planner, speed=0.295, ticks=54, delivered=0.240)
+    assert planner.counts["sub_floor"] == 54, planner.counts
+    assert planner.counts["sub_floor_stalled"] == 0, \
+        "a run that arrived must not be faulted for the speed it arrived at"
+    assert printed == "", printed
+    assert "54/54 ticks commanded below the gait floor" in planner.report(), \
+        planner.report()
+    assert "NOT THE TETHER" not in planner.report(), planner.report()
+
+
+def test_the_progress_bar_is_the_stacks_own_and_a_crawl_that_delivers_clears_it():
+    """The boundary, so ``SUB_FLOOR_PROGRESS_FRACTION`` is load-bearing rather than
+    decorative. At exactly the fraction the run passes; a hair under it does not."""
+    over = _planner(platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    _drive_sub_floor(over, speed=0.200, ticks=10,
+                     delivered=0.200 * SUB_FLOOR_PROGRESS_FRACTION * 1.05)
+    assert over.counts["sub_floor_stalled"] == 0, over.counts
+    under = _planner(platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    _drive_sub_floor(under, speed=0.200, ticks=10,
+                     delivered=0.200 * SUB_FLOOR_PROGRESS_FRACTION * 0.95)
+    assert under.counts["sub_floor_stalled"] >= 1, under.counts
+
+
+def test_the_commanded_travel_is_what_was_asked_for_over_each_interval():
+    """A planner that is actively slowing down commands a DIFFERENT speed every tick, and
+    which one is credited to which interval decides the verdict.
+
+    The loop issues a command and then sleeps, so the command in force over
+    ``[previous, now]`` is the one decided at ``previous``. Crediting this tick's command
+    to the last tick's interval is an off-by-one, and on a collapsing command it is not a
+    rounding error: asked for 0.34 m/s and then 0.01 for seven ticks, the honest total is
+    0.132 m and the off-by-one says 0.023 m — 5.7x apart, and the robot moved 0.015 m,
+    which is between them. Correct accounting faults it; the off-by-one lets it pass.
+
+    Replace ``held`` with ``speed`` in the integration and this reads zero.
+    """
+    planner = _planner(platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    speeds = [0.34] + [0.01] * 7
+    dt, now, x = 0.33, 100.0, 0.0
+    with contextlib.redirect_stdout(io.StringIO()):
+        for i, speed in enumerate(speeds):
+            planner._note_sub_floor(Command(speed, 0.0, 0.0, reason="veto-avoid",
+                                            gap_m=1.0), (x, 0.0, 0.0), now)
+            # 0.015 m of travel in total, all of it while the command was still 0.34.
+            x = 0.015 if i == 0 else x
+            now += dt
+    assert planner.counts["sub_floor_stalled"] == 1, planner.counts
+
+
+def test_a_commanded_stop_is_not_a_sub_floor_command():
+    """A held robot is stationary on purpose, and a stop has no speed to be under a
+    floor. Counting it would fault every peer hold, every stale-input tick and every
+    arrival — and the peer hold is the one branch of ``plan()`` that exists to stop."""
+    planner = _planner(platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    printed = _drive_sub_floor(planner, speed=0.0, ticks=30, delivered=0.0)
+    assert planner.counts["sub_floor"] == 0 and planner.counts["sub_floor_stalled"] == 0
+    assert printed == ""
+
+
+def test_a_strafe_at_the_lateral_floor_is_not_reported_as_sub_floor():
+    """0.20 m/s of pure strafe walks this robot — three repeats of three, 0.076-0.087 m
+    each — and 0.20 is below the FORWARD floor of 0.35. Judging the speed against the
+    forward number would report every legal crab step as sub-floor, which is the same
+    axis confusion the ``vx <= 0.0`` guard had. The ellipse is what makes it right."""
+    planner = _planner(platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    now = 100.0
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _ in range(20):
+            planner._note_sub_floor(Command(0.0, 0.20, 0.0, reason="policy", gap_m=1.0),
+                                    (0.0, 0.0, 0.0), now)
+            now += 0.33
+    assert planner.counts["sub_floor"] == 0, planner.counts
+
+
+def test_the_sub_floor_window_re_arms_so_a_second_stall_is_reported_too():
+    """A GATE THAT FIRES ONCE IS A GATE THAT MISSES THE SECOND FAILURE. The window is
+    judged and restarted whatever the verdict, so a robot that stalls, is nudged, and
+    stalls again is caught twice; only the banner is latched, because eight copies of it
+    would bury the run log it is printed into.
+
+    Latch the whole check on ``_sub_floor_announced`` and the count stops at one.
+
+    The count is ONE PER WINDOW, not one per tick, which is what makes it a duration: 40
+    ticks of 0.33 s is 13.2 s, five whole windows of 2.0 s. Drop the ``_sub_floor = None``
+    that restarts the window and every tick after the first stall re-judges the whole run
+    and is counted again — 34 rather than 5, from the same 13.2 s of standing still.
+    """
+    planner = _planner(platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    ticks, dt = 40, 0.33
+    printed = _drive_sub_floor(planner, speed=0.137, ticks=ticks, delivered=0.0,
+                               dt=dt)
+    windows = int(ticks * dt / SUB_FLOOR_WINDOW_S)
+    assert planner.counts["sub_floor_stalled"] in (windows - 1, windows), \
+        f"{planner.counts['sub_floor_stalled']} verdicts over {windows} windows"
+    assert f"({planner.counts['sub_floor_stalled']} 2s windows" in planner.report(), \
+        planner.report()
+    assert printed.count("NOT THE TETHER") == 1, "the banner is printed once per run"
+
+
+# ── The floor ellipse is the FLOOR's, not the envelope's (issues #26 + #103) ──
+def test_the_measured_go2_pair_survives_the_floor_projection_exactly():
+    """The projection was written when the floor and the envelope were provably the same
+    curve — ``MIN_GAIT_COMMAND_M_S`` 0.35 == ``max_vx`` and the lateral floor 0.20 ==
+    ``max_vy``, which ``avoidance`` says is not a coincidence. Every recorded run was
+    made there, so the generalisation has to reduce to it exactly rather than nearly."""
+    planner = _planner(gait_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    assert planner._floor_axes(MIN_GAIT_COMMAND_M_S) == (0.35, 0.20, False)
+    # No floor is the envelope, unclipped. Both callers guard against reaching here with
+    # zero, so this is the contract rather than a live path — pinned because the wrong
+    # answer for it, `(0, 0)`, reads downstream as "a direction the envelope cannot
+    # reach" and would count a normal command as unreachable.
+    assert planner._floor_axes(0.0) == (0.35, 0.20, False)
+
+
+def test_a_floor_inside_the_envelope_is_projected_onto_the_floor_not_the_ceiling():
+    """ISSUE #103 BROKE THE PREMISE THE PROJECTION RESTED ON. The envelope is now a
+    per-robot number a Lite3 must STATE on a live run, and
+    ``robot-stack/deep_robotics/lite3/DEPLOYMENT-SOP.md`` states ``--max-vx 0.55`` beside
+    a measured ``--gait-floor 0.30``. The floor is then strictly inside the envelope and
+    they are different curves.
+
+    Projecting onto the ENVELOPE turns a 0.050 m/s policy command into 0.550 m/s — an
+    11x amplification of a command the policy meant as a crawl, with the veto then
+    validating the sprint. The floor it should reach is 0.30.
+
+    Restore ``_axis_reach(vx, self.limits.max_vx)`` and this reads 0.55.
+    """
+    planner = _planner(limits=Limits(max_vx=0.55, max_vy=0.0), gait_floor_m_s=0.30)
+    vx, vy, wz = planner._at_least_walking_pace((0.05, 0.0, 0.1))
+    assert math.isclose(vx, 0.30, abs_tol=1e-9), f"raised to {vx:.3f}, not to the floor"
+    assert (vy, wz) == (0.0, 0.1)
+    assert planner.counts["raised_below_floor"] == 0, "the envelope was above the floor"
+
+
+def test_a_command_that_already_reaches_the_floor_is_not_amplified_to_the_envelope():
+    """The same defect seen from the other side, and the more common one: a command that
+    already walks. 0.40 m/s is above the Lite3 SOP's 0.30 floor and below its 0.55
+    ceiling, so it needs no help — projecting onto the envelope would raise it anyway."""
+    planner = _planner(limits=Limits(max_vx=0.55, max_vy=0.0), gait_floor_m_s=0.30)
+    assert planner._at_least_walking_pace((0.40, 0.0, 0.0)) == (0.40, 0.0, 0.0)
+    assert planner.counts["speed_raised"] == 0, planner.counts
+
+
+def test_the_projection_still_preserves_direction_on_a_floor_inside_the_envelope():
+    """Scaling both components by one scalar is what keeps the direction, and shrinking
+    the ellipse must not change that — near an obstacle, rotating a command toward
+    straight ahead is rotating it toward the thing being avoided."""
+    planner = _planner(limits=Limits(max_vx=0.55, max_vy=0.30), gait_floor_m_s=0.30)
+    vx, vy, _ = planner._at_least_walking_pace((0.05, 0.03, 0.0))
+    assert abs(math.degrees(math.atan2(vy, vx))
+               - math.degrees(math.atan2(0.03, 0.05))) < 1e-6
+    assert math.isclose(math.hypot(vx / 0.30, vy / (0.30 * 0.30 / 0.55)), 1.0,
+                        rel_tol=1e-6), "on the FLOOR ellipse, not the envelope's"
+    assert abs(vx) <= 0.55 and abs(vy) <= 0.30, "still inside the envelope"
+
+
+def test_a_floor_above_the_envelope_is_not_reported_as_having_reached_it():
+    """``--derate 0.6`` on the shipped Go2 profile is exactly 0.21 m/s, the setting
+    measured to stall 5 runs of 5. The projection can only reach the envelope, so the
+    result is still sub-floor — and reporting it as "scaled up to the gait floor" is a
+    false sentence about a safety number. It is counted apart and said out loud."""
+    planner = _planner(limits=Limits().scaled(0.6), gait_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    vx, _vy, _wz = planner._at_least_walking_pace((0.10, 0.0, 0.0))
+    assert math.isclose(vx, 0.21, abs_tol=1e-9), vx
+    assert vx < MIN_GAIT_COMMAND_M_S, "the envelope cannot reach the floor here"
+    assert planner.counts["raised_below_floor"] == 1, planner.counts
+    assert "below the floor" in planner.report(), planner.report()
+
+
+def test_a_derated_run_is_reported_as_sub_floor_on_every_tick():
+    """``--derate 0.6`` on the shipped Go2 profile is exactly 0.21 m/s, the setting
+    measured to stall 5 runs of 5 across two controllers. EVERY command such a run can
+    make is below the floor, including the fastest one.
+
+    A sub-floor test that clipped the floor to the envelope would call a command at the
+    0.21 ceiling "at the floor" and report ``0/N ticks below the floor`` for a run that
+    was under it from the first tick to the last — the exact reading that sent five runs
+    after tethers and walls. ``_floor_axes(..., clip=False)`` is what stops it.
+
+    Pass ``clip=True`` from ``_note_sub_floor`` and this reads zero.
+    """
+    planner = _planner(limits=Limits().scaled(0.6),
+                       platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+    assert planner.limits.max_vx == 0.21, planner.limits
+    now = 100.0
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _ in range(5):
+            planner.counts["ticks"] += 1
+            # The FASTEST command this envelope allows, and it still does not walk.
+            planner._note_sub_floor(Command(0.21, 0.0, 0.0, reason="policy", gap_m=1.0),
+                                    (0.0, 0.0, 0.0), now)
+            now += 0.33
+    assert planner.counts["sub_floor"] == 5, planner.counts
+    assert "5/5 ticks commanded below the gait floor" in planner.report(), \
+        planner.report()
+
+
+# ── Which floor, and whose (issue #26) ──────────────────────────────────────
+class _NoFloorBindings:
+    """A binding with no measured floor — a Lite3 before commissioning."""
+
+    @staticmethod
+    def gait_floor(_args):
+        return None
+
+
+class _MeasuredFloorBindings:
+    """A binding whose floor is the operator's measurement, as a Lite3's is."""
+
+    @staticmethod
+    def gait_floor(args):
+        return args.gait_floor
+
+
+def test_the_floor_judged_against_is_the_robots_own_and_needs_no_flag():
+    """A Go2 gets the per-tick check from ``MIN_GAIT_COMMAND_M_S`` with nothing typed,
+    which is what makes it apply to every command line already in the runbooks. Reading
+    it off ``--policy-gait-floor`` instead would leave it off wherever it matters, since
+    that flag defaults to 0 and only ``deploy/run-peer-supervised.sh`` passes it."""
+    import visual_nav
+    args, _ = split_argv(["--goal-class", "chair", "--goal-height", "1.067"],
+                         visual_nav.build_parser())
+    assert args.policy_gait_floor == 0.0, "the raising knob is off by default"
+    with contextlib.redirect_stdout(io.StringIO()):
+        assert platform_gait_floor(visual_nav.Go2Bindings(), args) \
+            == MIN_GAIT_COMMAND_M_S
+
+
+def test_an_unmeasured_floor_judges_nothing_and_says_so():
+    """An absent measurement is not a floor of zero and must not become the Go2's 0.35
+    by default — that substitution is issues #83, #96, #101 and #103. What it becomes is
+    a printed absence, because a check that silently did not run is the other half of
+    the same defect."""
+    args = argparse.Namespace(policy_gait_floor=0.0)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert platform_gait_floor(_NoFloorBindings(), args) == 0.0
+    assert "no gait floor is known" in out.getvalue(), out.getvalue()
+
+    planner = _planner(platform_floor_m_s=0.0)
+    _drive_sub_floor(planner, speed=0.137, ticks=20, delivered=0.0)
+    assert planner.counts["sub_floor"] == 0, "nothing may be judged against no floor"
+    assert "no gait floor was known" in planner.report(), planner.report()
+
+
+def test_a_policy_gait_floor_that_is_not_this_robots_is_named():
+    """Two numbers that both call themselves the gait floor, set in two places.
+    ``deploy/run-peer-supervised.sh`` hard-codes ``--policy-gait-floor 0.35``, which is
+    the Go2's; a Lite3 measures 0.30. Until now nothing compared them, and the script is
+    the thing somebody copies onto the next robot."""
+    args = argparse.Namespace(policy_gait_floor=0.35, gait_floor=0.30)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        assert platform_gait_floor(_MeasuredFloorBindings(), args) == 0.30
+    assert "0.350" in out.getvalue() and "0.300" in out.getvalue(), out.getvalue()
+
+    agreed = io.StringIO()
+    args = argparse.Namespace(policy_gait_floor=0.30, gait_floor=0.30)
+    with contextlib.redirect_stdout(agreed):
+        platform_gait_floor(_MeasuredFloorBindings(), args)
+    assert "⚠️" not in agreed.getvalue(), \
+        "a gate that warns about the correct configuration is a gate people switch off"
+
+
+def test_a_floor_above_the_envelope_is_announced_when_the_planner_is_built():
+    """Before the legs move, and in the drive path's own terms. The stack warns when the
+    envelope ceiling is under the floor, but nothing said what that means for a run that
+    is about to hand the policy the legs: NO command it can make will reach the floor."""
+    def built(limits):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            MappoPlanner(limits, PlannerConfig(robot_radius_m=0.25),
+                         PolicyRunner(DEFAULT_PACKAGE),
+                         platform_floor_m_s=MIN_GAIT_COMMAND_M_S)
+        return out.getvalue()
+
+    derated = built(Limits().scaled(0.6))
+    assert "ABOVE THIS RUN'S ENVELOPE" in derated, derated
+    shipped = built(Limits())
+    assert "ABOVE THIS RUN'S ENVELOPE" not in shipped, shipped
+    assert "gait floor 0.350" in shipped, shipped
 
 
 if __name__ == "__main__":

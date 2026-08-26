@@ -30,6 +30,20 @@ for people, so that would zero the policy in the one scene it exists to solve. R
 the actual command separates "the planner would rather wait" from "this command ends
 inside the bin", and only the second is worth overriding.
 
+## The gait floor, which is a second gate and not part of the envelope
+
+The envelope is a CEILING and this robot also has a FLOOR: below about 0.35 m/s the Go2
+produces no gait, stands still, and reports no fault. Until issue #26 the floor was
+checked once, at startup, against the envelope's ceiling — so a per-tick command below it
+was never checked at all, and the stall gate four seconds later named the tether.
+
+Every command leaving ``plan()`` is now compared to the floor the ROBOT's bindings
+report, on every path, and a run of sub-floor ticks that covers no ground says so before
+the stall gate gets to misattribute it. It changes no velocity: two ways of making a
+sub-floor command faster were measured and both were worse than the stall (issue #26).
+``--policy-gait-floor`` still raises a sub-floor POLICY command onto the floor ellipse,
+and stays opt-in.
+
 ## Peer robots, with no perception at all
 
 ``--peer-odom-align`` turns on a second obstacle source: peer poses published over the
@@ -162,8 +176,27 @@ def _record_refusal(path: Path | None, reason: str, detail: dict) -> None:
               file=sys.stderr)
 
 
+#: How long an emitted command may stay below the gait floor while the robot goes
+#: nowhere before the drive path says so, seconds.
+#:
+#: SHORTER THAN THE STACK'S OWN STALL GATE ON PURPOSE. ``visual_nav.PROGRESS_WINDOW_S``
+#: is 4.0 s, and when it fires it ENDS THE RUN with a message naming the tether. An
+#: explanation printed after that outcome line is an explanation nobody reads, so this
+#: one has to arrive first. It does not stop the robot and does not suppress that gate:
+#: the run still ends the same way, with the cause already on the screen above it.
+SUB_FLOOR_WINDOW_S = 2.0
+
+#: Fraction of the commanded travel the robot must actually cover over that window.
+#:
+#: ``visual_nav.PROGRESS_FRACTION``, restated rather than imported, because
+#: ``visual_nav`` needs OpenCV and a robot and this file must stay importable without
+#: either — ``test_mappo_drive.py`` says so in its first paragraph. Low on purpose there
+#: and here: the failure being caught is total, not marginal.
+SUB_FLOOR_PROGRESS_FRACTION = 0.20
+
+
 def _axis_reach(value: float, limit: float) -> float:
-    """One axis's share of the envelope ellipse; ``0`` for an axis that is switched off.
+    """One axis's share of an ellipse; ``0`` for an axis that is switched off.
 
     A zero ``limit`` means the robot cannot move on this axis at all, and the envelope
     clamp in :meth:`MappoPlanner.plan` has already forced ``value`` to zero to match, so
@@ -184,7 +217,8 @@ class MappoPlanner(DynamicWindowPlanner):
     def __init__(self, limits, config, runner: PolicyRunner, supervised: bool = True,
                  refusal_log: Path | None = None, scale_override: bool = False,
                  veto_horizon_s: float | None = VETO_HORIZON_S,
-                 gait_floor_m_s: float = 0.0):
+                 gait_floor_m_s: float = 0.0,
+                 platform_floor_m_s: float = 0.0):
         super().__init__(limits=limits, config=config)
         self._runner = runner
         self._supervised = supervised
@@ -211,11 +245,75 @@ class MappoPlanner(DynamicWindowPlanner):
         #: in a log of velocities.
         self.counts: dict = {"ticks": 0, "policy": 0, "vetoed": 0, "stopped": 0,
                              "velocity_unavailable": 0, "speed_raised": 0,
-                             "peer_held": 0, "floor_unreachable": 0}
+                             "peer_held": 0, "floor_unreachable": 0,
+                             "raised_below_floor": 0, "sub_floor": 0,
+                             "sub_floor_stalled": 0}
         #: Commanded speeds below this are scaled up, direction preserved — see
-        #: :meth:`_at_least_walking_pace`. Zero disables it.
+        #: :meth:`_at_least_walking_pace`. Zero disables it. This is
+        #: ``--policy-gait-floor``: an OPT-IN override of what the policy asked for, and
+        #: it stays opt-in. Issue #106 has just moved the heading servo the other way
+        #: after its default drove the robot into a wall three times.
         self._gait_floor_m_s = gait_floor_m_s
+        #: THIS ROBOT'S measured gait floor, from its bindings — ``MIN_GAIT_COMMAND_M_S``
+        #: on a Go2, ``--gait-floor`` on a Lite3. Nothing is scaled by it and no leg
+        #: moves differently because of it: it is what :meth:`_note_sub_floor` judges the
+        #: EMITTED command against, on every path out of :meth:`plan`. Separate from the
+        #: field above because raising a command is a decision and reporting one is not,
+        #: and because they are two different numbers on any robot that is not a Go2.
+        self._platform_floor_m_s = platform_floor_m_s
+        #: ``None``, or ``[since, x0, y0, commanded_travel_m, last_now, last_speed]``
+        #: for the run of consecutive sub-floor ticks in progress. See
+        #: :meth:`_note_sub_floor`.
+        self._sub_floor: list | None = None
+        #: The banner is printed once per run; the COUNT keeps rising after it.
+        self._sub_floor_announced = False
         self._check_radius_calibration(refusal_log)
+        self._announce_floor_against_envelope()
+
+    def _announce_floor_against_envelope(self) -> None:
+        """State how the two gates compose, at the top of the run log, in one place.
+
+        THE TWO GATES ARE A CEILING AND A FLOOR AND NOTHING PUTS THEM SIDE BY SIDE.
+        ``limits`` is the envelope — ``--max-vx``/``--max-vy``/``--max-wz`` scaled by
+        ``--derate`` — which issue #103 made a per-robot, refusable number carrying named
+        Go2 provenance. ``_platform_floor_m_s`` is the floor. Before this line the only
+        report of either was ``warn_if_below_gait_floor``, which fires once, at startup,
+        and only when the CEILING is under the floor.
+
+        Three cases, and only the first is the one every recorded run was made in:
+
+        * floor == the envelope's forward ceiling. The Go2's, and not a coincidence —
+          ``avoidance`` says so at :data:`MIN_GAIT_COMMAND_M_S`. The robot has exactly
+          one usable forward speed, and the floor ellipse and the envelope ellipse
+          coincide, which is the premise :meth:`_floor_axes` exists to stop assuming.
+        * floor INSIDE the envelope. A Lite3 states ``--max-vx 0.55`` and measures
+          ``--gait-floor 0.30`` (``DEPLOYMENT-SOP.md``). The two ellipses are then
+          different curves, and projecting onto the outer one turns a 0.05 m/s crawl
+          into 0.55 m/s. See :meth:`_at_least_walking_pace`.
+        * floor ABOVE the envelope. ``--derate 0.6`` on the shipped Go2 profile is
+          exactly the 0.21 m/s measured to stall 5 runs of 5. NO command this run can
+          make reaches the floor, so it is worth a banner rather than a line.
+        """
+        floor = self._platform_floor_m_s
+        if floor <= 0.0:
+            return
+        ceiling = self.limits.max_vx
+        if ceiling > 0.0 and floor > ceiling:
+            print("!" * 78)
+            print(f"[mappo_drive] ⚠️  GAIT FLOOR {floor:.3f} m/s IS ABOVE THIS RUN'S "
+                  f"ENVELOPE (vx<={ceiling:.3f} m/s)")
+            print("    No command this run can make is at or above the floor, so the "
+                  "robot may stand")
+            print("    still and report no fault. Raise --max-vx / --derate, or do not "
+                  "run.")
+            print("!" * 78)
+            return
+        shape = ("the same number as the envelope, so a sub-floor command has no faster "
+                 "version" if math.isclose(floor, ceiling, rel_tol=1e-6)
+                 else "INSIDE the envelope, so the floor and the envelope are "
+                      "different curves")
+        print(f"[mappo_drive] gait floor {floor:.3f} m/s against envelope "
+              f"vx<={ceiling:.3f} vy<={self.limits.max_vy:.3f} — {shape}")
 
     def _check_radius_calibration(self, refusal_log: Path | None) -> None:
         """Refuse the run if the policy's scale was calibrated for a different robot size.
@@ -321,6 +419,23 @@ class MappoPlanner(DynamicWindowPlanner):
 
     def plan(self, pose, goal, last_command, obstacles, control_dt: float = 0.1,
              last_reason: str = "goal") -> Command:
+        """Choose a command, then judge the one that is actually going out.
+
+        SPLIT IN TWO SO THAT THE JUDGEMENT CANNOT BE SKIPPED. :meth:`_choose` has five
+        exits — a goal-less tick, a peer hold, a policy stop, a vetoed tick and a
+        policy-driven one — and issue #26 is about a gate that ran on ONE of them.
+        ``_at_least_walking_pace`` sits inside the policy branch, so the planner's own
+        command, which is the one measured crawling at 0.137 m/s through a 0.93 m gap,
+        has never been compared to the floor at all. A single exit is the only way "on
+        every path" is a property of the code rather than a claim in a comment.
+        """
+        command = self._choose(pose, goal, last_command, obstacles,
+                               control_dt=control_dt, last_reason=last_reason)
+        self._note_sub_floor(command, pose, time.monotonic())
+        return command
+
+    def _choose(self, pose, goal, last_command, obstacles, control_dt: float = 0.1,
+                last_reason: str = "goal") -> Command:
         # The incumbent is computed on EVERY tick, used or not, so that its acceleration
         # window and reason hysteresis stay continuous. A planner consulted for the first
         # time mid-run plans from a standstill the robot is not in.
@@ -541,8 +656,13 @@ class MappoPlanner(DynamicWindowPlanner):
         # Symmetric on both axes. `--max-vx 0` is not documented as a thing anyone does,
         # but the degenerate case is identical and a one-sided guard would be a second
         # rule to remember.
-        reach = math.hypot(_axis_reach(vx, self.limits.max_vx),
-                           _axis_reach(vy, self.limits.max_vy))
+        #
+        # CORRECTED 2026-08-26 (issue #26): the ellipse projected onto is the FLOOR's,
+        # not the ENVELOPE's. Everything above is unchanged and still true on a Go2,
+        # where they are one curve — see `_floor_axes`, which is where the two come
+        # apart, and why they no longer can be assumed to be the same one.
+        floor_x, floor_y, clipped = self._floor_axes(floor)
+        reach = math.hypot(_axis_reach(vx, floor_x), _axis_reach(vy, floor_y))
         if reach >= 1.0:
             # Already on or outside the ellipse: it walks as proposed. `speed < floor`
             # can still hold here, because a mostly-lateral command reaches the lateral
@@ -553,7 +673,176 @@ class MappoPlanner(DynamicWindowPlanner):
             return proposed
         scale = 1.0 / reach
         self.counts["speed_raised"] += 1
+        if clipped:
+            # The envelope is under the floor, so this landed on the envelope and is
+            # STILL sub-floor. Counted apart from `speed_raised`, because "scaled up to
+            # the gait floor" would be a false sentence about it, and a count that
+            # misdescribes what it counted is worse than no count.
+            self.counts["raised_below_floor"] += 1
         return (vx * scale, vy * scale, wz)
+
+    def _floor_axes(self, floor: float, clip: bool = True) -> tuple:
+        """``(forward floor, lateral floor, is the envelope below the floor)``.
+
+        WHY THIS IS NOT JUST ``(self.limits.max_vx, self.limits.max_vy)``, which is what
+        it was until issue #26. That spelling rested on one measured coincidence, stated
+        in :meth:`_at_least_walking_pace` and in ``avoidance.GO2_MAX_VX_M_S``: on the Go2
+        the forward floor 0.35 IS ``max_vx`` and the lateral floor 0.20 IS ``max_vy``, so
+        the floor ellipse and the envelope ellipse are the same curve and it does not
+        matter which one you project onto.
+
+        Issue #103 ended that. The envelope is now a per-robot, refusable number — a
+        Lite3 must STATE ``--max-vx``/``--max-vy``/``--max-wz`` on a live run, and
+        ``robot-stack/deep_robotics/lite3/DEPLOYMENT-SOP.md`` states ``--max-vx 0.55``
+        beside a measured ``--gait-floor 0.30``. Against that envelope the old spelling
+        scaled a 0.050 m/s policy command to **0.550 m/s, an 11x amplification** of a
+        command the policy meant as a crawl, and the veto then validated the sprint. The
+        floor it should have reached is 0.30.
+
+        So: take the envelope ellipse and shrink it by ``floor / max_vx`` — the one
+        factor that puts the forward semi-axis on the floor — and never grow it past the
+        envelope. Multiplying both semi-axes by one scalar keeps the ellipse's SHAPE, so
+        the lateral floor is still interpolated from the envelope's aspect ratio, which
+        is the assumption :meth:`_at_least_walking_pace` already documents and defends.
+
+        Reduces exactly to the old behaviour wherever the old behaviour was measured:
+
+        * Go2, ``floor 0.35`` vs ``max_vx 0.35`` → ``k = 1`` → ``(0.35, 0.20)``, the two
+          measured floors, unchanged to the bit.
+        * ``--derate 0.6`` → ``max_vx 0.21`` under the 0.35 floor → ``k`` clips at 1 →
+          ``(0.21, 0.12)``, the envelope, again unchanged — but ``clipped`` is now True,
+          so the caller stops claiming the result reached the floor.
+
+        ``clip`` IS THE DIFFERENCE BETWEEN TWO QUESTIONS AND THEY HAVE DIFFERENT ANSWERS.
+        "How fast can this command be made, in this direction?" is bounded by the
+        envelope, so :meth:`_at_least_walking_pace` clips. "Is this command below the
+        floor?" is not: under ``--derate 0.6`` the envelope ceiling 0.21 m/s is ITSELF
+        the speed measured to stall 5 runs of 5, and a clipped test would call a command
+        AT that ceiling "at the floor" and report ``0/58 ticks below the floor`` on a run
+        that was under it from the first tick to the last. :meth:`_note_sub_floor` asks
+        the second question and passes ``clip=False``.
+        * ``--max-vx 0``: no forward axis, so ``floor / max_vx`` has no value. ``k = 1``
+          leaves the lateral floor at ``max_vy``, which is what the symmetric-degenerate
+          test pins today. A robot with no forward axis has no measured forward floor to
+          scale a lateral one from, and inventing one to divide by would be worse than
+          keeping the envelope.
+        """
+        ceiling = self.limits.max_vx
+        if floor <= 0.0 or ceiling <= 0.0:
+            return self.limits.max_vx, self.limits.max_vy, False
+        # The floor ellipse is the envelope ellipse scaled by this one factor, which is
+        # what keeps its SHAPE — and therefore the interpolated lateral floor — intact.
+        scale = floor / ceiling
+        clipped = scale > 1.0
+        if clipped and clip:
+            scale = 1.0
+        return ceiling * scale, self.limits.max_vy * scale, clipped
+
+    def _note_sub_floor(self, command: Command, pose, now: float) -> None:
+        """Judge the command that is actually going out against this robot's gait floor.
+
+        THE DEFECT THIS EXISTS FOR. Below :data:`avoidance.MIN_GAIT_COMMAND_M_S` the Go2
+        produces no gait, stands still, and reports NO FAULT — the joint encoders read
+        0.0 deg of swing, the state estimator agrees, and the stack's stall gate then
+        fires four seconds later with *"something is holding the robot — check the
+        tether"*. Every instrument is right and every one of them points away from the
+        cause; five runs and two controllers went on tethers and walls before the speed
+        was tested. The floor was checked once, at startup, against the envelope CEILING
+        (``visual_nav`` line 1433, and this file's own startup line) and never against a
+        command. This is that check, on the command, on every tick.
+
+        IT DOES NOT GATE ON THE FLOOR'S VALUE, and that is deliberate, because the value
+        is a guess. 0.35 is "the lowest speed observed to work" on 2026-08-14, not a
+        measured threshold, and this repository's own run C of 2026-08-18 contradicts it:
+        a sustained mean of 0.295 m/s with **54 of 54 ticks below 0.35**, minimum 0.189,
+        3 m walked, arrived. A rule that stopped or faulted on "sub-floor" alone would
+        have killed that run. So the trigger is a FACT — commanded to move and not
+        moving — and the floor is used only to choose which of the two explanations of
+        that fact to print. Above the floor and stationary is the tether. Below it and
+        stationary is this.
+
+        MEASURED FROM POSE, NOT FROM THE VELOCITY ESTIMATE, for the reason
+        ``lateral_floor_probe.py`` gives: *"the reported velocity on this unit has been
+        caught reading 0.17 m/s of noise as signal"*, which is larger than the whole
+        0.137 m/s signal being judged. ``plan()`` is handed the odom pose every tick, and
+        net displacement between two of them is the same quantity the stack's own stall
+        gate compares against.
+
+        IT NEVER TOUCHES THE LEGS. It does not scale, clamp, hold or refuse. Two measured
+        attempts to make a sub-floor command into a faster one both failed and are
+        recorded in issue #26 — filtering the dynamic window leaves only zero from rest,
+        and allowing sub-floor only while ramping up drops the lateral offset around a
+        bin from the required 0.88 m to 0.55 m and CLIPS IT. Clamping on the way out is
+        worse again: ``is_feasible`` would then have validated a velocity the legs never
+        received. And commanding a stop here would suppress the stack's stall gate, whose
+        ``commanded <= PROGRESS_MIN_COMMAND_M_S`` branch returns "not asking it to go
+        anywhere" — the run would stop ENDING and just stand there instead. So the run
+        still ends exactly as it does today, with the cause printed above the outcome
+        line rather than absent from it.
+        """
+        if self._platform_floor_m_s <= 0.0:
+            return                            # no floor measured for this robot
+        # `clip=False`: the question here is whether the command is under the FLOOR,
+        # which does not stop being true because the envelope cannot reach it. See
+        # `_floor_axes` — a clipped test reports `--derate 0.6` as fully compliant.
+        floor_x, floor_y, _clipped = self._floor_axes(self._platform_floor_m_s,
+                                                      clip=False)
+        speed = math.hypot(command.vx, command.vy)
+        reach = math.hypot(_axis_reach(command.vx, floor_x),
+                           _axis_reach(command.vy, floor_y))
+        if speed <= 0.0 or reach >= 1.0:
+            # A stop is a stop, and a command on or outside the floor ellipse walks. Both
+            # end the run of sub-floor ticks; neither is evidence about the floor.
+            self._sub_floor = None
+            return
+        self.counts["sub_floor"] += 1
+        if self._sub_floor is None:
+            self._sub_floor = [now, pose[0], pose[1], 0.0, now, speed]
+            return
+        since, x0, y0, travel, previous, held = self._sub_floor
+        # Integrated rather than `speed * span`, which is the stack's model and takes the
+        # LAST tick's command as though it had been held all window. At an irregular
+        # ~3 Hz under a planner that is actively slowing down those are different numbers.
+        # `held` and not `speed`: the command in force over [previous, now] is the one
+        # decided at `previous`, because the loop issues a command and then sleeps.
+        # `speed` here would credit this tick's command to an interval it did not
+        # govern, and on a collapsing command that is a factor of five, not a rounding.
+        travel += held * max(0.0, now - previous)
+        span = now - since
+        if span < SUB_FLOOR_WINDOW_S:
+            self._sub_floor = [since, x0, y0, travel, now, speed]
+            return
+        moved = math.hypot(pose[0] - x0, pose[1] - y0)
+        # Judged, so the next window starts here whatever the verdict. Re-arming on a
+        # PASS is what keeps a long productive-but-sub-floor run — run C — quiet; not
+        # re-arming on a FAIL would make this a once-per-run gate that a robot which
+        # recovered and stalled again would never trip twice.
+        self._sub_floor = None
+        if moved >= SUB_FLOOR_PROGRESS_FRACTION * travel:
+            return
+        self.counts["sub_floor_stalled"] += 1
+        if self._sub_floor_announced:
+            return
+        self._sub_floor_announced = True
+        print("!" * 78)
+        print("[mappo_drive] ⚠️  COMMANDED BELOW THE GAIT FLOOR AND NOT MOVING — "
+              "IT IS NOT THE TETHER")
+        print(f"    commanded {speed:.3f} m/s for {span:.1f}s and moved {moved:.3f} m "
+              f"of an expected {travel:.3f} m.")
+        print(f"    This robot's measured gait floor is "
+              f"{self._platform_floor_m_s:.3f} m/s; below it the legs stop swinging "
+              f"and")
+        print("    nothing reports a fault. When the stall gate fires it names the "
+              "tether; below 0.05 m/s")
+        print("    commanded it does not fire at all, and the robot simply stands "
+              "there. It is this.")
+        print("    Fixes, cheapest first: --robot-radius 0.20 so the planner never "
+              "feels squeezed;")
+        print(f"    --policy-gait-floor {self._platform_floor_m_s:.2f} so a sub-floor "
+              f"POLICY command is raised; then")
+        print("    widen the lane. The planner's own command is not raised, on purpose "
+              "— see issue #26.")
+        print("!" * 78)
 
     def report(self) -> str:
         counts = self.counts
@@ -561,8 +850,25 @@ class MappoPlanner(DynamicWindowPlanner):
                 f"policy, {counts['vetoed']} vetoed, {counts['stopped']} stopped"
                 + (f", {counts['speed_raised']} scaled up to the gait floor"
                    if counts["speed_raised"] else "")
+                + (f", {counts['raised_below_floor']} of those only as far as an "
+                   f"envelope that is itself below the floor"
+                   if counts["raised_below_floor"] else "")
                 + (f", {counts['floor_unreachable']} with a direction the envelope "
                    f"cannot reach" if counts["floor_unreachable"] else "")
+                # Printed even when it is zero, unlike every other term here. A run in
+                # which NO tick was commanded below the floor is the control that makes
+                # a run in which many were mean something, and issue #26's proposal 2 —
+                # measure the real floor — is a comparison of those two numbers across
+                # runs. An absent line reads as "not measured", which is the one thing
+                # it is not.
+                + (f", {counts['sub_floor']}/{counts['ticks']} ticks commanded below "
+                   f"the gait floor" if self._platform_floor_m_s > 0.0
+                   else ", and no gait floor was known to judge the commands against")
+                + (f" ({counts['sub_floor_stalled']} "
+                   f"{SUB_FLOOR_WINDOW_S:.0f}s "
+                   f"{'window' if counts['sub_floor_stalled'] == 1 else 'windows'} "
+                   f"of it covering no ground — THE GAIT FLOOR, NOT THE TETHER)"
+                   if counts["sub_floor_stalled"] else "")
                 + (f", {counts['peer_held']} held for a peer this robot could not locate"
                    if counts["peer_held"] else "")
                 + (f", {counts['velocity_unavailable']} with no measured velocity"
@@ -636,12 +942,18 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                             "also the safety margin, so it trades directly against it")
     group.add_argument("--policy-gait-floor", type=float, default=0.0,
                        metavar="M_PER_S",
-                       help="scale a policy command slower than this UP to it, keeping "
+                       help="scale a POLICY command slower than this UP to it, keeping "
                             "its direction. The checkpoint is a holonomic agent that "
                             "never saw a minimum speed, so a slow sideways manoeuvre — "
                             "exactly what threading a gap needs — comes out below the "
                             "Go2's gait floor and the robot stands still reporting no "
-                            "fault. 0 (the default) leaves the command alone")
+                            "fault. 0 (the default) leaves the command alone. This is "
+                            "the RAISING knob only, and it does not have to be set for "
+                            "a sub-floor command to be reported: the floor a command is "
+                            "judged against comes from the robot's own bindings "
+                            "(MIN_GAIT_COMMAND_M_S on a Go2, --gait-floor on a Lite3) "
+                            "and is checked on every tick and on every path. Pass the "
+                            "same number this robot measured, or do not pass it")
     group.add_argument("--peer-odom-align", metavar="DX,DY,DYAW_DEG",
                        help="TURNS ON peer avoidance over the Device Connect mesh, and "
                             "declares where the peer's odom frame is relative to this "
@@ -714,6 +1026,43 @@ def split_argv(argv, stack_parser) -> tuple:
     return args, vendored_argv
 
 
+def platform_gait_floor(bindings, args) -> float:
+    """This robot's own measured gait floor in m/s, or ``0.0`` if it has none.
+
+    IT COMES FROM THE ROBOT, NOT FROM THE COMMAND LINE, which is the half of issue #26
+    that a flag could not fix. ``Go2Bindings.gait_floor`` is ``MIN_GAIT_COMMAND_M_S``;
+    ``Lite3Bindings.gait_floor`` is the operator's measured ``--gait-floor``, which that
+    binding's own pre-flight already requires on a live run. So a Go2 gets the per-tick
+    check with no flag at all, and every recorded run gets it retroactively.
+
+    ``None`` — a Lite3 dry run — resolves to ``0.0`` and NOTHING IS JUDGED. An unmeasured
+    floor is an absence, not a floor of zero, and inventing 0.35 for a robot that never
+    produced it is the mistake issues #83, #96, #101 and #103 have each been about. The
+    absence is printed, because a check that silently did not run is the other half of
+    this repository's recurring defect.
+
+    Split out of ``main`` so it can be exercised against both bindings without a robot,
+    a camera or a policy package — the same reason ``visual_nav.build_goal_source`` is.
+    """
+    floor = bindings.gait_floor(args) or 0.0
+    if not floor:
+        print("[mappo_drive] no gait floor is known for this robot, so a command below "
+              "it cannot be reported. Pass this platform's measured floor.")
+        return 0.0
+    override = getattr(args, "policy_gait_floor", 0.0)
+    if override and not math.isclose(override, floor, rel_tol=0.02):
+        # Two numbers that both call themselves the gait floor, set in two places, and
+        # until now nothing compared them. `deploy/run-peer-supervised.sh` hard-codes
+        # `--policy-gait-floor 0.35` — right for a Go2, wrong for the 0.30 a Lite3
+        # measures — and that script is the thing people copy onto the next robot.
+        print(f"[mappo_drive] ⚠️  --policy-gait-floor {override:.3f} is not this robot's "
+              f"measured floor of {floor:.3f} m/s.")
+        print(f"[mappo_drive]   A policy command will be raised to {override:.3f}; a "
+              f"command is reported as sub-floor against {floor:.3f}.")
+        print("[mappo_drive]   Pass one number, or neither.")
+    return floor
+
+
 def main(argv=None, bindings=None) -> int:
     # Parsed twice on purpose: once here to build the policy before the vendored main()
     # runs, and once by that main() for everything else.
@@ -752,6 +1101,7 @@ def main(argv=None, bindings=None) -> int:
             print(f"    Here that is command_scale {cfg.command_scale} x max_vx_mps "
                   f"{cfg.max_vx_mps} = {top_speed:.3f}. Pass --policy-command-scale "
                   f"{floor / cfg.max_vx_mps:.2f} or higher.")
+        platform_floor = platform_gait_floor(bindings, args)
         if args.policy_mode == "raw":
             print("[mappo_drive] ⚠️  NO VETO. In the closed-loop simulation the raw "
                   "policy collided and the supervised one did not. Empty arena only.")
@@ -776,7 +1126,8 @@ def main(argv=None, bindings=None) -> int:
                                    veto_horizon_s=(VETO_HORIZON_S
                                                    if args.veto_horizon is None
                                                    else args.veto_horizon),
-                                   gait_floor_m_s=args.policy_gait_floor)
+                                   gait_floor_m_s=args.policy_gait_floor,
+                                   platform_floor_m_s=platform_floor)
             planners.append(planner)
             return planner
 
