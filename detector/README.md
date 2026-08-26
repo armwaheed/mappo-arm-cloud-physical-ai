@@ -102,16 +102,76 @@ Two things follow, and both of them are the finding:
 2. **Every fine-tune buys that with people.** `f_full_distil01`, the best peer precision on the
    table, keeps **4 of 15**. `FROZEN-FEATURE-CEILING.md` already warns that one-class fine-tuning
    teaches the network that people are background; that warning was right and understated at 2 of
-   15. **Nothing here is deployable.** The open objective is to hold 15/15 people while keeping
-   the peer gains — a sweep testing exactly that is running as this is written, and no conclusion
-   about it is recorded here.
+   15. **Nothing here is deployable.** The open objective is to hold every person the shipped
+   network sees while keeping the peer gains — a sweep testing exactly that was running as this
+   was written, and has since reported. It did not clear the gate. See below.
 
 ⚠️ **47 and 134 are small, and this is one corridor on one day.** Three evidence sets in this work
 have already been too small and too like themselves — the 0-of-705 refusal gate, the fifteen
 stills of which nine held no peer, and the 47-positive ranking — and each flattered the thing being
 tested. The table above is worth what it compares, not what it measures: every row scored the same
-way on the same frames. (The manifest's test split holds 136 peer-free frames; this sweep scored
-134. Two frames are unaccounted for, worth 1.5 points of false-alarm rate.)
+way on the same frames.
+
+⚠️ *The 134 is now explained, and it was not the manifest.*
+[#91](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/pull/91) found the *derived* split
+on the training host shifted by one clip index — two named frames that do not exist, two real ones
+omitted. Repaired and all thirteen rows rescored: every numerator identical, only the denominator
+moving, and the shipped weights going from 76/134 = 57% to **76/136 = 56%**. The table above is
+left at 134 and 57% because that is what it was measured on; the 2026-08-26 sweep is scored on the
+repaired 136.
+
+### ⚠️ Those four checkpoints were not the best four — swept 2026-08-26
+
+**They were four of the thirteen model/epoch rows anybody had scored, out of 640 checkpoints that
+existed.** Sixteen training runs at 40 epochs each left 640 checkpoints on the training host;
+thirteen rows had ever been evaluated, and a fifth training wave was launched before the rest were
+measured. 64 have now been scored the same way, on the same split, and **the best detector in the
+whole set was already on disk in a run no document in this repository had ever named.**
+
+`git grep` finds four of the sixteen run names on `main` before 2026-08-26 — `f_full_distil01`,
+`i_full_pseudo`, `j_full_distil03`, `l_full_bb02`. The winner is one of the other twelve.
+
+Same Aug-20 split, same one rule, on the **136** peer-free frames the manifest actually holds
+(see the correction to the note above). `people` counts, of the **22** frames where the shipped
+network sees a person at **0.25** — the value `deploy/run-peer-supervised.sh` launches the peer
+runs with, not the 0.45 the earlier table uses — how many the candidate still sees. **ep022 and
+ep017 come from a finer pass over the winning run and are not among the 64**; they are recorded
+as attributed rather than verified, and so is the 22-frame denominator, which needs the corpus
+pixels this repository does not hold:
+
+| model | peer recall | false alarms | people at 0.25 |
+| --- | ---: | ---: | ---: |
+| **stock 21-class (shipped)** | 68% (32/47) | **56%** (76/136) | **22/22** |
+| `k_full_pseudo03` ep022 | **89%** | 12% | 17/22 |
+| `k_full_pseudo03` ep020 | 85% (40/47) | 10% (14/136) | 17/22 |
+| `k_full_pseudo03` ep017 | 83% | 12% | **19/22** |
+| `p_bb02_d01_aug` ep020 | 70% (33/47) | 18% (25/136) | **19/22** |
+| `f_full_distil01` ep020 | 74% (35/47) | **1%** (2/136) | 5/22 |
+
+**13 of the 64 beat the shipped weights on both peer axes. All 64 beat them on false alarms.**
+
+Three things follow, and the first is the one worth carrying to another project:
+
+1. **The order of work was the defect.** The best detector was on disk, unscored, while a fifth
+   wave was queued against the same host. Measuring 640 existing checkpoints costs an evaluation
+   pass; four more 40-epoch runs cost a day of GB10 time and produced nothing better than what
+   was already there. **Measure what you have before you make more of it.**
+2. **The lever is `--pseudo-labels`.** `k_full_pseudo03` is the only run of the sixteen at 0.3;
+   every other used 0.5 or none. A lower threshold carries more of the starting network's own
+   detections into training as old-class ground truth — nearly all of them `person` — which is
+   the axis every other run failed on. `UNFROZEN-FINE-TUNE.md` had already called that knob *"the
+   single most effective knob in this work"* and it was never turned again. A wave sweeping below
+   0.3 is running as this is written; **no conclusion about its outcome is recorded here.**
+3. ⛔ **Nothing is deployable, and the gate is unchanged.** No checkpoint of the 64 keeps all 22
+   people. The best keeps 20 and is *below* the shipped weights on peer recall; the set that
+   beats them on both peer axes and keeps at least 20 is empty. `k_full_pseudo03` ep022, the best
+   peer row here, loses five people. **Gives way to people** is this robot's shipped safety
+   property, and a checkpoint that finds more peers and drops a person is not an improvement to
+   it.
+
+The full record — the 64-row grid, the raw sweep data, both figures, the augmentation control and
+what a clone cannot re-derive — is in
+[`evidence/2026-08-26-checkpoint-sweep/`](../evidence/2026-08-26-checkpoint-sweep/).
 
 ### ⚠️ `horse` is not a viable label for a quadruped, and counting emitted labels could not tell you
 
