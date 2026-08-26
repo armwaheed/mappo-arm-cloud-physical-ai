@@ -1,22 +1,25 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Per-frame peer boxes for p4, the one segment where the peer actually crosses the frame.
 
 p4 gets its own plate built from its own frames, so registration is exact and the difference
 is clean enough to use directly as the box.  Cast shadow is rejected only in the floor band:
 a grey robot against a light wall satisfies the same colour-ratio test, so applying it
 frame-wide eats the robot's own top edge.
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
 """
 import glob
 import json
 
 import cv2
 import numpy as np
+import peercap
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
-WORK = SCRATCH + "peercap_work/"
+SRC = peercap.frames_dir()
+WORK = peercap.work_dir()
 
 THR, MIN_AREA, MERGE_FRAC, FLOOR_Y = 28, 1500, 0.12, 950
 

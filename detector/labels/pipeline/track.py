@@ -1,22 +1,25 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Anchor-template NCC tracker: propagate one hand-drawn box across a segment.
 
 The camera never moves within a segment, so the peer's box can only translate.  Matching the
 anchor patch -- not the previous frame's patch -- keeps the tracker from accumulating drift
 over a long static run, and the reported peak correlation flags frames where the peer no
 longer looks like its anchor and the box should be distrusted.
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
 """
 import glob
 import json
 import sys
 
 import cv2
+import peercap
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
-WORK = SCRATCH + "peercap_work/"
+SRC = peercap.frames_dir()
+WORK = peercap.work_dir()
 
 
 def track(tag: str, anchor_idx: int, box: tuple[int, ...], pad: int = 70) -> dict:

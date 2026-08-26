@@ -1,0 +1,52 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint settings for detector/. Byte-identical in effect to detector/labels/ruff.toml,
+# integration/ruff.toml and robot-stack/unitree/go2/visual_nav/ruff.toml — a second style
+# across directories that are read together would be noise, and the repo has no root
+# config to inherit.
+#
+#   ruff check . --config ruff.toml
+#
+# Why it exists. Until this file landed, detector/ was the one code directory in the
+# repository with no ruff.toml, so the repo's own lint gate had never covered eight
+# modules — including peer_recall.py, which #89 had to lint with a hand-typed
+# `--select E,W,F,I,UP,B,C4,SIM,RET,RUF --line-length 100 --target-version py38` because
+# there was no config to point at. A gate you have to retype is a gate that gets retyped
+# differently: #78 shipped 13 findings for exactly that reason, having run a neighbouring
+# directory's config.
+#
+# It surfaced NOTHING. Measured 2026-08-26 against `main` at 8817b9e, before this change:
+# `ruff check .` from detector/ is already clean under this config and under each of
+# integration/, visual_nav/, policy/ and dashboard/'s. So this is a gate, not a cleanup —
+# there was no debt, only no check.
+#
+# detector/labels/ruff.toml is left in place deliberately. Its own comment calls widening
+# it "a one-line move", and this is that move; it is kept rather than deleted because #86
+# records `cd detector/labels && ruff check . --config ruff.toml` as the command it
+# verified, and that command has to keep working. The two files must not drift: they are
+# the same three settings, and a diff between them is a bug.
+line-length = 100
+
+# The robot's Jetson runs Python 3.8 (Ubuntu 20.04 / JetPack 5). Nothing in this directory
+# runs on the robot — training and evaluation happen on the Spark — but helpers move
+# between here, detector/labels/ and detector/labels/pipeline/, and splitting the target
+# by directory is a trap the first time one does.
+target-version = "py38"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
+
+[lint.per-file-ignores]
+# The test modules put their own directory on sys.path before importing what they test, so
+# their imports genuinely are not at the top of the file. Same idiom as the repo's other
+# suites — and the reason `ruff --fix` must not be turned loose on them, per AGENTS.md.
+"test_*.py" = ["E402"]
+
+[lint.isort]
+# peercap.py is a sibling MODULE, not a package, and ruff resolves first-party-ness from
+# the directory it is invoked in: standing in labels/pipeline/ it is first-party and wants
+# its own section; standing in detector/ or labels/ it is third-party and does not. Same
+# config file, opposite verdicts -- the #78 failure in miniature. Pinned here so this
+# config answers the same wherever it is run from.
+known-third-party = ["peercap"]

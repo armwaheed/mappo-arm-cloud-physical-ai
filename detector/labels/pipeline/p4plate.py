@@ -1,20 +1,23 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Composite background plate for p4, built from p4's own frames -- zero registration error.
 
 The peer is on the left early in the run and parked on the right at the end, so the left of
 the plate comes from the late frames and the right from the early ones.  Both halves share a
 camera pose, so no warping (and no parallax error) is involved.
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
 """
 import glob
 
 import cv2
 import numpy as np
+import peercap
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
-WORK = SCRATCH + "peercap_work/"
+SRC = peercap.frames_dir()
+WORK = peercap.work_dir()
 
 SPLIT = 1150
 

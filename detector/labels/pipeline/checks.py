@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Diagnostics that justify the propagation method, printed per segment.
 
   drift   - global camera motion within a segment (phase correlation vs frame 0)
@@ -5,18 +8,18 @@
   roi     - change confined to the labelled box, i.e. whether the peer itself moved
 
 These are what say a single box may legitimately be reused across a whole static segment.
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
 """
 import glob
 import sys
 
 import cv2
 import numpy as np
+import peercap
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
+SRC = peercap.frames_dir()
 
 TAGS = [
     "p1_close_broadside", "p2_close_headon_stand", "p3_close_rearon_stand",
