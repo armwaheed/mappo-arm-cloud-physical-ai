@@ -1,0 +1,19 @@
+{
+  "schema": "lite3-axis-profile/v1",
+  "input_deadband": {
+    "linear_m_s": 0.05,
+    "yaw_rad_s": 0.1
+  },
+  "allowed_gait_states": [
+    0
+  ],
+  "evidence": {},
+  "primitives": {
+    "forward_positive": null,
+    "forward_negative": null,
+    "lateral_positive": null,
+    "lateral_negative": null,
+    "yaw_positive": null,
+    "yaw_negative": null
+  }
+}

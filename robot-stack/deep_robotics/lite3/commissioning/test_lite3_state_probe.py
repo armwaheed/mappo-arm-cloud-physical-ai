@@ -42,6 +42,7 @@ from deep_robotics.lite3.commissioning.lite3_state_probe import (
     ROBOT_STATE_CODE,
     DecodeError,
     ProbeStatistics,
+    _format_report,
     decode_frame,
     run_probe,
     unwrap_degrees,
@@ -98,6 +99,11 @@ def _robot_state_frame(**overrides) -> bytes:
 def _handle_state_frame(forward=0.3, side=0.0, yaw=0.0) -> bytes:
     return struct.pack("<3i6d", HANDLE_STATE_CODE, 48, 0,
                        0.5, 0.0, 0.0, forward, side, yaw)
+
+
+def _imu_frame(angle=(0.0, 0.0, 0.0), angular_velocity=(0.0, 0.0, 0.0)) -> bytes:
+    return struct.pack("<3iI9f", IMU_DATA_CODE, 40, 0, 0, *angle, *angular_velocity,
+                       0.0, 0.0, 9.81)
 
 
 def test_frame_lengths_match_the_compiled_vendor_header():
@@ -180,6 +186,21 @@ def test_yaw_unit_check_reads_radians_per_second_as_radians():
     assert "radians/s" in unit["verdict"]
 
 
+def test_yaw_unit_check_falls_back_to_imu_when_robot_state_is_absent():
+    statistics = ProbeStatistics()
+    for index in range(20):
+        frame = decode_frame(_imu_frame(
+            angle=(0.0, 0.0, index * 3.0),
+            angular_velocity=(0.0, 0.0, 0.5235987755982988)))
+        statistics.observe(frame, index * 0.1)
+
+    unit = statistics.yaw_rate_unit()
+
+    assert unit is not None
+    assert unit["source"] == "imu"
+    assert "radians/s" in unit["verdict"]
+
+
 def test_a_stationary_robot_cannot_decide_the_yaw_unit():
     statistics = ProbeStatistics()
     for index in range(40):
@@ -250,6 +271,17 @@ def test_a_zero_command_is_excluded_so_a_parked_robot_cannot_set_the_gait_floor(
     for index in range(5):
         statistics.observe(decode_frame(_robot_state_frame()), 0.1 * index)
     assert statistics.command_response() == []
+
+
+def test_report_distinguishes_a_missing_measurement_from_a_missing_command():
+    statistics = ProbeStatistics()
+    statistics.observe(decode_frame(_handle_state_frame(forward=0.32)), 0.0)
+
+    report = _format_report(statistics)
+
+    assert "1 forward-command frame arrived (0.320-0.320 m/s)" in report
+    assert "no robot_state frame arrived" in report
+    assert "no forward command seen" not in report
 
 
 def test_mode_transitions_record_changes_only():

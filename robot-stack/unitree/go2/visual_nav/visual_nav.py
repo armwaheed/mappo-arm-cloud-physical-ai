@@ -113,6 +113,7 @@ one who steps out of shot and stays there parks the robot for up to three second
 from __future__ import annotations
 
 import argparse
+import hashlib
 import math
 import sys
 import threading
@@ -140,7 +141,13 @@ from avoidance import (
     PlannerConfig,
 )
 from camera_model import FisheyeCamera
-from colour_detector import PROFILES, ColourBlobDetector, ColourProfile
+from colour_detector import (
+    COLOUR_PROFILE_SCHEMA,
+    PROFILES,
+    ColourBlobDetector,
+    ColourProfile,
+    load_colour_profile,
+)
 from goal import (
     DEFAULT_GOAL_CROP,
     DEFAULT_GOAL_INPUT_SIZE,
@@ -878,13 +885,25 @@ def build_camera_model(width: int, height: int,
 
 
 def static_profile(args) -> ColourProfile:
-    """The named colour profile, with any measured overrides applied.
+    """Resolve an evidence-backed custom profile or a named profile with measured overrides.
 
     Overrides are ``replace`` on a frozen dataclass rather than mutation, so a profile
     is never edited in place — ``PROFILES`` is module-level and shared, and one run
     quietly rewriting the bin's height for every later one is the kind of bug that only
     shows up as ranges being wrong in the NEXT session.
     """
+    custom_profile = getattr(args, "static_profile", None)
+    if custom_profile is not None:
+        if args.prop_height is not None or args.prop_radius is not None:
+            raise SystemExit(
+                "[visual_nav] --static-profile contains evidenced dimensions; do not override "
+                "them with --prop-height or --prop-radius"
+            )
+        try:
+            return load_colour_profile(custom_profile)
+        except ValueError as error:
+            raise SystemExit(f"[visual_nav] REFUSING TO USE STATIC PROFILE: {error}") from None
+
     profile = PROFILES[args.static_prop]
     changes = {}
     if args.prop_height is not None:
@@ -896,6 +915,26 @@ def static_profile(args) -> ColourProfile:
     if args.prop_radius is not None:
         changes["radius_m"] = args.prop_radius
     return replace(profile, **changes) if changes else profile
+
+
+def static_profile_telemetry(args, profile: ColourProfile | None) -> dict | None:
+    """Return custom-profile provenance without recording its local filename."""
+    custom_profile = getattr(args, "static_profile", None)
+    if custom_profile is None or profile is None:
+        return None
+    try:
+        digest = hashlib.sha256(Path(custom_profile).read_bytes()).hexdigest()
+    except OSError as error:
+        raise SystemExit(
+            f"[visual_nav] REFUSING TO RECORD STATIC PROFILE: cannot read {custom_profile}: "
+            f"{error}"
+        ) from None
+    return {
+        "schema": COLOUR_PROFILE_SCHEMA,
+        "sha256": digest,
+        "label": profile.label,
+        "evidence": dict(profile.evidence),
+    }
 
 
 def build_goal_source(args, camera_model: FisheyeCamera, pose_fn) -> GoalSource:
@@ -986,10 +1025,15 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
                          "inside this robot's own footprint")
 
     static = ap.add_argument_group("static obstacles")
-    static.add_argument("--static-prop", default=None, choices=sorted(PROFILES),
-                        help="segment a known-coloured static prop by colour and map "
+    static_source = static.add_mutually_exclusive_group()
+    static_source.add_argument("--static-prop", default=None, choices=sorted(PROFILES),
+                             help="segment a known-coloured static prop by colour and map "
                              "it in odom. No detector is trained on a recycling bin, "
                              "so this is the only way the pipeline sees one at all")
+    static_source.add_argument(
+        "--static-profile", type=Path,
+        help="evidence-backed custom colour-profile JSON for one named static obstacle",
+    )
     static.add_argument("--prop-height", type=float, default=None,
                         help="override the profile's height in metres (measured, not "
                              "estimated — every range scales linearly on it)")
@@ -1148,9 +1192,10 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
 
         goal_source = build_goal_source(args, camera_model, pose_tuple)
 
-        colour_detector = static_map = None
-        if args.static_prop:
+        colour_detector = static_map = static_profile_used = None
+        if args.static_prop or args.static_profile:
             profile = static_profile(args)
+            static_profile_used = profile
             colour_detector = ColourBlobDetector(profile)
             static_map = StaticObstacleMap(
                 radii={profile.label: profile.radius_m},
@@ -1201,7 +1246,10 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                 "goal": goal_source.description,
                 "classes": list(args.classes),
                 "confidence": args.confidence,
-                "static_prop": args.static_prop,
+                "static_prop": (
+                    static_profile_used.label if static_profile_used is not None else None
+                ),
+                "static_profile": static_profile_telemetry(args, static_profile_used),
                 "arrive_tolerance_m": config.arrive_tolerance_m,
                 "control_hz": config.control_hz,
                 "camera": {"width": width, "height": height,

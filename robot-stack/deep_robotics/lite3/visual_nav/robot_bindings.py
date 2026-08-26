@@ -6,10 +6,21 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from pathlib import Path
 
+from deep_robotics.lite3.locomotion.lite3_axis_locomotion import (
+    AXIS_PROFILE_SCHEMA,
+    AXIS_RATE_HZ,
+    COMMAND_TTL_S,
+    HEARTBEAT_HZ,
+    AxisProfile,
+    AxisProfileError,
+    axis_locomotion_factory,
+)
+from deep_robotics.lite3.locomotion.lite3_axis_udp import DEFAULT_LOCAL_PORT
 from deep_robotics.lite3.locomotion.lite3_locomotion import Lite3Locomotion
 from deep_robotics.lite3.locomotion.lite3_udp_locomotion import (
     DEFAULT_COMMAND_PORT,
@@ -45,6 +56,7 @@ class Lite3Bindings:
         # create_health_monitor reads battery through whatever create_locomotion built,
         # because only one process can hold the robot's single state port.
         self._locomotion = None
+        self._axis_profile = None
 
     def add_navigation_arguments(self, parser, envelope) -> None:
         parser.add_argument(
@@ -115,9 +127,9 @@ class Lite3Bindings:
         """
         transport = parser.add_argument_group("Lite3 locomotion transport")
         transport.add_argument(
-            "--locomotion-transport", choices=("udp", "ros2"), default="udp",
+            "--locomotion-transport", choices=("udp", "axis", "ros2"), default="udp",
             help="udp: the vendor high-level UDP interface directly, no ROS 2 (default); "
-                 "ros2: the Lite3_ROS bridge topics",
+                 "axis: profile-gated moving-mode simple axes; ros2: the Lite3_ROS bridge topics",
         )
         transport.add_argument("--motion-host", default=DEFAULT_MOTION_HOST,
                                help="Lite3 motion host address, for --locomotion-transport udp")
@@ -126,6 +138,27 @@ class Lite3Bindings:
         transport.add_argument("--state-port", type=int, default=DEFAULT_STATE_PORT,
                                help="local port the motion host streams state to; it must "
                                     "match 'ip'/'target_port' in ~/jy_exe/conf/network.toml")
+        transport.add_argument("--state-bind", default="0.0.0.0",
+                               help="local address for state telemetry; use 127.0.0.1 only "
+                                       "after verified host-local telemetry loopback")
+        axis = transport.add_argument_group("Lite3 simple-axis transport")
+        axis.add_argument(
+            "--axis-profile", type=Path,
+            help=f"versioned local profile ({AXIS_PROFILE_SCHEMA}) containing only "
+                 "physically evidenced axis primitives; required for live axis runs",
+        )
+        axis.add_argument(
+            "--axis-source-address",
+            help="source address for simple-axis UDP; omit for the kernel-selected local address",
+        )
+        axis.add_argument("--axis-local-port", type=int, default=DEFAULT_LOCAL_PORT,
+                          help="simple-axis sender source port (vendor reference: 20001)")
+        axis.add_argument("--axis-rate-hz", type=float, default=AXIS_RATE_HZ,
+                          help="simple-axis stream rate; vendor minimum is 20 Hz")
+        axis.add_argument("--axis-heartbeat-hz", type=float, default=HEARTBEAT_HZ,
+                          help="simple-axis heartbeat rate; vendor minimum is 2 Hz")
+        axis.add_argument("--axis-command-ttl", type=float, default=COMMAND_TTL_S,
+                          help="maximum age of a policy command before all axes zero")
         transport.add_argument("--cmd-vel-topic", default="/cmd_vel",
                                help="Lite3_ROS geometry_msgs/Twist command topic (ros2 only)")
         transport.add_argument("--odom-topic", default="/leg_odom2",
@@ -137,18 +170,36 @@ class Lite3Bindings:
             "odom_topic": args.odom_topic,
             "operator_ready": args.operator_ready,
         }
-        if getattr(args, "locomotion_transport", "udp") == "udp":
+        transport = getattr(args, "locomotion_transport", "udp")
+        self._axis_profile = None
+        if transport == "udp":
             arguments["implementation_factory"] = udp_locomotion_factory(
                 motion_host=args.motion_host,
                 command_port=args.command_port,
                 state_port=args.state_port,
+                bind=args.state_bind,
+            )
+        elif transport == "axis":
+            profile = self._load_axis_profile(args)
+            self._axis_profile = profile
+            arguments["implementation_factory"] = axis_locomotion_factory(
+                axis_profile=profile,
+                axis_source_address=args.axis_source_address,
+                axis_local_port=args.axis_local_port,
+                axis_rate_hz=args.axis_rate_hz,
+                heartbeat_hz=args.axis_heartbeat_hz,
+                command_ttl_s=args.axis_command_ttl,
+                motion_host=args.motion_host,
+                command_port=args.command_port,
+                state_port=args.state_port,
+                bind=args.state_bind,
             )
         self._locomotion = Lite3Locomotion(**arguments)
         return self._locomotion
 
     def create_health_monitor(self, args, *, live: bool):
         battery_source = None
-        if getattr(args, "locomotion_transport", "udp") == "udp":
+        if getattr(args, "locomotion_transport", "udp") in ("udp", "axis"):
             # Late-bound: the navigator may build the monitor before the locomotion, and
             # the link is not up until connect(). The poller treats a raise as "no
             # sample", so the staleness gate covers the gap rather than a fabricated one.
@@ -203,6 +254,13 @@ class Lite3Bindings:
                 missing.append("--robot-radius measured for the loaded Lite3")
             if not args.operator_ready:
                 missing.append("--operator-ready after STANDING + navigation mode")
+            if getattr(args, "locomotion_transport", "udp") == "axis":
+                if args.axis_profile is None:
+                    missing.append("--axis-profile with physically evidenced primitives")
+                elif self._axis_profile is None:
+                    self._axis_profile = self._load_axis_profile(args)
+                self._validate_axis_transport(args)
+                self._validate_axis_profile_for_envelope(args)
             if missing:
                 raise SystemExit("[lite3] REFUSING TO WALK: missing " + ", ".join(missing))
             if args.accept_no_motor_temperatures:
@@ -221,6 +279,59 @@ class Lite3Bindings:
                 print("[lite3]   emergency stop in hand, and stop if a motor smells hot "
                       "or the gait changes.")
         self._report_health(health, live=args.live, prefix="visual_nav")
+
+    @staticmethod
+    def _validate_axis_transport(args) -> None:
+        if not math.isfinite(args.axis_rate_hz) or args.axis_rate_hz < AXIS_RATE_HZ:
+            raise SystemExit(
+                f"[lite3] REFUSING TO WALK: --axis-rate-hz must be at least "
+                f"{AXIS_RATE_HZ:.0f}"
+            )
+        if not math.isfinite(args.axis_heartbeat_hz) or args.axis_heartbeat_hz < 2.0:
+            raise SystemExit(
+                "[lite3] REFUSING TO WALK: --axis-heartbeat-hz must be at least 2"
+            )
+        if not math.isfinite(args.axis_command_ttl) \
+                or not 0.0 < args.axis_command_ttl < 0.25:
+            raise SystemExit(
+                "[lite3] REFUSING TO WALK: --axis-command-ttl must be within 0..0.25 s"
+            )
+        if not 0 <= args.axis_local_port <= 65535:
+            raise SystemExit(
+                "[lite3] REFUSING TO WALK: --axis-local-port must be within 0..65535"
+            )
+
+    @staticmethod
+    def _load_axis_profile(args) -> AxisProfile | None:
+        if args.axis_profile is None:
+            return None
+        try:
+            return AxisProfile.load(args.axis_profile)
+        except AxisProfileError as error:
+            raise SystemExit(f"[lite3] REFUSING TO USE AXIS PROFILE: {error}") from None
+
+    def _validate_axis_profile_for_envelope(self, args) -> None:
+        profile = self._axis_profile
+        if profile is None:
+            return
+        missing = []
+        if args.max_vx > 0.0 and args.derate > 0.0 and profile.forward_positive is None:
+            missing.append("forward_positive")
+        if args.max_vy > 0.0 and args.derate > 0.0:
+            if profile.lateral_positive is None:
+                missing.append("lateral_positive")
+            if profile.lateral_negative is None:
+                missing.append("lateral_negative")
+        if args.max_wz > 0.0 and args.derate > 0.0:
+            if profile.yaw_positive is None:
+                missing.append("yaw_positive")
+            if profile.yaw_negative is None:
+                missing.append("yaw_negative")
+        if missing:
+            raise SystemExit(
+                "[lite3] REFUSING TO WALK: axis profile lacks evidenced primitives for "
+                + ", ".join(missing)
+            )
 
     def preflight_calibration(self, args, health) -> None:
         if not args.spin:
@@ -279,9 +390,15 @@ class Lite3Bindings:
                 f"[lite3] REFUSING TO {action}: {path} was not produced by the "
                 f"Lite3 calibration runner (platform={data.get('platform')!r})"
             )
+        if args.live and data.get("calibration_status") != "validated":
+            raise SystemExit(
+                f"[lite3] REFUSING TO WALK: {path} is not a validated Lite3 calibration"
+            )
 
     def prepare_motion(self, _args, loco) -> None:
         loco.prepare_motion()
+        if getattr(_args, "locomotion_transport", "udp") == "axis":
+            loco.assert_axis_state_ready()
 
     def stand_up(self, loco) -> None:
         loco.recover()
@@ -311,11 +428,13 @@ class Lite3Bindings:
         return default if args.robot_radius is None else args.robot_radius
 
     def telemetry_config(self, args) -> dict:
+        axis_profile = self._axis_profile_telemetry(args)
         return {
             "platform": {
                 "name": self.platform_name,
                 "transport": getattr(args, "locomotion_transport", "udp"),
                 "motion_host": getattr(args, "motion_host", None),
+                "state_bind": getattr(args, "state_bind", None),
                 "cmd_vel_topic": args.cmd_vel_topic,
                 "odom_topic": args.odom_topic,
                 "motor_temperatures_monitored": not args.accept_no_motor_temperatures,
@@ -325,11 +444,48 @@ class Lite3Bindings:
                 ),
                 "gait_floor_m_s": args.gait_floor,
                 "actuator_gain": args.actuator_gain,
+                "axis_profile_schema": (
+                    AXIS_PROFILE_SCHEMA
+                    if getattr(args, "locomotion_transport", "udp") == "axis"
+                    else None
+                ),
+                "axis_profile": axis_profile,
             }
         }
 
+    def _axis_profile_telemetry(self, args) -> dict | None:
+        if getattr(args, "locomotion_transport", "udp") != "axis":
+            return None
+        profile = self._axis_profile
+        if profile is None and args.axis_profile is not None:
+            profile = self._load_axis_profile(args)
+        if profile is None:
+            return None
+        try:
+            digest = hashlib.sha256(args.axis_profile.read_bytes()).hexdigest()
+        except OSError as error:
+            raise SystemExit(
+                f"[lite3] REFUSING TO RECORD AXIS PROFILE: cannot read {args.axis_profile}: {error}"
+            ) from None
+        return {
+            "sha256": digest,
+            "allowed_gait_states": list(profile.allowed_gait_states),
+            "primitives": {
+                "forward_positive": profile.forward_positive,
+                "forward_negative": profile.forward_negative,
+                "lateral_positive": profile.lateral_positive,
+                "lateral_negative": profile.lateral_negative,
+                "yaw_positive": profile.yaw_positive,
+                "yaw_negative": profile.yaw_negative,
+            },
+            "evidence": dict(profile.evidence),
+        }
+
     def calibration_provenance(self, _args) -> dict:
-        return {"platform": self.platform_name}
+        return {
+            "platform": self.platform_name,
+            "calibration_status": "provisional",
+        }
 
     def actuation_summary(self, top_speed: float, args) -> str:
         achieved = (None if args.actuator_gain is None

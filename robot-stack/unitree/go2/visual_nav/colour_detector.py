@@ -36,7 +36,10 @@ Nothing here needs the robot — pass any BGR image. ``python3 test_colour_detec
 
 from __future__ import annotations
 
+import json
+import math
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import numpy as np
@@ -45,6 +48,7 @@ from person_detector import Detection, SizePrior
 
 #: OpenCV packs hue into 0..179, half the usual degrees. Blue sits near 110.
 HUE_MAX = 179
+COLOUR_PROFILE_SCHEMA = "colour-profile/v1"
 
 
 @dataclass(frozen=True)
@@ -112,15 +116,29 @@ class ColourProfile:
     min_fill: float = 0.35
     min_aspect: float = 0.35
     max_aspect: float = 2.60
+    evidence: tuple[tuple[str, str], ...] = ()
 
     def __post_init__(self) -> None:
-        for name in ("height_m", "width_m", "radius_m"):
-            if getattr(self, name) <= 0.0:
-                raise ValueError(f"{name} must be positive, got {getattr(self, name)}")
-        if not 0 <= self.hue_lo <= HUE_MAX or not 0 <= self.hue_hi <= HUE_MAX:
-            raise ValueError(f"hue window must be within 0..{HUE_MAX}")
+        for name in ("hue_lo", "hue_hi", "sat_min", "val_min"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int):
+                raise ValueError(f"{name} must be an integer")
+            maximum = HUE_MAX if name.startswith("hue") else 255
+            if not 0 <= value <= maximum:
+                raise ValueError(f"{name} must be within 0..{maximum}")
+        for name in ("height_m", "width_m", "radius_m", "min_fill", "min_aspect", "max_aspect"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                    or not math.isfinite(float(value)) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        if isinstance(self.min_area_px, bool) or not isinstance(self.min_area_px, int) \
+                or self.min_area_px <= 0:
+            raise ValueError("min_area_px must be a positive integer")
         if self.min_aspect > self.max_aspect:
             raise ValueError("min_aspect must not exceed max_aspect")
+        for key, value in self.evidence:
+            if not isinstance(key, str) or not key or not isinstance(value, str) or not value:
+                raise ValueError("profile evidence must contain non-empty string pairs")
 
     @property
     def prior(self) -> SizePrior:
@@ -160,6 +178,56 @@ BLUE_BIN = ColourProfile(
 
 #: Named profiles the CLI can select. Extend rather than teaching callers HSV.
 PROFILES = {"bin": BLUE_BIN}
+
+
+def load_colour_profile(path: str | Path) -> ColourProfile:
+    """Load an evidence-backed custom static-colour profile from versioned JSON."""
+    path = Path(path)
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"cannot read colour profile {path}: {error}") from None
+    if not isinstance(data, dict):
+        raise ValueError("colour profile must be a JSON object")
+    if data.get("schema") != COLOUR_PROFILE_SCHEMA:
+        raise ValueError(
+            f"colour profile schema must be {COLOUR_PROFILE_SCHEMA!r}, "
+            f"got {data.get('schema')!r}"
+        )
+    evidence = data.get("evidence")
+    if not isinstance(evidence, dict) or not evidence:
+        raise ValueError("custom colour profile requires a non-empty evidence object")
+    label = data.get("label")
+    if not isinstance(label, str) or not label:
+        raise ValueError("custom colour profile label must be a non-empty string")
+    for name in ("hue_lo", "hue_hi", "sat_min", "val_min", "min_area_px"):
+        value = data.get(name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"custom colour profile {name} must be an integer")
+    for name in ("height_m", "width_m", "radius_m", "min_fill", "min_aspect", "max_aspect"):
+        value = data.get(name)
+        if isinstance(value, bool) or not isinstance(value, (int, float)) \
+                or not math.isfinite(float(value)):
+            raise ValueError(f"custom colour profile {name} must be finite")
+    fields = {
+        "label": label,
+        "hue_lo": data.get("hue_lo"),
+        "hue_hi": data.get("hue_hi"),
+        "sat_min": data.get("sat_min"),
+        "val_min": data.get("val_min"),
+        "height_m": data.get("height_m"),
+        "width_m": data.get("width_m"),
+        "radius_m": data.get("radius_m"),
+        "min_area_px": data.get("min_area_px", 400),
+        "min_fill": data.get("min_fill", 0.55),
+        "min_aspect": data.get("min_aspect", 0.35),
+        "max_aspect": data.get("max_aspect", 2.60),
+        "evidence": tuple(evidence.items()),
+    }
+    try:
+        return ColourProfile(**fields)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"invalid colour profile {path}: {error}") from None
 
 
 class ColourBlobDetector:

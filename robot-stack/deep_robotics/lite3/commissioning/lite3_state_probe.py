@@ -215,9 +215,13 @@ class ProbeStatistics:
         self.is_charging: bool | None = None
         self.error_states: dict[int, int] = {}
         self._modes: dict[str, int] | None = None
-        self._yaw: tuple[float, float] | None = None
-        self._yaw_rate_pairs: list[tuple[float, float]] = []
+        self._yaw: dict[str, tuple[float, float]] = {}
+        self._yaw_rate_pairs: dict[str, list[tuple[float, float]]] = {
+            "robot_state": [],
+            "imu": [],
+        }
         self._handle: tuple[float, dict] | None = None
+        self._forward_commands: list[float] = []
         self._command_pairs: list[tuple[float, float, float, float]] = []
 
     def observe(self, frame: dict, timestamp: float) -> None:
@@ -229,8 +233,13 @@ class ProbeStatistics:
 
         if kind == "handle_state":
             self._handle = (timestamp, frame)
+            if frame["goal_vel_forward"] > 0.0:
+                self._forward_commands.append(frame["goal_vel_forward"])
         elif kind == "robot_state":
             self._observe_robot_state(frame, timestamp)
+        elif kind == "imu":
+            self._observe_yaw(
+                "imu", frame["angle_deg"][2], frame["angular_velocity"][2], timestamp)
 
     def observe_undecoded(self) -> None:
         self.undecoded += 1
@@ -246,16 +255,8 @@ class ProbeStatistics:
             self.mode_transitions.append((timestamp, modes))
             self._modes = modes
 
-        yaw = frame["rpy_deg"][2]
-        if self._yaw is not None:
-            previous_time, previous_yaw = self._yaw
-            interval = timestamp - previous_time
-            # One sample interval is the resolution floor of a finite difference; below a
-            # few milliseconds the quotient is dominated by arrival jitter, not by motion.
-            if interval >= 0.005:
-                measured = unwrap_degrees(previous_yaw, yaw) / interval
-                self._yaw_rate_pairs.append((measured, frame["rpy_vel"][2]))
-        self._yaw = (timestamp, yaw)
+        self._observe_yaw(
+            "robot_state", frame["rpy_deg"][2], frame["rpy_vel"][2], timestamp)
 
         # Pair only against a command still being transmitted. Latching the last
         # handle frame forever would keep a stale command paired with fresh measurements
@@ -268,6 +269,19 @@ class ProbeStatistics:
                     handle["goal_vel_forward"], frame["vel_body"][0],
                     handle["goal_vel_yaw"], frame["rpy_deg"][2],
                 ))
+
+    def _observe_yaw(self, source: str, yaw: float, reported_rate: float,
+                     timestamp: float) -> None:
+        previous = self._yaw.get(source)
+        if previous is not None:
+            previous_time, previous_yaw = previous
+            interval = timestamp - previous_time
+            # One sample interval is the resolution floor of a finite difference; below a
+            # few milliseconds the quotient is dominated by arrival jitter, not by motion.
+            if interval >= 0.005:
+                measured = unwrap_degrees(previous_yaw, yaw) / interval
+                self._yaw_rate_pairs[source].append((measured, reported_rate))
+        self._yaw[source] = (timestamp, yaw)
 
     @property
     def duration(self) -> float:
@@ -287,19 +301,28 @@ class ProbeStatistics:
         are noise and their ratio is unbounded, so including them would let a stationary
         robot decide the unit.
         """
-        moving = [(measured, reported) for measured, reported in self._yaw_rate_pairs
-                  if abs(measured) >= 5.0 and abs(reported) >= 1e-3]
-        if not moving:
-            return None
-        ratios = sorted(measured / reported for measured, reported in moving)
-        median = ratios[len(ratios) // 2]
-        if abs(median - 1.0) < 0.25:
-            verdict = "rpy_vel is degrees/s (matches rpy, which is degrees)"
-        elif abs(median - DEGREES_PER_RADIAN) < 12.0:
-            verdict = "rpy_vel is radians/s"
-        else:
-            verdict = "inconclusive — neither degrees/s nor radians/s; do not use it"
-        return {"samples": len(moving), "median_ratio": median, "verdict": verdict}
+        for source in ("robot_state", "imu"):
+            moving = [
+                (measured, reported) for measured, reported in self._yaw_rate_pairs[source]
+                if abs(measured) >= 5.0 and abs(reported) >= 1e-3
+            ]
+            if not moving:
+                continue
+            ratios = sorted(measured / reported for measured, reported in moving)
+            median = ratios[len(ratios) // 2]
+            if abs(median - 1.0) < 0.25:
+                verdict = "reported yaw rate is degrees/s (matches yaw, which is degrees)"
+            elif abs(median - DEGREES_PER_RADIAN) < 12.0:
+                verdict = "reported yaw rate is radians/s"
+            else:
+                verdict = "inconclusive — neither degrees/s nor radians/s; do not use it"
+            return {
+                "source": source,
+                "samples": len(moving),
+                "median_ratio": median,
+                "verdict": verdict,
+            }
+        return None
 
     def command_response(self, bin_width: float = 0.05) -> list[dict]:
         """Bin measured forward speed by the speed the *remote* asked the firmware for.
@@ -325,6 +348,16 @@ class ProbeStatistics:
                 "samples": len(pairs),
             })
         return rows
+
+    def forward_command_summary(self) -> dict | None:
+        """Summarize positive remote forward requests, even without robot-state frames."""
+        if not self._forward_commands:
+            return None
+        return {
+            "frames": len(self._forward_commands),
+            "min_m_s": min(self._forward_commands),
+            "max_m_s": max(self._forward_commands),
+        }
 
 
 def _format_report(statistics: ProbeStatistics) -> str:
@@ -377,18 +410,31 @@ def _format_report(statistics: ProbeStatistics) -> str:
         lines.append("  AUTO/manual answer for THIS firmware.")
 
     unit = statistics.yaw_rate_unit()
-    lines += ["", "Angular-velocity unit (rpy_vel z vs measured yaw change)"]
+    lines += ["", "Angular-velocity unit (reported z rate vs measured yaw change)"]
     if unit is None:
         lines.append("  not enough yaw motion to decide — turn the robot on the remote")
     else:
         lines.append(f"  median ratio {unit['median_ratio']:.2f} over {unit['samples']} "
-                     f"moving samples")
+                     f"moving {unit['source']} samples")
         lines.append(f"  -> {unit['verdict']}")
 
     rows = statistics.command_response()
     lines += ["", "Remote-commanded vs measured forward speed"]
     if not rows:
-        lines.append("  no forward command seen — drive the robot on the vendor remote")
+        commands = statistics.forward_command_summary()
+        if commands is None:
+            lines.append("  no forward command seen — drive the robot on the vendor remote")
+        else:
+            frame_label = "frame" if commands["frames"] == 1 else "frames"
+            lines.append(f"  {commands['frames']} forward-command {frame_label} arrived "
+                         f"({commands['min_m_s']:.3f}-{commands['max_m_s']:.3f} m/s), "
+                         "but no fresh measured speed was paired")
+            if statistics.counts.get("robot_state", 0) == 0:
+                lines.append("  no robot_state frame arrived, so --gait-floor and "
+                             "--actuator-gain remain unknown")
+            else:
+                lines.append("  the command was stale when measurements arrived; repeat "
+                             "while holding the remote forward")
     else:
         lines.append("   commanded   measured    gain   samples")
         for row in rows:

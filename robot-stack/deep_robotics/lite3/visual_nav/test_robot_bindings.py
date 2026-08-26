@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -89,12 +90,130 @@ def test_the_udp_transport_can_be_pointed_at_a_second_robot():
     assert implementation._state_port == 43898
 
 
+def _axis_profile(path: Path):
+    path.write_text(json.dumps({
+        "schema": "lite3-axis-profile/v1",
+        "input_deadband": {"linear_m_s": 0.05, "yaw_rad_s": 0.1},
+        "allowed_gait_states": [0],
+        "evidence": {
+            "forward_positive": "test-forward-positive",
+        },
+        "primitives": {
+            "forward_positive": 7000,
+            "forward_negative": None,
+            "lateral_positive": None,
+            "lateral_negative": None,
+            "yaw_positive": None,
+            "yaw_negative": None,
+        },
+    }))
+
+
+def test_axis_transport_uses_explicit_profile_and_state_bind():
+    from deep_robotics.lite3.locomotion.lite3_axis_locomotion import Lite3AxisLocomotion
+
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(profile)
+        args = _args(
+            "--locomotion-transport", "axis",
+            "--axis-profile", str(profile),
+            "--state-bind", "127.0.0.1",
+            "--axis-source-address", "127.0.0.1",
+            "--axis-local-port", "20001",
+        )
+        loco = Lite3Bindings().create_locomotion(args)
+        implementation = loco._implementation_factory(
+            cmd_vel_topic=None, odom_topic=None, stamped=False, node_name="test",
+        )
+    assert isinstance(implementation, Lite3AxisLocomotion)
+    assert implementation._bind == "127.0.0.1"
+    assert implementation._axis_source_address == "127.0.0.1"
+    assert implementation._axis_local_port == 20001
+    assert implementation._axis_profile.forward_positive == 7000
+
+
+def test_live_axis_transport_requires_an_evidenced_profile():
+    binding = Lite3Bindings()
+    args = _live_args("--locomotion-transport", "axis")
+    try:
+        binding.preflight_navigation(args, None, _Health())
+    except SystemExit as error:
+        assert "--axis-profile" in str(error)
+    else:
+        raise AssertionError("accepted a live axis run with no primitive profile")
+
+
+def test_live_axis_transport_requires_primitives_for_enabled_axes():
+    binding = Lite3Bindings()
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(profile)
+        args = _live_args("--locomotion-transport", "axis", "--axis-profile", str(profile))
+        try:
+            binding.preflight_navigation(args, None, _Health())
+        except SystemExit as error:
+            message = str(error)
+            assert "lateral_positive" in message
+            assert "yaw_positive" in message
+        else:
+            raise AssertionError("accepted a live axis run with unsupported directions")
+
+        args = _live_args(
+            "--locomotion-transport", "axis",
+            "--axis-profile", str(profile),
+            "--max-vy", "0",
+            "--max-wz", "0",
+        )
+        binding.preflight_navigation(args, None, _Health())
+
+
+def test_live_axis_transport_refuses_protocol_rate_and_ttl_violations():
+    binding = Lite3Bindings()
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(profile)
+        invalid_cases = (
+            ("--axis-rate-hz", "19.9", "--axis-rate-hz"),
+            ("--axis-heartbeat-hz", "1.9", "--axis-heartbeat-hz"),
+            ("--axis-command-ttl", "0.25", "--axis-command-ttl"),
+        )
+        for flag, value, expected in invalid_cases:
+            args = _live_args(
+                "--locomotion-transport", "axis",
+                "--axis-profile", str(profile),
+                flag, value,
+            )
+            try:
+                binding.preflight_navigation(args, None, _Health())
+            except SystemExit as error:
+                assert expected in str(error)
+            else:
+                raise AssertionError(f"accepted invalid axis transport option {flag}={value}")
+
+
 def test_telemetry_does_not_persist_camera_source_credentials():
     binding = Lite3Bindings()
     args = _args("--camera-source", "rtsp://operator:secret@camera/live?token=private")
     serialized = json.dumps(binding.telemetry_config(args))
     assert "secret" not in serialized and "private" not in serialized
     assert binding.telemetry_config(args)["platform"]["camera_source_kind"] == "rtsp"
+
+
+def test_axis_telemetry_records_profile_hash_and_provenance_without_path():
+    binding = Lite3Bindings()
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(profile)
+        args = _args("--locomotion-transport", "axis", "--axis-profile", str(profile))
+        platform = binding.telemetry_config(args)["platform"]
+        assert platform["axis_profile_schema"] == "lite3-axis-profile/v1"
+        expected_sha256 = hashlib.sha256(profile.read_bytes()).hexdigest()
+        assert platform["axis_profile"]["sha256"] == expected_sha256
+        assert platform["axis_profile"]["allowed_gait_states"] == [0]
+        assert platform["axis_profile"]["primitives"]["forward_positive"] == 7000
+        assert platform["axis_profile"]["evidence"]["forward_positive"] == "test-forward-positive"
+        assert str(profile) not in json.dumps(platform)
 
 
 def test_a_live_run_requires_every_robot_specific_measurement_and_operator_gate():
@@ -191,8 +310,44 @@ def test_lite3_calibration_provenance_round_trips_through_the_gate():
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "camera.json"
         path.write_text(json.dumps(binding.calibration_provenance(None)))
+        args = _args("--calibration", str(path))
+        binding.validate_camera_calibration(args)
+        args = _args("--live", "--calibration", str(path))
+        try:
+            binding.validate_camera_calibration(args)
+        except SystemExit as error:
+            assert "not a validated Lite3 calibration" in str(error)
+        else:
+            raise AssertionError("generated provisional calibration was accepted for live movement")
+
+
+def test_live_accepts_a_separately_validated_lite3_calibration():
+    binding = Lite3Bindings()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "camera.json"
+        path.write_text(json.dumps({
+            "platform": binding.platform_name,
+            "calibration_status": "validated",
+        }))
         args = _args("--live", "--calibration", str(path))
         binding.validate_camera_calibration(args)
+
+
+def test_live_rejects_provisional_lite3_calibration():
+    binding = Lite3Bindings()
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "camera.json"
+        path.write_text(json.dumps({
+            "platform": binding.platform_name,
+            "calibration_status": "provisional",
+        }))
+        args = _args("--live", "--calibration", str(path))
+        try:
+            binding.validate_camera_calibration(args)
+        except SystemExit as error:
+            assert "not a validated Lite3 calibration" in str(error)
+        else:
+            raise AssertionError("a provisional calibration was accepted for live movement")
 
 
 def test_live_rejects_a_missing_or_malformed_calibration_without_a_traceback():

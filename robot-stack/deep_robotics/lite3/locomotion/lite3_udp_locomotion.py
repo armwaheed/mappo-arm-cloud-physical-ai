@@ -68,6 +68,11 @@ LATERAL_VELOCITY_CODE = 325
 YAW_VELOCITY_CODE = 321
 COMPLEX_CMD_TYPE = 1
 COMPLEX_CMD_SIZE = 8
+VELOCITY_COMMAND_CODES = frozenset((
+    FORWARD_VELOCITY_CODE,
+    LATERAL_VELOCITY_CODE,
+    YAW_VELOCITY_CODE,
+))
 
 DEFAULT_MOTION_HOST = "192.168.1.120"
 DEFAULT_COMMAND_PORT = 43893
@@ -84,6 +89,15 @@ CONNECT_TIMEOUT_S = 5.0
 
 class Lite3LinkLost(RuntimeError):
     """The motion host stopped reporting state, so commanding it would be blind."""
+
+
+def velocity_packet(code: int, value: float) -> bytes:
+    """Encode one vendor high-level velocity command without native padding."""
+    if code not in VELOCITY_COMMAND_CODES:
+        raise ValueError(f"unsupported Lite3 velocity command code: {code}")
+    if not math.isfinite(value):
+        raise ValueError(f"Lite3 velocity command must be finite: {value}")
+    return _COMMAND.pack(code, COMPLEX_CMD_SIZE, COMPLEX_CMD_TYPE, float(value))
 
 
 @dataclass(frozen=True)
@@ -111,6 +125,7 @@ class _StateSnapshot:
     vy: float
     reported_yaw_rate: float
     battery_level: float
+    error_state: int
     mode: tuple
 
 
@@ -243,7 +258,7 @@ class Lite3UdpLocomotion:
         self._send(YAW_VELOCITY_CODE, 0.0)
 
     def _send(self, code: int, value: float) -> None:
-        frame = _COMMAND.pack(code, COMPLEX_CMD_SIZE, COMPLEX_CMD_TYPE, float(value))
+        frame = velocity_packet(code, value)
         self._command_socket.sendto(frame, (self._motion_host, self._command_port))
 
     # ----- state ----------------------------------------------------------------------
@@ -275,6 +290,14 @@ class Lite3UdpLocomotion:
     def battery_level(self) -> float:
         """Battery percentage, which the vendor ROS bridge drops and this stream carries."""
         return self._require_state().battery_level
+
+    def mode(self) -> tuple:
+        """Documented vendor state tuple: basic state, gait, policy, and motion."""
+        return self._require_state().mode
+
+    def error_state(self) -> int:
+        """The latest documented high-level error state."""
+        return self._require_state().error_state
 
     def state_age(self) -> float | None:
         """Seconds since the last state frame, or ``None`` if none has ever arrived."""
@@ -323,6 +346,7 @@ class Lite3UdpLocomotion:
             vx=frame["vel_body"][0], vy=frame["vel_body"][1],
             reported_yaw_rate=frame["rpy_vel"][2],
             battery_level=frame["battery_level"],
+            error_state=frame["error_state"],
             mode=(frame["robot_basic_state"], frame["robot_gait_state"],
                   frame["robot_policy_state"], frame["robot_motion_state"]),
         )

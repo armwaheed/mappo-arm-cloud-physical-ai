@@ -305,7 +305,7 @@ def _Snapshot(loco):
     from deep_robotics.lite3.locomotion.lite3_udp_locomotion import _StateSnapshot
     return _StateSnapshot(received_at=loco._clock(), x=0.0, y=0.0, yaw_rad=0.0,
                           vx=0.0, vy=0.0, reported_yaw_rate=0.0, battery_level=90.0,
-                          mode=(3, 2, 1, 4))
+                          error_state=0, mode=(3, 2, 1, 4))
 
 
 def _decoded(*, yaw_deg=0.0, reported_yaw_rate=0.0):
@@ -313,7 +313,7 @@ def _decoded(*, yaw_deg=0.0, reported_yaw_rate=0.0):
         "rpy_deg": [0.0, 0.0, yaw_deg], "rpy_vel": [0.0, 0.0, reported_yaw_rate],
         "pos_world": [0.0, 0.0, 0.32], "vel_body": [0.0, 0.0, 0.0],
         "battery_level": 90.0, "robot_basic_state": 3, "robot_gait_state": 2,
-        "robot_policy_state": 1, "robot_motion_state": 4,
+        "robot_policy_state": 1, "robot_motion_state": 4, "error_state": 0,
     }
 
 
