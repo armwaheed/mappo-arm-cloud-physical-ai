@@ -431,15 +431,6 @@ def test_the_recorded_run_predates_kind_and_the_audit_says_so():
     assert totals["no_goal"] == 0
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-        print(f"  ok  {t.__name__}")
-    print(f"mappo_bridge: {len(tests)}/{len(tests)} passed")
-
-
-
 def test_a_person_shaped_obstacle_holds_even_when_its_label_is_not_in_hold_labels():
     """THE HOLE THIS CLOSES. Every other fixture here has a label that agrees with its
     shape, so deleting the shape check from `holds_the_robot` used to leave the whole
@@ -462,3 +453,11 @@ def test_shape_defaults_to_holding_when_a_producer_omits_it():
     legacy = {k: v for k, v in PARKED_PEER.items() if k != "person_shaped"}
     assert "person_shaped" not in legacy
     assert holds_the_robot(legacy) is True
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+        print(f"  ok  {t.__name__}")
+    print(f"mappo_bridge: {len(tests)}/{len(tests)} passed")
