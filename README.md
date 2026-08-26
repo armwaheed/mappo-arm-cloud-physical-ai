@@ -431,22 +431,41 @@ evidence/        the approved run, the static-obstacle dry run, a sample telemet
 
 ## Running the tests
 
+Everything, from the repository root, with the script CI runs:
+
 ```bash
-cd policy      && python3 test_physical_ai_mappo.py                                #  33
-cd integration && for t in test_*.py; do python3 $t; done                          # 142
-cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 265
-cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
-cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done #  39
-cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py #  16
-cd dashboard   && for t in test_*.py; do python3 $t; done                          # 114
+bash .github/measure-suites.sh            # every suite; one `  ok  ` line per test
+bash .github/measure-suites.sh --check    # ...and fail if any count has drifted
 ```
+
+`--check` needs Python ≥ 3.11 with `numpy`, `opencv-python`, `Pillow`, `pytest` and
+`aiohttp` importable, and refuses to run rather than reporting a total short by whatever
+the interpreter could not reach. Plain `bash .github/measure-suites.sh` runs under 3.8,
+which is what the robot's Jetson has, and still fails on a broken suite.
+
+One directory at a time — **the parentheses are load-bearing**, because the directories
+are nested and a bare `cd` per line would run the next line from inside the last one:
+
+```bash
+(cd policy && for t in test_*.py; do python3 "$t"; done)
+```
+
+The directories are listed in [`AGENTS.md`](AGENTS.md); the per-directory counts are in
+[`.github/test-inventory.tsv`](.github/test-inventory.tsv), which
+`bash .github/measure-suites.sh --write` regenerates and which CI re-measures on every
+pull request, failing on a disagreement in either direction. **Neither is repeated here**,
+because this block used to carry its own copy of both and by the time anyone read it they
+were wrong in both directions at once: about half the tests claimed against what the tree
+actually runs, seven directories listed against twelve that exist, and the Lite3
+commissioning line naming a single file in a directory of ten. A second copy of a count is
+a second thing to drift, and only one of them is checked.
 
 `policy/` and the parts of `integration/` that touch the policy need `numpy`; the
 robot-stack suites also need `opencv-python`; `dashboard/` needs `device-connect-edge`,
-`device-connect-agent-tools` and `aiohttp` on Python ≥ 3.11. `deploy/install.sh` runs the first two
-suites as part of installing, because a truncated checkout should fail there rather than
-in the arena. Every listed code directory carries a `ruff.toml`; `ruff check .` is clean
-in each.
+`device-connect-agent-tools` and `aiohttp` on Python ≥ 3.11. `deploy/install.sh` runs the
+policy and integration suites as part of installing, because a truncated checkout should
+fail there rather than in the arena. Thirteen directories carry a `ruff.toml`;
+`ruff check .` is clean in each, run from inside the directory it governs.
 
 ## Safety
 
