@@ -7,7 +7,12 @@ closes that gap: the SDK call stays on the robot, and the frame crosses as HTTP.
 
 Read-only. Opens the video client and nothing else. No motion, no lease, no writes.
 """
-import http.server, socketserver, threading, time, sys
+import http.server
+import json
+import socketserver
+import sys
+import threading
+import time
 
 from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 from unitree_sdk2py.go2.video.video_client import VideoClient
@@ -31,7 +36,7 @@ def pump():
                 with _lock:
                     _latest.update(jpeg=bytes(data), seq=seq, t=time.time())
         except Exception as exc:                      # a dropped frame is not fatal
-            sys.stderr.write("frame error: %r\n" % (exc,))
+            sys.stderr.write(f"frame error: {exc!r}\n")
         time.sleep(0.08)                              # ~12 Hz ceiling; the SDK sets the real rate
 
 
@@ -43,9 +48,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         with _lock:
             jpeg, seq, t = _latest["jpeg"], _latest["seq"], _latest["t"]
         if self.path.startswith("/status"):
-            body = ('{"seq": %d, "age_s": %.2f, "have_frame": %s}'
-                    % (seq, time.time() - t if t else -1.0,
-                       "true" if jpeg else "false")).encode()
+            body = json.dumps({
+                "seq": seq,
+                "age_s": round(time.time() - t, 2) if t else -1.0,
+                "have_frame": jpeg is not None,
+            }).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -71,5 +78,5 @@ class Server(socketserver.ThreadingTCPServer):
 if __name__ == "__main__":
     threading.Thread(target=pump, daemon=True).start()
     time.sleep(2.0)
-    print("go2 frame server on :%d  (/ = latest jpeg, /status = json)" % PORT, flush=True)
+    print(f"go2 frame server on :{PORT}  (/ = latest jpeg, /status = json)", flush=True)
     Server(("0.0.0.0", PORT), Handler).serve_forever()
