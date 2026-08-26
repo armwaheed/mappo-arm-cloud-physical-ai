@@ -68,6 +68,25 @@ python3 lite3_state_probe.py --seconds 30 --robot-id LITE3-A --record lite3-a-ca
 
 If it reports zero frames, the destination address is wrong; the report says what to check.
 
+## Mirror existing telemetry without changing the robot
+
+[`lite3_state_relay.py`](lite3_state_relay.py) is a diagnostic-only sender for a computer that
+already receives the motion host's UDP state stream. It sends only validated `RobotState`
+datagrams to a non-command UDP port; it counts other valid frame types but does not send them.
+It rejects port 43893, has no motion/control import, and does not edit `network.toml` or restart
+`jy_exe`.
+
+Its `sent` count proves only that the local UDP stack accepted the datagram; UDP has no delivery
+acknowledgement. On this Lite3, Mac-to-motion-host UDP frames reached host Ethernet capture but
+did not reach any host user-space UDP socket, so this relay is **not** a usable host state path.
+Do not use it as the MAPPO state source.
+
+The planned standalone-demo solution is a separately authorized host-local `RobotState`
+configuration: backup the current `network.toml`, point the vendor telemetry destination to a
+host-local address/port, restart `jy_exe` once, prove valid state at the expected rate, and prove
+rollback. That maintenance operation is not performed by this relay and does not authorize robot
+motion.
+
 ### Capture 1 — the robot is prone and untouched
 
 Establishes the link, the frame rates, `battery_level`, and the resting values of the four
@@ -85,7 +104,7 @@ legs.** It settles four of the open items in issue #13:
 | approved AUTO/manual transition | the four mode fields change at the moment the operator acts; the report timestamps each transition, so you learn this firmware's state machine by watching it |
 | `--gait-floor` | `HandleState.goal_vel_forward` is the velocity the firmware derived from the remote's stick, paired against measured `vel_body`; the lowest commanded bin that produces a real walk is the floor |
 | `--actuator-gain` | measured ÷ commanded from the same pairs, at the envelope you intend to demo |
-| angular-velocity units | `rpy` is degrees; `rpy_vel` is copied into a ROS rad/s field without conversion. The report divides observed yaw change by the reported rate: ≈1 means the field is degrees/s, ≈57.3 means radians/s |
+| angular-velocity units | Prefer `robot_state.rpy` / `rpy_vel`; when that frame is absent, use IMU `angle_deg` / `angular_velocity`. The report divides observed yaw change by the reported rate: ≈1 means the field is degrees/s, ≈57.3 means radians/s |
 
 Record the robot ID against every number and repeat on the second Venture. None of these
 transfer between units, and none of the Go2 values apply.

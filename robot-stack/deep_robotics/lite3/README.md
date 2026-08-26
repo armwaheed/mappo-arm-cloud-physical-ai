@@ -9,28 +9,30 @@ This is the Lite3 Venture binding for the same visual navigator and MAPPO integr
 used on the Go2. It assumes the two event robots have one forward RGB camera and **no
 LiDAR**. Nothing in this path starts a LiDAR node or consumes a point cloud.
 
-The code is offline-tested. It has not moved either event robot. Hardware commissioning
-is tracked in [issue #13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13)
-and still has to supply the four measurements in the table below and the two health
-topics; live mode fails closed when any of them is absent.
+The visual-navigation and MAPPO path is offline-tested. A separate, bounded vendor
+high-level locomotion proof moved one event robot on 2026-08-24; it does **not** authorize
+the visual-navigation or MAPPO path to move a robot. Hardware commissioning is tracked in
+[issue #13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13) and still
+has to supply the four measurements in the table below and the two health topics; live mode
+fails closed when any of them is absent.
 
 | platform item | implementation | hardware evidence |
 | --- | --- | --- |
-| high-level locomotion | vendor high-level UDP (default), or `Lite3_ROS` `/cmd_vel` + `/leg_odom2` | not yet run on either Venture |
+| high-level locomotion | bounded vendor moving-mode axis UDP, legacy complex UDP, or `Lite3_ROS` `/cmd_vel` + `/leg_odom2` | one bounded axis-forward proof moved 0.401 m and stopped cleanly; generic velocity mapping remains unverified |
 | RGB capture | explicit V4L2 index, RTSP URI, or GStreamer pipeline | endpoint not yet supplied |
 | gait floor | required as `--gait-floor` | not measured |
 | actuator gain | required as `--actuator-gain` | not measured |
 | loaded planning radius | required as `--robot-radius` | not measured |
 | focal length / HFOV | Lite3-tagged calibration JSON required live | not measured |
-| battery | read from the UDP state stream | not yet read on either Venture |
+| battery | documented legacy `RobotState` UDP field | 21% after the 2026-08-21 vendor-service restart |
 | motor temperatures | absent from the high-level interface | vendor question, still open |
 
-## Which of the three vendor interfaces this uses, and why
+## Which vendor interfaces this uses, and why
 
 Deep Robotics expose the same high-level gait controller two ways, and a third,
 lower-level interface that this repository does not use.
 
-**The high-level UDP interface — the default here.** The motion host accepts a 20-byte
+**The legacy complex-velocity UDP interface — the default offline binding.** The motion host accepts a 20-byte
 `{int32 cmd_code, int32 size, int32 type, double data}` frame on port 43893, with code
 `320` carrying forward velocity, `325` lateral and `321` yaw. It streams pose, body
 velocity, IMU, joints, handle state and battery back to the single address configured in
@@ -64,6 +66,161 @@ does not send them. Commissioning must get the approved sequence for each event 
 `--operator-ready` records that the external transition succeeded. There is no
 documented high-level stand-down verb, so cleanup publishes repeated zero velocities and
 the operator returns the robot to manual/prone through the approved vendor interface.
+
+### Bounded direct velocity proof
+
+[`locomotion/lite3_velocity_udp.py`](locomotion/lite3_velocity_udp.py) is a manual,
+bounded reproduction of the three outbound frames in `Lite3_ROS` `Jetson2Motion.cpp`; it
+does not import ROS or decode state. On the event motion host, the vendor packed C++
+structure measures 20 bytes, matching its explicit little-endian Python encoding:
+`<int32 code, int32 size=8, int32 type=1, double data>`. It accepts only codes 320, 325
+and 321, and sends the yaw field negated as the bridge does.
+
+The first live command is deliberately narrower than the vendor example: only forward
+`0.00..0.10 m/s`, no lateral or yaw component, at most one second, and every exit sends
+zero-velocity triplets repeatedly for two seconds. Even a zero-only live check needs
+`--operator-ready`; a non-zero command also needs the operator to confirm the documented
+external-control mode, a clear lane and the emergency stop in hand.
+
+On 2026-08-21, a zero-only stream at 10 Hz was passively captured at
+`192.168.1.120:43893`: 12 packets from the development host, all 20-byte 320/325/321
+zero triplets. The robot remained still. The current Venture App exposes **AI Motion
+Mode**, while the public `Lite3_ROS` bridge documents **Auto Mode**. No public source
+maps those labels, so this tool must not send a non-zero velocity until the vendor confirms
+the applicable external-control transition. The current motion-host image also lacks the
+ROS 2 and SDK service packages required for the official Venture SDK Mode path, so SDK Mode
+cannot currently provide an alternative control transition.
+
+#### AI Motion Control Mode gate
+
+The high-level sender is prepared but must remain at dry-run or zero velocity until a Deep
+Robotics engineer has legitimately enabled **AI Motion Control Mode** on this specific
+Venture. Do not bypass, alter, or reverse-engineer that activation. Before one non-zero
+programmatic command:
+
+1. Record a fresh 10-second `RobotState` baseline after the vendor unlock. Compare only
+   documented fields against the pre-unlock capture; a particular undocumented mode bit is
+   not a requirement.
+2. Have the operator prove a small forward walk and stop through the official app/controller.
+   If it cannot walk there, stop: this repository is not the first fault to investigate.
+3. While the robot is standing under its onboard controller, capture one 10 Hz zero triplet
+   stream arriving at UDP `43893` and confirm fresh `RobotState`, valid battery and
+   `error_state == 0`.
+4. Obtain a separate, immediate operator authorization for one `vx=0.10`, `vy=0`,
+   `wz=0`, 10 Hz, 1-second run. It must finish with at least two seconds of zero triplets.
+   Record command and measured body velocity, error state, and the operator's visual result.
+
+The AI Motion label is not assumed to be equivalent to legacy Auto Mode. On 2026-08-24, after
+vendor-confirmed AI Motion unlock and an operator-confirmed official-App walk, a single
+`vx=0.10`, 10 Hz, 1-second high-level pulse was captured arriving at `43893` as the documented
+20-byte 320/325/321 sequence, including zero-velocity cleanup. The robot remained stable but
+did not visibly move; six seconds of valid `RobotState` showed zero world-pose delta and
+`error_state == 0`. No higher speed or repeat was attempted.
+
+The vendor motion-host communication guide explains this A/B result: its complex floating-point
+velocity commands (`0x0140`, `0x0145`, `0x0141`, equivalent to 320/325/321) must be sent in
+**autonomous mode**, while a robot in AI state cannot switch into autonomous mode. In moving
+mode or AI state, the guide instead specifies a separate simple axis-command interface: at
+least 20 Hz, 250 ms command timeout, and zero axis value to stop.
+
+### Verified manual-moving axis path
+
+On 2026-08-24, the vendor reference control script and communication guide were used for one
+bounded, separately authorized hardware proof:
+
+1. Strict host captures confirmed one little-endian 12-byte manual-mode command
+   `0x21010C02` followed by one moving-mode command `0x21010D06`; neither command contains an
+   axis or velocity value.
+2. A non-actuating health check from `192.168.1.103:20001` confirmed the documented
+   `0x21040001` heartbeat and repeated `0x21010130 = 0` axis packets arriving at motion-host
+   UDP port 43893. The robot remained healthy: 2,000 `RobotState` frames in 10 s at 200.1 Hz,
+   `error_state = 0`.
+3. One nominal-20-Hz `+32767` forward-axis pulse was sent for at most one second, with the
+   heartbeat and zero-axis cleanup. The strict capture contained the initial heartbeat, 19
+   `+32767` axis packets about 50--55 ms apart, then the first two zero-axis cleanup packets.
+   Its fixed packet count intentionally did not capture the entire cleanup interval.
+4. During the synchronized passive telemetry capture, firmware `goal_vel_forward` rose from
+   0 to at most 0.5012, peak measured body-x velocity was 0.7289 m/s, and world-plane
+   displacement at the recording boundary was 0.4011 m. `error_state` stayed 0 across all
+   3,999 captured `RobotState` frames; the operator observed forward motion, a stop, and a
+   stable robot. A following 10-second passive capture showed no forward command,
+   `robot_motion_state = 0`, and `error_state = 0` in 2,000/2,000 frames.
+
+`+32767` is the vendor reference script's full-scale axis value, not a documented metres-per-
+second setting. The telemetry values above are one observed response, not a calibration for
+the generic navigator. The synchronized capture ended before its handle-state telemetry
+reported the zero cleanup, so it does not establish an exact firmware stop latency; it only
+establishes that the sender began cleanup and that the robot was stopped in the follow-up
+capture.
+
+[`locomotion/lite3_control_mode_udp.py`](locomotion/lite3_control_mode_udp.py) restricts mode
+selection to documented 12-byte commands.
+[`locomotion/lite3_axis_udp.py`](locomotion/lite3_axis_udp.py) restricts the axis sender to
+the documented forward full-scale or zero value, uses the vendor local port 20001, defaults to
+dry-run, requires `--operator-ready` for live use, and sends zero axis values in `finally`. Its
+periodic scheduler was corrected after this proof so send overhead does not accumulate into the
+nominal 20 Hz period; that correction has offline tests but was not physically repeated just to
+measure cadence. The same offline tests also prove that a failed zero packet does not abort the
+cleanup interval: later zero packets are still attempted, the failure is surfaced, and the socket
+is closed.
+
+This proof does not permit a repeat, a higher value, a lateral/yaw command, or an autonomous
+visual-navigation run. Motor temperatures remain unavailable; every future leg-moving test
+requires new immediate operator authorization, a clear lane, a remote/e-stop in hand, and a
+fresh health capture.
+
+### Profile-gated simple-axis navigation transport
+
+The vendor V1.0.8 Motion Host Communication Interface defines the moving/AI axis contract:
+
+| axis | code | vendor positive direction | dead zone |
+| --- | ---: | --- | ---: |
+| forward/back | `0x21010130` | forward | `[-6553, +6553]` |
+| lateral | `0x21010131` | right | `[-12553, +12553]` |
+| yaw | `0x21010135` | right turn | `[-9553, +9553]` |
+
+It also specifies a minimum 20 Hz axis cadence, a 250 ms axis timeout, and zero axis values as
+the stop command. The supplied vendor reference GUI repeats held axes at 20 Hz, sends heartbeat
+at 2 Hz, and sends a zero value when an input is released.
+
+[`locomotion/lite3_axis_locomotion.py`](locomotion/lite3_axis_locomotion.py) is the
+repository's offline-tested transport for that interface. It is deliberately not a generic
+raw-axis CLI: a live run needs an explicit local axis profile. Every nonzero profile primitive
+must carry an evidence reference, must sit outside the corresponding vendor dead zone, and must
+cover every enabled navigation direction. No nonzero primitive is shipped by default; see
+[`locomotion/lite3_axis_profile.example.json`](locomotion/lite3_axis_profile.example.json).
+
+The shared navigator convention is positive-left lateral/yaw, while the vendor raw axes are
+positive-right. The transport performs that inversion once at the boundary. It starts a
+profile-gated independent 20 Hz axis stream only after fresh `RobotState` and a nonzero
+navigation command, emits 4 Hz heartbeat, zeros all axes after a 150 ms command TTL, and streams
+zeros on stop, failure, and shutdown. It neither changes control/moving mode nor falls back to
+legacy 320/325/321 velocity commands.
+
+Nonzero axes also require `error_state=0`, documented force-control `basic_state=6`,
+`policy_state=0`, a profile-allowed documented gait state, and `motion_state` 0 or 1. The
+operator establishes manual/moving state; the MAPPO process refuses an unexpected state rather
+than switching it.
+
+This transport requires verified host-local `RobotState` before it can support the existing
+MAPPO/planner implementation. Camera-only shadow detection is useful evidence but is not an
+odometry replacement: the shared RGB path projects detections into world coordinates, latches
+the goal and static map there, consumes measured body velocity in MAPPO input, and uses actual
+displacement for its stall gate.
+
+### Evidence-backed custom static profiles
+
+`--static-profile PATH.json` selects one custom static colour profile and is mutually exclusive
+with the shipped `--static-prop bin` profile. A custom profile must contain schema
+`colour-profile/v1`, finite HSV/shape thresholds, known panel dimensions used for monocular
+ranging, the whole obstacle's conservative radius, and non-empty evidence references. Its file
+hash and evidence are written to telemetry; its local path is not. Geometry overrides are
+refused, so a reviewed profile cannot be silently changed by command-line flags.
+
+This is appropriate when a known panel is attached to an otherwise hard-to-segment obstacle. The
+panel must be large, saturated, stable, and visibly distinct from all background objects in
+actual Lite3 RTSP imagery. Its visual dimensions drive range, while its profile radius must
+cover the complete physical obstacle plus documented measurement uncertainty.
 
 ## Read the robot before installing anything on it
 
@@ -108,11 +265,13 @@ queue can otherwise make fresh-looking frames old.
 
 ## The health feed
 
-**Battery needs nothing extra any more.** `RobotState.battery_level` is in the high-level
-UDP stream. The `Lite3_ROS` bridge drops that field, which is why the ROS path needed a
-companion publisher for something the robot was already reporting; on the default UDP
-transport the health monitor reads it from the same link locomotion uses. That path
-imports no ROS at all.
+**Battery is available only while the stream matches the documented contract.** Public
+`Lite3_ROS` identifies `code=2305` as `RobotState`, including `battery_level`. Before the
+2026-08-21 vendor-service restart, this Venture emitted that code in an incompatible
+212-byte packet, which the decoder correctly rejected. The restarted service emits the
+documented 220-byte layout and reports 21% battery. The decoder must continue to reject
+any future layout mismatch rather than guessing offsets; charge the robot before a live
+run because 21% is only one point above the 20% abort threshold.
 
 **Motor temperatures are genuinely absent.** The high-level interface does not carry them
 in any form. The low-level `Lite3_MotionSDK` reports them, but taking low-level control
@@ -125,7 +284,7 @@ Until it is answered there are two ways to run:
 | | motor temperatures | what runs |
 | --- | --- | --- |
 | default | required | dry navigation only; `--live` refuses |
-| `--accept-no-motor-temperatures` | unmonitored | `--live` runs, bounded and recorded |
+| `--accept-no-motor-temperatures` | unmonitored | needs a verified fresh battery; a charged run is bounded and recorded |
 
 The override is an explicit operator decision, not a way to make the gate pass:
 
@@ -167,6 +326,11 @@ None of the Go2 numbers are defaults here.
        --marker MEASURED_CAMERA_TO_MARKER_M --out lite3_front_camera.json
    ```
 
+   Static fits write a **provisional** Lite3 calibration. They may be used for shadow/map
+   evidence, but `--live` refuses them. Independently validate focal length, optical-centre
+   height, and mount pitch against a second known-distance observation before producing a
+   reviewed `calibration_status=validated` artifact.
+
    The odometry-based spin fit avoids a range measurement, but it moves the robot. Run
    it only after the Lite3 yaw deadband, health feed, clear area, and tether/remote plan
    are known:
@@ -185,6 +349,37 @@ Do not use measured yaw rate downstream until that unit is confirmed on the inst
 firmware.
 
 ## Run the common stack
+
+### Record live perception without motion
+
+[`visual_nav/lite3_vision_shadow.py`](visual_nav/lite3_vision_shadow.py) is the first
+on-robot deployment rung. It opens only the supplied camera source and runs the existing
+MobileNet-SSD detector; it imports no locomotion, UDP, ROS, or vendor-control module and has
+no `--live` option. Its JSONL is credential-safe: it records only the camera source kind, frame
+metadata, pixel-space boxes, and inference timing.
+
+On the staged motion host, `/dev/video0` is already owned by the vendor GStreamer publisher.
+Consume its existing local RTSP output rather than competing for the V4L2 device:
+
+```bash
+release=$HOME/mappo-lite3-stage/releases/mappo-arm-cloud-physical-ai-lite3-20260825
+export PYTHONPATH=$HOME/mappo-lite3-stage/python
+python3 "$release/robot-stack/deep_robotics/lite3/visual_nav/lite3_vision_shadow.py" \
+    --camera-source rtsp://127.0.0.1:8554/test \
+    --model-dir "$HOME/mappo-lite3-stage/models/mobilenet-ssd" \
+    --classes person,chair --seconds 60 \
+    --output "$HOME/mappo-lite3-stage/evidence/vision-shadow.jsonl"
+```
+
+This confirms camera/model/target perception only. It does not provide calibrated range,
+odometry, planner output, obstacle avoidance, or locomotion authorization.
+
+On 2026-08-25 this command ran on the event motion host against the existing local RTSP
+publisher: 10 1280x720 frames, zero camera read errors, and 77.5 ms mean MobileNet-SSD
+inference. It detected no `person` or `chair` in that short sample; that is a scene observation,
+not evidence that the camera or model failed. The deployed AArch64 source passed 284
+non-actuating tests: policy 33, integration 144, Lite3 locomotion 45, visual navigation 44, and
+commissioning 18.
 
 First run perception and planning without `--live`; it can publish no non-zero velocity:
 

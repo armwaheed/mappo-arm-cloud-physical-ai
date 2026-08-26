@@ -105,12 +105,19 @@ class Lite3Camera:
     def stop(self) -> None:
         """Stop capture. Safe after partial startup and safe to call twice."""
         self._stop.set()
-        capture, self._capture = self._capture, None
-        if capture is not None:
-            capture.release()  # unblocks a backend waiting in read()
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
+        thread = self._thread
+        if thread is not None:
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                raise RuntimeError("Lite3 camera reader did not stop within 2.0s")
             self._thread = None
+
+        # VideoCapture backends are not required to make read() and release() safe from
+        # different threads. The reader releases its own capture in _run(); this branch
+        # only covers a partially-started camera that never acquired a reader thread.
+        capture, self._capture = self._capture, None
+        if thread is None and capture is not None:
+            capture.release()
 
     def __enter__(self):
         self.start()
@@ -120,29 +127,32 @@ class Lite3Camera:
         self.stop()
 
     def _run(self) -> None:
-        while not self._stop.is_set():
-            capture = self._capture
-            if capture is None:
-                return
-            ok, image = capture.read()
-            arrival = time.monotonic()
-            if not ok or image is None:
-                if not self._stop.is_set():
-                    self._errors += 1
-                    self._stop.wait(0.02)
-                continue
+        capture = self._capture
+        if capture is None:
+            return
+        try:
+            while not self._stop.is_set():
+                ok, image = capture.read()
+                arrival = time.monotonic()
+                if not ok or image is None:
+                    if not self._stop.is_set():
+                        self._errors += 1
+                        self._stop.wait(0.02)
+                    continue
 
-            stamp = None
-            if self._stamp_fn is not None:
-                try:
-                    stamp = self._stamp_fn()
-                except Exception:
-                    stamp = None
-            self._seq += 1
-            frame = Frame(image=image, capture_time=arrival, seq=self._seq, stamp=stamp)
-            with self._lock:
-                self._frame = frame
-            self._new_frame.set()
+                stamp = None
+                if self._stamp_fn is not None:
+                    try:
+                        stamp = self._stamp_fn()
+                    except Exception:
+                        stamp = None
+                self._seq += 1
+                frame = Frame(image=image, capture_time=arrival, seq=self._seq, stamp=stamp)
+                with self._lock:
+                    self._frame = frame
+                self._new_frame.set()
+        finally:
+            capture.release()
 
     def latest(self) -> Frame | None:
         with self._lock:

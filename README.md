@@ -230,7 +230,7 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Walks to a goal, gives way to people | hardware-verified (Go2 stack PR #10) |
 | ✅ Runs from a clean clone | Go2 stack PR #11 |
 | ✅ Maps a static obstacle, goes around it, detected goal | live; walked 1.89 m, stopped for lane width |
-| ✅ Offline regression suite | 698 tests: policy 33, integration 189, Go2 visual navigation 265, Lite3 72, dashboard 139 |
+| ✅ Offline regression suite | 772 checks: policy 33, integration 191, Go2 visual navigation 277, Lite3 132, dashboard 139 |
 | ✅ MAPPO policy driven from a recorded run | replayed all 122 ticks; mapping clean apart from object ids, which the log now carries |
 | ✅ Policy package + checkpoint in the tree | `policy/`, 262 KiB; six silent defects corrected, each pinned by a test |
 | ✅ Closed-loop simulation | 30 seeded scenarios × 3 controllers × 2 scales × 3 command scales, each paired with an ablated control |
@@ -244,11 +244,17 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ⛔ Peers from the camera, as a trained class | closed as a negative result. A frozen-feature head and a fully unfrozen fine-tune both land below the **stock** model read class-agnostically — 64% recall at 18% false alarms over 1,903/897 frames, against the best fine-tune's 53% at 38% on the same frames. A marker and a colour panel were ruled out earlier |
 | ⏳ Peers from the camera, class-agnostically | the boxes exist and are correctly placed; `PersonDetector` is configured `classes=("person",)` and drops them before anything downstream. Not yet wired: a range prior for a box with no meaningful label, and which of the 18% the static map should hold rather than the tracker carry as a mover |
 | ✅ Peers over the Device Connect mesh | the peer publishes its own pose at 10 Hz and the navigator consumes it as an ordinary obstacle — no detector, no marker, no training. 66 offline tests, 11 of them mutation-checked; **no two-robot hardware run yet** |
-| ✅ Lite3 Venture offline port | high-level ROS locomotion, RGB camera, fail-closed health gate, calibration and MAPPO entry points; 30 platform tests |
-| ⏳ Lite3 hardware commissioning | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): neither event robot has been run; gait floor, actuator gain, loaded radius, camera model/source and health publisher remain measured inputs |
 | ✅ Dashboard drives a fleet | every robot listed at once with its own stop, plus STOP ALL; cross-robot stop 4.23 s → 0.06 s, same-robot stop 4.17 s → 0.07 s and it now interrupts the walk |
 | ✅ Device Connect dashboard, off-robot | [#43](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/43): events, motion, checkpoint swap and Cloud AI load/unload, end to end over a real D2D mesh against a bench double — see `evidence/2026-08-21-device-connect-dashboard/` |
 | ⏳ Device Connect dashboard, on hardware | not yet run on a robot. The bench double delivers 1.00 of what it is commanded, which is exactly the number a real robot does not produce; nothing there tests gait, DDS, the ROS bridge or the SDK import |
+| ✅ Lite3 Venture offline port | high-level UDP/axis transport, RGB camera, fail-closed health gate, calibration and MAPPO entry points; 132 platform tests |
+| ✅ Lite3 high-level pre-unlock baseline | 2,000 valid 220-byte `RobotState` frames in 10 s, 200.0 Hz, battery 99%, error 0; AI Motion Control Mode reported locked |
+| ⛔ Lite3 legacy autonomous velocity interface | after vendor AI Motion unlock and official-App walk confirmation, 20-byte 320/325/321 packets for `vx=0.10` reached UDP 43893 at 10 Hz with zero cleanup; no visible forward movement, zero pose delta, and error 0. The vendor guide says these commands require autonomous mode, which AI state cannot enter |
+| ✅ Lite3 vendor moving-mode axis proof | after manual (`0x21010C02`) then moving (`0x21010D06`) mode selection, a source-port-20001 heartbeat plus axis stream moved the robot 0.401 m in one bounded `+32767`, 1 s trial; peak measured body-x speed was 0.729 m/s, error remained 0, and the operator confirmed a stable stop. This is not approval for visual-navigation or repeated runs. |
+| ✅ Lite3 motion-host MAPPO shadow | AArch64 30 s chair/bin MAPPO shadow completed with 158 perception cycles, 0 perception errors, and no actuation; camera teardown is regression-tested after the RTSP reader fault. |
+| ✅ Lite3 no-walk lifecycle | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): vendor ARM controller completed Idle acquire -> 3-second damping -> one `ControlGet(1)` release; process exited normally and vendor control recovered |
+| ⛔ Lite3 short forward RL walk | controller completed Idle -> StandUp -> RL -> damping/release, but 250 ms, 1 s, and 5 s bounded `w` inputs produced no observed forward movement; the historical trials lack tick/payload tracing, so they do not establish real inference exposure or rule out duration; production is restored to the source-tested 250 ms dead-man |
+| ⚠️ Lite3 hardware commissioning | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): camera validation, yaw primitive evidence, gait floor, actuator gain, loaded radius, motor temperatures, and operator-established moving state remain required before a live navigation run. |
 
 ## Porting to the Deep Robotics Lite3 Venture
 

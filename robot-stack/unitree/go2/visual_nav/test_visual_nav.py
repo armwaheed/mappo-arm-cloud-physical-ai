@@ -19,10 +19,13 @@ Run: ``python3 test_visual_nav.py``
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
+import tempfile
 import time
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import inspect
@@ -497,6 +500,74 @@ def test_overriding_the_prop_height_carries_the_width_with_it():
 
 def test_the_profile_is_returned_untouched_when_nothing_is_overridden():
     assert visual_nav.static_profile(_args(static_prop="bin")) is PROFILES["bin"]
+
+
+def test_custom_static_profile_is_evidence_backed_and_path_safe_in_telemetry():
+    profile = {
+        "schema": "colour-profile/v1",
+        "label": "brown-box-marker",
+        "hue_lo": 75,
+        "hue_hi": 90,
+        "sat_min": 200,
+        "val_min": 70,
+        "height_m": 0.05,
+        "width_m": 0.10,
+        "radius_m": 0.168,
+        "min_area_px": 400,
+        "min_fill": 0.55,
+        "min_aspect": 1.3,
+        "max_aspect": 2.6,
+        "evidence": {"rtsp_frames": "green-marker-rtsp"},
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "profile.json"
+        path.write_text(json.dumps(profile))
+        args = _args(static_prop=None, static_profile=path)
+        resolved = visual_nav.static_profile(args)
+        telemetry = visual_nav.static_profile_telemetry(args, resolved)
+        assert resolved.label == "brown-box-marker"
+        assert telemetry["label"] == "brown-box-marker"
+        assert telemetry["evidence"]["rtsp_frames"] == "green-marker-rtsp"
+        assert str(path) not in json.dumps(telemetry)
+
+
+def test_custom_static_profile_refuses_geometry_override():
+    profile = {
+        "schema": "colour-profile/v1",
+        "label": "brown-box-marker",
+        "hue_lo": 75,
+        "hue_hi": 90,
+        "sat_min": 200,
+        "val_min": 70,
+        "height_m": 0.05,
+        "width_m": 0.10,
+        "radius_m": 0.168,
+        "min_area_px": 400,
+        "min_fill": 0.55,
+        "min_aspect": 1.3,
+        "max_aspect": 2.6,
+        "evidence": {"rtsp_frames": "green-marker-rtsp"},
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "profile.json"
+        path.write_text(json.dumps(profile))
+        try:
+            visual_nav.static_profile(_args(static_prop=None, static_profile=path,
+                                            prop_radius=0.2))
+        except SystemExit as error:
+            assert "--static-profile" in str(error)
+        else:
+            raise AssertionError("overrode evidence-backed custom profile geometry")
+
+
+def test_static_profile_cli_sources_are_mutually_exclusive():
+    parser = visual_nav.build_parser()
+    try:
+        parser.parse_args(["--static-prop", "bin", "--static-profile", "profile.json"])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("accepted both named and custom static profile sources")
 
 
 def test_a_detected_goal_without_a_height_is_refused():

@@ -50,6 +50,29 @@ class _Capture:
         self.allow.set()
 
 
+class _ConcurrentReleaseCapture(_Capture):
+    """Capture that records whether release overlaps a native-style blocking read."""
+
+    def __init__(self):
+        super().__init__()
+        self.reading = threading.Event()
+        self.concurrent_release = False
+        self.reader_thread = None
+        self.release_thread = None
+
+    def read(self):
+        self.reader_thread = threading.get_ident()
+        self.reading.set()
+        time.sleep(0.05)
+        self.reading.clear()
+        return super().read()
+
+    def release(self):
+        self.release_thread = threading.get_ident()
+        self.concurrent_release = self.reading.is_set()
+        super().release()
+
+
 def test_numeric_sources_are_v4l2_indices_and_uris_remain_strings():
     assert parse_camera_source("0") == 0
     assert parse_camera_source(" 12 ") == 12
@@ -117,6 +140,16 @@ def test_stop_releases_the_capture_and_is_idempotent():
     camera.stop()
     camera.stop()
     assert capture.released
+
+
+def test_stop_never_releases_while_the_reader_is_inside_read():
+    capture = _ConcurrentReleaseCapture()
+    camera = Lite3Camera(0, capture_factory=lambda _source: capture)
+    camera.start()
+    assert capture.reading.wait(0.5)
+    camera.stop()
+    assert not capture.concurrent_release
+    assert capture.release_thread == capture.reader_thread
 
 
 if __name__ == "__main__":

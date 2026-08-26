@@ -14,15 +14,24 @@ Run: ``python3 test_colour_detector.py``
 """
 from __future__ import annotations
 
+import json
 import os
 import sys
+import tempfile
+from pathlib import Path
 
 import cv2
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from camera_model import FisheyeCamera
-from colour_detector import BLUE_BIN, ColourBlobDetector, ColourProfile
+from colour_detector import (
+    BLUE_BIN,
+    COLOUR_PROFILE_SCHEMA,
+    ColourBlobDetector,
+    ColourProfile,
+    load_colour_profile,
+)
 from person_detector import estimate_range
 
 #: The office the robot actually works in: grey carpet and grey partitions, i.e.
@@ -39,6 +48,93 @@ def _frame(width=1920, height=1080, ground=GREY):
 def _rect(image, x, y, w, h, colour=BIN_BLUE):
     cv2.rectangle(image, (x, y), (x + w, y + h), colour, cv2.FILLED)
     return image
+
+
+def _custom_profile_data(**overrides):
+    return {
+        "schema": COLOUR_PROFILE_SCHEMA,
+        "label": "brown-box-marker",
+        "hue_lo": 75,
+        "hue_hi": 90,
+        "sat_min": 200,
+        "val_min": 70,
+        "height_m": 0.05,
+        "width_m": 0.10,
+        "radius_m": 0.168,
+        "min_area_px": 400,
+        "min_fill": 0.55,
+        "min_aspect": 1.3,
+        "max_aspect": 2.6,
+        "evidence": {
+            "rtsp_frames": "green-marker-rtsp-20260825T172500Z",
+            "panel_measurement": "0.10m x 0.05m at 0.68m",
+        },
+        **overrides,
+    }
+
+
+def test_custom_colour_profile_requires_schema_and_evidence():
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "profile.json"
+        path.write_text(json.dumps(_custom_profile_data()))
+        profile = load_colour_profile(path)
+        assert profile.label == "brown-box-marker"
+        assert profile.radius_m == 0.168
+        assert dict(profile.evidence)["rtsp_frames"].startswith("green-marker")
+
+        invalid = _custom_profile_data(evidence={})
+        path.write_text(json.dumps(invalid))
+        try:
+            load_colour_profile(path)
+        except ValueError as error:
+            assert "evidence" in str(error)
+        else:
+            raise AssertionError("accepted custom profile without evidence")
+
+        invalid = _custom_profile_data(label=None)
+        path.write_text(json.dumps(invalid))
+        try:
+            load_colour_profile(path)
+        except ValueError as error:
+            assert "label" in str(error)
+        else:
+            raise AssertionError("accepted custom profile without a label")
+
+        invalid = _custom_profile_data(sat_min=256)
+        path.write_text(json.dumps(invalid))
+        try:
+            load_colour_profile(path)
+        except ValueError as error:
+            assert "sat_min" in str(error)
+        else:
+            raise AssertionError("accepted out-of-range HSV saturation threshold")
+
+    try:
+        ColourProfile(label="invalid-hsv", hue_lo=75, hue_hi=90, sat_min=256, val_min=70,
+                      height_m=0.05, width_m=0.10, radius_m=0.168)
+    except ValueError as error:
+        assert "sat_min" in str(error)
+    else:
+        raise AssertionError("direct profile construction bypassed HSV threshold validation")
+
+    invalid = _custom_profile_data(height_m=float("nan"), min_fill=float("nan"))
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "profile.json"
+        path.write_text(json.dumps(invalid))
+        try:
+            load_colour_profile(path)
+        except ValueError as error:
+            assert "finite" in str(error)
+        else:
+            raise AssertionError("accepted non-finite custom profile geometry")
+
+    try:
+        ColourProfile(label="invalid-geometry", hue_lo=75, hue_hi=90, sat_min=200, val_min=70,
+                      height_m=float("nan"), width_m=0.10, radius_m=0.168)
+    except ValueError as error:
+        assert "finite" in str(error)
+    else:
+        raise AssertionError("direct profile construction bypassed finite geometry validation")
 
 
 def test_a_solid_blue_rectangle_is_found():

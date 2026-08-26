@@ -134,6 +134,24 @@ class Lite3Locomotion:
             raise RuntimeError("connect() first")
         return self._impl.velocity()
 
+    def mode(self) -> tuple:
+        """Return the vendor state tuple when the selected transport exposes it."""
+        if self._impl is None:
+            raise RuntimeError("connect() first")
+        mode = getattr(self._impl, "mode", None)
+        if mode is None:
+            raise RuntimeError("selected Lite3 transport does not expose vendor state mode")
+        return mode()
+
+    def assert_axis_state_ready(self) -> None:
+        """Require the selected transport's documented simple-axis state gate."""
+        if self._impl is None:
+            raise RuntimeError("connect() first")
+        gate = getattr(self._impl, "assert_axis_state_ready", None)
+        if gate is None:
+            raise RuntimeError("selected Lite3 transport is not a simple-axis transport")
+        gate()
+
     def shutdown(self) -> None:
         """Stop first, then release the shared ROS binding. Safe after partial setup."""
         implementation, self._impl = self._impl, None
