@@ -28,6 +28,13 @@ assumption that the six `*_mbox_conf` heads can be re-fitted on their own.
 > 18% was measured against staged empty corridor. What survives is `person`: the stock weights
 > keep all 15 people the navigator sees, and every fine-tune loses between 2 and 11 of them, so
 > nothing is deployable either way. See *The bar was measured on the wrong day*, below.
+>
+> ⚠️ **And the four fine-tunes in that correction were not the best four, 2026-08-26.** They were
+> four of the thirteen model/epoch rows anybody had scored, out of **640 checkpoints that
+> existed**. 64 have now been scored, and the best run's finer pass reads **89% peer recall at 12%
+> false alarms** — well past the 72% this page credits unfreezing with. It keeps 17 of 22 people,
+> so it does not clear the gate either. See *The ceiling was cleared by more than this page
+> records*, below.
 
 ## ⚠️ Two corrections, both found later, neither of which changes the conclusion
 
@@ -45,6 +52,13 @@ lifts it. Scored against the stock model on the same 2,800 frames, that same che
 **53% at 38%** and loses on both axes. See [`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md),
 including the part where it costs `person` and the part where 47 held-out positives could not
 rank anything.
+
+⚠️ **And "72%" is not the ceiling either.** It is the best of thirteen checkpoints anybody had
+scored. Sixteen runs at 40 epochs left **640**, and a sweep of 64 of them on 2026-08-26 found
+**89% recall at 12% false alarms** in a run this page does not name. The linear-probe limit this
+page diagnoses is cleared by a wider margin than this page ever recorded — and still by nothing
+deployable. See below, and
+[`evidence/2026-08-26-checkpoint-sweep/`](../evidence/2026-08-26-checkpoint-sweep/).
 
 ⚠️ **"It did not matter" was the wrong conclusion, and the last clause of that paragraph is why.**
 The 53%-at-38% row is the fine-tune's own training day; the 72%-at-4% row is the held-out day; the
@@ -267,8 +281,7 @@ that loses eleven. The shipped weights lose none, by construction: they are the 
 `person`.
 
 **So nothing here is deployable, on either route.** The open objective is the combination no run has
-produced: hold **15/15** people while keeping the peer gains. A sweep testing exactly that is
-running as this is written, and no conclusion about it belongs on this page until it has numbers.
+produced: hold every person the shipped network sees while keeping the peer gains.
 
 ### ⚠️ 47 and 134 are small, and this repository has been burned three times
 
@@ -277,8 +290,51 @@ peer), and the 47-positive ranking in `UNFROZEN-FINE-TUNE.md` were each an evide
 and too like itself, and each flattered the thing being tested. The table above is one corridor,
 one held-out day, 47 positives and 134 negatives. It is good for the comparison it makes — every
 row scored the same way on the same frames — and it is not a claim about buildings in general.
-Note also that the manifest's test split holds **136** peer-free frames and this sweep scored
-**134**; two frames are unaccounted for, which is 1.5 points of false-alarm rate.
+~~Note also that the manifest's test split holds **136** peer-free frames and this sweep scored
+**134**; two frames are unaccounted for.~~ **Answered by
+[#91](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/pull/91):** the manifest in this
+repository was right and the *derived* split on the training host was shifted by one clip index,
+naming two frames that do not exist and omitting two that do. Repaired and all thirteen rows
+rescored, every numerator is identical and only the denominator moved — the shipped weights go
+from 76/134 = 57% to **76/136 = 56%**. The table above is left at 134 and 57% because that is
+what it was measured on; the 2026-08-26 sweep is scored on the repaired 136.
+
+### The ceiling was cleared by more than this page records — swept 2026-08-26
+
+That sweep has reported. It scored 64 of the **640** checkpoints sixteen runs at 40 epochs had
+left on disk — thirteen model/epoch rows had ever been evaluated — and the best is
+`k_full_pseudo03`, a run named in no document in this repository before 2026-08-26. The two odd
+epochs below are from a finer pass over that run and are not among the 64:
+
+| model | peer recall | false alarms | people at 0.25 |
+| --- | ---: | ---: | ---: |
+| **stock 21-class, as shipped** | 68% (32/47) | **56%** (76/136) | **22/22** |
+| `k_full_pseudo03` ep022 | **89%** | 12% | 17/22 |
+| `k_full_pseudo03` ep017 | 83% | 12% | **19/22** |
+| `f_full_distil01` ep020 | 74% (35/47) | **1%** (2/136) | 5/22 |
+
+**13 of the 64 beat the shipped weights on both peer axes; all 64 beat them on false alarms.**
+So the answer to this page's central question — *can a fine-tune clear the frozen-feature
+ceiling and beat the shipped model on the peer* — is yes, by 21 points of recall, and it was
+already answered by a file sitting on the training host while a fifth wave was being queued
+against it.
+
+⛔ **It changes nothing about deployment.** No checkpoint of the 64 keeps all 22 people; the best
+keeps 20 and is *below* the shipped weights on peer recall. The set that beats the shipped
+weights on both peer axes and keeps at least 20 people is empty. This page's own warning —
+one-class fine-tuning teaches the network that people are background — is now measured over 64
+checkpoints instead of four and holds across all of them.
+
+⚠️ The gate is restated with it: **lose none of the 22 people the shipped network sees at 0.25**,
+not 15 at 0.45. 0.25 is what `deploy/run-peer-supervised.sh` launches the peer runs with. The
+larger denominator makes the gate harder, and the 22 was computed on the training host and
+cannot be re-derived from a clone.
+
+**The transferable lesson is order of work, not weights: measure what you have before you make
+more of it.** The full record, the 64-row grid and the raw data are in
+[`evidence/2026-08-26-checkpoint-sweep/`](../evidence/2026-08-26-checkpoint-sweep/). A further
+wave sweeping the lever that produced the winner — `--pseudo-labels` below 0.3 — is running as
+this is written, and no conclusion about it belongs on this page until it has numbers.
 
 ## What survives
 

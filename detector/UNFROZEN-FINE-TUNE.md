@@ -28,6 +28,13 @@ limit is real and unfreezing lifts it.
 > checkpoints loses people the shipped network keeps, and none of them is deployable. See
 > *Correction, 2026-08-26* below. The block is left standing because it is what was believed,
 > and on what evidence.
+>
+> ⛔ **And the checkpoint this page recommends is not the best one it produced.** Sixteen runs
+> x 40 epochs left **640 checkpoints** on disk; thirteen model/epoch rows had ever been scored.
+> 64 were scored on 2026-08-26 and the winner is `k_full_pseudo03`, a run no table on this page
+> names; a finer pass over it reads **89% peer recall at 12% false alarms**. It keeps 17 of 22
+> people, so it does not clear the gate either. See *The sweep finished* below and
+> [`evidence/2026-08-26-checkpoint-sweep/`](../evidence/2026-08-26-checkpoint-sweep/).
 
 Two things on this page outlive the recommendation, and both are the reason it is being
 merged rather than deleted: **fine-tuning on a one-class corpus teaches the network that
@@ -125,10 +132,13 @@ the spread across four checkpoints is 2 to 11 of 15.
 
 **So nothing on this page is deployable, and nothing above changes that.** A checkpoint that finds
 more peers and drops a person is not an improvement to a stack whose first job is not to walk into
-someone. The open objective is the one no run has hit: **hold 15/15 people while keeping the peer
-gains.** A wave-5 sweep testing exactly that combination — the two levers that each moved person
-retention on their own, plus three augmentations no wave has run — is running as this is written.
-No conclusion about its outcome is recorded here, and none should be until it has numbers.
+someone. The open objective is the one no run has hit: **hold every person the shipped network
+sees while keeping the peer gains.**
+
+That wave-5 sweep has now finished, and so has a sweep of the checkpoints that already existed.
+**Neither cleared the gate.** Of 64 checkpoints scored, the best keeps **20 of 22** people and is
+*below* the shipped weights on peer recall; every checkpoint that beats them on both peer axes
+loses at least three. See *The sweep finished* below.
 
 ### ⚠️ Read the denominators before quoting any of this
 
@@ -138,9 +148,115 @@ and the 47-positive ranking above applies to the table in this section: it is sm
 building. What it is good for is the comparison it makes — every row scored the same way on the
 same frames on the same day — and not for the absolute values.
 
-**Two frames are unaccounted for.** The manifest's test split holds **136** peer-free frames and
-this sweep scored **134**; the difference is not explained here. It is 1.5 points of false-alarm
-rate, well inside the gaps being argued and well outside "do not state it".
+~~**Two frames are unaccounted for.** The manifest's test split holds **136** peer-free frames and
+this sweep scored **134**; the difference is not explained here.~~ **Explained by
+[#91](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/pull/91), 2026-08-26.** The
+manifest in this repository was right and the *derived* split on the training host — the file the
+evaluator actually opens — had its clip indices shifted by one: it named `peer_baseline_045.jpg`
+and `smoke1_058.jpg`, neither of which exists, and omitted `peer_baseline_000.jpg` and
+`smoke1_000.jpg`, which do. Repaired and all thirteen rows rescored, **every numerator is
+identical** and only the denominator moved: the shipped weights go from 76/134 = 57% to
+**76/136 = 56%**, and every other rate by at most one point. The table above is left at 134 and
+57% because that is what it was measured on; the 2026-08-26 sweep below is scored on the
+repaired 136 and reads 56%.
+
+## ⛔ The sweep finished, and the winner is a run this page never names — 2026-08-26
+
+Everything above ranks the handful of checkpoints somebody happened to score. **Sixteen runs at
+40 epochs each is 640 checkpoints, and thirteen model/epoch rows had ever been evaluated** — the
+thirteen [#91](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/pull/91) rescored when it
+repaired the split, one of which is the shipped model itself. So at least **627 of the 640 had
+never been evaluated**, and wave 5 was launched before they were.
+
+64 of them have now been scored — epochs 10/20/30/40 of every run — against the shipped weights,
+on the Aug-20 cross-day split, under this page's own rule. **The best detector was already on
+disk.** `git grep` finds four of the sixteen run names in this repository; the winner is one of
+the twelve it does not.
+
+**Aug-20 held-out split, 47 peer-present and 136 peer-free** (the denominator #91 repaired), one
+rule for every model — a frame fires if any detection at >= 0.25 has box aspect h/w < 2.0.
+`people` counts, of the **22** frames where the shipped network sees a person at **0.25**, how
+many the candidate still sees. 0.25, not the 0.45 this page quotes elsewhere, because 0.25 is
+what `deploy/run-peer-supervised.sh` launches the peer runs with; the denominator grows from 15
+to 22 and the gate gets harder, not easier.
+
+| model | peer recall | false alarms | people |
+| --- | ---: | ---: | ---: |
+| **stock 21-class, as shipped** | 68% (32/47) | **56%** (76/136) | **22/22** |
+| `k_full_pseudo03` ep022 | **89%** | 12% | 17/22 |
+| `k_full_pseudo03` ep020 | 85% (40/47) | 10% (14/136) | 17/22 |
+| `k_full_pseudo03` ep017 | 83% | 12% | **19/22** |
+| `k_full_pseudo03` ep010 | 77% (36/47) | 5% (7/136) | 18/22 |
+| `p_bb02_d01_aug` ep020 | 70% (33/47) | 18% (25/136) | **19/22** |
+| `l_full_bb02` ep040 | 72% (34/47) | 21% (29/136) | 16/22 |
+| `f_full_distil01` ep020 | 74% (35/47) | **1%** (2/136) | 5/22 |
+
+**13 of the 64 beat the shipped weights on both peer axes, and all 64 beat them on false alarms
+alone** — 56% against a candidate range of 0% to 55%. The full 64-row grid, the raw
+`sweep_all.json` and both figures are in
+[`evidence/2026-08-26-checkpoint-sweep/`](../evidence/2026-08-26-checkpoint-sweep/).
+
+⚠️ **`k_full_pseudo03` ep022 and ep017 are not in the archived sweep data.** That file is the
+coarse pass — four epochs per run, 64 rows. The two odd epochs come from a finer pass over the
+winning run made afterwards on the training host, and are recorded as attributed rather than
+verified from this repository. The archived data also reads **5/22** for `f_full_distil01` ep020
+where the published table says 4 — 4 is that run's ep010 value, one row up.
+
+### The lever is `--pseudo-labels`, and this page already identified it
+
+`k_full_pseudo03` is the **only run of the sixteen at `--pseudo-labels 0.3`**. Every other run
+used 0.5, or carried no old-class labels at all.
+
+The mechanism is the one measured further down this page, under *What fixes it is labelling the
+old objects*: the threshold decides how many of the starting network's own confident detections
+are carried into training as old-class ground truth, and nearly all of them are `person`. Lower
+threshold, more `person` supervision — which is precisely the axis every run has failed on. That
+section measured 0.5 to 0.3 as worth five `person` detections **and** two points of new-class
+recall, and called it *"the single most effective knob in this work"*.
+
+**It was right, and the knob was then never turned again.** Nobody had ever swept below 0.3.
+A wave doing exactly that — 0.1 / 0.2 / 0.3, with a paired control on the winner's configuration —
+is running as this is written, and **no conclusion about its outcome is recorded here.**
+
+### Augmentation moved the metric, against a contemporaneous control
+
+`l2_bb02_d01_control` and `p_bb02_d01_aug` share every hyperparameter — `--backbone-lr-scale 0.2
+--pseudo-labels 0.5 --distil 0.1`, 40 epochs, same corpus — and differ in exactly three
+augmentations no earlier wave ran: **motion blur, sensor noise, and compositing the peer onto a
+peer-free frame.** `l2` is a control run in the same wave rather than a citation of `l_full_bb02`,
+which it had to be: the new operators call `rng.random()` even at probability 0, so the stream
+shifted and the earlier runs are no longer byte-reproducible under wave-5 code.
+
+Epoch-matched at 040, both at **68% peer recall: 15/22 people to 18/22, +3**, for 4 points of
+false-alarm rate. The published figure states **+4** by comparing the control's epoch040 against
+the augmented run's epoch015 — also at 68% recall, but not the same epoch. The augmented run
+keeps more people at every epoch from 020 on; the epoch-matched +3 is the number to quote.
+
+The composite stands the peer on a plane fitted from the corpus,
+`contact_row = 0.472 x box_height + 0.585`, r2 = 0.702 over 1,256 boxes whose bottom edge is
+inside the frame. That fit is re-derivable from `labels/peer_go2wheel_20260824.json` in this
+repository, and the evidence directory carries the command.
+
+### ⛔ What it does not change: nothing clears the gate
+
+**No checkpoint of the 64 keeps all 22 people.** The best keeps 20, reached by ten rows across
+four runs, and every one of those ten is *below* the shipped weights on peer recall. The set of
+checkpoints that beat the shipped weights on both peer axes and keep at least 20 people is
+**empty**. The best peer row, `k_full_pseudo03` ep022, loses five.
+
+The warning further down this page — *Fine-tuning on a one-class corpus teaches the network that
+people are background* — is now measured across 64 checkpoints instead of four, and it holds
+across all of them. It is the constraint on this whole line of work, not a property of one run.
+
+### ⚠️ The transferable lesson is about order of work, not about weights
+
+The best detector in this project was on disk, unscored, while a fifth training wave was queued
+on the same host. Measuring 640 existing checkpoints costs an evaluation pass; producing four
+more runs costs a day of GB10 time and produced nothing that beat what was already there.
+
+**Measure what you have before you make more of it.** That is the same shape as this page's
+other two lessons — a test that shares its conditions with what it tests measures nothing, and
+47 positives could not rank anything — and it is the cheaper of the three to act on.
 
 ## The cross-day number, on its own terms
 
@@ -387,9 +503,12 @@ The three sentences that changed:
   and that is the blocker. The shipped weights keep 15 of 15 by construction.
 
 So fine-tuning is an open line of work again, with one gate on it, and the gate is not a peer
-number: **lose none of the 15 people the shipped network sees at 0.45.** Nothing that drops a
-person is a candidate, however good its peer columns. A wave-5 sweep is testing that combination
-now; this page records no result for it, because it has none yet.
+number: **lose none of the people the shipped network sees.** Nothing that drops a person is a
+candidate, however good its peer columns. ⚠️ *Restated 2026-08-26:* the gate is **22 people at
+0.25**, not 15 at 0.45 — 0.25 is what `deploy/run-peer-supervised.sh` launches the peer runs
+with, and the larger denominator makes the gate harder. Wave 5 and the 64-checkpoint sweep have
+both now reported and **neither cleared it**; the best of 64 keeps 20 of 22 and is below the
+shipped weights on peer recall. See *The sweep finished* above.
 
 Neither route is deployable today. What the class-agnostic stock read still owes is unchanged
 except in size: a range prior for a box with no meaningful label, and a decision about which of
@@ -398,7 +517,9 @@ mover — 18% of them on staged empty corridor, **57%** in a furnished room.
 
 ## Reproducing
 
-Twelve runs, 40 epochs each, about 35 s per epoch with three in parallel on one GB10.
+Twelve runs, 40 epochs each, about 35 s per epoch with three in parallel on one GB10. ⚠️ *Wave 5
+added four more in the same shape, so sixteen runs and 640 checkpoints exist; the sweep above
+measured 64 of them.*
 
 ```sh
 add_class.py --in-proto MobileNetSSD_deploy.prototxt \
