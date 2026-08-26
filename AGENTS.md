@@ -46,11 +46,11 @@ directories are nested and a bare `cd` would run the next line from inside the l
 (cd robot-stack/unitree/go2/controller && for t in test_*.py; do python3 "$t"; done)             #    6
 (cd robot-stack/unitree/go2/d1_arm && for t in test_*.py; do python3 "$t"; done)                 #   15
 (cd robot-stack/unitree/go2/lidar_sight && for t in test_*.py; do python3 "$t"; done)            #    7
-(cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 "$t"; done)     #   60
+(cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 "$t"; done)     #   62
 (cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)     #   58
 (cd robot-stack/deep_robotics/lite3/commissioning && for t in test_*.py; do python3 "$t"; done)  #  188
 (cd dashboard && for t in test_*.py; do python3 "$t"; done)                                      #  110
-#                                                                                          total 1036
+#                                                                                          total 1038
 ```
 
 Then `ruff check .` from inside **every** directory that holds a `ruff.toml` — there are
