@@ -100,6 +100,31 @@ STATIC_HARD_GAP_M = 0.12
 #: the cause. `--derate` reaches the same place by a different road.
 MIN_GAIT_COMMAND_M_S = 0.35
 
+#: THE GO2'S forward ceiling, m/s — the arm-fitted conservative profile of ``SKILL.md``.
+#: It is the same number as :data:`MIN_GAIT_COMMAND_M_S`, and that is not a coincidence
+#: to be tidied away: this robot's floor and its demo ceiling meet, so the Go2 has
+#: exactly ONE usable forward speed and ``--derate`` below 1.0 walks it off the bottom of
+#: its own gait. The 0.35 itself is measured — 5 of 5 runs stalled at 0.21, one run
+#: walked 2.07 m in 9 s at 0.35 — and contested by this repository's own evidence:
+#: `evidence/2026-08-18-threading-two-bins/` sustained 0.295 m/s for 54 of 54 ticks.
+#: That is issue #26, not this constant.
+GO2_MAX_VX_M_S = 0.35
+
+#: THE GO2'S strafe ceiling, m/s. It is also this robot's measured LATERAL GAIT FLOOR:
+#: on 2026-08-19, vy 0.15 travelled 0.010 m with no gait and vy 0.20 walked 3 of 3
+#: (0.076-0.087 m each) against a forward control in the same session — issue #42, and
+#: the attribution issues #83 and #101 had to put back after it was written down as a
+#: Lite3 measurement. Both floors meeting their own axis limit is what makes
+#: ``mappo_drive``'s floor ELLIPSE and the envelope ellipse the same curve.
+GO2_MAX_VY_M_S = 0.20
+
+#: THE GO2'S yaw ceiling, rad/s, from the same arm-fitted profile. Unlike the two above
+#: this is a CHOSEN setting bracketed by measurements rather than a measured point: on
+#: this robot 0.30 commanded achieves 0.02-0.04 and below ~0.4 (``SPIN_DEADBAND_RAD_S``)
+#: it does not reliably initiate a turn at all, 0.80 achieves 0.45-0.49, and 1.50
+#: saturates at 0.55-0.58. Nothing was run at 0.70. See ``SKILL.md``.
+GO2_MAX_WZ_RAD_S = 0.70
+
 
 @dataclass(frozen=True)
 class Limits:
@@ -108,15 +133,34 @@ class Limits:
     ⚠️ ``max_vx`` has a FLOOR as well as a ceiling — see :data:`MIN_GAIT_COMMAND_M_S`.
     Derating below it (``--derate``, ``--max-vx``) produces a robot that stands still.
 
+    ⚠️ **THE THREE VELOCITY DEFAULTS ARE ONE ROBOT'S MEASUREMENTS, NOT A NEUTRAL
+    ENVELOPE.** They are the Unitree Go2's, named above so that a reader of ``Limits()``
+    can see whose they are; every other field here is a planner property that is not
+    platform-specific in the same way. A second platform that takes this class as its
+    envelope inherits a Go2 measurement silently, and this repository has now shipped
+    that mistake four times (issues #83, #96, #101). The seam where a platform blanks
+    them is its bindings' ``add_navigation_arguments``; see
+    ``deep_robotics/lite3/visual_nav/robot_bindings.py``, which sets ``--max-vx`` /
+    ``--max-vy`` / ``--max-wz`` to ``None`` beside ``--robot-radius`` for exactly this
+    reason.
+
+    They are NOT ``None``-defaulted here, which is the ``#96`` treatment given to
+    ``FisheyeCamera.height_m``. That was tried and measured: a bare ``None`` default
+    takes 5 test files down and 184 of 1113 tests with them, and two of those files are
+    ``integration/test_closed_loop_sim.py`` and ``integration/test_mappo_drive.py``,
+    whose ``Limits()`` calls are the Go2 drive path legitimately asking for the Go2's
+    envelope. A default that is correct for the platform this file belongs to is not
+    the defect. Being inherited without being named is.
+
     Accelerations bound how far the command may move in ONE control period; that is
     what makes the sampled window "dynamic" and keeps the vendor gait controller from
     being handed a step it cannot follow.
     """
 
-    max_vx: float = 0.35          # m/s forward. Reverse is never sampled (see below).
-    max_vy: float = 0.20          # m/s strafe — the Go2 can crab, which is the
-    #                               cheapest sidestep available to it.
-    max_wz: float = 0.70          # rad/s yaw
+    max_vx: float = GO2_MAX_VX_M_S    # m/s forward. Reverse is never sampled (below).
+    max_vy: float = GO2_MAX_VY_M_S    # m/s strafe — the Go2 can crab, which is the
+    #                                   cheapest sidestep available to it.
+    max_wz: float = GO2_MAX_WZ_RAD_S  # rad/s yaw
     accel_x: float = 0.50         # m/s^2
     accel_y: float = 0.40         # m/s^2
     accel_wz: float = 1.50        # rad/s^2

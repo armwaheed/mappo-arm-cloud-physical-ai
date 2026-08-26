@@ -388,16 +388,217 @@ def test_a_live_run_requires_every_robot_specific_measurement_and_operator_gate(
     except SystemExit as exc:
         message = str(exc)
         for required in ("--calibration", "--gait-floor", "--actuator-gain",
-                         "--robot-radius", "--operator-ready"):
+                         "--robot-radius", "--max-vx", "--max-vy", "--max-wz",
+                         "--operator-ready"):
             assert required in message
         return
     raise AssertionError("an uncalibrated live Lite3 run was accepted")
 
 
+def test_the_velocity_envelope_is_blanked_the_way_the_radius_is():
+    """``Limits``' three velocity defaults are the Go2's arm-fitted profile, and this
+    parser used to hand them to a Lite3 as though somebody had chosen them.
+
+    They are checked as ``None`` rather than "not 0.35": the point is that an omitted
+    value is DISTINGUISHABLE from a stated one, which is what lets the live gate below
+    refuse. A default of any other number would be the same defect with a different
+    robot's numbers in it.
+    """
+    args = _args()
+    assert args.max_vx is None
+    assert args.max_vy is None
+    assert args.max_wz is None
+    # ...and the neighbouring knob that is NOT platform-specific is untouched.
+    assert args.derate == 1.0
+
+
+def test_a_live_run_refuses_the_go2s_envelope_and_names_whose_it_is():
+    """The mutation this exists to catch is ``set_defaults(max_vx=0.35, ...)`` coming
+    back -- i.e. the state of ``main`` before this change."""
+    binding = Lite3Bindings()
+    parser = visual_nav.build_parser(binding)
+    args = parser.parse_args([
+        "--camera-source", "0", "--live", "--calibration", "x.json",
+        "--gait-floor", "0.3", "--actuator-gain", "0.7", "--robot-radius", "0.25",
+        "--operator-ready",
+    ])
+    try:
+        binding.preflight_navigation(args, None, _Health())
+    except SystemExit as exc:
+        message = str(exc)
+        assert "--max-vx" in message and "--max-vy" in message and "--max-wz" in message
+        assert "Go2" in message, message
+        # The Go2's actual numbers are quoted WITH THEIR UNITS, so the operator can see
+        # what they would have been running under and cannot read the yaw rate as a
+        # third speed. Matched as whole fragments: a bare "0.2" also matches "0.25".
+        assert "the Go2's 0.35 m/s" in message, message
+        assert "the Go2's 0.2 m/s" in message, message
+        assert "the Go2's 0.7 rad/s" in message, message
+        return
+    raise AssertionError("a live Lite3 run was accepted on the Go2's velocity envelope")
+
+
+def test_a_dry_run_keeps_working_and_says_whose_envelope_it_is_standing_on():
+    """A gate that stops the offline path is a gate nobody runs before a live one.
+
+    So the dry run behaves exactly as it did before -- and announces the inheritance,
+    which is the entire difference.
+    """
+    binding = Lite3Bindings()
+    parser = visual_nav.build_parser(binding)
+    args = parser.parse_args(["--camera-source", "0"])
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        binding.preflight_navigation(args, None, _Health())
+    printed = stdout.getvalue()
+    assert "ENVELOPE NOT STATED" in printed
+    assert "GO2" in printed
+    assert "#13" in printed
+    # The planner still gets a usable envelope, and it is the one it got before.
+    assert (args.max_vx, args.max_vy, args.max_wz) == (0.35, 0.20, 0.70)
+
+
+def test_a_dry_run_that_states_the_envelope_is_not_warned_at():
+    binding = Lite3Bindings()
+    parser = visual_nav.build_parser(binding)
+    args = parser.parse_args(["--camera-source", "0", *_TEST_ENVELOPE])
+    stdout = io.StringIO()
+    with contextlib.redirect_stdout(stdout):
+        binding.preflight_navigation(args, None, _Health())
+    assert "ENVELOPE NOT STATED" not in stdout.getvalue()
+    assert (args.max_vx, args.max_vy, args.max_wz) == (0.31, 0.13, 0.61)
+
+
+def test_the_captured_go2_default_is_the_named_constant_and_not_a_copy():
+    """Two ways to name the same three numbers, and they have to agree.
+
+    ``add_navigation_arguments`` reads what the shared parser is actually defaulting to;
+    ``_go2_envelope``'s fallback imports the named constants. If a future change sets
+    ``Limits``' defaults from something other than ``GO2_MAX_*`` the two diverge, and an
+    operator gets told the wrong numbers were the ones they would have inherited.
+    """
+    from avoidance import GO2_MAX_VX_M_S, GO2_MAX_VY_M_S, GO2_MAX_WZ_RAD_S, Limits
+
+    binding = Lite3Bindings()
+    visual_nav.build_parser(binding)
+    captured = binding._inherited_envelope
+    assert captured == {"max_vx": GO2_MAX_VX_M_S, "max_vy": GO2_MAX_VY_M_S,
+                        "max_wz": GO2_MAX_WZ_RAD_S}
+    assert captured == {"max_vx": Limits().max_vx, "max_vy": Limits().max_vy,
+                        "max_wz": Limits().max_wz}
+    # And the fallback used when the parser was built by a different instance agrees.
+    assert Lite3Bindings()._go2_envelope() == captured
+
+
+def test_zero_disables_an_axis_and_is_not_treated_as_an_omitted_measurement():
+    """``--max-vy 0`` is how DEPLOYMENT-SOP.md turns the strafe axis off. Reusing
+    ``_positive_finite`` here would have refused the documented live command."""
+    binding = Lite3Bindings()
+    args = _live_args("--max-vy", "0")
+    binding.preflight_navigation(args, None, _Health())
+    assert args.max_vy == 0.0
+
+
+def test_a_negative_or_nan_envelope_cannot_even_poison_a_dry_run():
+    for flag, value in (("--max-vx", "nan"), ("--max-vy", "-0.1"),
+                        ("--max-wz", "inf")):
+        binding = Lite3Bindings()
+        try:
+            binding.preflight_navigation(_args(flag, value), None, _Health())
+        except SystemExit as exc:
+            assert flag in str(exc)
+        else:
+            raise AssertionError(f"a Lite3 dry run accepted {flag}={value}")
+
+
+def test_the_axis_speed_gate_is_never_answered_by_the_go2s_ceiling():
+    """``_validate_axis_profile_speeds`` is the gate PR #100's probe supplies the left
+    side of. Its right side is ``--max-vx x --derate``.
+
+    A profile measured at 0.729 m/s is over the Go2's 0.35 and under a stated 0.80. With
+    the envelope unstated the run must be refused for the MISSING ENVELOPE -- not
+    "refused" by a comparison against a ceiling no Lite3 produced, which would read like
+    a verdict on this robot and would be one on a different one.
+    """
+    binding = Lite3Bindings()
+    parser = visual_nav.build_parser(binding)
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(profile, measured_m_s={"forward_positive": 0.729})
+        args = parser.parse_args([
+            "--camera-source", "0", "--live", "--calibration", "x.json",
+            "--gait-floor", "0.3", "--actuator-gain", "0.7", "--robot-radius", "0.25",
+            "--operator-ready", "--locomotion-transport", "axis",
+            "--axis-profile", str(profile),
+        ])
+        try:
+            binding.preflight_navigation(args, None, _Health())
+        except SystemExit as exc:
+            message = str(exc)
+            assert "--max-vx" in message, message
+            assert "0.729" not in message, (
+                "the sign-only speed gate was evaluated against the Go2's ceiling: "
+                + message)
+            return
+    raise AssertionError("a live axis run was accepted with no envelope stated")
+
+
+def test_the_recording_says_the_envelope_was_inherited_rather_than_chosen():
+    """A JSONL stamped ``deep-robotics-lite3-venture`` reads as this robot's numbers
+    whether or not anybody chose them. This is the only field that can tell them apart."""
+    binding = Lite3Bindings()
+    parser = visual_nav.build_parser(binding)
+    args = parser.parse_args(["--camera-source", "0"])
+    with contextlib.redirect_stdout(io.StringIO()):
+        binding.preflight_navigation(args, None, _Health())
+    provenance = binding.telemetry_config(args)["platform"]["envelope_provenance"]
+    assert provenance["inherited_from_unitree_go2"] == ["--max-vx", "--max-vy", "--max-wz"]
+    assert provenance["stated"] == []
+
+
+def test_a_stated_envelope_is_recorded_as_stated():
+    binding = Lite3Bindings()
+    parser = visual_nav.build_parser(binding)
+    args = parser.parse_args(["--camera-source", "0", *_TEST_ENVELOPE])
+    with contextlib.redirect_stdout(io.StringIO()):
+        binding.preflight_navigation(args, None, _Health())
+    provenance = binding.telemetry_config(args)["platform"]["envelope_provenance"]
+    assert provenance["inherited_from_unitree_go2"] == []
+    assert provenance["stated"] == ["--max-vx", "--max-vy", "--max-wz"]
+
+
+def test_the_drive_path_names_the_second_route_the_go2s_numbers_arrive_by():
+    """``--max-vx`` is a clamp. What is COMMANDED on the policy path is
+    ``max_vx_mps x command_scale`` out of ``policy/config.json``, which carries the same
+    Go2 pair and has no per-field override. Stating ``--max-vx`` does not touch it.
+    """
+    binding = Lite3Bindings()
+    drive = SimpleNamespace(actuator_gain=1.07, policy_config=None)
+    summary = binding.actuation_summary(0.35, drive)
+    assert "policy/config.json" in summary
+    assert "GO2" in summary
+
+    # An operator who supplied their own package config has answered for it.
+    stated = SimpleNamespace(actuator_gain=1.07, policy_config=Path("lite3.json"))
+    assert "policy/config.json" not in binding.actuation_summary(0.35, stated)
+
+    # And the plain navigator, which has no policy at all, says nothing about one.
+    plain = SimpleNamespace(actuator_gain=1.07)
+    assert "policy/config.json" not in binding.actuation_summary(0.35, plain)
+
+
+#: Envelope for the live fixture. Deliberately NOT the Go2's 0.35/0.20/0.70: if a change
+#: ever puts those back as the Lite3 default, a test that happened to state the same
+#: numbers would keep passing while the defect was live again.
+_TEST_ENVELOPE = ("--max-vx", "0.31", "--max-vy", "0.13", "--max-wz", "0.61")
+
+
 def _live_args(*extra):
+    # ``*extra`` LAST so a caller can override any of these; argparse takes the final
+    # occurrence.
     return _args("--live", "--calibration", "x.json", "--gait-floor", "0.3",
                  "--actuator-gain", "0.7", "--robot-radius", "0.25",
-                 "--operator-ready", *extra)
+                 *_TEST_ENVELOPE, "--operator-ready", *extra)
 
 
 def test_running_without_temperature_monitoring_must_be_time_bounded():

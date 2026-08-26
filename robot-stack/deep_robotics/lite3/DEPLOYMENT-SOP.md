@@ -322,13 +322,26 @@ PYTHONPATH=$HOME/mappo-lite3-stage/python python3 lite3_visual_nav.py \
 
 **EN** — `--gait-floor` / `--actuator-gain` / `--robot-radius` come from this robot's
 **reviewed** commissioning record (`--emit-flags`), not from this document; the values
-shown are LITE3-A's and are placeholders. `--accept-no-motor-temperatures` is an
+shown are LITE3-A's and are placeholders. `--max-vx` / `--max-vy` / `--max-wz` are
+**required** on a live run and have no default: unstated, they used to fall back to the
+shared navigator's `Limits`, which is the **Unitree Go2's** envelope (0.35 / 0.20 / 0.70)
+and is the right-hand side of the `measured_m_s` gate. The 0.55 / 0 / 0.90 above is the
+envelope this SOP runs at; it is a decision made for this robot and a lane, not a Lite3
+measurement — no Lite3 velocity ceiling has been measured (issue #13). `--max-vy 0`
+disables the strafe axis, which is legal and is why zero is accepted where a measurement
+would be refused. `--accept-no-motor-temperatures` is an
 explicit operator decision that bounds **one** run: `--max-seconds` is capped at 120 s,
 battery gates stay enforced, and heat is invisible to software — let the robot cool
 between runs.
 
 **中文** —— `--gait-floor` / `--actuator-gain` / `--robot-radius` 必须来自本机**已审**
 标定记录（`--emit-flags`），不能抄本文档；上面展示的是 LITE3-A 的值，仅作占位。
+`--max-vx` / `--max-vy` / `--max-wz` 在实机运行时为**必填**且没有默认值：以前不写就会退回
+共享导航器的 `Limits`，那是 **Unitree Go2** 的包线（0.35 / 0.20 / 0.70），也正是
+`measured_m_s` 这道闸门的右侧比较值。上面的 0.55 / 0 / 0.90 是本 SOP 采用的包线，是针对
+这台机器人和这条通道做出的**决定**，不是 Lite3 的实测值 —— 目前没有任何 Lite3 速度上限被
+实测过（issue #13）。`--max-vy 0` 表示关闭横移轴，这是合法的，也是为什么这里允许填 0 而
+实测量却会被拒绝。
 `--accept-no-motor-temperatures` 是操作员的明确决定，它只约束**一次**运行：
 `--max-seconds` 上限 120 秒，电池门照常生效，而热量对软件完全不可见 —— 两次运行之间
 让机器人散热。

@@ -20,6 +20,9 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from avoidance import (
+    GO2_MAX_VX_M_S,
+    GO2_MAX_VY_M_S,
+    GO2_MAX_WZ_RAD_S,
     MIN_GAIT_COMMAND_M_S,
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
@@ -30,6 +33,37 @@ from avoidance import (
 )
 
 ORIGIN = (0.0, 0.0, 0.0)     # at the origin, facing +x
+
+
+def test_the_velocity_envelope_carries_the_go2s_measurements_and_says_so():
+    """``Limits``' three velocity fields are ONE ROBOT's numbers, and the constants they
+    are bound to record which robot and what was measured.
+
+    The literals are repeated here on purpose. If somebody changes the Go2's envelope to
+    suit a second platform -- which is how the Lite3 inherited 0.35/0.20 in the first
+    place, four separate times -- this goes red naming the measurement being overwritten
+    instead of the change landing silently. The corresponding refusal lives in
+    ``deep_robotics/lite3/visual_nav/robot_bindings.py``.
+    """
+    assert GO2_MAX_VX_M_S == 0.35
+    assert GO2_MAX_VY_M_S == 0.20
+    assert GO2_MAX_WZ_RAD_S == 0.70
+
+    shipped = Limits()
+    assert shipped.max_vx == GO2_MAX_VX_M_S
+    assert shipped.max_vy == GO2_MAX_VY_M_S
+    assert shipped.max_wz == GO2_MAX_WZ_RAD_S
+
+
+def test_the_go2s_forward_ceiling_is_also_its_own_gait_floor():
+    """Not a tidy-uppable duplication: this robot's usable forward speed is a POINT, not
+    a range, and that is why ``--derate`` below 1.0 walks it off the bottom of its gait.
+
+    Kept separate from ``test_the_shipped_envelope_is_above_the_gait_floor`` because that
+    one states an inequality that would still hold if the ceiling were raised, and the
+    thing worth knowing is that today there is no headroom at all.
+    """
+    assert GO2_MAX_VX_M_S == MIN_GAIT_COMMAND_M_S
 
 
 def test_the_shipped_envelope_is_above_the_gait_floor():

@@ -41,6 +41,23 @@ from deep_robotics.lite3.visual_nav.safety import Lite3HealthMonitor
 #: pre-flight says so out loud rather than implying the ceiling is protection.
 MAX_UNMONITORED_RUN_S = 120.0
 
+#: The velocity-envelope flags the shared navigator offers, mapped to their ``args``
+#: attribute. Their parser defaults come from ``avoidance.Limits``, whose three velocity
+#: fields are the UNITREE GO2's arm-fitted profile -- 0.35 m/s forward, 0.20 m/s strafe,
+#: 0.70 rad/s yaw, two of them measured gait floors on that robot. Nothing about them was
+#: measured on a Lite3, and issue #13 still owns that measurement, so this binding blanks
+#: them the way it blanks ``--robot-radius``: a live run refuses, a dry run says whose
+#: numbers it is standing on. They are captured from the parser rather than imported,
+#: because a copy here would pin whatever the Go2's numbers were the day it was written.
+ENVELOPE_ARGUMENTS = {
+    "--max-vx": ("max_vx", "m/s"),
+    "--max-vy": ("max_vy", "m/s"),
+    "--max-wz": ("max_wz", "rad/s"),
+}
+
+#: Just the ``args`` attributes, in flag order.
+ENVELOPE_NAMES = tuple(name for name, _unit in ENVELOPE_ARGUMENTS.values())
+
 
 class Lite3Bindings:
     """Construct the Lite3 seams without copying the navigator's safety/run loop."""
@@ -57,6 +74,13 @@ class Lite3Bindings:
         # because only one process can hold the robot's single state port.
         self._locomotion = None
         self._axis_profile = None
+        #: What ``--max-vx`` / ``--max-vy`` / ``--max-wz`` defaulted to before this
+        #: binding blanked them, i.e. the Go2's numbers, kept so a dry run can fall back
+        #: to exactly today's behaviour while naming where the values came from.
+        self._inherited_envelope: dict[str, float] = {}
+        #: Which of those a run actually fell back on. Empty until ``preflight_navigation``
+        #: has resolved them, and empty forever on a run that stated all three.
+        self._envelope_inherited: frozenset[str] = frozenset()
 
     def add_navigation_arguments(self, parser, envelope) -> None:
         parser.add_argument(
@@ -96,6 +120,13 @@ class Lite3Bindings:
         # No Lite3 radius is defensible before measuring the loaded body. ``None`` lets
         # the live pre-flight distinguish an omitted value from a deliberate 0.40 m.
         parser.set_defaults(robot_radius=None)
+        # Same argument, one flag along, and the reason this binding is where it happens:
+        # ``Limits``' velocity defaults are correct FOR THE GO2 and are the Go2 navigator's
+        # to keep. Reading them here before blanking them is what turns a silent
+        # inheritance into a stated one. See ENVELOPE_ARGUMENTS.
+        self._inherited_envelope = {name: parser.get_default(name)
+                                    for name in ENVELOPE_NAMES}
+        parser.set_defaults(**dict.fromkeys(ENVELOPE_NAMES))
 
     def add_calibration_arguments(self, parser, _spin) -> None:
         parser.add_argument(
@@ -241,10 +272,16 @@ class Lite3Bindings:
         }
         invalid = [name for name, value in measurements.items()
                    if value is not None and not self._positive_finite(value)]
+        # The envelope is checked separately because ZERO is a legal value for it and is
+        # not a legal measurement: ``--max-vy 0`` is how the deployment SOP disables the
+        # strafe axis, and ``_validate_axis_profile_for_envelope`` reads it that way.
+        invalid += [flag for flag, (name, _unit) in ENVELOPE_ARGUMENTS.items()
+                    if getattr(args, name) is not None
+                    and not self._non_negative_finite(getattr(args, name))]
         if invalid:
             raise SystemExit(
-                "[lite3] REFUSING TO RUN: measurements must be finite and positive: "
-                + ", ".join(invalid)
+                "[lite3] REFUSING TO RUN: measurements must be finite and positive, and "
+                "envelope ceilings finite and not negative: " + ", ".join(invalid)
             )
         if args.live:
             missing = []
@@ -256,17 +293,26 @@ class Lite3Bindings:
                 missing.append("--actuator-gain measured at this envelope")
             if args.robot_radius is None:
                 missing.append("--robot-radius measured for the loaded Lite3")
+            missing += self._missing_envelope(args)
             if not args.operator_ready:
                 missing.append("--operator-ready after STANDING + navigation mode")
+            if getattr(args, "locomotion_transport", "udp") == "axis" \
+                    and args.axis_profile is None:
+                missing.append("--axis-profile with physically evidenced primitives")
+            # Raised BEFORE the axis checks below, which is a change of order and a
+            # deliberate one. ``_validate_axis_profile_for_envelope`` compares a measured
+            # primitive against ``--max-vx x --derate``; with the envelope unstated that
+            # comparison has no right-hand side, and running it anyway would either
+            # trip over ``None`` or -- worse -- answer using the Go2's number and print
+            # a refusal that reads like a Lite3 verdict. Nothing is lost: every path
+            # below this point ends in a refusal too.
+            if missing:
+                raise SystemExit("[lite3] REFUSING TO WALK: missing " + ", ".join(missing))
             if getattr(args, "locomotion_transport", "udp") == "axis":
-                if args.axis_profile is None:
-                    missing.append("--axis-profile with physically evidenced primitives")
-                elif self._axis_profile is None:
+                if self._axis_profile is None:
                     self._axis_profile = self._load_axis_profile(args)
                 self._validate_axis_transport(args)
                 self._validate_axis_profile_for_envelope(args)
-            if missing:
-                raise SystemExit("[lite3] REFUSING TO WALK: missing " + ", ".join(missing))
             if args.accept_no_motor_temperatures:
                 if not self._positive_finite(args.max_seconds) \
                         or args.max_seconds > MAX_UNMONITORED_RUN_S:
@@ -282,7 +328,81 @@ class Lite3Bindings:
                       "cool between runs, keep the")
                 print("[lite3]   emergency stop in hand, and stop if a motor smells hot "
                       "or the gait changes.")
+        # After the live gate and never before it. Reaching this line means either the
+        # operator stated the envelope or the run cannot move a leg, so on a live run
+        # this resolves nothing and records that nothing was inherited.
+        self._resolve_envelope(args)
         self._report_health(health, live=args.live, prefix="visual_nav")
+
+    def _go2_envelope(self) -> dict:
+        """The Go2 numbers this binding is refusing to let a Lite3 inherit silently.
+
+        Primary source is what ``add_navigation_arguments`` read off the parser, because
+        that is literally the default that was in force. The fallback covers a caller
+        that builds the parser with one ``Lite3Bindings`` and pre-flights with another --
+        the offline suite does exactly that -- where the capture is empty and the
+        alternative is printing ``the Go2's None`` at an operator.
+
+        Imported inside the method rather than at module scope. Every caller today puts
+        the shared navigator on ``sys.path`` before importing this file, so a top-level
+        import would work; it would also be a hard import-order dependency that
+        ``ruff --fix`` is documented in ``AGENTS.md`` to break by hoisting, in a file that
+        currently has none.
+        """
+        if self._inherited_envelope:
+            return self._inherited_envelope
+        from avoidance import GO2_MAX_VX_M_S, GO2_MAX_VY_M_S, GO2_MAX_WZ_RAD_S
+
+        return {"max_vx": GO2_MAX_VX_M_S, "max_vy": GO2_MAX_VY_M_S,
+                "max_wz": GO2_MAX_WZ_RAD_S}
+
+    def _missing_envelope(self, args) -> list:
+        """Envelope flags a live Lite3 run has to state, and why it cannot be defaulted.
+
+        A ceiling is not a measurement, so this is not the same claim ``--gait-floor``
+        makes. It is the claim that *whoever set it looked at this robot* -- because this
+        number is the right-hand side of a safety gate. ``_validate_axis_profile_speeds``
+        refuses a primitive whose ``measured_m_s`` exceeds ``--max-vx x --derate``, and
+        the ``axis_primitive_probe`` measures that left-hand side carefully. Against a
+        borrowed right-hand side that is not a gate, it is arithmetic.
+        """
+        inherited = self._go2_envelope()
+        return [f"{flag} stated for this Lite3 (unset it inherits the Go2's "
+                f"{inherited[name]:g} {unit})"
+                for flag, (name, unit) in ENVELOPE_ARGUMENTS.items()
+                if getattr(args, name) is None]
+
+    def _resolve_envelope(self, args) -> None:
+        """Put the Go2's numbers back for a run that cannot move, and say so.
+
+        A dry run has to keep working: perception, planning, the shadow ladder and every
+        offline suite go through here, and a navigator that refuses to plan is a navigator
+        nobody runs before a live one. So the fallback is the SAME behaviour as before
+        this gate existed -- and it is announced, which is the whole difference. The
+        values are the ones this parser inherited, not a copy, so they cannot drift from
+        the Go2's.
+        """
+        unset = tuple(name for name in ENVELOPE_NAMES if getattr(args, name) is None)
+        self._envelope_inherited = frozenset(unset)
+        if not unset:
+            return
+        inherited = self._go2_envelope()
+        for name in unset:
+            setattr(args, name, inherited[name])
+        flags = ", ".join(flag for flag, (name, _unit) in ENVELOPE_ARGUMENTS.items()
+                          if name in self._envelope_inherited)
+        print(f"[lite3] ENVELOPE NOT STATED: {flags} fall back to the shared navigator's")
+        print("[lite3]   defaults, which are the UNITREE GO2's arm-fitted profile "
+              f"(vx<={inherited['max_vx']:g} m/s vy<={inherited['max_vy']:g} m/s "
+              f"wz<={inherited['max_wz']:g} rad/s).")
+        print("[lite3]   No Lite3 produced them; issue #13 still owns that measurement. "
+              "A --live run")
+        print("[lite3]   refuses without them. This one cannot move, so it continues.")
+
+    @staticmethod
+    def _non_negative_finite(value) -> bool:
+        """Zero is a legal envelope entry -- it disables an axis -- and NaN is not."""
+        return value is not None and math.isfinite(value) and value >= 0.0
 
     @staticmethod
     def _validate_axis_transport(args) -> None:
@@ -498,6 +618,7 @@ class Lite3Bindings:
                 ),
                 "gait_floor_m_s": args.gait_floor,
                 "actuator_gain": args.actuator_gain,
+                "envelope_provenance": self._envelope_provenance(args),
                 "axis_profile_schema": (
                     AXIS_PROFILE_SCHEMA
                     if getattr(args, "locomotion_transport", "udp") == "axis"
@@ -505,6 +626,24 @@ class Lite3Bindings:
                 ),
                 "axis_profile": axis_profile,
             }
+        }
+
+    def _envelope_provenance(self, args) -> dict:
+        """Whose envelope this recording was made under.
+
+        The navigator already writes the VALUES into the telemetry header. What it cannot
+        write is whether a Lite3 operator chose them or the shared Go2 default supplied
+        them, and a run stamped ``platform.name: deep-robotics-lite3-venture`` reads as
+        the former either way. That is the half of the defect a reviewer opening a JSONL
+        six weeks later has no other way to recover.
+        """
+        return {
+            "stated": sorted(flag for flag, (name, _unit) in ENVELOPE_ARGUMENTS.items()
+                             if getattr(args, name, None) is not None
+                             and name not in self._envelope_inherited),
+            "inherited_from_unitree_go2": sorted(
+                flag for flag, (name, _unit) in ENVELOPE_ARGUMENTS.items()
+                if name in self._envelope_inherited),
         }
 
     def _axis_profile_telemetry(self, args) -> dict | None:
@@ -546,10 +685,44 @@ class Lite3Bindings:
         achieved = (None if args.actuator_gain is None
                     else top_speed * args.actuator_gain)
         if achieved is None:
-            return (f"top commanded speed {top_speed:.3f} m/s; Lite3 actuator gain "
-                    f"not supplied (dry/offline only)")
-        return (f"top commanded speed {top_speed:.3f} m/s; measured gain "
-                f"{args.actuator_gain:.3f} predicts {achieved:.3f} m/s achieved")
+            summary = (f"top commanded speed {top_speed:.3f} m/s; Lite3 actuator gain "
+                       f"not supplied (dry/offline only)")
+        else:
+            summary = (f"top commanded speed {top_speed:.3f} m/s; measured gain "
+                       f"{args.actuator_gain:.3f} predicts {achieved:.3f} m/s achieved")
+        return summary + self._policy_envelope_note(args)
+
+    @staticmethod
+    def _policy_envelope_note(args) -> str:
+        """The SECOND route the Go2's envelope reaches this robot by, and it is worse.
+
+        ``--max-vx`` is a CLAMP. The number that decides what is actually commanded on
+        the policy drive path is ``max_vx_mps x command_scale``, and ``max_vx_mps`` /
+        ``max_vy_mps`` live in the shipped ``policy/config.json`` -- where they are the
+        same Go2 pair, carried in without a provenance comment while every neighbouring
+        field has one. Stating ``--max-vx`` explicitly, as the deployment SOP does, does
+        not touch them: a clamp above the commanded speed changes nothing.
+
+        This warns rather than refusing, on purpose. There is no measured Lite3 value to
+        put in a replacement config and no per-field override to put one in with, so a
+        refusal here would force somebody to type a plausible number -- which is the
+        defect, not the fix. ``--policy-config`` (a whole package config) and
+        ``--policy-command-scale`` (both axes at once) are the only knobs that exist.
+
+        Empty on the plain navigator, which has no policy and no such flag.
+        """
+        if not hasattr(args, "policy_config") or args.policy_config is not None:
+            return ""
+        return (
+            "\n[mappo_drive] ⚠️  that speed is max_vx_mps x command_scale from the "
+            "shipped policy/config.json,\n"
+            "[mappo_drive]   whose max_vx_mps/max_vy_mps are the UNITREE GO2's envelope. "
+            "--max-vx clamps\n"
+            "[mappo_drive]   ABOVE them and so does not replace them; no Lite3 produced "
+            "either number\n"
+            "[mappo_drive]   (issue #13). --policy-config is the only way to state a "
+            "different pair."
+        )
 
     def shutdown(self) -> None:
         return

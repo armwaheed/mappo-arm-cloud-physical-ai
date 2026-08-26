@@ -521,15 +521,20 @@ perfectly plausible speed, so this is checked before the number is written down.
 配置文件里这两个写反了，机器人就会横向撞进你清理得最不干净的那一侧。
 写反的配置照样会给出一个非常像样的速度，所以必须在记录数值之前先查这一项。
 
-**EN — ⚠️ this is only half the gate.** The measured speed is compared against
-`--max-vx × --derate`, and the Lite3's `--max-vx` still defaults to **0.35 m/s — the
-Go2's** measured envelope. Measuring this side does not make the comparison a Lite3 one.
-State `--max-vx` / `--max-vy` / `--max-wz` explicitly on the live run.
+**EN — ⚠️ this is only half the gate, and the other half is now a refusal.** The measured
+speed is compared against `--max-vx × --derate`. That right-hand side used to default to
+**0.35 m/s — the Go2's** arm-fitted envelope, so measuring this side did not make the
+comparison a Lite3 one. Since 2026-08-26 a `--live` Lite3 run **refuses** unless
+`--max-vx` / `--max-vy` / `--max-wz` are all stated, and a dry run prints
+`ENVELOPE NOT STATED` naming the Go2 numbers it fell back on. State them on the live run.
+Nothing in this repository knows a Lite3 velocity ceiling — issue #13 still owns it.
 
-**中文 —— ⚠️ 这只是这道闸门的一半。** 实测速度会与 `--max-vx × --derate` 比较，
-而 Lite3 的 `--max-vx` 目前仍默认为 **0.35 m/s —— 那是 Go2 的**实测包线。
-把这一侧测准了，并不能让这个比较变成 Lite3 的比较。实机运行时请显式写出
-`--max-vx` / `--max-vy` / `--max-wz`。
+**中文 —— ⚠️ 这只是这道闸门的一半，另一半现在会直接拒绝运行。** 实测速度会与
+`--max-vx × --derate` 比较。这个右侧的值以前默认是 **0.35 m/s —— 那是 Go2 的**实测包线，
+所以把这一侧测准了并不能让这个比较变成 Lite3 的比较。自 2026-08-26 起，`--live` 运行在
+`--max-vx` / `--max-vy` / `--max-wz` 未全部显式给出时会**拒绝启动**；影子（非实机）运行则会
+打印 `ENVELOPE NOT STATED` 并说明它退回到的是 Go2 的哪几个数。实机运行请显式写出这三项。
+本仓库里没有任何一个 Lite3 的速度上限 —— 这仍然属于 issue #13。
 
 ---
 
