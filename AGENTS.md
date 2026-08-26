@@ -32,25 +32,61 @@ current, and it documents three mappings that are *not* the obvious ones.
 
 ## Before you say you are done
 
+Every suite prints one `  ok  <name>` line per test and a `<name>: N/N passed` summary.
+The counts below are those `ok` lines, measured on `main` at `526f0b0` on 2026-08-26.
+Run each line from the repository root; the parentheses are load-bearing, because the
+directories are nested and a bare `cd` would run the next line from inside the last one.
+
 ```bash
-cd policy      && python3 test_physical_ai_mappo.py                                #  33
-cd integration && for t in test_*.py; do python3 $t; done                          # 189
-cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 $t; done   # 329
-cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 $t; done #  17
-cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 $t; done # 39
-cd robot-stack/deep_robotics/lite3/commissioning && python3 test_lite3_state_probe.py # 16
-cd dashboard   && for t in test_*.py; do python3 $t; done                          # 139
-ruff check .        # must be clean in each code directory above; each has a ruff.toml
+(cd policy && for t in test_*.py; do python3 "$t"; done)                                         #   33
+(cd integration && for t in test_*.py; do python3 "$t"; done)                                    #  196
+(cd detector/labels && for t in test_*.py; do python3 "$t"; done)                                #   13
+(cd detector/labels/pipeline && for t in test_*.py; do python3 "$t"; done)                       #   10
+(cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 "$t"; done)             #  329
+(cd robot-stack/unitree/go2/controller && for t in test_*.py; do python3 "$t"; done)             #    6
+(cd robot-stack/unitree/go2/d1_arm && for t in test_*.py; do python3 "$t"; done)                 #   15
+(cd robot-stack/unitree/go2/lidar_sight && for t in test_*.py; do python3 "$t"; done)            #    7
+(cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 "$t"; done)     #   60
+(cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)     #   58
+(cd robot-stack/deep_robotics/lite3/commissioning && for t in test_*.py; do python3 "$t"; done)  #  188
+(cd dashboard && for t in test_*.py; do python3 "$t"; done)                                      #  110
+#                                                                                          total 1025
 ```
 
-`policy/` and most of `integration/` need `numpy`. The `visual_nav` suite also needs
-`opencv-python`: without `cv2`, several files fail at import and the suite is incomplete.
-That is a missing dependency, not a regression — install it or say so explicitly.
+Then `ruff check .` from inside **every** directory that holds a `ruff.toml` — there are
+ten, and running one directory's config against another directory's code is how a PR came
+to report "ruff clean" while shipping 13 findings. Twelve directories still hold Python
+that no `ruff.toml` covers at all: the five Go2 directories beside `visual_nav`, both of
+`deploy/`, and five `evidence/` run directories. CI names each of them in a warning, and
+fails if a thirteenth appears — the count can shrink, and cannot grow unnoticed.
 
-`dashboard/` needs `device-connect-edge`, `device-connect-agent-tools` and `aiohttp`, in a
-**Python >= 3.11** environment — that is what Device Connect requires, and it is why
-`dashboard/drive_bridge.py` is a separate Python 3.8 process rather than an import.
-`test_drive_bridge.py`, `test_model_store.py` and `test_peer_link.py` run without any of them.
+**CI enforces this block rather than trusting it.**
+[`.github/workflows/offline-checks.yml`](.github/workflows/offline-checks.yml) discovers
+every `test_*.py` and every `ruff.toml` in the tree by globbing, re-measures each number
+above, and fails if a number here and a number it measured disagree — in either direction,
+including a directory of tests that this block does not list. Do not edit a count here to
+make CI pass; the count is the measurement.
+
+### What is not counted, and why
+
+- `robot-stack/unitree/go2/deploy/test_go2_robot_io.py` imports `arm_dc_robotkit` and
+  `dashboard/test_robot_driver.py` imports `device_connect_edge`. Neither package is on
+  PyPI before launch, so both die at `ModuleNotFoundError` rather than at a test, and both
+  fail that way on `main` today. CI skips them and says so with a `::warning::`. **A
+  missing dependency is not a pass and is not a regression — install it or say so.**
+- `dashboard/`'s other 110 need **Python >= 3.11**, which is what Device Connect requires,
+  and that is why `dashboard/drive_bridge.py` is a separate Python 3.8 process rather than
+  an import. CI runs a `3.8` leg and a `3.11` leg for exactly this reason: the Go2's Jetson
+  is Ubuntu 20.04 / JetPack 5, so 3.8 is what the robot code has to import under, and the
+  `3.8` leg skips `dashboard/` apart from `test_drive_bridge.py`.
+- Installing `Pillow` is not optional if you want the real number: three tests in
+  `dashboard/test_camera_source.py` print `  skip  ` and then `  ok  ` without it, which is
+  a missing dependency reading as a pass. `numpy`, `opencv-python` and `pytest` are needed
+  the same way — without `cv2` several `visual_nav` files fail at import.
+- The block previously read `33 / 189 / 329 / 17 / 39 / 16 / 139` and did not mention
+  `detector/labels`, `detector/labels/pipeline` or three of the Go2 directories at all. Its
+  Lite3 commissioning line named `test_lite3_state_probe.py` by name, in a directory that
+  holds ten test files.
 
 **`ruff --fix` sorts imports and will hoist a `from avoidance import ...` above the
 `sys.path` line that makes it importable.** Two test files went from passing to
