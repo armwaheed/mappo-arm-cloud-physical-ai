@@ -15,6 +15,7 @@ Pure stdlib. Run: ``python3 test_telemetry.py``
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import math
@@ -529,9 +530,9 @@ def _run_file(directory, ticks, header=None):
     return path
 
 
-def _synthetic_tick(t, video_frame, profile=None, stale=False):
+def _synthetic_tick(t, video_frame, profile=None, stale=False, seq=1):
     return {"type": "tick", "t": t, "profile": profile,
-            "perception": {"seq": 1, "video_frame": video_frame, "detect_ms": 200.0,
+            "perception": {"seq": seq, "video_frame": video_frame, "detect_ms": 200.0,
                            "frame_age_s": 0.3, "stale": stale, "cycle_ms": None,
                            "wait_ms": None}}
 
@@ -559,22 +560,47 @@ def test_a_truncated_last_line_costs_one_tick_and_not_the_run():
     assert len(ticks) == 1
 
 
-def test_a_file_with_no_profile_is_split_by_the_recorder_gate_instead():
-    """What the 26 committed runs can still be asked. The recording gate and the
-    perception-consumption gate are the SAME gate, so this cannot separate the MP4 encode
-    from the tracker update — and the report has to say so rather than name a cause."""
+#: A recorded run in miniature: the tick that consumes a new result is the tick that
+#: writes a frame, because the loop gates both on `result.seq > <last>`. 250 ms against
+#: 100 ms, which is the shape of every `--record` run in `evidence/`.
+_RECORDING_RUN = [_synthetic_tick(0.00, 0, seq=1), _synthetic_tick(0.25, None, seq=1),
+                  _synthetic_tick(0.35, 1, seq=2), _synthetic_tick(0.60, None, seq=2),
+                  _synthetic_tick(0.70, 2, seq=3)]
+
+
+def test_a_recorded_file_with_no_profile_is_split_by_both_gates_and_says_what_it_cannot_do():
+    """Within ONE `--record` run the two gates are the same predicate, so 'wrote a frame'
+    and 'consumed a new result' are one indicator for two candidates. The report has to say
+    that, and then point at the runs that DO separate them rather than stopping there."""
     with tempfile.TemporaryDirectory() as directory:
-        path = _run_file(directory, [_synthetic_tick(0.0, 0), _synthetic_tick(0.25, None),
-                                     _synthetic_tick(0.35, 1), _synthetic_tick(0.60, None),
-                                     _synthetic_tick(0.70, 2)])
+        path = _run_file(directory, _RECORDING_RUN, header={"video": "/home/x/run.mp4"})
         header, ticks = read_run(path)
     out = io.StringIO()
     assert report(header, ticks, out=out) == 0
     text = out.getvalue()
     assert "no per-stage profile" in text
     assert "wrote a frame" in text and "wrote none" in text
-    assert "150.0 ms difference" in text, text
-    assert "It cannot say which." in text
+    assert "consumed a new result" in text and "reused the result" in text
+    assert "cannot subdivide that 150.0 ms" in text, text
+    assert "the two runs with no --record" in text, text
+
+
+def test_a_run_with_no_recorder_is_reported_as_the_control_it_is():
+    """THE MEASUREMENT THAT ATTRIBUTES THE 150 ms. A run with no `--record` still consumes
+    perception results and still runs the tracker and the static map, so its new-result
+    ticks price that path with the encode taken out. Reporting it as "wrote none" alone
+    threw that away — it is the one bucket in the corpus that separates the two."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = [_synthetic_tick(0.00, None, seq=1), _synthetic_tick(0.10, None, seq=1),
+                 _synthetic_tick(0.20, None, seq=2), _synthetic_tick(0.30, None, seq=2)]
+        path = _run_file(directory, ticks)          # no `video` in the header
+        header, ticks = read_run(path)
+    out = io.StringIO()
+    assert report(header, ticks, out=out) == 0
+    text = out.getvalue()
+    assert "NO RECORDER on this run, which makes it the control" in text, text
+    assert "100.0 ms against a 100 ms period" in text, text
+    assert "cannot subdivide" not in text, text
 
 
 def test_a_file_with_a_profile_is_reported_stage_by_stage():
@@ -667,6 +693,123 @@ def telemetry_source_comment() -> str:
         block.append(line)
     assert len(block) > 5, "the comment block above `sightings` has gone"
     return "\n".join(block)
+
+
+#: Every committed run, found rather than listed: a file nobody adds to a list gets
+#: measured, and the point of the test below is that it is the WHOLE corpus.
+_EVIDENCE = Path(os.path.abspath(__file__)).parents[4] / "evidence"
+
+#: The stand-up tick blocks ~3 s inside the vendor RecoveryStand. It is a posture change,
+#: not a control tick, and one of them in a bucket of ninety would move nothing — but it is
+#: excluded so the maxima below mean something.
+_STAND_UP_MS = 1000.0
+
+
+def _corpus_runs():
+    """Every distinct committed run, DE-DUPLICATED BY CONTENT. `live_run_telemetry.jsonl`
+    and `sample_telemetry.jsonl` are byte-identical, so counting both would double-weight
+    one run in every aggregate below."""
+    seen = set()
+    for path in sorted(_EVIDENCE.rglob("*.jsonl")):
+        if "leg-encoders" in path.name:
+            continue
+        # md5 for identity, not integrity: this is "have I read these bytes already".
+        digest = hashlib.md5(path.read_bytes()).hexdigest()
+        if digest in seen:
+            continue
+        seen.add(digest)
+        header, ticks = read_run(path)
+        if len(ticks) >= 3:
+            yield path, header, summarise(header, ticks)
+
+
+def test_two_committed_evidence_files_are_one_run_and_are_counted_once():
+    """`evidence/live_run_telemetry.jsonl` and `evidence/sample_telemetry.jsonl` are
+    byte-identical, so an aggregate over "every file under evidence/" double-weights that
+    one run in every bucket below — 24 files, 23 runs. Found on PR #116.
+
+    Pinned because the de-duplication is invisible when it works: removing it changes the
+    medians by a few milliseconds and no other assertion here would notice.
+    """
+    files = [path for path in _EVIDENCE.rglob("*.jsonl")
+             if "leg-encoders" not in path.name]
+    digests = {hashlib.md5(path.read_bytes()).hexdigest() for path in files}
+    assert len(files) - len(digests) == 1, (
+        f"{len(files)} files, {len(digests)} distinct — the duplicate pair this guards "
+        f"against has changed; re-check what the corpus aggregates now weight twice")
+    assert len(list(_corpus_runs())) == len(digests), "_corpus_runs stopped de-duplicating"
+
+
+def test_the_recorder_and_not_the_tracker_owns_the_missing_150_ms():
+    """ISSUE #18, ANSWERED FROM DATA THAT WAS ALREADY COMMITTED. This is the measurement,
+    and it is here rather than in a comment because a number in a comment is not re-checked.
+
+    ``_record``'s gate and the tracker-update gate are the same predicate, so within one
+    ``--record`` run the mp4v encode and the tracker/static-map update cannot be told apart
+    — which is what #112 and #116 both concluded. Two runs in the corpus pass no
+    ``--record`` at all, and they still consume results and still update the tracker, so
+    they price that path with the encode removed. They are interleaved in time with the
+    recorded ones on the same 2026-08-17 session, not recalled from an earlier day.
+
+    ======================================================  =====  ==========
+    tick population, 23 distinct runs                           n      median
+    ======================================================  =====  ==========
+    ``--record``, consumed a new result (tracker + encode)   1023    246.4 ms
+    ``--record``, reused the result                           453    101.4 ms
+    NO ``--record``, consumed a new result (tracker only)     126    100.6 ms
+    NO ``--record``, reused the result                        212    100.9 ms
+    ======================================================  =====  ==========
+
+    So ``_record`` is at least 145 ms of the control tick. A LOWER bound: both 100 ms
+    buckets sit on the trailing sleep's floor, which absorbs any body shorter than the
+    period, so they bound their own bodies from above and nothing more. The bound is what
+    matters — it is the whole deficit.
+
+    ⚠️ What this does NOT say: which half of ``_record``, the overlay draw or the encode.
+    That needs the profiler on a live run, and ``record`` and ``tracker`` are timed under
+    two names so that run confirms or breaks this table rather than assuming it.
+    """
+    populations = {"rec_new": [], "rec_reused": [], "dry_new": [], "dry_reused": []}
+    runs = 0
+    for _path, _header, summary in _corpus_runs():
+        runs += 1
+        prefix = "rec" if summary["recorder"] else "dry"
+        for key, name in (("new_result_ms", "new"), ("reused_result_ms", "reused")):
+            populations[f"{prefix}_{name}"] += [x for x in summary[key] if x < _STAND_UP_MS]
+
+    # ANTI-VACUITY. A corpus that stopped being found, or a `recorder` flag that stopped
+    # discriminating, would empty a bucket and every median below would be over nothing.
+    assert runs >= 23, f"only {runs} distinct runs found under {_EVIDENCE}"
+    assert len(populations["dry_new"]) >= 100, populations["dry_new"]
+    assert len(populations["rec_new"]) >= 900, len(populations["rec_new"])
+
+    medians = {name: statistics.median(values) for name, values in populations.items()}
+    assert medians["dry_new"] < 110.0, medians
+    assert medians["dry_reused"] < 110.0, medians
+    assert medians["rec_reused"] < 110.0, medians
+    assert medians["rec_new"] > 200.0, medians
+
+    # The recorder's cost, bounded below by the widest thing the corpus can rule out.
+    floor = medians["rec_new"] - max(medians["dry_new"], medians["rec_reused"])
+    assert floor > 130.0, f"{floor:.1f} ms — the attribution in #18 no longer holds: {medians}"
+
+
+def test_the_two_dry_runs_are_interleaved_with_the_recorded_ones_not_a_recalled_baseline():
+    """The control has to be contemporaneous or it is not a control, and this repository
+    has been burned by a recalled baseline before. ``wall_time`` is a monotonic clock, so
+    these are comparable only within one boot — and they are: the 2026-08-17 session runs
+    582662 -> 584886 s with a dry run BETWEEN two recorded ones rather than before all."""
+    session = sorted(
+        (header["wall_time"], header.get("video") is not None, path.name)
+        for path, header, _ in _corpus_runs()
+        if path.parent.name == "2026-08-17-corridor-and-room-runs")
+    assert len(session) == 8, session
+    kinds = [recorded for _t, recorded, _n in session]
+    assert kinds.count(False) == 2, session
+    first_dry, last_dry = kinds.index(False), len(kinds) - 1 - kinds[::-1].index(False)
+    assert any(kinds[i] for i in range(first_dry, last_dry)), (
+        "both dry runs sit on one side of the recorded ones; this is a baseline, not a "
+        f"control: {session}")
 
 
 if __name__ == "__main__":

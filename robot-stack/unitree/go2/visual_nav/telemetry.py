@@ -89,7 +89,8 @@ FRAMES = {
 #: in five that write no frame — must still appear, as ``0.0``, or every consumer has to
 #: decide for itself whether a missing key means "free" or "did not happen".
 TICK_STAGES = (
-    "perceive",     # latest() + consuming a new result: tracker predict/update, static map
+    "perceive",     # latest() — reading the newest result off the perception thread
+    "tracker",      # consuming a new result: tracker predict/update, static map observe
     "obstacles",    # pose() + extrapolating and inflating the tracks
     "plan",         # planner.plan() — for MAPPO this is the policy and both rollouts
     "command",      # handing the velocity to the locomotion transport
@@ -100,18 +101,41 @@ TICK_STAGES = (
 class TickProfiler:
     """Wall clock of each stage of one control tick, for the record.
 
-    WHAT THE RECORDED TELEMETRY COULD ALREADY PROVE, and why this is still needed. Across
-    the 21 committed runs, every tick that wrote a video frame took 173-299 ms and every
-    tick that did not took 100.2-103.7 ms — the configured period, to the jitter. The two
-    dry runs, which pass no ``--record`` at all, hold 9.86 Hz for 195 and 145 ticks while
+    WHAT THE RECORDED TELEMETRY ALREADY PROVES, and why this is still worth having. Across
+    the committed runs, every tick that wrote a video frame took 173-299 ms and every tick
+    that did not took 100.3-104.0 ms — the configured period, to the jitter. The two dry
+    runs, which pass no ``--record`` at all, hold 9.86 Hz for 195 and 145 ticks while
     carrying the HIGHEST ``detect_ms`` in the corpus (262 and 269 ms median). So detection
     does not enter the control tick, and the deficit is on the ticks that record.
 
-    That is as far as a recorded file goes, and it is not far enough. The recording gate
-    and the perception-consumption gate are the same gate, so nothing already written can
-    separate the MP4 encode from the tracker update; and everything on a non-recording
-    tick is hidden under the trailing sleep, which absorbs any body shorter than the
-    period. Both of those are exactly one measurement away, and this is the measurement.
+    ``_record``'s gate and the tracker-update gate are the same predicate
+    (``result.seq > <last>``), and both #112 and #116 concluded from that that a recorded
+    file cannot separate the mp4v encode from the tracker update. WITHIN one ``--record``
+    run that is true. Across the corpus it is not, because the dry runs still consume
+    results and still run the tracker — the recorder is the only thing they take out.
+    Every tick of every committed run, split on the loop's own predicate:
+
+    ======================================================  =====  ==========
+    tick population, all 23 distinct committed runs             n      median
+    ======================================================  =====  ==========
+    ``--record``, consumed a new result (tracker + encode)   1023    246.4 ms
+    ``--record``, reused the result                           453    101.4 ms
+    NO ``--record``, consumed a new result (tracker only)     126    100.6 ms
+    NO ``--record``, reused the result                        212    100.9 ms
+    ======================================================  =====  ==========
+
+    The tracker-and-static-map path costs the same as no path at all once the recorder is
+    absent, and the two dry runs are interleaved in time with the recorded ones on the same
+    2026-08-17 session (wall clocks 582662, 583045 ... 584060, **584591**, 584701) rather
+    than being a recalled baseline. So ``_record`` is **at least 145 ms** of the control
+    tick — a lower bound, because the two 100 ms buckets sit on the sleep floor and only
+    bound their own bodies from above. That is issue #18's item 2, answered from data that
+    was already committed, and ``test_telemetry`` recomputes the whole table on every run.
+
+    What is left for this class is the part a recording cannot do: which HALF of
+    ``_record`` — the overlay draw or the mp4v encode. ``tracker`` is timed under its own
+    name so that the next live run confirms or breaks the table above rather than assuming
+    it; #116 was right that the two want separate names even though the corpus settles it.
 
     Usage, once per tick::
 
@@ -432,6 +456,21 @@ def summarise(header: dict, ticks: list) -> dict:
                 if perception[i].get("video_frame") is not None]
     plain = [intervals[i] for i in range(len(intervals))
              if perception[i].get("video_frame") is None]
+
+    # DID THIS TICK CONSUME A NEW PERCEPTION RESULT — that is, run the tracker and the
+    # static map? Reconstructed from `seq` with the loop's own predicate. This is the split
+    # the recorder gate coincides with inside a `--record` run and DIVERGES from in a run
+    # with none: a dry run still consumes results and still updates the tracker, so its
+    # new-result ticks are the price of that path with the encode taken out. That is what
+    # attributes the deficit to the recorder rather than merely localising it.
+    consumed, highest = [], None
+    for entry in perception:
+        seq = entry.get("seq")
+        consumed.append(highest is None or (seq is not None and seq > highest))
+        if seq is not None:
+            highest = seq if highest is None else max(highest, seq)
+    fresh = [intervals[i] for i in range(len(intervals)) if consumed[i]]
+    reused = [intervals[i] for i in range(len(intervals)) if not consumed[i]]
     profiles = [tick["profile"] for tick in ticks if tick.get("profile")]
     stages = {name: statistics.median([p.get("stages", {}).get(name, 0.0)
                                        for p in profiles])
@@ -450,6 +489,10 @@ def summarise(header: dict, ticks: list) -> dict:
         "frame_age_s": field("frame_age_s"),
         "recorded_ms": [x * 1000.0 for x in recorded],
         "plain_ms": [x * 1000.0 for x in plain],
+        "new_result_ms": [x * 1000.0 for x in fresh],
+        "reused_result_ms": [x * 1000.0 for x in reused],
+        "recorder": (header.get("video") is not None
+                     or header.get("video_raw") is not None),
         "profiles": profiles,
         "stages_ms": stages,
     }
@@ -495,21 +538,34 @@ def report(header: dict, ticks: list, out=sys.stdout) -> int:
                 print(f"  {label:<16} {statistics.median(values):7.1f} ms", file=out)
         return 0
 
-    # No profile: say what the recorder gate alone implies, and no more than that.
-    print("  this file carries no per-stage profile. What the recorder gate implies:",
-          file=out)
-    for label, values in (("wrote a frame", summary["recorded_ms"]),
-                          ("wrote none", summary["plain_ms"])):
+    # No profile: what the two gates a recorded file DOES carry can be made to say. Both,
+    # because they coincide in a `--record` run and diverge in a run with none, and that
+    # divergence is the only thing in the corpus that separates the encode from the tracker.
+    print("  this file carries no per-stage profile. What its gates still say:", file=out)
+    buckets = (("wrote a frame", summary["recorded_ms"]),
+               ("wrote none", summary["plain_ms"]),
+               ("consumed a new result", summary["new_result_ms"]),
+               ("reused the result", summary["reused_result_ms"]))
+    for label, values in buckets:
         if values:
-            print(f"    {len(values):3d} tick(s) that {label:<14} "
+            print(f"    {len(values):3d} tick(s) that {label:<22} "
                   f"median {statistics.median(values):7.1f} ms", file=out)
-    if summary["recorded_ms"] and summary["plain_ms"]:
-        delta = statistics.median(summary["recorded_ms"]) - statistics.median(summary["plain_ms"])
-        print(f"    the {delta:.1f} ms difference is everything a recording tick does and "
-              f"the other does not:\n"
-              f"    consume the perception result, update the tracker and the static map, "
-              f"draw the\n    overlay and encode one frame — all of it on the control "
-              f"thread. It cannot say which.", file=out)
+    if summary["recorder"] and summary["new_result_ms"] and summary["reused_result_ms"]:
+        delta = (statistics.median(summary["new_result_ms"])
+                 - statistics.median(summary["reused_result_ms"]))
+        print(f"    THIS run cannot subdivide that {delta:.1f} ms: the recorder gate and "
+              f"the tracker gate are\n    the same predicate, so 'wrote a frame' and "
+              f"'consumed a new result' are one indicator\n    for two candidates. The "
+              f"CORPUS can, and does — the two runs with no --record still\n    consume "
+              f"results and still update the tracker, and their new-result ticks measure\n"
+              f"    100.6 ms. So this is the recorder. Run this over\n"
+              f"    evidence/2026-08-17-corridor-and-room-runs/*.jsonl to see both halves.",
+              file=out)
+    elif not summary["recorder"] and summary["new_result_ms"]:
+        print(f"    NO RECORDER on this run, which makes it the control: its new-result "
+              f"ticks price the\n    tracker and the static map with the encode taken "
+              f"out, at {statistics.median(summary['new_result_ms']):.1f} ms against a "
+              f"{1000.0 / summary['configured_hz']:.0f} ms period.", file=out)
     return 0
 
 

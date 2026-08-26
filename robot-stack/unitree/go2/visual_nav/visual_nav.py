@@ -726,11 +726,15 @@ class VisualNavigator:
                 self._sleep_out_the_period(tick_start, period)
                 continue
 
-            # A second `perceive` block rather than one around both: the `result is None`
-            # branch above has to `continue` from between them. `stage` ADDS on re-entry
-            # precisely so a stage split across a branch is not reduced to its last part.
-            with self._profiler.stage("perceive"):
-                if result.seq > self._consumed_seq:
+            # ⚠️ THIS BRANCH AND `_record`'S ARE GATED ON THE SAME PREDICATE. That is why a
+            # recorded file cannot tell the tracker update apart from the mp4v encode WITHIN
+            # one --record run, and it is why they are timed under two names: the next live
+            # run then confirms or breaks the corpus-wide split in `TickProfiler`, which
+            # puts the whole 145 ms on the recorder. Timed INSIDE the gate, so `tracker`'s
+            # samples are the cost of an update rather than a median over the four ticks in
+            # five that do not consume anything.
+            if result.seq > self._consumed_seq:
+                with self._profiler.stage("tracker"):
                     self._tracker.predict(
                         max(0.0, result.capture_time - self._tracker_time))
                     # Static props first: the map they build is what tells the tracker a

@@ -193,16 +193,37 @@ it writes a manifest in the `records` shape this directory already uses, so
 
 ```
 python3 autolabel_run.py RUN.jsonl --frames-dir OUT --manifest OUT/labels.json \
-    --classes person --label go2wheel
+    --unlabelled-dir MISSED --classes person --label go2wheel
 python3 check_manifest.py OUT/labels.json --frames-dir OUT        # both directions
 ```
 
 ⛔ **These are detector boxes.** They inherit the shipped network's recall — 64%
 class-agnostic at the deployed 0.25 — so this cannot benchmark that network, and a frame
-it found nothing in is an *unlabelled* frame, not a peer-free one. `autolabel_run.py`
-therefore extracts only the frames that kept a sighting, and prints how many it left
-behind. Good for range and aspect statistics over real runs, and for producing frames a
-human corrects rather than draws. Not a test set. Issue #77.
+it found nothing in is an *unlabelled* frame, not a peer-free one. Good for range and
+aspect statistics over real runs, and for producing frames a human corrects rather than
+draws. Not a test set. Issue #77.
 
-It also refuses the `--record` video by name: that file has an orange box drawn around
-every detection, at exactly the place the label goes. Use `--record-raw` (#84).
+**One record per box, not per frame.** Two peers in one frame are two records naming one
+image; `eval_class_agnostic.load_frames` accumulates a list per image and scores each
+frame against the best match in it. Over the two committed runs that carry `sightings`,
+21% of the frames with a box hold more than one, and a top-box-per-frame manifest drops
+23 of their 118 boxes.
+
+Three things it refuses, and each of them has cost this project something before:
+
+* **The `--record` video, by name.** That file has an orange box drawn around every
+  detection, at exactly the place the label goes. Use `--record-raw` (#84).
+  `--allow-annotated` exists for range statistics, where a drawn box does not matter, and
+  it is stamped into the manifest.
+* **A video that is not this run's own recording.** Joining
+  `evidence/2026-08-25-peer-runs/hero-run-telemetry.jsonl` to the committed
+  `hero-clears-peer-on-right.mp4` yields auto-labels that pass `check_manifest.py` in both
+  directions and are nonsense — 58 frames recorded, 423 in that file, because the committed
+  clips are re-timed edits. The recorder writes exactly one frame per recorded index, so the
+  count is checked: against the container's own header before a single JPEG is written, and
+  against the decoded count afterwards.
+* **Putting the frames the detector missed beside the ones it found.**
+  `eval_class_agnostic.py` scores every JPEG a manifest does not name as peer-free, so
+  those would be filed as the network's own false alarms. `--unlabelled-dir` keeps the
+  pixels somewhere else — they are the frames a human should label next — and the two
+  directories may not be the same one.

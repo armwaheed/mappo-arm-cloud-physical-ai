@@ -23,6 +23,7 @@ Run: ``python3 test_autolabel_run.py``.
 """
 from __future__ import annotations
 
+import contextlib
 import io
 import json
 import os
@@ -84,12 +85,20 @@ class _Video:
         self.written.append((Path(path).name, image))
 
 
-def _extract(wanted, video, frames_dir, prefix="run", frames=8):
+def _no_count(_path):
+    """A container that will not declare a frame count. Real: `CAP_PROP_FRAME_COUNT` is a
+    header field and some containers report zero, which is why the decoded count is
+    checked as well."""
+    return 0
+
+
+def _extract(wanted, video, frames_dir, prefix="run", frames=8, **kwargs):
     video_io = _Video(frames)
-    # `extract` returns (indices found, frames decoded) — the second is what
+    # `extract` returns (found, unlabelled found, frames decoded) — the third is what
     # `check_frame_count` needs to tell this run's recording from another file.
-    found, _decoded = autolabel_run.extract(wanted, Path(video), Path(frames_dir), prefix,
-                                            decoder=video_io.decode, writer=video_io.write)
+    found, _unlabelled, _decoded = autolabel_run.extract(
+        wanted, Path(video), Path(frames_dir), prefix,
+        decoder=video_io.decode, writer=video_io.write, **kwargs)
     return found, video_io
 
 
@@ -115,12 +124,13 @@ def test_a_frame_the_detector_found_nothing_in_is_neither_written_nor_named():
     strength of the same network having missed it."""
     with tempfile.TemporaryDirectory() as directory:
         ticks = [_tick(0, [_sighting()]), _tick(1, []), _tick(2, [])]
-        wanted, counts = autolabel_run.sightings_by_frame(ticks)
+        wanted, _empty, counts = autolabel_run.sightings_by_frame(ticks)
         assert sorted(wanted) == [0], wanted
         assert counts["frames_without_a_box"] == 2, counts
         found, video = _extract(wanted, "raw.mp4", directory)
         assert [name for name, _ in video.written] == ["run_0000.jpg"]
-        records = [autolabel_run.record_for("run", i, wanted[i], "go2wheel") for i in found]
+        records = [r for i in found
+                   for r in autolabel_run.records_for("run", i, wanted[i], "go2wheel")]
         assert [r["image"] for r in records] == ["run_0000.jpg"]
 
 
@@ -128,7 +138,7 @@ def test_ticks_that_wrote_no_frame_are_skipped():
     """The recorder advances once per PERCEPTION cycle and the controller runs faster, so
     most ticks of a healthy run carry ``video_frame: null`` and have no pixels to join to."""
     ticks = [_tick(None, [_sighting()]), _tick(4, [_sighting()])]
-    wanted, counts = autolabel_run.sightings_by_frame(ticks)
+    wanted, _empty, counts = autolabel_run.sightings_by_frame(ticks)
     assert sorted(wanted) == [4], wanted
     assert counts["ticks"] == 2 and counts["recorded"] == 1, counts
 
@@ -147,18 +157,54 @@ def test_a_video_frame_on_two_ticks_is_refused():
 
 
 # ── What survives the filters ───────────────────────────────────────────────
-def test_the_highest_scoring_sighting_becomes_the_box_and_the_others_are_kept():
-    """One box per image, because both readers of this shape assume it —
-    ``check_manifest.check_unique`` fails a repeated key and ``eval_class_agnostic``
-    keys its boxes by image name. Nothing measured is thrown away for that."""
+def test_every_surviving_sighting_gets_a_record_and_they_share_one_image():
+    """TWO PEERS IN A FRAME ARE TWO ROWS, not one row and a discarded box.
+
+    This kept only the top-scoring sighting, on the stated grounds that "both readers of
+    this shape assume" one box per image. `eval_class_agnostic.load_frames` never did — it
+    appends into a list per image and `score` maxes over it — and `check_unique` no longer
+    does either. Over the two committed runs that carry `sightings`, 21.1% of the frames
+    with a box hold more than one and the old rule discarded 23 of 118 boxes.
+
+    Highest score first, so the first record for an image is what the old shape emitted.
+    """
     ticks = [_tick(0, [_sighting(score=0.3, box=[1.0, 1.0, 2.0, 2.0]),
                        _sighting(score=0.9, box=[3.0, 3.0, 9.0, 9.0])])]
-    wanted, _ = autolabel_run.sightings_by_frame(ticks)
-    record = autolabel_run.record_for("run", 0, wanted[0], "go2wheel")
-    assert record["box"] == [3.0, 3.0, 9.0, 9.0], record["box"]
-    assert record["score"] == 0.9
-    assert len(record["sightings"]) == 2
-    assert [s["score"] for s in record["sightings"]] == [0.9, 0.3]
+    wanted, _empty, _ = autolabel_run.sightings_by_frame(ticks)
+    records = autolabel_run.records_for("run", 0, wanted[0], "go2wheel")
+    assert len(records) == 2, records
+    assert {r["image"] for r in records} == {"run_0000.jpg"}
+    assert [r["score"] for r in records] == [0.9, 0.3]
+    assert [r["box"] for r in records] == [[3.0, 3.0, 9.0, 9.0], [1.0, 1.0, 2.0, 2.0]]
+
+
+def test_a_second_box_on_one_frame_survives_the_whole_pipeline_into_check_manifest():
+    """The end-to-end version, through the artefact a user gets. The old shape's loss was
+    invisible: a top-box manifest passes every check and the second peer is simply not in
+    it. So this drives `main` and asserts the count the checker recomputes."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting(score=0.9),
+                                               _sighting(score=0.4,
+                                                         box=[400.0, 60.0, 600.0, 480.0])]),
+                                     _tick(1, [_sighting(score=0.8)])])
+        frames_dir = Path(directory) / "F"
+        video = _Video(2)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(frames_dir),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                      counter=_no_count)
+        assert code == 0, out.getvalue()
+        manifest = json.loads((Path(directory) / "m.json").read_text())
+        assert manifest["count"] == 3, manifest["count"]
+        assert [r["image"] for r in manifest["records"]] == [
+            "run_0000.jpg", "run_0000.jpg", "run_0001.jpg"]
+        report = io.StringIO()
+        rows = check_manifest.rows_of(manifest)
+        assert check_manifest.report(manifest, rows, frames_dir, None,
+                                     out=report) == 0, report.getvalue()
+        assert "3 rows" in report.getvalue(), report.getvalue()
 
 
 def test_the_record_carries_the_range_the_bearing_and_which_prior_produced_it():
@@ -166,8 +212,8 @@ def test_the_record_carries_the_range_the_bearing_and_which_prior_produced_it():
     carry the range and the prior that made it, which is what makes a run usable for range
     and aspect statistics."""
     ticks = [_tick(0, [_sighting(range_m=2.5, bearing_rad=0.75, source="width")], t=4.25)]
-    wanted, _ = autolabel_run.sightings_by_frame(ticks)
-    record = autolabel_run.record_for("run", 0, wanted[0], "go2wheel")
+    wanted, _empty, _ = autolabel_run.sightings_by_frame(ticks)
+    record = autolabel_run.records_for("run", 0, wanted[0], "go2wheel")[0]
     assert record["range_m"] == 2.5
     assert record["bearing_rad"] == 0.75
     assert record["range_source"] == "width"
@@ -180,8 +226,9 @@ def test_every_record_says_it_was_auto_labelled():
     """A reader who opens one record must not have to find the docstring to learn that a
     detector drew this box. The manifest header carries the caveat in full."""
     ticks = [_tick(0, [_sighting()])]
-    wanted, _ = autolabel_run.sightings_by_frame(ticks)
-    assert autolabel_run.record_for("run", 0, wanted[0], "go2wheel")["provenance"] == "auto"
+    wanted, _empty, _ = autolabel_run.sightings_by_frame(ticks)
+    records = autolabel_run.records_for("run", 0, wanted[0], "go2wheel")
+    assert [r["provenance"] for r in records] == ["auto"]
     manifest = autolabel_run.build_manifest(
         [], label="go2wheel", run_path=Path("r.jsonl"), video=Path("v.mp4"), header={},
         counts={}, filters={}, manifest_path=Path("m.json"), frames_dir=Path("F"))
@@ -195,7 +242,7 @@ def test_a_class_filter_and_a_score_floor_drop_sightings_and_say_how_many():
     ticks = [_tick(0, [_sighting(label="person", score=0.9),
                        _sighting(label="chair", score=0.9),
                        _sighting(label="person", score=0.1)])]
-    wanted, counts = autolabel_run.sightings_by_frame(ticks, frozenset({"person"}), 0.25)
+    wanted, _empty, counts = autolabel_run.sightings_by_frame(ticks, frozenset({"person"}), 0.25)
     assert [s["score"] for s in wanted[0]] == [0.9]
     assert counts["dropped_class"] == 1 and counts["dropped_score"] == 1, counts
 
@@ -207,7 +254,7 @@ def test_a_box_without_positive_extent_is_dropped_rather_than_written():
     ticks = [_tick(0, [_sighting(box=[10.0, 10.0, 10.0, 40.0])]),
              _tick(1, [_sighting(box=[10.0, 10.0, None, 40.0])]),
              _tick(2, [_sighting(box=[10.0, 10.0])])]
-    wanted, counts = autolabel_run.sightings_by_frame(ticks)
+    wanted, _empty, counts = autolabel_run.sightings_by_frame(ticks)
     assert wanted == {}, wanted
     assert counts["dropped_box"] == 3, counts
 
@@ -276,9 +323,10 @@ def test_the_manifest_this_writes_passes_check_manifest_in_both_directions():
     with tempfile.TemporaryDirectory() as directory:
         frames_dir = Path(directory) / "frames"
         ticks = [_tick(0, [_sighting()]), _tick(1, []), _tick(3, [_sighting(score=0.8)])]
-        wanted, counts = autolabel_run.sightings_by_frame(ticks)
-        found, _ = _extract(wanted, "raw.mp4", frames_dir)
-        records = [autolabel_run.record_for("run", i, wanted[i], "go2wheel") for i in found]
+        wanted, _empty, counts = autolabel_run.sightings_by_frame(ticks)
+        found, _video = _extract(wanted, "raw.mp4", frames_dir)
+        records = [r for i in found
+                   for r in autolabel_run.records_for("run", i, wanted[i], "go2wheel")]
         manifest = autolabel_run.build_manifest(
             records, label="go2wheel", run_path=Path("run.jsonl"), video=Path("raw.mp4"),
             header={"live": True, "confidence": 0.25}, counts=counts, filters={},
@@ -303,7 +351,8 @@ def test_a_frame_the_telemetry_names_but_the_video_lacks_fails_the_run():
                 "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
         out = io.StringIO()
         with redirect_stdout(out):
-            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                      counter=_no_count)
         assert code == 1, out.getvalue()
         assert "[9]" in out.getvalue(), out.getvalue()
         manifest = json.loads((Path(directory) / "m.json").read_text())
@@ -332,7 +381,8 @@ def test_a_video_longer_than_the_run_recorded_is_refused():
         out = io.StringIO()
         try:
             with redirect_stdout(out):
-                autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+                autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                      counter=_no_count)
         except autolabel_run.Refused as refusal:
             assert "holds 40 frames and this run recorded 2" in str(refusal), refusal
         else:
@@ -357,7 +407,8 @@ def test_the_expected_count_is_the_highest_index_and_not_the_tick_count():
                 "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
         out = io.StringIO()
         with redirect_stdout(out):
-            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                      counter=_no_count)
         assert code == 0, out.getvalue()
         assert [r["video_frame"] for r in
                 json.loads((Path(directory) / "m.json").read_text())["records"]] == [0, 5]
@@ -375,7 +426,8 @@ def test_a_short_video_still_fails_the_old_way_rather_than_being_refused():
                 "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
         out = io.StringIO()
         with redirect_stdout(out):
-            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                      counter=_no_count)
         assert code == 1, out.getvalue()
         assert "[9]" in out.getvalue(), out.getvalue()
         assert (Path(directory) / "m.json").exists()
@@ -392,7 +444,8 @@ def test_the_override_is_stamped_into_the_manifest():
                 "--allow-frame-count-mismatch"]
         out = io.StringIO()
         with redirect_stdout(out):
-            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write)
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                      counter=_no_count)
         assert code == 0, out.getvalue()
         assert "holds 40 frames" in out.getvalue(), out.getvalue()
         source = json.loads((Path(directory) / "m.json").read_text())["source"]
@@ -410,11 +463,225 @@ def test_a_correct_recording_is_not_stamped():
                 "--allow-frame-count-mismatch"]
         out = io.StringIO()
         with redirect_stdout(out):
-            assert autolabel_run.main(argv, decoder=video.decode,
+            assert autolabel_run.main(argv, counter=_no_count, decoder=video.decode,
                                       writer=video.write) == 0, out.getvalue()
         source = json.loads((Path(directory) / "m.json").read_text())["source"]
         assert "frame_count_unverified" not in source, source
         assert "holds" not in out.getvalue()
+
+
+# ── The decoder's own counter, and the container's declared length ──────────
+class _Capture:
+    """A stand-in for ``cv2.VideoCapture``: n frames, and a declared count that may lie."""
+
+    def __init__(self, frames: int, declared=None):
+        self._frames = frames
+        self._index = 0
+        self.declared = frames if declared is None else declared
+        self.released = False
+
+    def get(self, prop):
+        # ONLY the frame-count property answers. `cv2.VideoCapture.get` takes an id and a
+        # fake that ignores it would let `declared_frame_count` ask for CAP_PROP_FPS and
+        # still pass — which is a refusal comparing a frame rate against a frame count.
+        if prop != autolabel_run.CAP_PROP_FRAME_COUNT:
+            return 30.0
+        return float(self.declared)
+
+    def read(self):
+        if self._index >= self._frames:
+            return False, None
+        self._index += 1
+        return True, f"frame-{self._index - 1}"
+
+    def release(self):
+        self.released = True
+
+
+def test_decode_frames_numbers_the_frames_from_zero_in_read_order():
+    """THE JOIN KEY IS THIS COUNTER, and it is the only thing in this module a test can be
+    wrong about and still look right. Every other test injects a decoder, so without this
+    the real index loop is never executed by anything: an off-by-one here relabels every
+    frame in the corpus and no check in this directory can see it."""
+    capture = _Capture(4)
+    pairs = list(autolabel_run.decode_frames(Path("v.mp4"), opener=lambda _p: capture))
+    assert pairs == [(0, "frame-0"), (1, "frame-1"), (2, "frame-2"), (3, "frame-3")], pairs
+    assert capture.released, "the capture must be released even on a full pass"
+
+
+def test_decode_frames_releases_the_capture_when_the_caller_stops_early():
+    """`extract` stops as soon as the last wanted index is past. Closed explicitly rather
+    than left to the refcount."""
+    capture = _Capture(9)
+    frames = autolabel_run.decode_frames(Path("v.mp4"), opener=lambda _p: capture)
+    assert next(frames) == (0, "frame-0")
+    frames.close()
+    assert capture.released
+
+
+def test_declared_frame_count_reads_the_header_and_releases():
+    capture = _Capture(4, declared=423)
+    assert autolabel_run.declared_frame_count(Path("v.mp4"),
+                                              opener=lambda _p: capture) == 423
+    assert capture.released
+
+
+def test_the_frame_count_property_id_is_the_one_cv2_uses():
+    """`CAP_PROP_FRAME_COUNT` is a literal here so this module stays importable without
+    OpenCV — the robot's interpreter has none. If the two ever disagree, `get` returns some
+    other property and the refusal below compares the wrong number against the wrong thing.
+    Asserted wherever cv2 IS importable, which is every CI leg."""
+    try:
+        import cv2
+    except ImportError:
+        return
+    assert int(cv2.CAP_PROP_FRAME_COUNT) == autolabel_run.CAP_PROP_FRAME_COUNT
+
+
+def test_a_video_longer_than_the_run_is_refused_before_any_jpeg_is_written():
+    """The decoded count is the trustworthy one, but it is only knowable once a directory
+    of wrong pixels exists under right-looking names. The container's own header is asked
+    first and used ONLY to refuse — and on the committed hero video it is right: 423."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()]), _tick(1, [_sighting()])])
+        frames_dir = Path(directory) / "F"
+        video = _Video(2)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(frames_dir),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        try:
+            with redirect_stdout(io.StringIO()):
+                autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                   counter=lambda _p: 423)
+        except autolabel_run.Refused as refusal:
+            assert "declares 423" in str(refusal), refusal
+        else:
+            raise AssertionError("a 423-frame file was accepted for a 2-frame run")
+        assert video.written == [], video.written
+        assert not frames_dir.exists(), "frames were written before the refusal"
+        assert not (Path(directory) / "m.json").exists()
+
+
+def test_a_container_that_declares_nothing_is_still_caught_after_decoding():
+    """`CAP_PROP_FRAME_COUNT` is a header field and some containers report zero. The
+    decoded count is checked too — later, which is why the declared one is asked at all."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()]), _tick(1, [_sighting()])])
+        video = _Video(7)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(Path(directory) / "F"),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        try:
+            with redirect_stdout(io.StringIO()):
+                autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                   counter=_no_count)
+        except autolabel_run.Refused as refusal:
+            assert "holds 7" in str(refusal), refusal
+        else:
+            raise AssertionError("a 7-frame file was accepted for a 2-frame run")
+        assert not (Path(directory) / "m.json").exists(), "the manifest was still written"
+
+
+# ── The frames the detector missed ──────────────────────────────────────────
+def test_the_missed_frames_go_to_their_own_directory_and_are_not_named():
+    """Issue #77's own thesis is that the pixels are the irreplaceable half, and a frame the
+    detector missed is a frame a human should label next. It just cannot live in the scored
+    directory: `eval_class_agnostic.load_frames` files every unnamed JPEG there as
+    peer-free, and at 64% recall a third of these still hold the object."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()]), _tick(1, []), _tick(2, [])])
+        frames_dir, missed = Path(directory) / "F", Path(directory) / "MISSED"
+        video = _Video(3)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(frames_dir),
+                "--unlabelled-dir", str(missed),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                      counter=_no_count)
+        assert code == 0, out.getvalue()
+        assert sorted(p.name for p in frames_dir.glob("*.jpg")) == ["run_0000.jpg"]
+        assert sorted(p.name for p in missed.glob("*.jpg")) == ["run_0001.jpg",
+                                                                "run_0002.jpg"]
+        manifest = json.loads((Path(directory) / "m.json").read_text())
+        assert [r["image"] for r in manifest["records"]] == ["run_0000.jpg"]
+        report = io.StringIO()
+        assert check_manifest.report(manifest, check_manifest.rows_of(manifest),
+                                     frames_dir, None, out=report) == 0, report.getvalue()
+
+
+def test_pointing_the_two_directories_at_one_path_is_refused():
+    """The one way this flag can poison what it exists to protect, and it is one
+    tab-completion away.
+
+    Spelled `F/../F` rather than `F`, because `Path` collapses neither `..` nor a symlink
+    on its own: a `==` between the two arguments passes this case and lets the misses into
+    the scored directory. Only `resolve()` catches it.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()]), _tick(1, [])])
+        frames_dir = Path(directory) / "F"
+        frames_dir.mkdir()
+        alias = frames_dir.parent / "F" / ".." / "F"
+        assert alias != frames_dir, "the spelling has to differ or this proves nothing"
+        video = _Video(2)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(frames_dir),
+                "--unlabelled-dir", str(alias),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        try:
+            with redirect_stdout(io.StringIO()):
+                autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                   counter=_no_count)
+        except autolabel_run.Refused as refusal:
+            assert "same directory" in str(refusal), refusal
+        else:
+            raise AssertionError("the misses were written beside the labelled frames")
+        assert video.written == [], video.written
+
+
+def test_allowing_the_annotated_video_is_stamped_into_the_manifest():
+    """The other waived refusal, stamped for the same reason `frame_count_unverified` is:
+    a reader of the directory has only this file, and these frames may have the label
+    drawn into the pixels."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()])])
+        video = _Video(1)
+        argv = [str(path), "--video", ANNOTATED, "--frames-dir", str(Path(directory) / "F"),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run",
+                "--allow-annotated"]
+        with redirect_stdout(io.StringIO()):
+            code = autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                                      counter=_no_count)
+        assert code == 0
+        source = json.loads((Path(directory) / "m.json").read_text())["source"]
+        assert "frames_are_annotated" in source, source
+        assert "NOT usable as training data" in source["frames_are_annotated"]
+
+
+def test_a_clean_manifest_does_not_grow_a_key_saying_nothing_was_waived():
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_tick(0, [_sighting()])])
+        video = _Video(1)
+        argv = [str(path), "--video", RAW, "--frames-dir", str(Path(directory) / "F"),
+                "--manifest", str(Path(directory) / "m.json"), "--prefix", "run"]
+        with redirect_stdout(io.StringIO()):
+            autolabel_run.main(argv, decoder=video.decode, writer=video.write,
+                               counter=_no_count)
+        source = json.loads((Path(directory) / "m.json").read_text())["source"]
+        assert "frames_are_annotated" not in source
+        assert "frame_count_unverified" not in source
+
+
+def test_every_documented_flag_renders_in_help():
+    """argparse `%`-formats help strings against the action's own `__dict__`, so one bare
+    `%` in a help string prints a repr of an argparse object into `--help` — non-fatal,
+    nondeterministic, and invisible to every test that never calls the parser."""
+    out = io.StringIO()
+    with redirect_stdout(out), contextlib.suppress(SystemExit):
+        autolabel_run.build_parser().parse_args(["--help"])
+    text = out.getvalue()
+    assert "argparse" not in text and "option_strings" not in text, text
+    for flag in ("--unlabelled-dir", "--allow-annotated", "--allow-frame-count-mismatch",
+                 "--classes", "--min-score", "--prefix"):
+        assert flag in text, flag
 
 
 if __name__ == "__main__":
