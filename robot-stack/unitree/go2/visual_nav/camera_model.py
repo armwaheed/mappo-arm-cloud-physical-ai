@@ -16,21 +16,61 @@ and gives two things the navigator needs:
     the unit has no depth camera (no RealSense, no ``/dev/video``), so a monocular
     size prior is all there is.
 
-WHY ANGULAR SIZE AND NOT THE GROUND PLANE. The obvious monocular ranger is to
-intersect the ray through a person's feet with the floor. It is unusable here: the
-Go2's camera sits 0.32 m off the ground, so a person at 3 m is only 6° below the horizon
-and the range goes as ``h/tan(elevation)`` — a 2° trunk-pitch wobble (a trotting Go2
-does more) swings the estimate from 2.3 m to 4.4 m. Angular size instead gives
-``d = L / (2·tan(dtheta/2))``, whose relative error just equals the relative error in
-the measured pixel span — a 4% range error for a 20 px error on a 520 px box. It
-degrades gracefully and does not care about pitch at all.
+WHY ANGULAR SIZE FOR A PERSON, AND THE FLOOR CONTACT POINT FOR EVERYTHING ELSE. Angular
+size gives ``d = L / (2·tan(dtheta/2))``, whose relative error just equals the relative
+error in the measured pixel span — a 4% range error for a 20 px error on a 520 px box.
+It degrades gracefully and does not care about pitch at all. That is why it ranges the
+one object this robot has a measured size for, and it is the right default.
 
-That last property is why the camera's pitch barely matters here, and why this module
-does NOT bother folding live IMU pitch into the model. Tilting the camera does shift a
-pixel's azimuth, but only through the cosine of the tilt: a 10° pitch moves a bearing
-by under 0.5° anywhere in this frame, and a trotting Go2's few degrees of trunk wobble
-by well under 0.2°. That is inside the bearing noise the tracker already assumes, so
-pitch is carried as a static mounting parameter rather than compensated per-frame.
+**It needs ``L``, and for an object nobody measured there is no ``L``.** That is not a
+tuning problem, it is the whole of it: substituting another object's prior scales the
+answer by the ratio of the two sizes, and the error is unbounded in the direction that
+matters. Measured, in this repository's own telemetry — the two live runs of
+2026-08-25 (``evidence/2026-08-25-peer-runs/``) ranged EVERY detection with the peer
+robot's 0.514 m prior, including the goal chair. Over the eight sightings of that chair a
+1.6°/18% ground ceiling keeps, the size prior reported it at 0.69-0.85 m where the floor
+contact of the same boxes puts it at 0.88-1.69 m — and those boxes imply an object 0.85 m
+tall, which is an office chair and is 1.7x the prior it was ranged with. A prior too small
+reads NEAR, which is merely useless; a prior too large reads FAR, which is the direction
+that walks into things.
+
+:meth:`ground_range` is the estimator with no ``L`` in it at all. Intersect the ray
+through the object's lowest pixel with the floor and read the range off the geometry:
+``d = h / tan(elevation)``. It costs one ray, it needs no class and no prior, and it is
+what makes an object a stranger dropped in the arena rangeable at all.
+
+ITS ERROR IS ENTIRELY THE PITCH, AND IT IS A FUNCTION OF RANGE — WHICH IS WHY IT IS
+GATED RATHER THAN TRUSTED. ``|Δd/d| = δ·(d/h + h/d)`` for a pitch error ``δ``, so on this
+0.32 m mount a 2° trunk wobble puts the FAR bound +10% out at 0.72 m, +14% at 1.0 m,
++20% at 1.5 m and +49% at 3 m — far being the side that walks into things. The 3 m
+figure is where this docstring used to stop, and *at 3 m the conclusion was right*:
+2.25 m to 4.49 m, which is not a measurement. What it missed is that the same
+expression is inside the 18% the tracker already budgets for its BEST source
+(``tracker.RANGE_SIGMA_FRACTION``) out to about 1.33 m, and that this detector's recall
+is 91% inside 1.1 m and 0 of 315 beyond 2.7 m — so the band in which the ground plane is
+unusable is a band no detection arrives from. :meth:`ground_range_limit` turns
+that into a number the caller chooses rather than a rule this module asserts.
+
+Neither estimator escapes the NEAR wall, and it is the same wall for both:
+``h / tan(half_vfov)`` = 0.719 m on this unit, below which the object's floor contact has
+left the bottom of the frame. There is nothing to intersect and nothing to measure, and
+a landmark inside it is memory rather than perception. That figure is the BEST case and
+is quoted around this repository as though it were the only one: it is the centre column,
+and the bottom-corner ray is shallower, so an object at the frame edge loses its contact
+point at 0.806 m instead. :meth:`ground_range` at ``(u, height - 1)`` is the per-column
+answer.
+
+The camera's static pitch is carried as a mounting parameter and applied by
+:meth:`unit_vector`; this module does NOT fold live IMU pitch in. For AZIMUTH that is
+free — tilting shifts a bearing only through the cosine of the tilt, so a 10° pitch moves
+one by under 0.5° anywhere in this frame, well inside the bearing noise the tracker
+assumes. For :meth:`ground_range` it is not free, and ``pitch_error_rad`` is where the
+caller states how much wobble it is willing to be wrong by. **Nobody has recorded this
+robot's trunk pitch while walking, so there is no default here.** The nearest thing to a
+measurement is an upper bound: over 71 unclipped sightings in six tracks of the two
+2026-08-25 runs, the frame-to-frame disagreement between the size-prior range and the
+ground range implies a combined angular error of 1.6° median, 4.5° p90 — combined,
+because the size prior's own box-height noise is in that number too.
 
 CALIBRATION. ``focal_px`` is the one number everything scales on, and this robot ships
 no intrinsics for the front camera (its VIO calibration is for the RealSense that is
@@ -310,10 +350,19 @@ class FisheyeCamera:
     def ground_point(self, u, v) -> tuple[float, float] | None:
         """Where the ray through ``(u, v)`` meets the floor, in body-frame metres.
 
-        Debug/overlay only — see the module docstring for why this is NOT the ranger.
+        Ray-plane intersection under the EQUIDISTANT model, not a homography. The two
+        are not interchangeable: a homography between the image and the floor is a
+        pinhole construct, and on an 85.3° measured fisheye it is wrong by more than the
+        thing it is estimating out at the frame edge — which is exactly where an obstacle
+        the robot is about to swerve past sits. Every pixel gets its own ray instead.
+
         Returns ``None`` when the ray points at or above the horizon, and refuses when
         :attr:`height_m` is unset: with no lens height there is no floor to intersect,
         and ``None`` already means something else here.
+
+        Scalar only. ``unit_vector`` vectorises and this deliberately does not — the
+        horizon test and the intersection would each need a masked form, and the one
+        caller ranges at most a handful of boxes per frame.
         """
         height_m = self.require_height_m("there is no floor to intersect")
         d = self.unit_vector(u, v)
@@ -321,6 +370,112 @@ class FisheyeCamera:
             return None
         t = height_m / -d[2]
         return float(t * d[0]), float(t * d[1])
+
+    def ground_range(self, u, v) -> float | None:
+        """Plan-view range to the floor point under ``(u, v)``, in metres.
+
+        THE ONE RANGE SOURCE ON THIS ROBOT THAT NEEDS NO SIZE PRIOR, which is what makes
+        an unrecognised object rangeable at all. ``None`` for a ray at or above the
+        horizon, as :meth:`ground_point`.
+
+        Plan view, i.e. ``hypot`` of the body-frame intersection, because that is the
+        quantity every consumer downstream means by "range": ``tracker.Observation``
+        places an obstacle at ``robot + range·(cos, sin)`` of a bearing, in the floor
+        plane. The slant range would be longer by ``h``-over-``d``, ~5% at 1 m.
+
+        ⚠️ IT IS ONLY A RANGE TO THE OBJECT IF THE PIXEL IS THE OBJECT'S FLOOR CONTACT.
+        Give it the bottom edge of a box that was cut off by the frame, or of something
+        standing on a table, and the elevation is shallower than the contact point's, so
+        the range reads FAR — the direction that walks into things. The caller owns that
+        test; ``person_detector.GroundRanger`` is the one that makes it.
+        """
+        point = self.ground_point(u, v)
+        if point is None:
+            return None
+        return math.hypot(*point)
+
+    def ground_range_bounds(self, range_m: float,
+                            pitch_error_rad: float) -> tuple[float, float]:
+        """``(nearest, farthest)`` a :meth:`ground_range` of ``range_m`` could really be.
+
+        The whole error budget of the contact-point ranger, exactly rather than
+        linearised, for a camera whose pitch is wrong by up to ``pitch_error_rad``:
+
+            ``d = h / tan(e)``, ``e = atan(h/d)`` -> ``h / tan(e ± δ)``
+
+        The two sides are NOT symmetric and the asymmetry is the safety-relevant half.
+        Nose-down error shortens the estimate, which is harmless. Nose-up error lengthens
+        it, and once ``δ`` reaches ``e`` the far bound is ``inf`` — the ray no longer
+        meets the floor at all. On this 0.32 m mount that happens at 9.2 m for 2°, and
+        the growth on the way there is what :meth:`ground_range_limit` gates.
+
+        First-order the same statement is ``|Δd/d| = δ·(d/h + h/d)``, which is the form
+        worth carrying in your head: the error grows LINEARLY in range for a fixed
+        wobble, so this estimator is good exactly where it is needed and bad where the
+        detector has stopped producing detections anyway.
+        """
+        # `isfinite` FIRST, and not as tidiness: every comparison below is `<= 0.0`, and
+        # NaN fails all of them, so a NaN would sail through and come back out as a NaN
+        # bound that no downstream `>` test can ever be true against. That is a gate
+        # failing open, which is the direction this repository has been bitten by before.
+        if not math.isfinite(range_m) or range_m <= 0.0:
+            raise ValueError(f"range_m must be finite and positive, got {range_m}")
+        if not math.isfinite(pitch_error_rad) or pitch_error_rad < 0.0:
+            raise ValueError(
+                f"pitch_error_rad must be finite and not negative, got {pitch_error_rad}")
+        height_m = self.require_height_m("the ground-range error cannot be bounded")
+        elevation = math.atan2(height_m, range_m)
+        nearest = height_m / math.tan(elevation + pitch_error_rad)
+        if pitch_error_rad >= elevation:
+            return nearest, math.inf
+        return nearest, height_m / math.tan(elevation - pitch_error_rad)
+
+    def ground_range_limit(self, pitch_error_rad: float,
+                           max_error_frac: float) -> float:
+        """Farthest range whose :meth:`ground_range_bounds` stay inside ``max_error_frac``.
+
+        The ceiling on contact-point ranging, expressed as the two things a caller
+        actually knows rather than as a constant this module asserts:
+
+          * ``pitch_error_rad`` — how far the camera's pitch may be from the mounting
+            value while the robot walks. **Unmeasured on this robot**; see the module
+            docstring for the 1.6°-median / 4.5°-p90 upper bound the 2026-08-25 telemetry
+            supports, and for why it is an upper bound rather than the number.
+          * ``max_error_frac`` — the relative range error the consumer can absorb.
+            ``tracker.RANGE_SIGMA_FRACTION`` (0.18) is the natural reference point: it is
+            what the filter already budgets for the size-prior source it trusts most.
+
+        Solved in closed form off the FAR bound, since far is the unsafe side. With
+        ``T = tan(e) = h/d``, ``D = tan(δ)`` and ``eps = max_error_frac``, requiring
+        ``h/tan(e-δ) <= (1+eps)·d`` reduces to ``D·T² - eps·T + (1+eps)·D = 0``; the
+        smaller root is the larger range.
+
+        Returns ``0.0`` when no range satisfies it — a real answer, not a failure. Below
+        roughly ``2·tan(δ)`` of tolerance the wobble alone exceeds the budget at every
+        range, and a caller asking for 5% accuracy from a 2° wobble is asking for
+        something the geometry does not contain. ``inf`` for a stated pitch error of
+        exactly zero, which is a claim about the mount, not a measurement.
+        """
+        if not math.isfinite(pitch_error_rad) or pitch_error_rad < 0.0:
+            raise ValueError(
+                f"pitch_error_rad must be finite and not negative, got {pitch_error_rad}")
+        if not math.isfinite(max_error_frac) or max_error_frac <= 0.0:
+            raise ValueError(
+                f"max_error_frac must be finite and positive, got {max_error_frac}")
+        height_m = self.require_height_m("the ground-range ceiling cannot be computed")
+        if pitch_error_rad >= math.pi / 2.0:
+            return 0.0
+        tan_delta = math.tan(pitch_error_rad)
+        if tan_delta <= 0.0:
+            return math.inf
+        discriminant = (max_error_frac ** 2
+                        - 4.0 * tan_delta ** 2 * (1.0 + max_error_frac))
+        if discriminant < 0.0:
+            return 0.0
+        tan_elevation = (max_error_frac - math.sqrt(discriminant)) / (2.0 * tan_delta)
+        if tan_elevation <= 0.0:
+            return math.inf
+        return height_m / tan_elevation
 
 
 def solve_focal_px(residual_fn, width: int, lo_hfov_deg: float = 40.0,

@@ -289,9 +289,15 @@ def test_the_best_evidenced_duplicate_is_the_one_kept():
     """A duplicate spawned by bad odometry has few sightings and a wide covariance; the
     real landmark has many and a tight one. Rank on that, not on arrival order."""
     mapping = _map()
-    _see(mapping, 2, bearing_deg=-30.0)          # the ghost, seen twice
+    # BOTH ghosts are spawned BEFORE the real bin, so map order is [ghost, ghost, real]
+    # and an unsorted `landmarks[:2]` would keep the two ghosts and drop the bin. With
+    # one ghost first the slice contains the real landmark either way and the test cannot
+    # fail — which is what it did until a mutation that deleted the sort stayed green.
+    _see(mapping, 2, bearing_deg=-30.0)          # a ghost, seen twice
+    _see(mapping, 2, bearing_deg=35.0)           # another ghost, seen twice
     _see(mapping, 12, bearing_deg=7.1)           # the real bin, seen twelve times
-    _see(mapping, 2, bearing_deg=35.0)           # another ghost
+    assert [lm.sightings for lm in mapping.landmarks][:2] == [2, 2], \
+        "the fixture must present the ghosts first or this cannot fail"
     confirmed = mapping.confirmed()
     assert len(confirmed) == MAX_LANDMARKS_PER_LABEL
     best = max(confirmed, key=lambda lm: lm.sightings)
@@ -448,6 +454,90 @@ def test_the_constant_still_counts_as_seeing_the_landmark():
     assert len(mapping.landmarks) == 1
     assert mapping.landmarks[0].landmark_id == identity, \
         "a distrusted sighting must still reset the miss counter"
+
+
+# ── the cap when the label is a bucket, not an object ───────────────────────
+def _see_all(mapping, cycles, bearings, label, range_m=2.2):
+    """Observe every bearing in EVERY cycle, so what is under test is the cap and not
+    the miss counter — the same reason `test_the_cap_is_per_label_not_global` does it."""
+    for index in range(cycles):
+        mapping.observe([_sighting(b, range_m, label=label) for b in bearings],
+                        index * 0.14, *ORIGIN)
+
+
+def test_the_default_cap_is_unchanged_by_the_new_knob():
+    """The regression pin for a default that must not have moved. A map constructed the
+    way every existing caller constructs it caps at two per label, exactly as before."""
+    mapping = StaticObstacleMap(radii={"bin": 0.15})
+    assert mapping.max_landmarks_for("bin") == MAX_LANDMARKS_PER_LABEL
+    assert mapping.max_landmarks_for("anything-else") == MAX_LANDMARKS_PER_LABEL
+    _see_all(mapping, 6, (7.1, -25.0, 40.0), "bin")
+    assert len(mapping.confirmed()) == MAX_LANDMARKS_PER_LABEL
+
+
+def test_a_bucket_label_hides_obstacles_from_the_planner_at_the_default():
+    """WHY THE KNOB EXISTS, stated as the failure it prevents. Every sub-threshold neural
+    static candidate is mapped under ONE label, because the classifier's labels are noise.
+    Three distinct objects then compete for two slots and the planner is shown two of
+    them, silently — which is precisely the thing an arena full of attendee-dropped props
+    must not do. This test asserts the BAD behaviour at the default on purpose: the
+    default is right for a named prop, and this is the cost of using it for a bucket."""
+    mapping = StaticObstacleMap(radii={"static-detect": 0.25})
+    _see_all(mapping, 6, (7.1, -25.0, 40.0), "static-detect")
+    assert len(mapping.landmarks) == 3, "all three are mapped"
+    assert len(mapping.confirmed()) == 2, "but only two are planned against"
+
+
+def test_a_bucket_label_can_be_raised_without_touching_a_named_one():
+    """And the fix, which has to be surgical: raising the bucket must leave `bin` at two,
+    because the duplicate argument that sized the default still holds for a named prop."""
+    mapping = StaticObstacleMap(radii={"bin": 0.15, "static-detect": 0.25},
+                                max_per_label={"static-detect": 4})
+    assert mapping.max_landmarks_for("static-detect") == 4
+    assert mapping.max_landmarks_for("bin") == MAX_LANDMARKS_PER_LABEL
+    for index in range(6):
+        mapping.observe(
+            [_sighting(b, 2.2, label="static-detect") for b in (7.1, -25.0, 40.0)]
+            + [_sighting(b, 2.2, label="bin") for b in (14.0, -33.0, 47.0)],
+            index * 0.14, *ORIGIN)
+    labels = [lm.label for lm in mapping.confirmed()]
+    assert labels.count("static-detect") == 3, labels
+    assert labels.count("bin") == MAX_LANDMARKS_PER_LABEL, labels
+
+
+def test_a_raised_cap_still_ranks_by_evidence():
+    """Raising the ceiling must not turn the cull off. Four candidates against a cap of
+    three still drops the weakest, not the last one to arrive."""
+    mapping = StaticObstacleMap(radii={"static-detect": 0.2},
+                                max_per_label={"static-detect": 3})
+    # The WEAK one is seen first and then stops being seen, so it is first in map order
+    # and an unsorted `landmarks[:3]` would keep it and drop a real one. Order the fixture
+    # against the code, or the test passes whether or not the ranking runs.
+    for index in range(8):
+        bearings = ([-48.0] if index < 2 else []) + [7.1, -25.0, 40.0]
+        mapping.observe([_sighting(b, 2.2, label="static-detect") for b in bearings],
+                        index * 0.14, *ORIGIN)
+    assert len(mapping.landmarks) == 4, "four candidates, three slots"
+    assert mapping.landmarks[0].sightings == 2, "the weak one is first in map order"
+    confirmed = mapping.confirmed()
+    assert len(confirmed) == 3, len(confirmed)
+    assert min(lm.sightings for lm in confirmed) > 2, \
+        "the two-sighting straggler is the one that should have been dropped"
+
+
+def test_a_cap_below_one_is_refused_at_construction():
+    """A cap of zero would hide every landmark of that label from the planner while the
+    map went on accumulating them — a detector that looks broken from outside, with
+    nothing in the logs saying so. It cannot be constructed."""
+    for bad in (0, -1, True, 1.5, "2", None):
+        try:
+            StaticObstacleMap(max_per_label={"static-detect": bad})
+        except ValueError as refusal:
+            assert "at least 1" in str(refusal), refusal
+        else:
+            raise AssertionError(f"max_per_label of {bad!r} should raise")
+    # ...and 1 is legal: one landmark of a kind is a real configuration.
+    assert StaticObstacleMap(max_per_label={"bin": 1}).max_landmarks_for("bin") == 1
 
 
 if __name__ == "__main__":

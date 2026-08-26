@@ -30,6 +30,15 @@ dimension is intact:
     NEARER, which is the safe direction.
   * clipped both ways           -> they fill the frame; report a fixed close range.
 
+EVERY BRANCH OF THAT NEEDS A PRIOR, AND AN OBJECT A STRANGER DROPPED IN THE ARENA HAS
+NONE. :class:`GroundRanger` is the estimator for that case: intersect the ray through the
+box's lowest pixel with the floor and read the range off the geometry, with no class, no
+measured size and nothing to mount. It is a drop-in ``ranger=`` for
+:func:`range_detections`, off unless one is passed, and it is gated rather than trusted —
+its error is the camera's pitch wobble times the range, so it carries a ceiling the
+caller sizes from two numbers it owns. See :class:`GroundRanger` and
+``camera_model.ground_range_limit``.
+
 TWO TIERS, ONE FORWARD PASS (opt-in; see :meth:`PersonDetector.detect_tiered`). The
 mover tier is the one described above and is unchanged. The STATIC tier exists because
 of a floor rather than a model: the published prototxt bakes
@@ -480,12 +489,149 @@ def prototxt_with_floor(text: str, floor: float) -> str:
     return _CONFIDENCE_FLOOR_RE.sub(lambda m: f"{m.group(1)}{floor:g}", text, count=1)
 
 
+@dataclass(frozen=True)
+class GroundRanger:
+    """Range from the floor contact point, with no size prior at all.
+
+    WHY THIS EXISTS AND ``estimate_range`` IS NOT ENOUGH. Every branch of
+    :func:`estimate_range` divides an apparent size by a known one, so it can only range
+    what somebody measured first. That is fine for the one class this pipeline holds for
+    and for a colour prop an operator staged, and it is the whole obstacle for the case
+    the arena is actually about: an attendee drops in a chair, a rucksack or a bin, and
+    there is no prior to divide by. Substituting one is worse than refusing — measured in
+    this repository's own telemetry, the two live runs of 2026-08-25 ranged EVERY
+    detection with the peer's 0.514 m prior, and the goal chair — 0.85 m tall by
+    :meth:`implied_height_m` over the eight sightings this ranger keeps — was reported at
+    0.69-0.85 m where the floor contact puts it at 0.88-1.69 m. That error ran in the
+    harmless direction. An object SHORTER than the assumed prior reads FAR, and far is the
+    direction that walks into things.
+
+    The contact point needs none of that: ``d = h / tan(elevation)`` of the box's lowest
+    pixel. ``camera_model``'s module docstring carries the error model and the argument
+    for why the ground plane is usable in this band and not at 3 m.
+
+    ⚠️ WHAT IT CANNOT DO, both of which the caller must live with rather than configure
+    away:
+
+      * **It stops at the near wall, and does not paper over it.** Below
+        ``h / tan(half_vfov)`` — 0.72 m on the centre-line of this unit, 0.81 m at the
+        frame corner, where the ray is shallower — the object's floor contact has left
+        the bottom of the frame. This refuses there. It does NOT substitute a constant:
+        the two constants that already exist for that band (``FILLS_FRAME_RANGE_M`` and
+        the ``width-capped`` fit cap) between them produced a five-second deadlock on
+        2026-08-19, because a planner cannot tell a constant from a measurement. Inside
+        the wall a landmark is memory — ``static_map`` keeps it and expires it on
+        disagreement, not on time — and that is the honest near-field story.
+      * **It cannot tell a floor contact from a box that merely ends there.** Something
+        standing on a table, or a box whose lower half the detector cut off, gives a
+        shallower elevation and therefore reads FAR. There is no geometric test for it
+        from one ray, and no threshold is invented here to pretend otherwise;
+        :meth:`implied_height_m` is the diagnostic that would let one be sized from
+        recorded frames. Until then this belongs behind the same
+        ``static_shaped`` gates that already refuse a clipped or slab-shaped box.
+
+    Args:
+        camera: the model the detections are expressed in. Must state a lens height.
+        pitch_error_rad: how far the camera's pitch may be from its mounting value while
+            the robot walks. **There is no default and there must not be one** — nobody
+            has recorded this robot's trunk pitch under gait. See ``camera_model``'s
+            module docstring for the 1.6°-median / 4.5°-p90 upper bound that two runs of
+            recorded telemetry support, and for why it is an upper bound.
+        max_error_frac: the relative range error the consumer can absorb.
+            ``tracker.RANGE_SIGMA_FRACTION`` (0.18) is what the filter already budgets
+            for the size-prior source it trusts most, and is the natural reference.
+    """
+
+    camera: FisheyeCamera
+    pitch_error_rad: float
+    max_error_frac: float
+
+    def __post_init__(self) -> None:
+        # A ceiling at or below the near wall means the band is EMPTY: there is no range
+        # at which this estimator both has a contact point to measure and meets the
+        # caller's accuracy. Refusing here rather than returning `inf` on every frame is
+        # the difference between a configuration error and a detector that silently sees
+        # nothing — the second is what a 5% tolerance against a 2° wobble would look like
+        # from the outside, and this repository has already shipped one gate that could
+        # never fire.
+        limit = self.range_limit_m
+        nearest = self.camera.ground_range(self.camera.cx, self.camera.height - 1.0)
+        if nearest is None:
+            raise ValueError("the camera's bottom centre pixel does not meet the floor")
+        if limit <= nearest:
+            raise ValueError(
+                f"no usable range: a pitch error of "
+                f"{math.degrees(self.pitch_error_rad):.2f} deg holds the ground range to "
+                f"{self.max_error_frac * 100:.1f}% only inside {limit:.3f} m, and the "
+                f"floor contact point is not in frame until {nearest:.3f} m. Widen "
+                f"max_error_frac, measure a smaller pitch error, or raise the camera.")
+
+    @property
+    def range_limit_m(self) -> float:
+        """Farthest range this will report. Recomputed rather than cached — a few flops
+        against a detector that hands over at most a handful of boxes per frame."""
+        return self.camera.ground_range_limit(self.pitch_error_rad, self.max_error_frac)
+
+    def implied_height_m(self, detection: Detection) -> float | None:
+        """How tall ``detection`` must be for its box and its contact range to agree.
+
+        NOT A GATE AND NOT USED BY :meth:`__call__` — the diagnostic that turns "we
+        cannot size the not-standing-on-the-floor refusal" into an afternoon of scoring
+        recorded frames. It is also the check that validated this estimator in the first
+        place: over the five sightings of the parked peer in the 2026-08-25 hero run that
+        a 1.6°/18% ceiling keeps, it implies 0.494 m (sd 0.060) against the 0.514 m the run
+        was told — an object dimension recovered from geometry that never saw a size.
+
+        ``None`` when the range is unusable, so a caller cannot read a height off a
+        refusal.
+        """
+        range_m, _source = self(detection)
+        if not math.isfinite(range_m):
+            return None
+        centre_x, _centre_y = detection.centre
+        span = float(self.camera.angle_between((centre_x, detection.y1),
+                                               (centre_x, detection.y2)))
+        return 2.0 * range_m * math.tan(span / 2.0)
+
+    def __call__(self, detection: Detection) -> tuple[float, str]:
+        """``(range_m, source)``, with a non-finite range for anything unusable.
+
+        The refusal reasons are distinct strings rather than one, because they mean
+        different things to whoever is reading a log: ``ground-clipped`` is the near wall
+        and is expected on approach, ``ground-horizon`` is a box floating above the
+        skyline and means the detection is junk, and ``ground-far`` is the accuracy
+        ceiling doing its job. ``range_detections`` drops all three.
+        """
+        width, height = self.camera.width, self.camera.height
+        vertical, _horizontal = detection.clipped(width, height)
+        if vertical:
+            # The bottom edge sits on the frame, so the lowest pixel is where the image
+            # ends and not where the object does. This is also the near wall: a box that
+            # is not vertically clipped has its contact point strictly inside the frame,
+            # so no separate minimum-range test is needed or wanted.
+            return math.inf, "ground-clipped"
+        centre_x, _centre_y = detection.centre
+        range_m = self.camera.ground_range(centre_x, detection.y2)
+        if range_m is None:
+            return math.inf, "ground-horizon"
+        if range_m > self.range_limit_m:
+            return math.inf, "ground-far"
+        return range_m, "ground"
+
+
 def range_detections(detections: list[Detection], camera: FisheyeCamera,
-                     prior: SizePrior = PERSON_PRIOR) -> list[RangedDetection]:
-    """Locate each detection in polar body coordinates, dropping unusable ones."""
+                     prior: SizePrior = PERSON_PRIOR, *,
+                     ranger: GroundRanger | None = None) -> list[RangedDetection]:
+    """Locate each detection in polar body coordinates, dropping unusable ones.
+
+    ``ranger`` replaces the size-prior estimator for these detections and ignores
+    ``prior``. ``None`` — the default — is the behaviour this function has always had,
+    so passing nothing changes nothing.
+    """
     ranged = []
     for detection in detections:
-        range_m, source = estimate_range(detection, camera, prior)
+        range_m, source = (estimate_range(detection, camera, prior) if ranger is None
+                           else ranger(detection))
         if not math.isfinite(range_m):
             continue
         centre_x, centre_y = detection.centre

@@ -131,6 +131,18 @@ MAX_PLANNING_SIGMA_M = 0.40
 #: different odom point, and each becomes its own landmark. The duplicates then box the
 #: robot in. This does not fix the odometry — nothing here can — it bounds the damage,
 #: and the stall abort in visual_nav is what actually catches the cause.
+#:
+#: ⚠️ THE ARGUMENT ABOVE HOLDS FOR A LABEL THAT NAMES ONE OBJECT, AND ONLY FOR THAT.
+#: ``visual_nav.STATIC_DETECT_LABEL`` is not that: every sub-threshold neural static
+#: candidate is mapped under the single label ``"static-detect"``, deliberately, because
+#: the classifier's labels are noise and keying the map on them would split one bin into
+#: two landmarks with two radii. The cost is that a cap written to stop ONE bin appearing
+#: four times becomes a cap of two on the WHOLE general-obstacle path: stage a chair, a
+#: bin and a rucksack and the planner is shown two of them, silently, with no way to tell
+#: which. That is the exact failure the arena is meant not to have. The number stays as
+#: the default because it is right for a named prop and because changing what the robot
+#: plans against is not a default's job; ``max_per_label`` is how a caller that uses a
+#: bucket label raises it for that label alone.
 MAX_LANDMARKS_PER_LABEL = 2
 
 #: Seconds an UNCONFIRMED landmark survives without being seen again. Confirmed ones
@@ -192,6 +204,12 @@ class StaticObstacleMap:
             person's, and inflating it to person-size is what turns a passable gap into
             a local minimum for the planner.
         default_radius_m: used for a label ``radii`` does not name.
+        max_per_label: per-label override of :data:`MAX_LANDMARKS_PER_LABEL`, shaped like
+            ``radii`` and defaulting to it for every label, so the constructed behaviour
+            is unchanged unless a caller names a label. It exists for a BUCKET label —
+            one under which several distinct objects are mapped — where the duplicate
+            argument that sized the default does not apply. See
+            :data:`MAX_LANDMARKS_PER_LABEL`.
         fov_rad/max_range_m: the same visibility envelope the tracker uses, here only to
             decide whether a landmark that failed to appear counts as evidence of
             absence. Defaults match ``ObstacleTracker``.
@@ -199,9 +217,18 @@ class StaticObstacleMap:
 
     def __init__(self, radii: dict | None = None, default_radius_m: float = 0.25,
                  fov_rad: float = math.radians(120.0),
-                 max_range_m: float = 6.0) -> None:
+                 max_range_m: float = 6.0,
+                 max_per_label: dict | None = None) -> None:
         self.radii = dict(radii or {})
         self.default_radius_m = default_radius_m
+        self.max_per_label = dict(max_per_label or {})
+        for label, cap in self.max_per_label.items():
+            # A cap of zero would hide every landmark of that label from the planner while
+            # the map went on accumulating them, which reads from outside as a detector
+            # that stopped working. Fail at construction instead.
+            if isinstance(cap, bool) or not isinstance(cap, int) or cap < 1:
+                raise ValueError(
+                    f"max_per_label[{label!r}] must be an integer of at least 1, got {cap!r}")
         self.fov_rad = fov_rad
         self.max_range_m = max_range_m
         self._landmarks: list[Landmark] = []
@@ -218,10 +245,9 @@ class StaticObstacleMap:
 
         Three gates, and the last two exist because of a live run that failed on exactly
         this: enough sightings, a position the map is still sure of
-        (:data:`MAX_PLANNING_SIGMA_M`), and no more than
-        :data:`MAX_LANDMARKS_PER_LABEL` of any one kind — best-evidenced first, since a
-        duplicate spawned by bad odometry has few sightings and a wide covariance while
-        the real one has many and a tight one.
+        (:data:`MAX_PLANNING_SIGMA_M`), and no more than :meth:`max_landmarks_for` of any
+        one kind — best-evidenced first, since a duplicate spawned by bad odometry has
+        few sightings and a wide covariance while the real one has many and a tight one.
         """
         candidates = [lm for lm in self._landmarks
                       if lm.confirmed and lm.position_sigma <= MAX_PLANNING_SIGMA_M]
@@ -229,15 +255,19 @@ class StaticObstacleMap:
         for landmark in candidates:
             by_label.setdefault(landmark.label, []).append(landmark)
         kept = []
-        for landmarks in by_label.values():
+        for label, landmarks in by_label.items():
             landmarks.sort(key=lambda lm: (-lm.sightings, lm.position_sigma))
-            kept.extend(landmarks[:MAX_LANDMARKS_PER_LABEL])
+            kept.extend(landmarks[:self.max_landmarks_for(label)])
         # Map order, not ranking order, so the overlay and the logs stay stable.
         keep = {id(lm) for lm in kept}
         return [lm for lm in self._landmarks if id(lm) in keep]
 
     def radius_for(self, label: str) -> float:
         return float(self.radii.get(label, self.default_radius_m))
+
+    def max_landmarks_for(self, label: str) -> int:
+        """How many landmarks of ``label`` the planner may be shown at once."""
+        return int(self.max_per_label.get(label, MAX_LANDMARKS_PER_LABEL))
 
     # ── Fusion ──────────────────────────────────────────────────────────────
     def observe(self, observations: list, now: float, robot_x: float, robot_y: float,
