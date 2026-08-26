@@ -18,6 +18,7 @@ import json
 import os
 import sys
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 import cv2
@@ -208,20 +209,109 @@ def test_max_blobs_caps_what_is_returned():
     assert len(ColourBlobDetector(max_blobs=2).detect(image)) == 2
 
 
-def test_the_measured_bin_ranges_to_its_measured_distance():
-    """End-to-end against the numbers taken off the robot's own footage.
+#: The staged bin as it segmented off this unit's own footage: a 164x183 px box under the
+#: calibrated model. THESE ARE MEASUREMENTS — pixels off a real frame, and the focal length
+#: from ``calibrate_camera.py --spin``. The metre range they imply is not, because it needs
+#: :data:`colour_detector.BLUE_BIN`'s height prior, which has never been checked against a
+#: tape. See :func:`test_the_bin_height_prior_is_still_the_unaudited_one_foot_tape_measure`.
+STAGED_BIN_BOX_PX = (716, 559, 164, 183)
+STAGED_FOCAL_PX = 1290.2
 
-    On the staged scene the bin segmented to 164x183 px with the calibrated model
-    (f=1290.2 px), and 0.3048 m of bin subtending 183 px is 2.15 m. This pins the whole
-    chain — mask, box, prior, ranging — to a real measurement rather than to itself.
+
+def test_the_mask_box_and_ranging_chain_agrees_with_the_stated_prior():
+    """Mask to box to :func:`estimate_range`, against the prior the profile states.
+
+    RENAMED, AND THE EXPECTATION IS NOW DERIVED. This used to be called
+    ``test_the_measured_bin_ranges_to_its_measured_distance`` and to assert a literal
+    2.15 m, described as pinning the chain "to a real measurement rather than to itself".
+    It was not: 2.15 is ``0.3048 x 1290.2 / 183``, computed from the very prior that
+    issue #35 is auditing. The only thing it could ever catch was a bug in the arithmetic
+    between the mask and the range — never a prior that does not match the physical bin.
+
+    So it now asserts what it actually covers, and it computes the expected metres from
+    ``BLUE_BIN.prior`` instead of restating them, which removes the trap in the old shape:
+    correcting the prior would turn this red, and the obvious way to make it green again is
+    to recompute the literal, which looks like fixing a test and is in fact deleting the
+    only place the change was visible. The prior is now pinned on its own, by name, below.
+
+    What is still measured here and worth keeping: 164x183 px of blue at f=1290.2 px is a
+    real box off a real frame, the detector has to segment it as exactly one blob of a
+    pinned pixel size, and the range has to come from the HEIGHT prior — a ``"width"`` or
+    ``"frame-fill"`` source at this box size would mean the clipping logic had changed
+    underneath the ranging.
+
+    Worth recording while it is visible: the old literal was 3.6 cm from what this
+    pipeline actually returns (2.114 m against 2.15 m), and passed only because the
+    tolerance was 0.05 m. A number that has to be given a 5 cm gate to match the code is
+    not the code's output; it is the arithmetic beside it.
     """
-    camera = FisheyeCamera(width=1920, height=1080, focal_px=1290.2, cx=960.0, cy=540.0)
-    image = _rect(_frame(), 716, 559, 164, 183)
+    camera = FisheyeCamera(width=1920, height=1080, focal_px=STAGED_FOCAL_PX,
+                           cx=960.0, cy=540.0)
+    x, y, width_px, height_px = STAGED_BIN_BOX_PX
+    image = _rect(_frame(), x, y, width_px, height_px)
     found = ColourBlobDetector().detect(image)
     assert len(found) == 1, found
+
+    # The pixels are the half that IS a measurement, so they are pinned here rather than
+    # taken on trust. A filled rectangle carries a one-pixel border on each side, so the
+    # blob the mask returns is 166x186 for a 164x183 draw — pinned as what the detector
+    # segments, because an erosion, a gate or a contour change that moved it would move
+    # every range with it.
+    assert (found[0].width_px, found[0].height_px) == (166.0, 186.0), \
+        (found[0].width_px, found[0].height_px)
+
+    # ``estimate_range`` goes through the exact ``L / (2·tan(dtheta/2))`` form, not the
+    # pinhole ``h·f/px``; at this box size the two differ by 1.9 mm, so the 0.01 m gate
+    # pins that agreement rather than merely restating the formula.
     range_m, source = estimate_range(found[0], camera, BLUE_BIN.prior)
-    assert source == "height"
-    assert abs(range_m - 2.15) < 0.05, range_m
+    assert source == "height", source
+    expected_m = BLUE_BIN.height_m * STAGED_FOCAL_PX / found[0].height_px
+    assert abs(range_m - expected_m) < 0.01, (range_m, expected_m)
+
+
+def test_the_bin_height_prior_is_still_the_unaudited_one_foot_tape_measure():
+    """``BLUE_BIN.height_m`` is 0.3048 m, and nothing in this repository has checked it.
+
+    Every bin range is this number times ``f`` over the box's pixel height, so every
+    obstacle position, every mapped gate width and every clearance a run reports scales
+    linearly on it — and the map, the planner and the policy all stay internally
+    consistent while being uniformly wrong, which is why no test downstream can notice.
+    Issue #35 is open on it and the thing that settles it is a tape measure against the
+    real prop, not anything that can be run from a desk.
+
+    This assertion is not a claim that 0.3048 is correct. It is a tripwire: it makes
+    changing the prior a deliberate, visible act with a red test attached, rather than an
+    edit that silently rescales the whole obstacle map. If you are here because you took
+    the tape measurement, change the number, say so in issue #35 with the two distances you
+    measured, and note that ``--prop-height`` rescales ``width_m`` but NOT ``radius_m``.
+    """
+    assert BLUE_BIN.height_m == 0.3048, BLUE_BIN.height_m
+    assert BLUE_BIN.prior.height_m == BLUE_BIN.height_m, "the prior must carry the profile's height"
+
+
+def test_every_bin_range_scales_linearly_with_the_height_prior():
+    """Double the prior and every range doubles — which is why a wrong prior is invisible.
+
+    This is the property that makes issue #35 a real risk rather than a rounding worry: the
+    error a wrong height introduces is MULTIPLICATIVE and uniform, so nothing downstream
+    disagrees with anything else. It is also the property ``--prop-height`` relies on, and
+    the reason the fix for a bad scale is the prior and not a re-calibration of ``f``.
+    """
+    camera = FisheyeCamera(width=1920, height=1080, focal_px=STAGED_FOCAL_PX,
+                           cx=960.0, cy=540.0)
+    x, y, width_px, height_px = STAGED_BIN_BOX_PX
+    found = ColourBlobDetector().detect(_rect(_frame(), x, y, width_px, height_px))
+    assert len(found) == 1, found
+
+    shipped, _ = estimate_range(found[0], camera, BLUE_BIN.prior)
+    for factor in (0.5, 1.5, 2.0):
+        # ``replace`` rather than a fresh ColourProfile: the dataclass carries thirteen
+        # fields and re-listing eight of them would quietly reset the gates to defaults.
+        taller = replace(BLUE_BIN, height_m=BLUE_BIN.height_m * factor,
+                         width_m=BLUE_BIN.width_m * factor)
+        scaled, source = estimate_range(found[0], camera, taller.prior)
+        assert source == "height", source
+        assert abs(scaled - shipped * factor) < 1e-6, (factor, scaled, shipped)
 
 
 def test_a_wrapped_hue_window_matches_both_sides_of_zero():
