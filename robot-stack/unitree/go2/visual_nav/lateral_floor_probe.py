@@ -125,6 +125,7 @@ def main(argv=None) -> int:
         return 0
 
     from locomotion.go2_locomotion import Go2Locomotion
+
     from safety import lie_down, stand_up
 
     loco = Go2Locomotion(iface=args.iface)
