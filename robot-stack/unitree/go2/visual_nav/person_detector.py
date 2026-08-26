@@ -30,13 +30,33 @@ dimension is intact:
     NEARER, which is the safe direction.
   * clipped both ways           -> they fill the frame; report a fixed close range.
 
+TWO TIERS, ONE FORWARD PASS (opt-in; see :meth:`PersonDetector.detect_tiered`). The
+mover tier is the one described above and is unchanged. The STATIC tier exists because
+of a floor rather than a model: the published prototxt bakes
+``confidence_threshold: 0.25`` into its ``DetectionOutput`` layer, which applies it
+INSIDE ``forward()``, so no Python-side threshold can reach below it. On the one Lite3
+frame containing a cardboard box the network scores that box **0.1221** and then deletes
+it — the box is suppressed, not missed. :func:`prototxt_with_floor` lowers that layer's
+floor for a copy of the file, and the sub-threshold rows are then read off the SAME pass
+and offered to ``static_map`` rather than to the tracker. Nothing about the mover tier
+changes, and no second inference is run.
+
+Off unless constructed with ``static_confidence``. What it costs when on is measured in
+:data:`DEFAULT_STATIC_CONFIDENCE`, :data:`STATIC_MIN_AREA_FRAC` and :func:`static_shaped`;
+what it BUYS is not measured and cannot be from one frame, which those docstrings say
+plainly.
+
 Nothing here needs the robot: pass any BGR image. ``python3 test_person_detector.py``
 covers the ranging and truncation logic against a synthetic model.
 """
 
 from __future__ import annotations
 
+import contextlib
 import math
+import os
+import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -56,6 +76,59 @@ VOC_CLASSES = (
 # as an obstacle-with-velocity would be noise. Static geometry is out of scope here —
 # see the README.
 DYNAMIC_CLASSES = ("person",)
+
+#: VOC labels a SUB-THRESHOLD detection may carry to be offered to the static map. This
+#: is not "the classes a cardboard box comes back as" — it cannot be, on the evidence
+#: below — it is the set of blocky floor-standing furniture whose members are, whatever
+#: the label says, things a robot should not walk into.
+#:
+#: THE LABELS ARE NOISE AND THIS FILTER DOES NOT PRETEND OTHERWISE. Rendered and
+#: inspected on the 2026-08-24 cross-day frames, the detections this tier keeps land on a
+#: real blue recycling bin under the label ``tvmonitor`` at 0.123 in one frame and
+#: ``chair`` at 0.146 in another. Both are correct as OBSTACLES and meaningless as
+#: classifications. What the filter buys is measured and modest: on 216 peer-absent
+#: corridor frames it cuts the per-frame fire rate from 74.5% class-agnostic to 46.3%,
+#: mostly by discarding the whole-wall ``aeroplane`` and ``train`` slabs that a lowered
+#: score floor lets through. ``person`` is deliberately absent — a person belongs to the
+#: tracker, and :func:`static_shaped` refuses person-shaped boxes a second time.
+STATIC_CLASSES = ("chair", "sofa", "diningtable", "pottedplant", "tvmonitor")
+
+#: Score floor for the STATIC tier. Below :data:`DEFAULT_CONFIDENCE`, and below the 0.25
+#: the published prototxt bakes into its own ``DetectionOutput`` layer — which is why
+#: :func:`prototxt_with_floor` exists at all.
+#:
+#: ⚠️ THIS NUMBER IS NOT VALIDATED FOR RECALL AND CANNOT BE. Exactly ONE frame containing
+#: a cardboard box exists (a Lite3 dry run in the Shanghai office, 1280x720). In it the
+#: box scores **0.1221** as ``chair`` at input 300. One observation cannot set a
+#: threshold, so this floor is not fitted to it: it is placed where the FALSE-ALARM cost
+#: was measured to be nil, and the single box then clears it by 1.22x rather than by
+#: rounding. On 705 frames of empty corridor (``neg_prone`` + ``neg_standing``,
+#: 2026-08-24) the full gate fires on **0 of 705** frames at this floor. Drop to 0.05 and
+#: that becomes 20% of frames; the cliff is real and it is just below here.
+DEFAULT_STATIC_CONFIDENCE = 0.10
+
+#: Fraction of the frame a static candidate must fill. THE AREA GATE IS THE ONE WITH
+#: MARGIN, and it is doing most of the work — on 216 peer-absent corridor frames it cuts
+#: the fire rate from 46.3% to 27.8% where the aspect band cuts only 46.3% to 43.5%.
+#:
+#: It is also the gate that can be argued from physics rather than fitted: this pipeline
+#: has no depth sensor and ranges by a size prior it must be TOLD, so a small distant
+#: blob is both the least trustworthy detection and the least urgent one. Requiring 4% of
+#: the frame keeps the decision to the near field where a wrong answer costs a collision.
+#: The one box observed fills 11.0%, i.e. 2.75x this floor.
+STATIC_MIN_AREA_FRAC = 0.04
+
+#: Upper area bound. A box larger than this is the detector describing the corridor, not
+#: an object in it: the 0.1475 ``person`` covering 81% of the Lite3 frame is the worked
+#: example, and mapping it as a landmark would put a 0.6 m disc on top of the robot.
+STATIC_MAX_AREA_FRAC = 0.60
+
+#: Lower aspect bound (height/width). Below this the box is a horizontal slab — a
+#: skirting rail, a window mullion, the wall-wide ``aeroplane`` at aspect 0.19 in the
+#: Lite3 frame — not a floor-standing object. The UPPER bound is not a separate number:
+#: it is :data:`PERSON_ASPECT_MIN`, because the thing this tier must never do is quietly
+#: reclassify a person as scenery. See :func:`static_shaped`.
+STATIC_ASPECT_MIN = 0.6
 
 #: Box aspect (height/width) at or above which a detection is treated as PERSON-SHAPED
 #: and stops the robot, whatever VOC called it. See
@@ -315,6 +388,98 @@ class RangedDetection:
         return self.detection.height_px / self.detection.width_px >= PERSON_ASPECT_MIN
 
 
+def static_shaped(detection: Detection, width: int, height: int) -> bool:
+    """Whether ``detection`` may be offered to the STATIC map, judged on shape and size.
+
+    THE MIRROR OF :meth:`RangedDetection.person_shaped`, AND DELIBERATELY ITS COMPLEMENT.
+    That method decides what must STOP the robot and answers on box aspect because the
+    VOC label cannot be trusted — the same peer came back ``motorbike`` 613 times,
+    ``chair`` 372 and ``person`` 109 across one corpus. This function inherits the whole
+    of that argument. It is asking the opposite question of the same unreliable
+    classifier, so it must be at least as sceptical.
+
+    WHY THIS RUNS BEFORE RANGING, unlike ``person_shaped`` which runs after. Ranging
+    needs a size prior, and the prior for a static prop is not the person prior — the
+    caller must supply a measured one. Handing an ungated detection to
+    :func:`range_detections` with a prop's prior is how a person 0.8 m away gets reported
+    as a 0.3 m object 6 m off. So the gate is on :class:`Detection`, before a prior has
+    been chosen.
+
+    ⚠️ THE PERSON REFUSAL IS THE SAFETY-CRITICAL HALF, and it is not symmetry for its own
+    sake. A landmark in :mod:`static_map` is planned against with ``person_shaped=False``
+    hard-coded, so anything that reaches the map is a thing the robot will route AROUND
+    at policy speed and never HOLD for. Route a person in there and the one behaviour
+    this robot ships — give way to people — is silently disabled for them. That is not
+    hypothetical: rendered on frame ``peer_cross5_005`` of the 2026-08-24 cross-day set,
+    a person's legs at close range come back as ``chair`` at 0.248, in-band on both
+    aspect and area. Refusing person-shaped boxes here is what keeps them with the
+    tracker, and it costs 26.4% -> 19.0% of the peer-absent fire rate as a bonus.
+
+    The refusal reuses ``person_shaped``'s two tests unchanged, for the reasons argued
+    there rather than re-argued here: an aspect at or above :data:`PERSON_ASPECT_MIN`, and
+    ANY vertical clipping — a person whose head has left the frame gives a shorter box
+    whose aspect falls toward furniture, which is the dangerous direction at exactly the
+    range where being wrong costs the most.
+    """
+    box_width = detection.width_px
+    box_height = detection.height_px
+    if box_width <= 0.0 or box_height <= 0.0:
+        return False
+    vertical, _horizontal = detection.clipped(width, height)
+    if vertical:
+        return False
+    aspect = box_height / box_width
+    if aspect >= PERSON_ASPECT_MIN or aspect < STATIC_ASPECT_MIN:
+        return False
+    frame_area = float(width) * float(height)
+    if frame_area <= 0.0:
+        return False
+    area_fraction = (box_width * box_height) / frame_area
+    return STATIC_MIN_AREA_FRAC <= area_fraction <= STATIC_MAX_AREA_FRAC
+
+
+#: Matches the ONE ``confidence_threshold`` the published MobileNet-SSD prototxt carries,
+#: inside its ``detection_output_param``. Anchored on the whole assignment so a stray
+#: number elsewhere in the 1,900-line file cannot be rewritten by accident.
+_CONFIDENCE_FLOOR_RE = re.compile(r"(confidence_threshold:\s*)([0-9]*\.?[0-9]+)")
+
+
+def prototxt_with_floor(text: str, floor: float) -> str:
+    """The prototxt ``text`` with its ``DetectionOutput`` score floor lowered to ``floor``.
+
+    WHY THIS IS NECESSARY AT ALL, and why passing a lower ``confidence=`` to
+    :class:`PersonDetector` is not enough. ``DetectionOutput`` is a network LAYER. It
+    applies ``confidence_threshold`` itself, during ``forward()``, before any Python sees
+    a row — so the Python-side ``score < self._confidence`` test can only ever discard
+    what the layer already let through. The published weights ship
+    ``confidence_threshold: 0.25``, and that number is why the cardboard box in the one
+    Lite3 frame available is invisible to this pipeline: the network scores it 0.1221 and
+    then deletes it. **The box is suppressed by a floor, not missed by a model.**
+
+    That is the whole reason this route is cheap. The alternative already tried and
+    measured to fail was colour: a brown box against a wooden background merges into one
+    contour, and the workaround in production is a green panel taped to the prop. Nothing
+    here needs new weights, a retrain, a second inference pass or a panel — it needs the
+    network to stop throwing away a number it has already computed.
+
+    Returns the text unchanged when ``floor`` is not below what is already there; the
+    floor is never RAISED, because a caller asking for a permissive static tier must not
+    be able to make the person tier blinder as a side effect.
+
+    Raises ``ValueError`` unless exactly one threshold is present. A prototxt with two
+    would leave one of them silently authoritative.
+    """
+    matches = _CONFIDENCE_FLOOR_RE.findall(text)
+    if len(matches) != 1:
+        raise ValueError(
+            f"expected exactly one confidence_threshold in the prototxt, found "
+            f"{len(matches)} — refusing to guess which one gates DetectionOutput")
+    existing = float(matches[0][1])
+    if floor >= existing:
+        return text
+    return _CONFIDENCE_FLOOR_RE.sub(lambda m: f"{m.group(1)}{floor:g}", text, count=1)
+
+
 def range_detections(detections: list[Detection], camera: FisheyeCamera,
                      prior: SizePrior = PERSON_PRIOR) -> list[RangedDetection]:
     """Locate each detection in polar body coordinates, dropping unusable ones."""
@@ -342,11 +507,18 @@ class PersonDetector:
         confidence: minimum score to report. See :data:`DEFAULT_CONFIDENCE` for why
             the default leans lower than the usual 0.5.
         classes: which VOC labels count as obstacles.
+        static_confidence: floor for the second, STATIC tier. ``None`` — the default —
+            leaves the detector exactly as it was: one tier, the published prototxt
+            loaded unmodified, ``detect_tiered`` returning an empty second list.
+        static_classes: which VOC labels a static candidate may carry. ``person`` is
+            rejected outright; see :data:`STATIC_CLASSES`.
     """
 
     def __init__(self, model_dir: str | Path, input_size: int = 300,
                  confidence: float = DEFAULT_CONFIDENCE,
-                 classes: tuple[str, ...] = DYNAMIC_CLASSES) -> None:
+                 classes: tuple[str, ...] = DYNAMIC_CLASSES,
+                 static_confidence: float | None = None,
+                 static_classes: tuple[str, ...] = STATIC_CLASSES) -> None:
         model_dir = Path(model_dir)
         prototxt = model_dir / "MobileNetSSD_deploy.prototxt"
         weights = model_dir / "MobileNetSSD_deploy.caffemodel"
@@ -355,20 +527,83 @@ class PersonDetector:
                 raise FileNotFoundError(
                     f"{path} not found — fetch the MobileNet-SSD model into "
                     f"{model_dir} (see README.md)")
-        self._net = cv2.dnn.readNetFromCaffe(str(prototxt), str(weights))
         self._input_size = int(input_size)
         self._confidence = float(confidence)
         self._classes = frozenset(classes)
-        unknown = self._classes.difference(VOC_CLASSES)
+        self._static_confidence = (None if static_confidence is None
+                                   else float(static_confidence))
+        self._static_classes = frozenset(static_classes)
+        unknown = self._classes.union(self._static_classes).difference(VOC_CLASSES)
         if unknown:
             raise ValueError(f"not VOC classes: {sorted(unknown)}")
+        if "person" in self._static_classes:
+            # The static map plans every landmark with `person_shaped=False`, so a person
+            # routed there is a person the robot will never hold for. `static_shaped`
+            # refuses person-SHAPED boxes, but a label that says `person` outright is a
+            # configuration error, not a shape question, and must fail at construction
+            # rather than being silently filtered later.
+            raise ValueError(
+                "'person' cannot be a static class: a landmark is planned with "
+                "person_shaped=False and would never hold the robot")
+        self._net = self._load_net(prototxt, weights)
+
+    @property
+    def static_tier(self) -> bool:
+        """Whether a second, sub-threshold tier is enabled. Off unless asked for."""
+        return self._static_confidence is not None
+
+    def _load_net(self, prototxt: Path, weights: Path):
+        """Load the net, lowering the prototxt's own score floor if a static tier is on.
+
+        The patched prototxt is a TEMPORARY FILE, written and unlinked inside this call.
+        ``cv2.dnn.readNetFromCaffe`` takes paths rather than text but has fully parsed the
+        file by the time it returns, so nothing outlives the load. It matters that the
+        published file is not edited in place: the model directory is shared with the GOAL
+        detector, which constructs its own :class:`PersonDetector` at a different
+        threshold, and a rewrite on disk would silently retune that one too — and would
+        persist into every later run from the same machine.
+        """
+        if not self.static_tier:
+            return cv2.dnn.readNetFromCaffe(str(prototxt), str(weights))
+        patched = prototxt_with_floor(prototxt.read_text(), self._static_confidence)
+        descriptor, path = tempfile.mkstemp(suffix=".prototxt")
+        try:
+            with os.fdopen(descriptor, "w") as handle:
+                handle.write(patched)
+            return cv2.dnn.readNetFromCaffe(path, str(weights))
+        finally:
+            # Best effort: a leaked temp file is untidy, but raising here would replace a
+            # working detector with a crash on the way out of a successful load.
+            with contextlib.suppress(OSError):
+                os.unlink(path)
 
     def detect(self, image: np.ndarray) -> list[Detection]:
-        """Detections in ``image``, in that image's own pixel coordinates.
+        """Mover detections in ``image``, in that image's own pixel coordinates.
 
         The network squashes its input to a square, which is what MobileNet-SSD was
         trained on, so the aspect distortion is expected rather than a bug — and the
         normalised boxes it returns map straight back onto the original frame.
+        """
+        return self.detect_tiered(image)[0]
+
+    def detect_tiered(self, image: np.ndarray) -> tuple[list[Detection], list[Detection]]:
+        """``(movers, static_candidates)`` from ONE forward pass.
+
+        The second list is empty unless a ``static_confidence`` was given, so the default
+        construction of this class behaves exactly as it did before the tier existed.
+
+        ONE PASS, NOT TWO, and that is the point of putting the tier here rather than in a
+        second detector. Inference is 131 ms at 300x300 on this robot's four Cortex-A78
+        cores with no CUDA — it is the entire perception budget, and the control loop
+        already consumes a belief that is ~160 ms old. A second pass would halve the
+        perception rate to buy detections the first pass has ALREADY COMPUTED and thrown
+        away. The two lists are two readings of the same ``forward()`` output.
+
+        The tiers cannot overlap: ``person`` may not be a static class (rejected in
+        ``__init__``) and the mover classes ship as ``("person",)``, so no detection can
+        be both a tracked mover and a mapped landmark. If a caller widens ``classes``
+        into the furniture set they get both, and that is their business — the shape
+        gates still apply independently.
         """
         height, width = image.shape[:2]
         blob = cv2.dnn.blobFromImage(image, _SSD_SCALE,
@@ -376,21 +611,35 @@ class PersonDetector:
         self._net.setInput(blob)
         raw = self._net.forward()
 
-        detections = []
+        floor = (self._confidence if not self.static_tier
+                 else min(self._confidence, self._static_confidence))
+        movers: list[Detection] = []
+        statics: list[Detection] = []
         for _, class_id, score, x1, y1, x2, y2 in raw[0, 0]:
-            if score < self._confidence:
+            if score < floor:
                 continue
             label = VOC_CLASSES[int(class_id)] if int(class_id) < len(VOC_CLASSES) else "?"
-            if label not in self._classes:
+            is_mover = score >= self._confidence and label in self._classes
+            is_static = (self.static_tier and score >= self._static_confidence
+                         and label in self._static_classes)
+            if not is_mover and not is_static:
                 continue
             # SSD box regression can land slightly outside the image. Clamp before
             # the model sees these: the fisheye projection extrapolated past the
             # frame edge would report an angle the lens never imaged, inflating the
             # subtended span and so under-reading the range.
-            detections.append(Detection(
+            detection = Detection(
                 x1=min(max(float(x1) * width, 0.0), width - 1.0),
                 y1=min(max(float(y1) * height, 0.0), height - 1.0),
                 x2=min(max(float(x2) * width, 0.0), width - 1.0),
                 y2=min(max(float(y2) * height, 0.0), height - 1.0),
-                score=float(score), label=label))
-        return detections
+                score=float(score), label=label)
+            if is_mover:
+                movers.append(detection)
+            # Clamped FIRST, then shape-gated. `static_shaped` asks whether the box
+            # touches a frame edge, and an unclamped box that ran off the image would
+            # answer "no" on coordinates the lens never imaged — losing exactly the
+            # vertical-clip refusal that keeps close-range people out of the map.
+            if is_static and static_shaped(detection, width, height):
+                statics.append(detection)
+        return movers, statics

@@ -163,8 +163,10 @@ from goal import (
 from lifecycle import run_cleanup
 from person_detector import (
     DEFAULT_CONFIDENCE,
+    DEFAULT_STATIC_CONFIDENCE,
     DYNAMIC_CLASSES,
     PERSON_PRIOR,
+    STATIC_CLASSES,
     PersonDetector,
     SizePrior,
     range_detections,
@@ -175,6 +177,15 @@ from telemetry import TelemetryWriter
 from tracker import PROCESS_ACCEL_SIGMA, ObstacleTracker, observation_from
 
 DEFAULT_MODEL_DIR = Path.home() / "go2_models"
+
+#: Label every sub-threshold NEURAL static candidate is mapped under, whatever VOC called
+#: it. ONE label, deliberately: `StaticObstacleMap` keys its plan-view radii by label, and
+#: the operator supplies exactly one measured height/width/radius triple for the prop they
+#: staged. Carrying the VOC label through instead would key the map on a classification
+#: this detector has been measured to get wrong — the same recycling bin comes back
+#: `tvmonitor` in one frame and `chair` in the next, which would split one bin into two
+#: landmarks with two different radii.
+STATIC_DETECT_LABEL = "static-detect"
 # One frame per PERCEPTION cycle, so every frame in the video is a decision the planner
 # really made rather than a resampled copy. The playback rate, though, is this fixed
 # number and NOT the rate perception achieved — those differ whenever the detector runs
@@ -242,7 +253,9 @@ class PerceptionWorker:
     def __init__(self, camera, detector: PersonDetector,
                  camera_model: FisheyeCamera, goal_source: GoalSource,
                  pose_fn, prior: SizePrior = PERSON_PRIOR,
-                 colour_detector: ColourBlobDetector | None = None) -> None:
+                 colour_detector: ColourBlobDetector | None = None,
+                 static_prior: SizePrior | None = None,
+                 static_label: str = STATIC_DETECT_LABEL) -> None:
         self._camera = camera
         self._detector = detector
         self._model = camera_model
@@ -250,6 +263,12 @@ class PerceptionWorker:
         self._pose_fn = pose_fn
         self._prior = prior
         self._colour = colour_detector
+        # A MEASURED prior, or the tier stays off however the detector was built. The
+        # neural tier finds an object of unknown size, and `range_detections` turns a
+        # size prior into metres — with no prior there is no defensible number to put in
+        # the map, and inventing one puts a landmark at a range nothing measured.
+        self._static_prior = static_prior
+        self._static_label = static_label
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
@@ -325,7 +344,7 @@ class PerceptionWorker:
 
         started = time.monotonic()
         goal_fix = self._goal.update(frame.image, pose)
-        detections = self._detector.detect(frame.image)
+        detections, static_detections = self._detector.detect_tiered(frame.image)
         # Colour segmentation costs 10.2 ms against the person detector's 114 ms, so
         # the static props ride along with the mover pass rather than earning a cadence
         # of their own. The GOAL pass is the expensive one and throttles itself.
@@ -358,11 +377,41 @@ class PerceptionWorker:
                              item.label, pose)
             for item in static_ranged
         ]
+        # The NEURAL static tier joins the colour tier here and nowhere else. It reaches
+        # `static_map` and never the tracker, and the distinction is the safety argument
+        # for the whole feature rather than a tidiness choice:
+        #
+        #   * A landmark cannot invent velocity. These detections sit near the network's
+        #     noise floor, so their range jitters; the constant-velocity filter would
+        #     differentiate that jitter into motion and the planner would swerve around a
+        #     phantom two and a half seconds ahead of where nothing is. `static_map`'s
+        #     module docstring works this through for the colour tier and every word of it
+        #     applies harder to a 0.10-confidence detection.
+        #   * A landmark needs TWO agreeing sightings (`CONFIRM_SIGHTINGS`) before the
+        #     planner sees it at all, and expires on disagreement. That is a second,
+        #     free filter on exactly the failure mode a lowered floor creates — a
+        #     single-frame flicker. Measured on 216 peer-absent corridor frames, requiring
+        #     a second agreeing sighting takes the gate's fire rate from 19.0% of frames
+        #     to 11.6%.
+        #   * A track can HOLD the robot; a landmark cannot. Everything here is routed
+        #     around at policy speed, never frozen for. That is the right authority for a
+        #     detection this weak — and it is also why `static_shaped` must keep people
+        #     out of this list, since a person in it would stop being held for.
+        neural_ranged = []
+        if static_detections and self._static_prior is not None:
+            neural_ranged = range_detections(static_detections, self._model,
+                                             self._static_prior)
+            static_observations.extend(
+                observation_from(item.bearing_rad, item.range_m, item.source,
+                                 self._static_label, pose)
+                for item in neural_ranged
+            )
 
         self._cycles += 1
         result = PerceptionResult(
             seq=frame.seq, capture_time=frame.capture_time, pose=pose,
-            observations=observations, ranged=ranged + static_ranged,
+            observations=observations,
+            ranged=ranged + static_ranged + neural_ranged,
             static_observations=static_observations, goal_fix=goal_fix,
             image=frame.image, detect_ms=detect_ms)
         with self._lock:
@@ -987,6 +1036,44 @@ def static_profile(args) -> ColourProfile:
     return replace(profile, **changes) if changes else profile
 
 
+def static_detect_prior(args) -> tuple[SizePrior, float] | None:
+    """``(prior, radius_m)`` for the neural static tier, or ``None`` when it is off.
+
+    Split out of ``main`` for the reason ``static_profile`` and ``build_goal_source``
+    are: this is where a flag combination is REFUSED, and a test should be able to check
+    the refusal without a robot, a camera or a DDS stack.
+
+    ⚠️ BOTH DIMENSIONS ARE REQUIRED AND NEITHER IS INFERRED. ``SizePrior.of_height``
+    will happily fill a width from a standing adult's aspect ratio, and its own docstring
+    records what that cost the last time it was relied on: 0.514 m of peer implied
+    0.151 m against a real 0.31 m, and clipped boxes then ranged the peer at 0.09-0.14 m —
+    inside the robot's own footprint, which the planner reads as an unavoidable collision.
+    A cardboard box is squatter than a person, so the same inference would be wronger. The
+    operator staged the prop; they can measure it.
+    """
+    if not getattr(args, "static_detect", False):
+        return None
+    missing = [name for name, value in (("--static-detect-height", args.static_detect_height),
+                                        ("--static-detect-width", args.static_detect_width))
+               if value is None]
+    if missing:
+        raise SystemExit(
+            f"[visual_nav] --static-detect needs {' and '.join(missing)}: the detector "
+            f"finds an object of unknown size and every range scales linearly on the "
+            f"prior it is given")
+    bad = [name for name, value in (("--static-detect-height", args.static_detect_height),
+                                    ("--static-detect-width", args.static_detect_width),
+                                    ("--static-detect-radius", args.static_detect_radius))
+           if value is not None and not (math.isfinite(value) and value > 0.0)]
+    if bad:
+        raise SystemExit(
+            f"[visual_nav] {', '.join(bad)} must be a positive number of metres")
+    radius = (args.static_detect_radius if args.static_detect_radius is not None
+              else args.static_detect_width / 2.0)
+    return (SizePrior(height_m=float(args.static_detect_height),
+                      width_m=float(args.static_detect_width)), float(radius))
+
+
 def static_profile_telemetry(args, profile: ColourProfile | None) -> dict | None:
     """Return custom-profile provenance without recording its local filename."""
     custom_profile = getattr(args, "static_profile", None)
@@ -1116,6 +1203,41 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
                              "estimated — every range scales linearly on it)")
     static.add_argument("--prop-radius", type=float, default=None,
                         help="override the profile's plan-view radius in metres")
+
+    detect_static = ap.add_argument_group(
+        "static obstacles from the neural detector (OFF unless --static-detect)")
+    detect_static.add_argument(
+        "--static-detect", action="store_true",
+        help="ALSO map sub-threshold MobileNet-SSD detections as static landmarks. The "
+             "published prototxt drops everything under 0.25 inside DetectionOutput, "
+             "which is why a cardboard box scoring 0.12 is invisible today. OFF BY "
+             "DEFAULT: this changes what the robot avoids, and its recall has never "
+             "been measured on more than a single frame")
+    detect_static.add_argument(
+        "--static-detect-confidence", type=float, default=DEFAULT_STATIC_CONFIDENCE,
+        help="score floor for that tier (default %(default)s). Measured cost of the "
+             "default: 0 of 705 empty-corridor frames fire; 0.05 would be 20%% of them")
+    detect_static.add_argument(
+        "--static-detect-height", type=float, default=None, metavar="M",
+        help="MEASURED height of the staged object, metres. Required by --static-detect: "
+             "the detector finds an object of unknown size and every range scales "
+             "linearly on this number")
+    detect_static.add_argument(
+        "--static-detect-width", type=float, default=None, metavar="M",
+        help="MEASURED width, metres. Also required — an inferred width comes from a "
+             "standing adult's aspect ratio and reports a clipped box at half its true "
+             "range (see SizePrior.of_height)")
+    detect_static.add_argument(
+        "--static-detect-radius", type=float, default=None, metavar="M",
+        help="plan-view radius of the object, metres. Defaults to half the measured "
+             "width, i.e. its own footprint with no clearance added — the planner adds "
+             "its own and must not double-count")
+    detect_static.add_argument(
+        "--static-detect-classes", nargs="+", default=list(STATIC_CLASSES),
+        metavar="VOC_CLASS",
+        help="VOC labels a candidate may carry (default: %(default)s). The labels are "
+             "noise — a real bin comes back 'tvmonitor' and 'chair' on consecutive "
+             "frames — so this is a coarse junk filter, not a classification")
 
     goal_group = ap.add_argument_group("goal")
     goal_group.add_argument("--marker-id", type=int, default=DEFAULT_MARKER_ID,
@@ -1260,9 +1382,13 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
 
         bindings.validate_camera_calibration(args)
         camera_model = build_camera_model(width, height, args.calibration)
-        detector = PersonDetector(args.model_dir, input_size=args.input_size,
-                                  confidence=args.confidence,
-                                  classes=tuple(args.classes))
+        static_detect = static_detect_prior(args)
+        detector = PersonDetector(
+            args.model_dir, input_size=args.input_size, confidence=args.confidence,
+            classes=tuple(args.classes),
+            static_confidence=(None if static_detect is None
+                               else args.static_detect_confidence),
+            static_classes=tuple(args.static_detect_classes))
         if args.obstacle_height is not None:
             prior = SizePrior.of_height(args.obstacle_height, args.obstacle_width)
         else:
@@ -1277,15 +1403,28 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         goal_source = build_goal_source(args, camera_model, pose_tuple)
 
         colour_detector = static_map = static_profile_used = None
+        radii: dict = {}
         if args.static_prop or args.static_profile:
             profile = static_profile(args)
             static_profile_used = profile
             colour_detector = ColourBlobDetector(profile)
-            static_map = StaticObstacleMap(
-                radii={profile.label: profile.radius_m},
-                fov_rad=math.radians(camera_model.hfov_deg))
+            radii[profile.label] = profile.radius_m
             print(f"[visual_nav] static prop: {profile.label} "
                   f"{profile.height_m:.4f} m tall, {profile.radius_m:.3f} m radius")
+        if static_detect is not None:
+            static_prior, static_radius = static_detect
+            radii[STATIC_DETECT_LABEL] = static_radius
+            print(f"[visual_nav] static detections: floor "
+                  f"{args.static_detect_confidence:.3f}, classes "
+                  f"{sorted(args.static_detect_classes)}, prior "
+                  f"{static_prior.height_m:.3f} x {static_prior.width_m:.3f} m, radius "
+                  f"{static_radius:.3f} m")
+            print("[visual_nav] WARNING: --static-detect surfaces detections the shipped "
+                  "prototxt suppresses. Its FALSE-ALARM cost is measured; its RECALL is "
+                  "not, and rests on one frame. Supervise the run.")
+        if radii:
+            static_map = StaticObstacleMap(
+                radii=radii, fov_rad=math.radians(camera_model.hfov_deg))
 
         limits = Limits(max_vx=args.max_vx, max_vy=args.max_vy,
                         max_wz=args.max_wz).scaled(args.derate)
@@ -1308,8 +1447,10 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         tracker = ObstacleTracker(fov_rad=math.radians(camera_model.hfov_deg),
                                   expansion=expansion)
 
-        perception = PerceptionWorker(camera, detector, camera_model, goal_source,
-                                      pose_tuple, prior, colour_detector)
+        perception = PerceptionWorker(
+            camera, detector, camera_model, goal_source, pose_tuple, prior,
+            colour_detector,
+            static_prior=(None if static_detect is None else static_detect[0]))
         perception.start()
 
         def open_recorder(path: str) -> cv2.VideoWriter:
