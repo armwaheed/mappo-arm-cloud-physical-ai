@@ -124,7 +124,19 @@ status=0; ran=0; skipped=0; total=0
 counts_raw="$(mktemp)"; generated="$(mktemp)"; diffout="$(mktemp)"
 trap 'rm -f "$counts_raw" "$generated" "$diffout"' EXIT
 
-for test in $(find . -name 'test_*.py' -not -path './.git/*' -not -path '*/__pycache__/*' | sort); do
+# ⚠️ DISCOVERY IS `git ls-files`, NOT `find`. A plain `find` walks gitignored directories,
+# and this repository keeps agent worktrees under `.claude/worktrees/` -- full copies of the
+# tree at older commits. Measured: `find` reported 3,171 tests across 45 directories where
+# `git ls-files` reports 1,046 across 12, because 33 of those 45 were worktree copies. CI
+# checks out fresh and never sees them, so `find` makes the script answer differently on a
+# developer's machine than in CI -- and the developer is the one who runs `--write`, so the
+# polluted number is the one that gets committed. Tracked files are what CI has, so tracked
+# files are what this measures.
+# The `./` prefix is load-bearing: skip_reason() matches on it, because `find .` emitted
+# it and the skip list was written against that. Dropping it silently un-skips every
+# entry in that list -- measured: both skipped suites ran, both died at import, and the
+# run still reported success.
+for test in $(git ls-files '*/test_*.py' 'test_*.py' | grep -v '/__pycache__/' | sed 's|^|./|' | sort); do
   dir="$(dirname "$test")"
   reason="$(skip_reason "$test")"
   if [ -n "$reason" ]; then
