@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import math
+import sys
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -176,6 +177,32 @@ class Config:
     #: this Go2's gait floor. At 1.0 the robot completed the first policy-driven walk;
     #: the control stack's ``Limits`` remains the safety envelope.
     command_scale: float = 1.0
+    #: ⚠️ MEASURED DEAD, AND IT CANNOT BE TUNED ALIVE. The policy's own goal stop, in
+    #: metres. It has fired on ZERO ticks of every run this repository has recorded —
+    #: seven arriving runs across four sessions, closest approach 0.2595 m
+    #: (`evidence/2026-08-25-peer-runs/hero-run-telemetry.jsonl`), against this 0.20.
+    #:
+    #: That is structural rather than lucky. :meth:`MappoController._local_state` maps
+    #: odom into the run-local frame with a rotation and a translation, so
+    #: ``hypot(gx - x, gy - y)`` below is the SAME scalar the control stack tests against
+    #: its own ``--arrive`` tolerance, from the same pose, on the same tick — and the
+    #: stack breaks its loop first. So:
+    #:
+    #:   * ``goal_stop_distance_m <= arrive_tolerance_m`` — unreachable. Dead config that
+    #:     reads like a working safety limit.
+    #:   * ``goal_stop_distance_m > arrive_tolerance_m`` — reachable, and worse. The stop
+    #:     below is a HARD zero rather than a ramp, and ``visual_nav`` does not end a run
+    #:     on it: the robot stands still until ``--max-seconds`` and the run reports a
+    #:     TIMEOUT rather than an arrival.
+    #:
+    #: There is no third case, which is why issue #25 does not tune this number. The
+    #: margin is also smaller than it looks: `deploy/run-peer-supervised.sh` ships
+    #: ``--arrive 0.30``, and the closest approach recorded at that tolerance was 0.2595 m
+    #: — 0.0595 m clear of this threshold, on a run whose own last tick moved 0.0616 m.
+    #: One tick.
+    #:
+    #: Raising it is not the fix for the goal overrun either. See the warning in
+    #: :meth:`step` and ``test_physical_ai_mappo`` for what the overrun actually is.
     goal_stop_distance_m: float = 0.20
     stale_input_timeout_s: float = 0.75
     static_obstacle_ttl_s: float = 120.0
@@ -296,6 +323,11 @@ class MappoController:
         #: what an off-robot analysis needs: an action alone cannot be checked, because
         #: the input that produced it is the half that can be wrong.
         self.last_observation: np.ndarray | None = None
+        #: Whether :data:`STOP_GOAL_REACHED` has already been reported on stderr for
+        #: this run. Once per RUN, not once per tick: the condition holds for every
+        #: remaining tick once it is true, and a message repeated 100 times is one a
+        #: reader scrolls past. :meth:`_reset` re-arms it.
+        self._warned_goal_stop = False
 
     def _check_against_checkpoint(self, model_path: Path) -> None:
         """Fail if the config claims something the checkpoint was not trained with.
@@ -346,6 +378,9 @@ class MappoController:
     def _reset(self, inp: RobotInput) -> None:
         self._origin = (inp.x_m, inp.y_m, inp.yaw_rad)
         self._obstacles.clear()
+        # Per RUN, not per process. Two runs in one process are two runs, and the second
+        # operator needs to be told the same thing the first was.
+        self._warned_goal_stop = False
 
     def _to_local_point(self, x: float, y: float) -> tuple[float, float]:
         assert self._origin is not None
@@ -497,6 +532,32 @@ class MappoController:
             lidar.astype(np.float32),
         ])
 
+    def _warn_goal_stop_fired(self, distance_m: float) -> None:
+        """CORRECTION (new). Say so, once a run, the first time :data:`STOP_GOAL_REACHED`
+        actually fires. The delivered adapter zeroes the command and says nothing.
+
+        A refusal at load would be the louder answer and this module cannot give it: the
+        thing that decides whether this stop is dead or harmful is the control stack's
+        ``--arrive`` tolerance, which is a per-run CLI flag on the other side of the
+        adapter and is not in :class:`Config`. So the check happens where the value is
+        known — at the moment the branch is taken, which in every run this repository has
+        recorded has been never. That is the point: this line has no cost until the day
+        somebody stages a run tight enough to reach it, and on that day the run would
+        otherwise fail as an unexplained timeout.
+
+        See :attr:`Config.goal_stop_distance_m` and issue #25.
+        """
+        if self._warned_goal_stop:
+            return
+        self._warned_goal_stop = True
+        print(f"[physical_ai_mappo] STOP_GOAL_REACHED at {distance_m:.3f} m: the policy "
+              f"has zeroed the command because goal_stop_distance_m is "
+              f"{self.cfg.goal_stop_distance_m}. This is a hard stop, not a ramp, and "
+              f"the control stack does not end a run on it — it breaks its own loop on "
+              f"--arrive. If --arrive is below goal_stop_distance_m this run will stand "
+              f"still until --max-seconds and report a timeout, not an arrival.",
+              file=sys.stderr)
+
     def step(self, inp: RobotInput) -> ActionOutput:
         now = time.monotonic()
         sample_time = now if inp.timestamp_s is None else inp.timestamp_s
@@ -526,14 +587,19 @@ class MappoController:
         # it would otherwise silently disable. External hold outranks goal-reached because
         # both stop the robot and the caller should be told which authority did it.
         status = COMMAND
+        # The SAME scalar the control stack tests against its own `--arrive` tolerance:
+        # the run-local frame is a rotation and a translation of odom, and a rigid
+        # transform preserves distance. See `Config.goal_stop_distance_m`.
+        goal_distance_m = math.hypot(gx - x, gy - y)
         if age_s < -CLOCK_TOLERANCE_S:
             status = STOP_CLOCK_ERROR
         elif age_s > self.cfg.stale_input_timeout_s:
             status = STOP_STALE_INPUT
         elif inp.external_hold:
             status = STOP_EXTERNAL_HOLD
-        elif math.hypot(gx - x, gy - y) <= self.cfg.goal_stop_distance_m:
+        elif goal_distance_m <= self.cfg.goal_stop_distance_m:
             status = STOP_GOAL_REACHED
+            self._warn_goal_stop_fired(goal_distance_m)
         if status != COMMAND:
             cmd_vx = cmd_vy = cmd_wz = 0.0
 
