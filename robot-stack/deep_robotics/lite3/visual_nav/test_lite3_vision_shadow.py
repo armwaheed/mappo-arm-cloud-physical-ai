@@ -12,6 +12,7 @@ import ast
 import json
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -21,7 +22,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parents[2]))
 sys.path.insert(0, str(_HERE.parents[2] / "unitree" / "go2" / "visual_nav"))
 
-from deep_robotics.lite3.visual_nav.camera import Frame
+from deep_robotics.lite3.visual_nav import camera as camera_module
+from deep_robotics.lite3.visual_nav.camera import Frame, Lite3Camera
 from deep_robotics.lite3.visual_nav.lite3_vision_shadow import (
     SCHEMA,
     parse_voc_classes,
@@ -80,6 +82,44 @@ class _Detector:
         if self.calls == 1:
             return [Detection(1.0, 2.0, 3.0, 4.0, 0.9, "chair")]
         return []
+
+
+class _StalledCapture:
+    """A source that serves one frame and then blocks inside ``read()``.
+
+    This is the case the camera's own cleanup cannot rush: a dead RTSP stream with no
+    FFmpeg ``rw_timeout``. It is also the case in which the run is most likely to be
+    failing for a reason worth reporting.
+    """
+
+    def __init__(self):
+        self.unblock = threading.Event()
+        self.released = False
+        self._served = False
+
+    def isOpened(self):
+        return True
+
+    def set(self, _prop, _value):
+        return True
+
+    def read(self):
+        if self._served:
+            self.unblock.wait(10.0)
+        self._served = True
+        return True, np.zeros((2, 3, 3), dtype=np.uint8)
+
+    def release(self):
+        self.released = True
+        self.unblock.set()
+
+
+class _FailingDetector:
+    def __init__(self, *_args, **_kwargs):
+        pass
+
+    def detect(self, _image):
+        raise RuntimeError("detector failed")
 
 
 def _frames() -> list[Frame]:
@@ -179,6 +219,47 @@ def test_recording_window_starts_after_camera_startup():
         assert summary["frames"] == 1
         assert records[0]["started_monotonic_s"] == 5.0
         assert camera.stopped
+
+
+def test_a_stalled_camera_stop_does_not_replace_the_exception_that_ended_the_run():
+    """``run`` stops the camera in a ``finally``; a stalled reader must not become the story.
+
+    Mirrors ``unitree/go2/visual_nav/test_lifecycle.py``'s
+    ``test_a_cleanup_failure_does_not_replace_the_exception_that_ended_the_run``. This
+    is the real camera, not a fake one, because the invariant being pinned belongs to
+    ``Lite3Camera.stop`` — a stalled reader is exactly when the run has something to say.
+    """
+    capture = _StalledCapture()
+    camera = Lite3Camera(0, capture_factory=lambda _source: capture)
+    saved_timeout = camera_module.STOP_JOIN_TIMEOUT_S
+    camera_module.STOP_JOIN_TIMEOUT_S = 0.05
+    try:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            output = Path(temporary_directory) / "lite3-shadow-stalled.jsonl"
+            try:
+                run(
+                    camera_source=0,
+                    camera_gstreamer=False,
+                    model_dir=Path("models"),
+                    classes=("person",),
+                    confidence=0.4,
+                    input_size=300,
+                    seconds=1.0,
+                    max_frames=1,
+                    output=output,
+                    camera_factory=lambda *_args, **_kwargs: camera,
+                    detector_factory=_FailingDetector,
+                )
+            except RuntimeError as error:
+                assert "detector failed" in str(error)
+            else:
+                raise AssertionError("cleanup replaced or swallowed the run failure")
+        # The stall was real: stop() gave up waiting for the reader and recorded it.
+        assert camera.stop_timed_out
+    finally:
+        camera_module.STOP_JOIN_TIMEOUT_S = saved_timeout
+        capture.unblock.set()
+        camera.stop()
 
 
 def test_shadow_recorder_does_not_import_or_call_a_motion_transport():

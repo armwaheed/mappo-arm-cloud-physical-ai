@@ -8,6 +8,8 @@
     0
   ],
   "evidence": {},
+  "measured_m_s": {},
+  "measured_rad_s": {},
   "primitives": {
     "forward_positive": null,
     "forward_negative": null,

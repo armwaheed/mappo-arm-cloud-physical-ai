@@ -19,6 +19,11 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
+#: How long :meth:`Lite3Camera.stop` waits for the reader to leave ``read()``. A stalled
+#: RTSP source with no FFmpeg ``rw_timeout`` can block far longer than this, so exceeding
+#: it is recorded rather than raised — see :meth:`Lite3Camera.stop`.
+STOP_JOIN_TIMEOUT_S = 2.0
+
 
 @dataclass(frozen=True)
 class Frame:
@@ -70,6 +75,8 @@ class Lite3Camera:
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._new_frame = threading.Event()
+        #: True when the last :meth:`stop` gave up waiting for a stalled reader.
+        self.stop_timed_out = False
         self._lock = threading.Lock()
         self._frame: Frame | None = None
         self._seq = 0
@@ -91,9 +98,15 @@ class Lite3Camera:
         # Ask the backend for the newest frame rather than a deep decode queue. Not all
         # backends honour this, but unsupported properties fail harmlessly.
         self._capture.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        self._stop.clear()
+        # A fresh token, not a cleared one: a reader abandoned by a timed-out stop() is
+        # still blocked in read() and must stay stopped when this camera restarts.
+        self._stop = threading.Event()
         self._new_frame.clear()
-        self._thread = threading.Thread(target=self._run, name="lite3-camera", daemon=True)
+        self.stop_timed_out = False
+        self._thread = threading.Thread(
+            target=self._run, args=(self._stop, self._capture),
+            name="lite3-camera", daemon=True,
+        )
         self._thread.start()
         if not self._new_frame.wait(wait_s):
             self.stop()
@@ -103,21 +116,35 @@ class Lite3Camera:
             )
 
     def stop(self) -> None:
-        """Stop capture. Safe after partial startup and safe to call twice."""
+        """Stop capture. Safe after partial startup, safe to call twice, and never raises.
+
+        Raising here would be worse than the stall it reports. ``stop()`` runs from
+        ``start()``'s own failure path and from callers' ``finally`` blocks — see
+        ``lite3_vision_shadow.run`` — so an exception raised here *replaces* the
+        diagnosis that actually ended the run, which is the invariant the Go2 suite pins
+        in ``test_lifecycle.py``. It also left ``_thread`` and ``_capture`` set, so the
+        object was unusable and a retry answered "camera is already running".
+
+        A reader still inside a blocking ``read()`` after
+        :data:`STOP_JOIN_TIMEOUT_S` is therefore recorded in :attr:`stop_timed_out` and
+        abandoned: it holds the only reference to its capture, releases it in its own
+        ``finally`` when ``read()`` returns, and is a daemon that cannot outlive the
+        process. An ``rw_timeout`` in ``OPENCV_FFMPEG_CAPTURE_OPTIONS`` bounds the stall
+        at the source, which is the real cure.
+        """
         self._stop.set()
-        thread = self._thread
-        if thread is not None:
-            thread.join(timeout=2.0)
-            if thread.is_alive():
-                raise RuntimeError("Lite3 camera reader did not stop within 2.0s")
-            self._thread = None
+        thread, self._thread = self._thread, None
 
         # VideoCapture backends are not required to make read() and release() safe from
         # different threads. The reader releases its own capture in _run(); this branch
         # only covers a partially-started camera that never acquired a reader thread.
         capture, self._capture = self._capture, None
-        if thread is None and capture is not None:
-            capture.release()
+        if thread is None:
+            if capture is not None:
+                capture.release()
+            return
+        thread.join(timeout=STOP_JOIN_TIMEOUT_S)
+        self.stop_timed_out = thread.is_alive()
 
     def __enter__(self):
         self.start()
@@ -126,18 +153,19 @@ class Lite3Camera:
     def __exit__(self, *exc_info) -> None:
         self.stop()
 
-    def _run(self) -> None:
-        capture = self._capture
-        if capture is None:
-            return
+    def _run(self, stop: threading.Event, capture) -> None:
         try:
-            while not self._stop.is_set():
+            while not stop.is_set():
                 ok, image = capture.read()
+                # A reader abandoned by a timed-out stop() reaches here long after the
+                # camera moved on. Publishing its frame would hand the caller an image
+                # from a source it already gave up on.
+                if stop.is_set():
+                    return
                 arrival = time.monotonic()
                 if not ok or image is None:
-                    if not self._stop.is_set():
-                        self._errors += 1
-                        self._stop.wait(0.02)
+                    self._errors += 1
+                    stop.wait(0.02)
                     continue
 
                 stamp = None
