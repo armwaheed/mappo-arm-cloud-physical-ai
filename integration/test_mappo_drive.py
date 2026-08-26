@@ -249,11 +249,48 @@ def test_a_slow_policy_command_is_scaled_up_to_the_gait_floor_keeping_direction(
     obstacle is the one direction it was steering away from."""
     planner = _planner(gait_floor_m_s=0.35)
     vx, vy, wz = planner._at_least_walking_pace((0.14, -0.09, 0.2))
-    assert math.isclose(math.hypot(vx, vy), 0.35, rel_tol=1e-6), "scaled to the floor"
+    # On the ellipse, not on a circle of radius 0.35: the floor is 0.35 forward but only
+    # 0.20 lateral, and a command 32.7 deg off the nose cannot be delivered at 0.35 m/s
+    # by this robot at all. Asserting hypot == 0.35 here is what the CIRCLE model claimed,
+    # and it was reachable only by rotating the command — see the next test.
+    assert math.isclose(math.hypot(vx / 0.35, vy / 0.20), 1.0, rel_tol=1e-6), \
+        "projected onto the envelope ellipse, which is where the floor lives"
     assert math.isclose(math.atan2(vy, vx), math.atan2(-0.09, 0.14), rel_tol=1e-6), \
         "direction must survive the scaling"
     assert wz == 0.2, "yaw has no gait floor and must not be touched"
     assert planner.counts["speed_raised"] == 1
+
+
+def test_the_floor_does_not_rotate_a_command_toward_the_obstacle():
+    """THE BUG THIS REPLACED. Scaling to a circular floor and then clamping each axis
+    trims only the component that overshot, and trimming one component of a vector turns
+    it — toward straight ahead, which near an obstacle is the direction the policy was
+    steering away from.
+
+    (0.05, 0.108) is 65.2 deg off the nose. The old code scaled by 0.35/0.119 = 2.94 to
+    (0.147, 0.318), the max_vy clamp cut vy to 0.20 and left vx at 0.147, and the command
+    left at 53.7 deg — 11.5 deg closer to the obstacle than the policy asked for. At
+    80 deg the same arithmetic turns the command by 34.8 deg.
+
+    Restore `scale = floor / speed` with per-axis clamps and this fails.
+    """
+    planner = _planner(gait_floor_m_s=0.35)
+    proposed = (0.05, 0.108)
+    vx, vy, _ = planner._at_least_walking_pace((*proposed, 0.0))
+    asked = math.degrees(math.atan2(proposed[1], proposed[0]))
+    got = math.degrees(math.atan2(vy, vx))
+    assert abs(got - asked) < 1e-6, f"command rotated {abs(got - asked):.1f} deg"
+    assert abs(vy) <= planner.limits.max_vy + 1e-9, "still inside the envelope"
+
+
+def test_a_lateral_command_that_already_walks_is_left_alone():
+    """A pure strafe at the lateral floor walks — 0.20 m/s, three repeats out of three —
+    even though 0.20 is below the FORWARD floor of 0.35. Scaling it would be scaling a
+    command that needed no help, and the circular test `speed >= floor` misses that
+    because it compares a lateral speed against the forward number."""
+    planner = _planner(gait_floor_m_s=0.35)
+    assert planner._at_least_walking_pace((0.0, 0.20, 0.1)) == (0.0, 0.20, 0.1)
+    assert planner.counts["speed_raised"] == 0
 
 
 def test_a_commanded_stop_is_never_turned_into_a_walk():
