@@ -3,11 +3,55 @@ Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Lite3 commissioning: read the robot before installing anything on it
+# Lite3 commissioning: measure this robot, or refuse to run
 
-This directory holds one tool, `lite3_state_probe.py`. It decodes the state stream the
-Lite3 motion host already transmits, and it cannot move the robot. Run it before anything
-else in [issue #13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13).
+This directory turns a Lite3 Venture commissioning session into a sequence of single
+commands. Every tool here produces **a number, an artefact, and a paragraph to paste into
+[issue #13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13)** — or it
+refuses and says what to go and measure. Nothing here carries a plausible default.
+
+Operators in Shanghai: **[`RUNBOOK.md`](RUNBOOK.md) is written for you**, bilingual
+English/中文, with what to set up, what a good result looks like, what a bad one looks
+like, and what to do when a gate refuses. Read that first; this file is the map.
+
+| tool | the number it produces | moves the robot |
+| --- | --- | --- |
+| [`lite3_state_probe.py`](lite3_state_probe.py) | frame rates, battery, mode transitions, the angular-velocity unit | no |
+| [`motor_temperature_probe.py`](motor_temperature_probe.py) | 12 Celsius motor temperatures, **or** evidence that the channel does not exist | no |
+| [`loaded_radius_probe.py`](loaded_radius_probe.py) | `--robot-radius` and `--policy-scale`, from four tape measurements | no |
+| [`camera_calibration.py`](camera_calibration.py) | `focal_px`, HFOV, and the measured lens height | only with `--spin` |
+| [`gait_floor_probe.py`](gait_floor_probe.py) | `--gait-floor`, plus two separate lateral numbers | **yes** |
+| [`actuator_gain_probe.py`](actuator_gain_probe.py) | `--actuator-gain` as a fitted ratio with its residual | **yes** |
+| [`commission.py`](commission.py) | all of the above, in a safe order, in one artefact | only with `--live` |
+
+Start with `lite3_state_probe.py`. It decodes the state stream the Lite3 motion host
+already transmits, it cannot move the robot, and the numbers it recovers from an operator
+driving on the vendor remote are the inputs the two walking probes need.
+
+## Nothing marked `provisional` may be used for live movement
+
+`commission.py` writes one artefact per robot with `"provenance": "provisional"`. A human
+reads the numbers and signs for them:
+
+```bash
+python3 commission.py --record lite3-commissioning-LITE3-A.json --review 'Your Name'
+```
+
+Only then will `--emit-flags` produce the `--gait-floor` / `--actuator-gain` /
+`--robot-radius` / `--policy-scale` / `--calibration` line a live run needs. That is the
+same shape as `Lite3Bindings.validate_camera_calibration`, which stops a run rather than
+warning when a calibration file is not what it claims to be — a number that has been
+*measured* and a number that has been *believed* are different things, and only a person
+turns one into the other.
+
+## There are no Go2 numbers in here, and there is no way to acquire one
+
+The Go2's measured gait floors are 0.35 m/s forward and 0.20 m/s lateral. They are
+properties of a different robot with different legs, a different mass and a different
+vendor gait controller. `test_gait_floor_probe.py` walks the AST of every module in this
+directory that could hold a velocity default and fails the suite if either value is ever
+executable here. Naming them in prose to explain why they are not defaults is fine;
+evaluating them is how the next robot silently inherits them.
 
 ## What the first bring-up attempt was aiming at
 
@@ -108,12 +152,34 @@ anything. It is not a read-only instrument. This module has no send path at all,
 `test_lite3_state_probe.py` asserts that by parsing its own source, so adding one fails
 the suite rather than passing review.
 
+## The two Go2 lessons this directory is built around
+
+**A lateral floor is not a floor on a diagonal.** The Go2's 0.20 m/s lateral floor was
+measured as a pure strafe from standstill, and every design decision after it treated 0.20
+as a hard floor — which produced a rule that a command had to be nearly 30 degrees off the
+nose before any sideways travel happened. Then a robot already walking forward delivered
+lateral travel proportionally from 0.05 m/s upward and the whole argument dissolved.
+`gait_floor_probe.py` therefore measures **both** cases, in separate phases, and reports
+them as two numbers that must never be substituted for one another.
+
+**A probe that fails to stand reports 0.000 m/s on every axis, which reads exactly like a
+floor that is real and total.** The Go2's own lateral probe once called `stand()` where
+getting up needs two calls; the robot stayed prone, every command was ignored, and the run
+produced a table of zeros. Here the forward ladder carries **anchor** segments commanded at
+a speed the operator has already watched this robot walk at, and if an anchor does not
+travel the run is refused outright. The diagonal phase holds forward velocity on every
+segment and so takes the Go2's own refusal unweakened.
+
 ## Offline checks
 
 ```bash
-python3 test_lite3_state_probe.py   # 16
+for test in test_*.py; do python3 "$test"; done   # 175
 ruff check .
 ```
+
+The guards are the point, so they are mutation-tested: breaking any one of them — the
+anchor refusal, the drifting-control refusal, the provisional gate, the twelve-channel
+refusal, the inference-config assertion, the operator-ready gate — turns a named test red.
 
 Read [`../../../SAFETY.md`](../../../SAFETY.md) before the operator-driven capture. No
 step in this directory authorises this repository to command a leg.
