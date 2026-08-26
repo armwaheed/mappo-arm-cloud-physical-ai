@@ -176,7 +176,7 @@ class MappoRobotDriver(DeviceDriver):
                  bridge_script: str = DEFAULT_BRIDGE, bridge_python: str | None = None,
                  iface: str = "eth0", allow_motion: bool = False,
                  operator_ready: bool = False, allow_http: bool = True,
-                 simulate: bool = False, camera_replay_dir: str = "",
+                 simulate: bool = False, camera_replay_dir: str = "", camera_url: str = "",
                  model_sources: list | None = None, publish_pose_hz: float = 0.0) -> None:
         super().__init__()
         self.platform = platform
@@ -197,6 +197,9 @@ class MappoRobotDriver(DeviceDriver):
         #: on the other end of it.
         self.simulate = simulate
         self.camera_replay_dir = camera_replay_dir
+        #: A live JPEG endpoint, used when the driver cannot host the platform camera
+        #: itself -- see HttpCameraSource. Takes precedence over the replay directory.
+        self.camera_url = camera_url
         #: Where THIS robot's checkpoints can come from — a list, because a deployment
         #: legitimately has more than one and the interesting question is which. Advertised
         #: by the ROBOT rather than configured in the dashboard: it is a property of the
@@ -735,6 +738,7 @@ class MappoRobotDriver(DeviceDriver):
             self._camera = await loop.run_in_executor(
                 None, lambda: camera_source.open_source(
                     self.platform, iface=self.iface,
+                    camera_url=self.camera_url or None,
                     replay_dir=self.camera_replay_dir or None,
                     replay_label=f"REPLAY · {self.platform}",
                     pose_fn=lambda: (self._last_pose or {})))
@@ -920,8 +924,10 @@ class MappoRobotDriver(DeviceDriver):
                              "unobserved space and is capped at 2 s"),
             "camera": {
                 "available": self.platform in ("sim", "go2", "lite3"),
-                "synthetic": self.platform == "sim" and not self.camera_replay_dir,
-                "replay": bool(self.camera_replay_dir),
+                "synthetic": (self.platform == "sim" and not self.camera_replay_dir
+                              and not self.camera_url),
+                "replay": bool(self.camera_replay_dir) and not self.camera_url,
+                "remote_url": self.camera_url or None,
                 "default_fps": camera_source.DEFAULT_FPS,
                 "max_fps": camera_source.MAX_FPS,
                 "error": self._camera_error,
@@ -1157,6 +1163,12 @@ def build_parser() -> argparse.ArgumentParser:
                              f"capped at {MAX_POSE_STREAM_HZ}. Off unless asked for: it "
                              "holds a persistent SDK worker on the DDS bus. It needs no "
                              "--allow-motion, because it only reads.")
+    parser.add_argument("--camera-url", default="",
+                        help="pull frames from an HTTP endpoint that returns one JPEG "
+                             "per GET, instead of opening a camera locally. For a robot "
+                             "whose interpreter cannot host this driver: the SDK call "
+                             "stays on the robot, only the frame crosses. Live, and "
+                             "deliberately unlabelled -- unlike --camera-replay-dir.")
     parser.add_argument("--camera-replay-dir", default="",
                         help="Serve JPEGs from this directory as the camera feed. Each frame "
                              "is labelled REPLAY in the pixels.")
@@ -1189,6 +1201,7 @@ def main(argv=None) -> int:
         bridge_python=args.bridge_python, iface=args.iface, allow_motion=args.allow_motion,
         operator_ready=args.operator_ready, allow_http=not args.no_http_sources,
         simulate=args.simulate, camera_replay_dir=args.camera_replay_dir,
+        camera_url=args.camera_url,
         model_sources=_load_sources(args.model_sources),
         publish_pose_hz=args.publish_pose)
 
