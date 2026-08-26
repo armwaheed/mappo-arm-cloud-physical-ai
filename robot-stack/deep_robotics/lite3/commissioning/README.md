@@ -224,9 +224,16 @@ segment and so takes the Go2's own refusal unweakened.
 ## Offline checks
 
 ```bash
-for test in test_*.py; do python3 "$test"; done   # 233
+for test in test_*.py; do python3 "$test"; done
 ruff check .
 ```
+
+**The count is deliberately not written here.** It lives in the
+`robot-stack/deep_robotics/lite3/commissioning` row of `.github/test-inventory.tsv`, which
+`.github/measure-suites.sh` generates and CI fails on when it disagrees with what the
+suites actually ran. This line carried a hand-typed `# 175` for a directory that measured
+233, and then a `# 233` for one that measured 234 — a number nobody re-measures, next to a
+number nobody can avoid re-measuring.
 
 The guards are the point, so they are mutation-tested: breaking any one of them — the
 anchor refusal, the drifting-control refusal, the provisional gate, the twelve-channel

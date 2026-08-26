@@ -327,16 +327,30 @@ robot and needs a `--spin-rate` measured above **this** robot's yaw deadband; th
 工具会在拟合之前先断言两边配置一致。`--spin` 还会让机器人原地旋转，
 并且需要一个**在本机偏航死区之上实测得到的** `--spin-rate`；Go2 的 0.8 rad/s 不是 Lite3 的实测值。
 
-**EN — one thing to know about the output.** The shared fitter writes `height_m: 0.32` into
-every calibration it produces, because 0.32 m is the height of the **Go2's** camera when the
-Go2 stands, and nothing on the fitting path has ever asked for a Lite3 value. This tool
-overwrites it with your measurement and prints what it replaced. If the line says
-`replaced the fitter's 0.32`, that is the bug being fixed in front of you, not an error.
+**EN — one thing to know about the output.** Nothing on the shared fitting path asks for a
+lens height, so a calibration carries whatever the shared camera model left in the field.
+This tool overwrites it with your measurement and prints what it replaced, and **there are
+two things it can print**:
 
-**中文 —— 关于输出需要知道的一件事。** 共用的标定程序会在每一份标定文件里写入
-`height_m: 0.32`，因为 0.32 m 是 **Go2** 站立时相机的高度，而标定流程从来没有向使用者
-索取过 Lite3 的对应数值。本工具会用你实测的数值覆盖它，并打印出被替换掉的旧值。
-如果看到 `replaced the fitter's 0.32`，那是这个缺陷正在被当场修正，**不是报错**。
+| the paste line reads | what it means |
+| --- | --- |
+| `Lens height was **unset (null)** …` | the shared model in this repository has no default for that field and wrote the absence out deliberately, so this tool could read it back. **This is what you should see today.** It is not a fault in the script — it is the script telling you the number is yours to measure. |
+| `Lens height was **0.32 m** …` | the calibration came through a copy of the shared model that still carries the **Go2's** default. 0.32 m is the height of the Go2's camera when the Go2 stands. |
+
+Neither is an error and neither is a Lite3 measurement. Both are overwritten by your
+`--lens-height`, which is required either way.
+
+**中文 —— 关于输出需要知道的一件事。** 共用的标定流程从来不索取镜头高度，
+所以标定文件里带的是共用相机模型在该字段里留下的任何值。本工具会用你实测的数值覆盖它，
+并打印出被替换掉的旧值——**它可能打印出两种结果**：
+
+| 粘贴行显示 | 含义 |
+| --- | --- |
+| `Lens height was **unset (null)** …` | 本仓库里的共用模型在该字段上已没有默认值，并且是**刻意**把"未设置"写进文件，以便本工具能读回来。**今天你应该看到的就是这一种。** 这不是脚本的缺陷——而是脚本在告诉你：这个数值需要你自己去测。 |
+| `Lens height was **0.32 m** …` | 该标定文件来自仍带 **Go2** 默认值的那份共用模型副本。0.32 m 是 Go2 站立时相机的高度。 |
+
+两者都不是报错，两者也都不是 Lite3 的实测值。无论是哪一种，都会被你的 `--lens-height`
+覆盖，而这个参数在任何一种情况下都是必填的。
 
 **EN — good / bad.** Good: a focal length in pixels, an HFOV in degrees, and a lens height
 equal to what you measured. Bad: *"only N sightings"* means the marker id, the lighting or

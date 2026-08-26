@@ -476,6 +476,82 @@ def test_the_preflight_reports_which_transport_it_is_about_to_command_through():
     assert "NO Venture has been seen to walk on this transport" in buffer.getvalue()
 
 
+#: How the RUNBOOK's safety section renders a count, in both languages, INCLUDING the bold
+#: markers. The emphasis is what makes these exact rather than incidental: the section also
+#: contains "All three refuse" and "三者都必须", so a bare "three"/"三" would be satisfied by
+#: prose that had nothing to do with the count. A rendering table, not a population -- the
+#: population is derived from the source below.
+_COUNT_WORDS = {1: ("**One**", "**一个**"), 2: ("**Two**", "**两个**"),
+                3: ("**Three**", "**三个**"), 4: ("**Four**", "**四个**"),
+                5: ("**Five**", "**五个**"), 6: ("**Six**", "**六个**"),
+                7: ("**Seven**", "**七个**"), 8: ("**Eight**", "**八个**")}
+
+
+def runbook_safety_section() -> str:
+    """The text of RUNBOOK.md section 1, which is where an operator reads what moves."""
+    text = (_HERE / "RUNBOOK.md").read_text(encoding="utf-8")
+    start = text.index("## 1. Safety")
+    return text[start:text.index("\n## 2.", start)]
+
+
+def walking_modules(directory) -> list:
+    """Filenames in ``directory`` that take the authority to move the robot."""
+    return sorted(path.name for path in sorted(Path(directory).glob("*.py"))
+                  if not path.name.startswith("test_")
+                  and takes_moving_authority(ast.parse(path.read_text(encoding="utf-8"))))
+
+
+def runbook_omissions(section: str, walkers) -> list:
+    """Walking tools the operator's safety section does not name, plus a count mismatch."""
+    findings = [f"{name} is not named" for name in walkers if name not in section]
+    english, chinese = _COUNT_WORDS[len(walkers)]
+    if english not in section or chinese not in section:
+        findings.append(f"the count does not read {english!r} / {chinese!r}")
+    return findings
+
+
+def test_the_runbook_safety_section_names_every_tool_that_walks_the_robot():
+    """The claim an operator acts on, checked against the directory rather than remembered.
+
+    Section 1 said "Two of the six tools in this directory walk the robot" and named
+    ``gait_floor_probe.py`` and ``actuator_gain_probe.py``. True when the harness was first
+    written. ``axis_primitive_probe.py`` arrived with the transport fix and is the THIRD --
+    and on these two Ventures it is the one an operator actually runs, because it is the
+    walking probe for the only transport either robot has been seen to move on. The text is
+    correct now; nothing made it stay correct, which is why it went wrong once already.
+
+    Derived here instead: ``takes_moving_authority`` reads the source, so a fourth walking
+    probe fails this test until the section an operator reads says so. The count has to
+    match in BOTH halves of the bilingual section -- half a correction is how a translated
+    safety document ends up disagreeing with itself.
+    """
+    walkers = walking_modules(_HERE)
+    assert walkers, "no module in this directory takes moving authority -- check the audit"
+    findings = runbook_omissions(runbook_safety_section(), walkers)
+    assert findings == [], (
+        "RUNBOOK.md section 1 is where an operator is told which tools move the robot, and "
+        + "; ".join(findings) + ". A tool that walks and is not in that list is one nobody "
+        "was told to hold the stop for.")
+
+
+def test_the_runbook_check_fails_on_the_section_as_it_actually_read():
+    """The audit above passes today, so prove the mechanism can fail -- on the real text.
+
+    This is the section as it stood before the transport fix: the third walking tool
+    missing and the count still reading Two/两个. Reconstructed from the live section rather
+    than from a fixture, so a restructuring of RUNBOOK.md that made section 1 unfindable
+    breaks this test instead of quietly making the one above vacuous.
+    """
+    walkers = walking_modules(_HERE)
+    as_it_read = (runbook_safety_section()
+                  .replace("`axis_primitive_probe.py`", "")
+                  .replace("**Three**", "**Two**").replace("**三个**", "**两个**"))
+    findings = runbook_omissions(as_it_read, walkers)
+    assert len(findings) == 2, findings
+    assert "axis_primitive_probe.py is not named" in findings
+    assert findings[1] == "the count does not read '**Three**' / '**三个**'"
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
