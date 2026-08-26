@@ -241,16 +241,18 @@ jobs:
         #
         # Warnings, not errors: adopting a config over a directory changes what is a
         # finding, and that is a judgement call for whoever owns the code, not for CI.
-        # The RATCHET below is the compromise — today's 13 are grandfathered, a 14th is
-        # not. `detector/` is the one worth deciding about: it holds 8 files including
-        # peer_recall.py, and it was measured clean under its own labels/ruff.toml on
-        # 2026-08-26, so adopting one there costs nothing today.
+        # The RATCHET below is the compromise — today's 12 are grandfathered, a 13th is
+        # not, so the class can shrink but not grow while nobody is deciding.
+        #
+        # It was 13 when this workflow was written, `detector/` among them. #92 landed
+        # detector/ruff.toml while this PR was open and the number dropped by one on its
+        # own, which is the ratchet working: the only way past it is to add a config.
         run: |
           # bash -e is GitHub's default for `run:` blocks and the loops below rely on
           # commands that exit non-zero in the good case; statuses are handled explicitly.
           set +e
           set -uo pipefail
-          GRANDFATHERED=13
+          GRANDFATHERED=12
           uncovered=0
           for dir in $(find . -name '*.py' -not -path './.git/*' -not -path '*/__pycache__/*' \
                        -print | sed 's|/[^/]*$||' | sort -u); do

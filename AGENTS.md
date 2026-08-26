@@ -33,7 +33,7 @@ current, and it documents three mappings that are *not* the obvious ones.
 ## Before you say you are done
 
 Every suite prints one `  ok  <name>` line per test and a `<name>: N/N passed` summary.
-The counts below are those `ok` lines, measured on `main` at `8817b9e` on 2026-08-26.
+The counts below are those `ok` lines, measured on `main` at `526f0b0` on 2026-08-26.
 Run each line from the repository root; the parentheses are load-bearing, because the
 directories are nested and a bare `cd` would run the next line from inside the last one.
 
@@ -41,6 +41,7 @@ directories are nested and a bare `cd` would run the next line from inside the l
 (cd policy && for t in test_*.py; do python3 "$t"; done)                                         #   33
 (cd integration && for t in test_*.py; do python3 "$t"; done)                                    #  196
 (cd detector/labels && for t in test_*.py; do python3 "$t"; done)                                #   13
+(cd detector/labels/pipeline && for t in test_*.py; do python3 "$t"; done)                       #   10
 (cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 "$t"; done)             #  329
 (cd robot-stack/unitree/go2/controller && for t in test_*.py; do python3 "$t"; done)             #    6
 (cd robot-stack/unitree/go2/d1_arm && for t in test_*.py; do python3 "$t"; done)                 #   15
@@ -49,13 +50,15 @@ directories are nested and a bare `cd` would run the next line from inside the l
 (cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)     #   58
 (cd robot-stack/deep_robotics/lite3/commissioning && for t in test_*.py; do python3 "$t"; done)  #  188
 (cd dashboard && for t in test_*.py; do python3 "$t"; done)                                      #  110
-#                                                                                          total 1015
+#                                                                                          total 1025
 ```
 
 Then `ruff check .` from inside **every** directory that holds a `ruff.toml` — there are
-nine, and running one directory's config against another directory's code is how a PR
-came to report "ruff clean" while shipping 13 findings. Thirteen directories hold Python
-that no `ruff.toml` covers at all, `detector/` among them; CI lists them as warnings.
+ten, and running one directory's config against another directory's code is how a PR came
+to report "ruff clean" while shipping 13 findings. Twelve directories still hold Python
+that no `ruff.toml` covers at all: the five Go2 directories beside `visual_nav`, both of
+`deploy/`, and five `evidence/` run directories. CI names each of them in a warning, and
+fails if a thirteenth appears — the count can shrink, and cannot grow unnoticed.
 
 **CI enforces this block rather than trusting it.**
 [`.github/workflows/offline-checks.yml`](.github/workflows/offline-checks.yml) discovers
@@ -81,8 +84,9 @@ make CI pass; the count is the measurement.
   a missing dependency reading as a pass. `numpy`, `opencv-python` and `pytest` are needed
   the same way — without `cv2` several `visual_nav` files fail at import.
 - The block previously read `33 / 189 / 329 / 17 / 39 / 16 / 139` and did not mention
-  `detector/labels` or three of the Go2 directories at all. Its Lite3 commissioning line
-  named `test_lite3_state_probe.py` by name, in a directory that holds ten test files.
+  `detector/labels`, `detector/labels/pipeline` or three of the Go2 directories at all. Its
+  Lite3 commissioning line named `test_lite3_state_probe.py` by name, in a directory that
+  holds ten test files.
 
 **`ruff --fix` sorts imports and will hoist a `from avoidance import ...` above the
 `sys.path` line that makes it importable.** Two test files went from passing to
