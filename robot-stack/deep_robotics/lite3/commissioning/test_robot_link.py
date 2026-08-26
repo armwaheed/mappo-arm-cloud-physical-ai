@@ -295,10 +295,22 @@ def test_only_one_transport_claims_to_have_walked_a_venture():
 # ``moving=True`` is a module saying it intends to command a velocity, and that is the
 # thing that has to be paired with asking which transport the velocity is going out on.
 #
-# The internal per-robot Lite3 repository carries the same audit one directory UP, OUTSIDE
-# this one, so that a copy which replaces this directory wholesale cannot take the check
-# away with it. This one is the copy that TRAVELS: it is here so that a future consumer who
-# takes this directory gets the invariant along with the code.
+# THIS COPY IS THE ONE THAT TRAVELS, and it is not the one that protects a consumer. It is
+# here so that a repository which takes this directory gets the invariant along with the
+# code -- but the failure being pinned is a copy that REPLACES the directory, and such a
+# copy arrives carrying its own version of this file. Only an audit OUTSIDE the directory
+# survives that, and it has to be written in the repository being protected.
+#
+# The internal per-robot Lite3 repository is where that matters first: it held only the two
+# receive-only scripts, so a sync of this directory at its pre-transport commit was a live
+# trap there. It is being given a `test_commissioning_transport_guards.py` one directory up
+# from its own `commissioning/`, and outside it. Do not read this comment as a statement
+# that the check is already in place there; go and look.
+#
+# One thing that audit found and this one cannot: a population derived from a single call
+# shape can be emptied by a rename. Pass `moving` positionally in all three probes here and
+# every test in this file stays green while the audit checks nothing. The pin below is what
+# makes that loud, and it is the reason the audit above it is not vacuous.
 
 #: The two guards that answer "is the measurement this module makes even defined on the
 #: selected transport". A moving module must call one of them.
@@ -340,6 +352,22 @@ def takes_moving_authority(tree) -> bool:
     return False
 
 
+def moving_modules(directory) -> list:
+    """Non-test modules in the directory that take the authority to move, by name.
+
+    Split out of :func:`audit_transport_guards` so the population can be asserted directly.
+    The audit returns "no findings" both when every moving module is guarded and when there
+    are no moving modules at all, and only one of those is this directory.
+    """
+    found = []
+    for path in sorted(Path(directory).glob("*.py")):
+        if path.name.startswith("test_"):
+            continue
+        if takes_moving_authority(ast.parse(path.read_text(encoding="utf-8"))):
+            found.append(path.name)
+    return found
+
+
 def audit_transport_guards(directory) -> list:
     """Modules that take the authority to move without asking which transport they are on.
 
@@ -376,6 +404,23 @@ def test_every_probe_that_may_move_the_robot_asks_which_transport_it_is_on():
         "mapping is sign-only, so every rung of a ladder fires the same primitive, walks "
         "at the same speed, passes every anchor and drift control, and reports the bottom "
         "rung as this robot's gait floor. Findings: " + "; ".join(findings))
+
+
+def test_the_audit_has_a_population_to_check():
+    """A single-signal population can be emptied by a rename, and then this file is inert.
+
+    ``takes_moving_authority`` matches one call shape: ``add_link_arguments`` with a
+    ``moving=True`` KEYWORD. Pass it positionally in all three walking probes -- a
+    refactor nobody would flag in review -- and the population is empty, the audit above
+    reports nothing, and every test in this file still passes while checking no module at
+    all. Verified by mutation.
+
+    The three names are spelled out rather than counted, because the failure this pins is a
+    partial copy and a partial copy shortens a count as easily as a list. A fourth walking
+    probe is a deliberate addition to this list; three that became two is the bug.
+    """
+    assert moving_modules(_HERE) == ["actuator_gain_probe.py", "axis_primitive_probe.py",
+                                     "gait_floor_probe.py"], moving_modules(_HERE)
 
 
 def test_the_audit_fails_on_a_probe_that_skips_the_guards():

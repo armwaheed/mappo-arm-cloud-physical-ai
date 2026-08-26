@@ -56,13 +56,16 @@ the measurement report.
 ## 1. 安全须知 —— 上电之前必须先读
 
 **EN** — `robot-stack/SAFETY.md` governs anything that moves a leg and is not optional.
-Two of the six tools in this directory walk the robot: `gait_floor_probe.py` and
-`actuator_gain_probe.py`. Both refuse to move without **both** `--live` and
-`--operator-ready`. Neither flag is a formality.
+**Three** of the tools in this directory walk the robot: `gait_floor_probe.py`,
+`actuator_gain_probe.py` and `axis_primitive_probe.py` — and on this robot's only walked
+transport it is the third one, not the first two. All three refuse to move without **both**
+`--live` and `--operator-ready`. Neither flag is a formality.
 
 **中文** —— `robot-stack/SAFETY.md` 管辖一切会让腿动起来的操作，不可跳过。
-本目录下六个工具中有两个会让机器人行走：`gait_floor_probe.py` 和 `actuator_gain_probe.py`。
-两者都必须**同时**给出 `--live` 和 `--operator-ready` 才会动。这两个参数都不是走形式。
+本目录下有**三个**工具会让机器人行走：`gait_floor_probe.py`、`actuator_gain_probe.py`
+和 `axis_primitive_probe.py` —— 在本机唯一真正走起来过的那条通道上，会动的是第三个，
+而不是前两个。三者都必须**同时**给出 `--live` 和 `--operator-ready` 才会动。
+这两个参数都不是走形式。
 
 | | **EN** | **中文** |
 | --- | --- | --- |

@@ -224,7 +224,7 @@ segment and so takes the Go2's own refusal unweakened.
 ## Offline checks
 
 ```bash
-for test in test_*.py; do python3 "$test"; done   # 175
+for test in test_*.py; do python3 "$test"; done   # 233
 ruff check .
 ```
 
@@ -232,5 +232,6 @@ The guards are the point, so they are mutation-tested: breaking any one of them 
 anchor refusal, the drifting-control refusal, the provisional gate, the twelve-channel
 refusal, the inference-config assertion, the operator-ready gate — turns a named test red.
 
-Read [`../../../SAFETY.md`](../../../SAFETY.md) before the operator-driven capture. No
-step in this directory authorises this repository to command a leg.
+Read [`../../../SAFETY.md`](../../../SAFETY.md) before the operator-driven capture, and
+before any run of the three probes that walk. Only `--live` together with `--operator-ready`
+authorises a leg; every other step here is receive-only.
