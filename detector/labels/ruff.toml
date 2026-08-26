@@ -1,9 +1,11 @@
 # Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Lint settings for detector/labels/. Deliberately identical to integration/ruff.toml and
-# robot-stack/unitree/go2/visual_nav/ruff.toml — a second style across directories that
-# are read together would be noise, and the repo has no root config to inherit.
+# Lint settings for detector/labels/. Deliberately identical to detector/ruff.toml, and one
+# rule ahead of integration/ruff.toml and robot-stack/unitree/go2/visual_nav/ruff.toml — a
+# second style across directories that are read together would be noise, and the repo has
+# no root config to inherit. The one rule is FA; see the comment above `select` for what it
+# caught and why it is here first.
 #
 #   ruff check . --config ruff.toml
 #
@@ -20,9 +22,38 @@ line-length = 100
 target-version = "py38"
 
 [lint]
-select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
+# FA IS ONE RULE MORE THAN THE OTHER EIGHT ruff.toml FILES CARRY, AND THAT IS THE POINT.
+# `target-version = "py38"` above does not mean "reject anything newer than 3.8". All it
+# does to annotations is SUPPRESS UP006, the rule that rewrites `List[str]` into
+# `list[str]`; no rule in the set above says the modern form is too NEW for the declared
+# target. So the config silently permitted exactly the thing it was written to forbid, and
+# `detector/labels/pipeline/` shipped five modules -- blobs, build, checks, p4plate, track
+# -- annotated with PEP 585 builtin generics and no `from __future__ import annotations`.
+# Every one raised `TypeError: 'type' object is not subscriptable` at its FIRST `def`
+# under CPython 3.8.20, before any of them did a line of work; nothing noticed, because
+# test_peercap.py parses those modules as source rather than importing them.
+#
+# FA102 is the rule that says it. The declared target is right -- CI runs a 3.8 leg over
+# this directory because the Go2's Jetson is Ubuntu 20.04 / JetPack 5 -- so the missing
+# thing was the check, not the target.
+#
+# Measured 2026-08-26 at 900788b, with the five modules fixed: `ruff check . --extend-select
+# FA` is clean in all ten ruff.toml directories. Widening FA to the other eight therefore
+# costs nothing and is a one-line move for whoever owns them; it is left out of this change
+# because this change does not own those files.
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF", "FA"]
 
 [lint.per-file-ignores]
 # The test module puts this directory on sys.path before importing check_manifest, so its
 # imports genuinely are not at the top of the file. Same idiom as the repo's other suites.
 "test_*.py" = ["E402"]
+
+[lint.isort]
+# Carried over from detector/ruff.toml, where it already lives, so that the two files
+# genuinely answer the same and not just nearly. peercap.py is a sibling MODULE, not a
+# package, and ruff resolves first-party-ness from the directory it is invoked in: standing
+# in labels/pipeline/ it is first-party and wants its own section; standing here or in
+# detector/ it is third-party and does not. Without this line, pointing THIS config at
+# labels/pipeline/ reported eight I001 findings that neither documented command produces --
+# the #78 failure in miniature, and it caught a reader of this file on 2026-08-26.
+known-third-party = ["peercap"]

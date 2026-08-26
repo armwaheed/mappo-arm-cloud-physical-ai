@@ -24,10 +24,16 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from camera_model import FisheyeCamera, solve_focal_px
+from camera_model import GO2_CAMERA_HEIGHT_M, FisheyeCamera, solve_focal_px
 
 WIDTH, HEIGHT = 1920, 1080
+#: Deliberately built WITHOUT a lens height, so every test below that does not name one is
+#: also a statement that the model does not supply a platform's number on its own.
 MODEL = FisheyeCamera.from_hfov(WIDTH, HEIGHT, 120.0)
+
+#: The same optics with the Go2's measured lens height named at the call site. This is the
+#: only shape in which the floor is locatable.
+ON_A_GO2 = FisheyeCamera.from_hfov(WIDTH, HEIGHT, 120.0, height_m=GO2_CAMERA_HEIGHT_M)
 
 
 def test_hfov_round_trips():
@@ -195,9 +201,69 @@ def test_save_load_round_trip():
 
 
 def test_ground_point_and_horizon():
-    assert MODEL.ground_point(WIDTH / 2.0, HEIGHT / 2.0) is None, "horizon never meets the floor"
-    forward, lateral = MODEL.ground_point(WIDTH / 2.0, HEIGHT - 1.0)
+    assert ON_A_GO2.ground_point(WIDTH / 2.0, HEIGHT / 2.0) is None, \
+        "horizon never meets the floor"
+    forward, lateral = ON_A_GO2.ground_point(WIDTH / 2.0, HEIGHT - 1.0)
     assert forward > 0.0 and abs(lateral) < 1e-6
+
+
+# ── the lens height ─────────────────────────────────────────────────────────
+def test_a_model_states_no_lens_height_until_one_is_given():
+    """The regression pin. `height_m` defaulted to 0.32 — the GO2's measured standing
+    lens height — on a model this repository also builds for a Lite3, whose lens height
+    has never been measured (issue #13). Every Lite3 calibration that did not pass one
+    inherited the Go2's, in a field that bounds a width-derived range in
+    `person_detector.object_fit_range`. There is no default that is right for two robots,
+    so there is no default."""
+    assert FisheyeCamera.from_hfov(WIDTH, HEIGHT, 120.0).height_m is None
+    assert FisheyeCamera(width=WIDTH, height=HEIGHT, focal_px=1290.2,
+                         cx=960.0, cy=540.0).height_m is None
+    assert GO2_CAMERA_HEIGHT_M == 0.32, "the Go2's measurement, unchanged — just named"
+    assert ON_A_GO2.height_m == GO2_CAMERA_HEIGHT_M
+
+
+def test_a_model_with_no_lens_height_refuses_to_find_the_floor():
+    """`ground_point` already returns None for "above the horizon", so it cannot use None
+    for "I do not know where the floor is" as well. It refuses, and the refusal has to
+    carry both halves an operator needs: what to pass, and whose 0.32 it is."""
+    try:
+        MODEL.ground_point(WIDTH / 2.0, HEIGHT - 1.0)
+    except ValueError as refusal:
+        message = str(refusal)
+    else:
+        raise AssertionError("a model with no lens height must not locate the floor")
+    assert "no lens height" in message, message
+    assert "height_m=" in message, "the refusal has to say what to pass"
+    assert str(GO2_CAMERA_HEIGHT_M) in message and "Go2" in message, message
+    assert "Lite3" in message, "and why the Go2's number is not a default"
+
+
+def test_the_lens_height_survives_a_rescale_and_a_save_load_round_trip():
+    """A calibration file must carry whatever height it was given and NEVER acquire one.
+
+    The Lite3 commissioning wrapper reads this field back out of the file the shared
+    fitter wrote (`stamp_lens_height`), so what `save` puts there is what a Lite3 is
+    judged on. An unmeasured model has to round-trip as unmeasured."""
+    assert ON_A_GO2.scaled(WIDTH // 2, HEIGHT // 2).height_m == GO2_CAMERA_HEIGHT_M
+    assert MODEL.scaled(WIDTH // 2, HEIGHT // 2).height_m is None
+    with tempfile.TemporaryDirectory() as directory:
+        measured = os.path.join(directory, "measured.json")
+        ON_A_GO2.save(measured, method="unit-test")
+        assert json.loads(Path(measured).read_text())["height_m"] == GO2_CAMERA_HEIGHT_M
+        assert FisheyeCamera.load(measured).height_m == GO2_CAMERA_HEIGHT_M
+
+        unmeasured = os.path.join(directory, "unmeasured.json")
+        MODEL.save(unmeasured, method="unit-test")
+        assert json.loads(Path(unmeasured).read_text())["height_m"] is None, \
+            "a fitted calibration must record that nobody measured the lens height"
+        assert FisheyeCamera.load(unmeasured).height_m is None
+
+        absent = os.path.join(directory, "absent.json")
+        data = json.loads(Path(measured).read_text())
+        del data["height_m"]
+        Path(absent).write_text(json.dumps(data))
+        assert FisheyeCamera.load(absent).height_m is None, \
+            "an omitted key must not be filled in with a number from another robot"
 
 
 def test_solve_focal_px_recovers_a_known_focal():

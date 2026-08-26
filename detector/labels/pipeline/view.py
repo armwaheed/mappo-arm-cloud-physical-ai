@@ -49,4 +49,5 @@ def main() -> None:
     cv2.imwrite(out, crop, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
 
-main()
+if __name__ == "__main__":
+    main()

@@ -61,4 +61,5 @@ def main() -> None:
     print("frames with no blob:", sum(1 for v in out.values() if v is None))
 
 
-main()
+if __name__ == "__main__":
+    main()

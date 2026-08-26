@@ -43,7 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))       # sibling modules
 
 import overlay
 from avoidance import Obstacle, PlannerConfig
-from camera_model import FisheyeCamera
+from camera_model import GO2_CAMERA_HEIGHT_M, FisheyeCamera
 from colour_detector import PROFILES, ColourBlobDetector
 from person_detector import (
     DEFAULT_CONFIDENCE,
@@ -101,8 +101,11 @@ def main() -> None:
             camera_model = camera_model.scaled(width, height)
         scale_note = f"calibrated ({args.calibration})"
     else:
-        camera_model = FisheyeCamera.from_hfov(width, height, args.hfov or 120.0)
-        scale_note = "ASSUMED FOV — metres and m/s are indicative only"
+        # The Go2's lens height, named rather than defaulted: the model itself has no
+        # default because the Lite3 stack imports it too and its height is unmeasured.
+        camera_model = FisheyeCamera.from_hfov(width, height, args.hfov or 120.0,
+                                               height_m=GO2_CAMERA_HEIGHT_M)
+        scale_note = "ASSUMED FOV and the GO2's lens height — metres and m/s are indicative only"
 
     detector = PersonDetector(args.model_dir, input_size=args.input_size,
                               confidence=args.confidence,

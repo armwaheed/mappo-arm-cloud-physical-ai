@@ -140,7 +140,7 @@ from avoidance import (
     Obstacle,
     PlannerConfig,
 )
-from camera_model import FisheyeCamera
+from camera_model import GO2_CAMERA_HEIGHT_M, FisheyeCamera
 from colour_detector import (
     COLOUR_PROFILE_SCHEMA,
     PROFILES,
@@ -908,17 +908,49 @@ class VisualNavigator:
 
 def build_camera_model(width: int, height: int,
                        calibration: str | None) -> FisheyeCamera:
-    """Load a calibrated model, or fall back to the nominal field of view."""
+    """Load a calibrated model, or fall back to the nominal field of view.
+
+    THE LENS HEIGHT IS CHECKED HERE, before anything moves. `camera.height_m` bounds a
+    width-derived range in `person_detector.object_fit_range`, which refuses without it —
+    and the first horizontally-clipped detection can be several metres into a live run.
+    A refusal that can only fire mid-run is a robot that stops walking because the process
+    died, so this reads the field at start-up instead. See `robot-stack/SAFETY.md`.
+    """
     if calibration:
         model = FisheyeCamera.load(calibration)
         if (model.width, model.height) != (width, height):
             model = model.scaled(width, height)
+        if model.height_m is None:
+            raise SystemExit(
+                f"[visual_nav] REFUSING TO RUN: {calibration} states no \"height_m\". "
+                f"calibrate_camera.py fits the focal length and cannot measure a lens "
+                f"height, so the file it writes carries none until somebody adds it. "
+                f"Measure floor to lens centre with the robot STANDING and put it in the "
+                f"file; the Go2's is {GO2_CAMERA_HEIGHT_M} m, and for a Lite3 run "
+                f"deep_robotics/lite3/commissioning/camera_calibration.py --lens-height, "
+                f"which stamps it and records what it replaced. It bounds a width-derived "
+                f"range estimate, so it is not cosmetic."
+            )
         print(f"[visual_nav] camera model: {calibration} "
-              f"(f={model.focal_px:.1f}px, HFOV={model.hfov_deg:.1f}deg)")
+              f"(f={model.focal_px:.1f}px, HFOV={model.hfov_deg:.1f}deg, "
+              f"lens height {model.height_m:.3f}m)")
         return model
-    model = FisheyeCamera.from_hfov(width, height)
-    print(f"[visual_nav] camera model: NOMINAL HFOV={model.hfov_deg:.1f}deg — ranges "
-          f"and bearings are un-calibrated. Run calibrate_camera.py.")
+    # Every intrinsic on this path is the GO2's published nominal spec already —
+    # DEFAULT_HFOV_DEG is the Go2 front fisheye's — so the Go2's lens height is the
+    # consistent companion to it, and naming it here is what keeps it out of the shared
+    # model's defaults. The print says whose numbers these are, because on any other
+    # robot all of them are wrong.
+    model = FisheyeCamera.from_hfov(width, height, height_m=GO2_CAMERA_HEIGHT_M)
+    # Read back through the accessor rather than formatted straight out of the field.
+    # The branch above has its own refusal, which is the better of the two because it can
+    # name the file; this branch has no file to name, and formatting the field directly
+    # would report a dropped `height_m=` as "unsupported format string passed to
+    # NoneType.__format__", which names nothing at all.
+    nominal_height_m = model.require_height_m("the nominal model has no floor either")
+    print(f"[visual_nav] camera model: NOMINAL HFOV={model.hfov_deg:.1f}deg and lens "
+          f"height {nominal_height_m:.2f}m, both the GO2's — ranges and bearings are "
+          f"un-calibrated, and on another robot the height is wrong too. "
+          f"Run calibrate_camera.py.")
     return model
 
 

@@ -18,7 +18,7 @@ and gives two things the navigator needs:
 
 WHY ANGULAR SIZE AND NOT THE GROUND PLANE. The obvious monocular ranger is to
 intersect the ray through a person's feet with the floor. It is unusable here: the
-camera sits ~0.32 m off the ground, so a person at 3 m is only 6° below the horizon
+Go2's camera sits 0.32 m off the ground, so a person at 3 m is only 6° below the horizon
 and the range goes as ``h/tan(elevation)`` — a 2° trunk-pitch wobble (a trotting Go2
 does more) swings the estimate from 2.3 m to 4.4 m. Angular size instead gives
 ``d = L / (2·tan(dtheta/2))``, whose relative error just equals the relative error in
@@ -58,6 +58,18 @@ import numpy as np
 # starting point, not a measurement. `calibrate_camera.py` replaces it.
 DEFAULT_HFOV_DEG = 120.0
 
+# ── Where the lens is, per platform ─────────────────────────────────────────
+# Floor to the optical centre with the robot STANDING. Measured on the Go2, and a
+# statement about the Go2 only. This module is not Go2-only: the Lite3 stack imports it
+# through `robot-stack/deep_robotics/lite3/`, and the Lite3's lens height has never been
+# measured — issue #13 still lists it as outstanding.
+#
+# That is why `FisheyeCamera.height_m` has NO default. It used to default to this number,
+# so any Lite3 calibration that did not explicitly pass one inherited the Go2's, silently,
+# in a field that bounds a width-derived range estimate in `person_detector`. Name the
+# platform's value at the call site, or the model has no floor and says so.
+GO2_CAMERA_HEIGHT_M = 0.32
+
 # ── Size priors for monocular ranging ───────────────────────────────────────
 # Standing adult, floor to crown. The detector's box tracks the visible extent, so
 # this is the right prior for an untruncated full-body box.
@@ -80,13 +92,16 @@ class FisheyeCamera:
         focal_px: the single intrinsic. Pixels per radian off the optical axis.
         cx/cy: principal point. Defaults to the image centre.
         pitch_rad: camera tilt below the body's forward axis, positive = nose-down.
-        height_m: optical centre above the floor when the robot stands. It is NOT the
+        height_m: optical centre above the floor when the robot stands, in metres.
+            NO DEFAULT, deliberately — see :data:`GO2_CAMERA_HEIGHT_M`. It is NOT the
             ranger — see the module docstring for why the ground-plane intersection is
             unusable here — but it is not overlay-only either: :meth:`ground_point`
             uses it for the debug overlay, and ``person_detector.object_fit_range``
             uses it to work out the distance below which a person no longer fits in
             frame, which caps a width-derived range. So it does feed a range bound, and
-            a wrong value moves that bound.
+            a wrong value moves that bound. ``None`` means "not measured on this
+            platform"; both of those callers go through :meth:`require_height_m` and
+            refuse rather than substitute another robot's number.
     """
 
     width: int
@@ -95,7 +110,7 @@ class FisheyeCamera:
     cx: float
     cy: float
     pitch_rad: float = 0.0
-    height_m: float = 0.32
+    height_m: float | None = None
 
     # ── Constructors ────────────────────────────────────────────────────────
     @classmethod
@@ -128,6 +143,12 @@ class FisheyeCamera:
 
         Provenance is not read back by :meth:`load` — it is there so a calibration
         file can never be mistaken for a nominal one by whoever reads it next.
+
+        An unset :attr:`height_m` is written as ``null`` rather than omitted, and that is
+        the honest record: the fitter considered the lens height and had nothing to put
+        there. The Lite3 commissioning wrapper reads this field straight back out of the
+        file (``stamp_lens_height``) and reports what it replaced, so a ``null`` is what
+        tells its operator the number is theirs to measure.
         """
         payload = asdict(self)
         payload.update(provenance)
@@ -164,6 +185,26 @@ class FisheyeCamera:
         cannot mean anything for a span the sensor could not have separated.
         """
         return 1.0 / self.focal_px
+
+    def require_height_m(self, consequence: str) -> float:
+        """:attr:`height_m`, or a refusal naming what it was needed for.
+
+        One accessor rather than an ``is None`` check at each call site, so the two
+        callers cannot drift into telling an operator two different things to do. It is
+        public because one of them is in another module (``person_detector``).
+        """
+        if self.height_m is None:
+            raise ValueError(
+                f"this camera model states no lens height, so {consequence}. height_m is "
+                f"a per-platform MEASUREMENT — floor to the optical centre, robot "
+                f"standing — and there is no default that is right for two robots: "
+                f"{GO2_CAMERA_HEIGHT_M} m is the Go2's (camera_model.GO2_CAMERA_HEIGHT_M) "
+                f"and a Lite3 that inherited it would move a real range bound. Pass "
+                f"height_m= explicitly, or load a calibration file that states one — "
+                f"deep_robotics/lite3/commissioning/camera_calibration.py --lens-height "
+                f"writes one for a Lite3."
+            )
+        return self.height_m
 
     # ── Projection ──────────────────────────────────────────────────────────
     def unit_vector(self, u, v) -> np.ndarray:
@@ -270,12 +311,15 @@ class FisheyeCamera:
         """Where the ray through ``(u, v)`` meets the floor, in body-frame metres.
 
         Debug/overlay only — see the module docstring for why this is NOT the ranger.
-        Returns ``None`` when the ray points at or above the horizon.
+        Returns ``None`` when the ray points at or above the horizon, and refuses when
+        :attr:`height_m` is unset: with no lens height there is no floor to intersect,
+        and ``None`` already means something else here.
         """
+        height_m = self.require_height_m("there is no floor to intersect")
         d = self.unit_vector(u, v)
         if d[2] >= -1e-6:
             return None
-        t = self.height_m / -d[2]
+        t = height_m / -d[2]
         return float(t * d[0]), float(t * d[1])
 
 

@@ -11,6 +11,8 @@ robot's reflection and a couple of fixed glare streaks.
 Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
 refuses with that list when it is not set.
 """
+from __future__ import annotations
+
 import glob
 import json
 import sys
@@ -85,4 +87,5 @@ def main() -> None:
         print("  ", k.rsplit("_", 1)[1], recs[k][:3])
 
 
-main()
+if __name__ == "__main__":
+    main()

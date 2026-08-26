@@ -173,9 +173,9 @@ def object_fit_range(camera: FisheyeCamera, prior: SizePrior = PERSON_PRIOR) -> 
     stays correct after calibration changes the focal length.
 
     BOTH ENDS CAN BE THE BINDING ONE, and which it is depends on how the object stands
-    relative to the lens. For something taller than the camera — a person against a
-    0.32 m mount — the crown is what leaves first. For something SHORTER, the top never
-    leaves at all and the base does: a 0.30 m bin loses its foot below 0.72 m while its
+    relative to the lens. For something taller than the camera — a person against the
+    Go2's 0.32 m mount — the crown is what leaves first. For something SHORTER, the top
+    never leaves at all and the base does: a 0.30 m bin loses its foot below 0.72 m while its
     rim stays comfortably in view. Taking only the top (``height_m - camera.height_m``)
     returns 0.0 for every such object, and ``estimate_range`` caps a width-derived range
     at this value — so a bin would be reported at ZERO metres, i.e. inside the robot,
@@ -184,13 +184,19 @@ def object_fit_range(camera: FisheyeCamera, prior: SizePrior = PERSON_PRIOR) -> 
 
     Assumes a level camera and a target near the image centre-line; it is a bound to
     switch estimators on, not a precise threshold.
+
+    REFUSES when the camera states no lens height. There is no safe fallback: `inf` would
+    disable the cap this function exists to impose, and 0.0 would report every object as
+    standing inside the robot. `FisheyeCamera.height_m` used to default to the Go2's
+    0.32 m, which is how a Lite3 would have inherited it.
     """
+    lens_height_m = camera.require_height_m("the fit distance cannot be computed")
     half_vfov = (camera.height / 2.0) / camera.focal_px
     if half_vfov <= 0.0 or half_vfov >= math.pi / 2.0:
         return math.inf
     tan_half_vfov = math.tan(half_vfov)
-    top_leaves = max(0.0, prior.height_m - camera.height_m) / tan_half_vfov
-    base_leaves = max(0.0, camera.height_m) / tan_half_vfov
+    top_leaves = max(0.0, prior.height_m - lens_height_m) / tan_half_vfov
+    base_leaves = max(0.0, lens_height_m) / tan_half_vfov
     return max(top_leaves, base_leaves)
 
 

@@ -10,6 +10,8 @@ camera pose, so no warping (and no parallax error) is involved.
 Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
 refuses with that list when it is not set.
 """
+from __future__ import annotations
+
 import glob
 
 import cv2
@@ -35,4 +37,5 @@ def main() -> None:
     print(f"plate_p4: left of x={SPLIT} from frames 150-207, right from frames 0-25")
 
 
-main()
+if __name__ == "__main__":
+    main()

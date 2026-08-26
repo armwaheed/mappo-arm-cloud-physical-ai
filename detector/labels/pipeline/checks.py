@@ -12,6 +12,8 @@ These are what say a single box may legitimately be reused across a whole static
 Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
 refuses with that list when it is not set.
 """
+from __future__ import annotations
+
 import glob
 import sys
 
@@ -90,4 +92,5 @@ def main() -> None:
         roi()
 
 
-main()
+if __name__ == "__main__":
+    main()
