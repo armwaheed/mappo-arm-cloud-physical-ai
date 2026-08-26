@@ -116,6 +116,62 @@ HOLD_LABELS = ("person",)
 #: is what would justify it.
 POLICY_MAX_MOVER_SPEED_MPS = 0.25
 
+#: How far ahead a moving obstacle's disc is grown, seconds.
+#:
+#: THE POLICY CANNOT SEE MOTION, and this is how it is told anyway. Its 18-value
+#: observation is ``[x, y, vx, vy, x-gx, y-gy, *12 lidar]`` where ``vx, vy`` are the
+#: ROBOT'S OWN; there is no channel for an obstacle's velocity, so a crossing peer enters
+#: as an instantaneous disc wherever it happened to be. Measured in simulation with the
+#: peer's EXACT position handed over every tick, the policy sees it (ray proximity 0.176,
+#: well inside the 0.875 m horizon) and responds by STOPPING — forward command to zero —
+#: with a closest approach of 0.194 m at the worst crossing speed.
+#:
+#: A disc does not have to mean "where it is". Growing it by ``speed * horizon`` makes the
+#: ray cast report where the peer WILL be, which is the one thing the policy's only input
+#: can express. The planner's own rollout already reasons this way in ``avoidance._gaps``;
+#: this gives the policy the same idea through the channel it has.
+#:
+#: Measured, same simulation, clearance against the TRUE disc:
+#:
+#:   ==========  ==============  =================
+#:   peer m/s    disc as-is      grown at 1.5 s
+#:   ==========  ==============  =================
+#:   0.10        0.148 m         0.275 m
+#:   0.20        0.194 m         0.505 m
+#:   0.35        0.537 m         0.791 m
+#:   0.50        0.790 m         1.004 m
+#:   ==========  ==============  =================
+#:
+#: and mean steering deflection at 0.20 m/s rises 9.5 deg -> 24.2 deg, attributed against a
+#: paired ablated control with the peer removed. That is the policy steering around the
+#: peer rather than halting in front of it.
+#:
+#: ISOTROPIC, NOT SWEPT, and that was the surprise. Placing the disc at the peer's
+#: predicted position instead — directional, and self-cancelling once the peer is past —
+#: was measured WORSE at every speed (0.376 m against 0.505 m at 0.20 m/s). Growing
+#: backwards as well keeps pushing the robot away during the approach, and that margin is
+#: worth more than the false conservatism costs.
+#:
+#: BOUNDED BY THE GATE ABOVE, with no clamp needed. Only an obstacle slower than
+#: :data:`POLICY_MAX_MOVER_SPEED_MPS` reaches the policy at all — anything faster holds the
+#: robot — so the largest disc the policy can ever be shown is its true radius plus
+#: ``0.25 * 1.5 = 0.375 m``. The two mechanisms compose; neither needs to know about the
+#: other.
+#:
+#: 1.5 s rather than the planner's 2.5 s veto horizon: 2.5 was also measured and gained
+#: nothing at the speeds that matter (0.460 m against 0.505 m at 0.20 m/s), while inflating
+#: every disc further into space the robot might legitimately use.
+#:
+#: ⛔ NOTHING PASSES THIS YET, AND THAT IS DELIBERATE. It is the value a caller opts into
+#: via ``policy_objects(..., motion_horizon_s=...)``; the default is 0.0, so every shipped
+#: call site — :func:`robot_input`, and therefore ``mappo_drive``, ``mappo_shadow`` and
+#: ``replay_mappo`` — still hands the policy the true disc. The encoding has been measured
+#: in simulation ONLY. It has never run on a robot, and the swerve it commands is
+#: 0.085-0.182 m/s, below this robot's lateral gait floor: it would not walk. Turning it on
+#: before that floor is measured on hardware would change what the demo does without
+#: changing what it can execute.
+POLICY_MOTION_HORIZON_S = 1.5
+
 
 @dataclass(frozen=True)
 class BridgeReport:
@@ -265,7 +321,7 @@ def external_hold(tick: dict) -> bool:
     return any(holds_the_robot(o) for o in tick.get("obstacles", []))
 
 
-def policy_objects(tick: dict) -> list:
+def policy_objects(tick: dict, *, motion_horizon_s: float = 0.0) -> list:
     """Obstacle kwargs for one tick, in the robot's body frame.
 
     NAMED FOR WHAT IT IS. These become the policy's ``stationary_objects``, because that
@@ -283,6 +339,19 @@ def policy_objects(tick: dict) -> list:
     An obstacle the robot is standing INSIDE is still emitted. The range caster on the
     far side reports zero for it, which is the correct and conservative reading; dropping
     it here would report clear space instead.
+
+    ``motion_horizon_s`` GROWS A MOVING OBSTACLE'S DISC by ``speed * motion_horizon_s``,
+    which is how motion is expressed to a policy that has no obstacle-velocity channel —
+    see :data:`POLICY_MOTION_HORIZON_S` for why, and for the measurements.
+
+    ⛔ IT DEFAULTS TO 0.0, i.e. OFF, and no caller in this repository passes anything else.
+    The encoding is measured in simulation and unrun on hardware, and the lateral command
+    it produces is below the gait floor, so it is landed inert rather than enabled. A zero
+    horizon is not a special case: the growth term is a multiplication, so it vanishes.
+
+    ⚠️ When it IS enabled, the growth applies ONLY here. The planner and its feasibility
+    veto keep the true radius and do their own rollout, so nothing double-counts, and
+    every clearance this repository reports is still measured against the real disc.
     """
     pose = tick["pose"]
     out = []
@@ -293,6 +362,12 @@ def policy_objects(tick: dict) -> list:
         if x is None or y is None or radius is None:
             continue                       # a half-recorded obstacle is not a detection
         body_x, body_y = to_body_frame(pose, x, y)
+        # Grow the disc by where the obstacle is going. Falls out to zero for anything
+        # stationary AND for the default horizon of 0.0, so a mapped landmark is
+        # unaffected and the shipped behaviour is unchanged; no branch is needed.
+        speed = math.hypot(_finite(obstacle.get("vx")) or 0.0,
+                           _finite(obstacle.get("vy")) or 0.0)
+        radius += speed * motion_horizon_s
         out.append({
             "distance_m": math.hypot(body_x, body_y),
             "bearing_rad": wrap_pi(math.atan2(body_y, body_x)),
@@ -306,7 +381,8 @@ def policy_objects(tick: dict) -> list:
 
 
 def robot_input(tick: dict, *, reset_run: bool = False,
-                monotonic_s: float | None = None) -> dict | None:
+                monotonic_s: float | None = None,
+                motion_horizon_s: float = 0.0) -> dict | None:
     """``RobotInput`` kwargs for one tick, or ``None`` if the tick has no goal.
 
     A tick without a goal is a real part of the episode — the robot is searching — but
@@ -321,6 +397,10 @@ def robot_input(tick: dict, *, reset_run: bool = False,
     driving the legs. Leaving it ``None`` lets the policy stamp its own clock, and the
     staleness that this stack can actually measure — perception age — is already carried
     into :func:`external_hold`.
+
+    ``motion_horizon_s`` is handed straight to :func:`policy_objects` and defaults to 0.0.
+    ⛔ No caller passes it; see :data:`POLICY_MOTION_HORIZON_S` for what it would do and
+    for the hardware measurement that has to land before anything should.
     """
     if not tick.get("goal"):
         return None
@@ -347,7 +427,7 @@ def robot_input(tick: dict, *, reset_run: bool = False,
         "goal_x_m": goal_x,
         "goal_y_m": goal_y,
         "external_hold": external_hold(tick),
-        "stationary_objects": policy_objects(tick),
+        "stationary_objects": policy_objects(tick, motion_horizon_s=motion_horizon_s),
         "reset_run": reset_run,
         "timestamp_s": monotonic_s,
     }
