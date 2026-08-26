@@ -71,6 +71,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
         run: |
+          # GitHub runs every `run:` block as `bash -e -o pipefail`. Half the commands
+          # below are expected to exit non-zero in the GOOD case — a grep that finds no
+          # forbidden name, a `grep -c` that counts none — so -e is turned off here and
+          # every status is handled explicitly. Leaving it on made this step exit 1 with
+          # no output at all on its first real run, before it had checked anything.
+          set +e
           set -uo pipefail
 
           # Underscore is a word character to grep -E, so \b will not separate a_bbr_b.
@@ -200,6 +206,9 @@ jobs:
         # unrepresentable: the directory linted is the directory the config lives in.
         # `ruff check .` from inside it is exactly the command AGENTS.md documents.
         run: |
+          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
+          # commands that exit non-zero in the good case; statuses are handled explicitly.
+          set +e
           set -uo pipefail
           status=0
           linted=0
@@ -237,6 +246,9 @@ jobs:
         # peer_recall.py, and it was measured clean under its own labels/ruff.toml on
         # 2026-08-26, so adopting one there costs nothing today.
         run: |
+          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
+          # commands that exit non-zero in the good case; statuses are handled explicitly.
+          set +e
           set -uo pipefail
           GRANDFATHERED=13
           uncovered=0
@@ -338,6 +350,9 @@ jobs:
         env:
           PY: ${{ matrix.python }}
         run: |
+          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
+          # commands that exit non-zero in the good case; statuses are handled explicitly.
+          set +e
           set -uo pipefail
 
           skip_reason() {
@@ -409,8 +424,17 @@ jobs:
       - name: Per-directory counts
         if: always()
         run: |
+          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
+          # commands that exit non-zero in the good case; statuses are handled explicitly.
+          set +e
           set -uo pipefail
-          [ -s /tmp/counts.txt ] || { echo "::error::no counts were recorded"; exit 1; }
+          # An empty file here can only mean the step above already failed the job with
+          # "the discovery loop found nothing" — that is the empty-loop guard, and this
+          # step runs on always(), so do not double-report it as a second error.
+          if [ ! -s /tmp/counts.txt ]; then
+            echo "::warning::no counts were recorded — see the step above"
+            exit 0
+          fi
           awk '{c[$1]+=$2; t+=$2} END {for (d in c) printf "%6d  %s\n", c[d], d; printf "%6d  TOTAL\n", t}' \
             /tmp/counts.txt | sort -k2 | tee /tmp/by-dir.txt
           if [ -s /tmp/skipped-dirs.txt ]; then
@@ -429,6 +453,9 @@ jobs:
         # so its total is smaller by construction and comparing it would be wrong.
         if: matrix.authoritative == 'yes'
         run: |
+          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
+          # commands that exit non-zero in the good case; statuses are handled explicitly.
+          set +e
           set -uo pipefail
           status=0
 
