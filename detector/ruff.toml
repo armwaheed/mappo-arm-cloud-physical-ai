@@ -1,7 +1,7 @@
 # Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Lint settings for detector/. Byte-identical in effect to detector/labels/ruff.toml, and
+# Lint settings for detector/, and — via a one-line `extend` — for detector/labels/, and
 # one rule ahead of integration/ruff.toml and
 # robot-stack/unitree/go2/visual_nav/ruff.toml — a second style across directories that
 # are read together would be noise, and the repo has no root config to inherit. The one
@@ -22,11 +22,14 @@
 # integration/, visual_nav/, policy/ and dashboard/'s. So this is a gate, not a cleanup —
 # there was no debt, only no check.
 #
-# detector/labels/ruff.toml is left in place deliberately. Its own comment calls widening
-# it "a one-line move", and this is that move; it is kept rather than deleted because #86
-# records `cd detector/labels && ruff check . --config ruff.toml` as the command it
-# verified, and that command has to keep working. The two files must not drift: they are
-# the same three settings, and a diff between them is a bug.
+# detector/labels/ruff.toml is left in place deliberately, because #86 records
+# `cd detector/labels && ruff check . --config ruff.toml` as the command it verified and
+# that command has to keep working. It used to be a COPY of the settings below, with a
+# comment in each file saying the two must not drift — and it drifted anyway: it shipped in
+# #86 without the isort pin at the bottom of this file, which put eight I001 findings in
+# front of the next person who pointed it at labels/pipeline/. #96 added the pin by hand.
+# It is `extend = "../ruff.toml"` now instead, so there is nothing left to keep in step:
+# change this file and both directories change.
 line-length = 100
 
 # The robot's Jetson runs Python 3.8 (Ubuntu 20.04 / JetPack 5). Nothing in this directory
@@ -64,9 +67,24 @@ select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF", "FA"]
 "test_*.py" = ["E402"]
 
 [lint.isort]
-# peercap.py is a sibling MODULE, not a package, and ruff resolves first-party-ness from
-# the directory it is invoked in: standing in labels/pipeline/ it is first-party and wants
-# its own section; standing in detector/ or labels/ it is third-party and does not. Same
-# config file, opposite verdicts -- the #78 failure in miniature. Pinned here so this
-# config answers the same wherever it is run from.
+# peercap.py is a sibling MODULE, not a package, and ruff decides first-party-ness from
+# isort's `src`, which is anchored at the PROJECT ROOT. Under `--config <path>` the project
+# root is THE DIRECTORY YOU ARE STANDING IN, not the directory the config lives in; under
+# plain discovery it is the config's own directory. Measured with ruff 0.15.21:
+# `--show-settings` prints `linter.project_root = <cwd>` in the first case and
+# `= <the config's directory>` in the second.
+#
+# So standing in labels/pipeline/, peercap is first-party and wants its own section;
+# standing in detector/ or labels/, it is third-party and does not. Same config file,
+# opposite verdicts -- the #78 failure in miniature. Reproduced 2026-08-26 against the
+# labels config as it stood before #96: `cd detector/labels/pipeline &&
+# ruff check . --config ../ruff.toml` reports eight I001 findings, and `ruff check .` from
+# either documented directory reports none.
+#
+# WHAT THIS LINE FIXES AND WHAT IT DOES NOT. It pins ONE module, by name. Any future sibling
+# module beside a subdirectory has the same problem and needs the same line, and nothing in
+# ruff anchors `src` to the config's own directory to fix the class. So the fix that scales
+# is not here: .github/workflows/offline-checks.yml runs every ruff.toml from every
+# directory it governs, and from the repository root, and fails when two standpoints
+# disagree. That gate is what would catch the next one; this line is what it enforces.
 known-third-party = ["peercap"]

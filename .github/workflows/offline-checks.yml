@@ -20,6 +20,23 @@
 #   4. A forbidden name reached the tree by being copied in from an upstream repository and
 #      nothing detected it. The `naming` job below greps for it — see that job's comment.
 #
+# AND TWO THINGS THIS FILE ITSELF GOT WRONG, FIXED HERE:
+#
+#   5. It made AGENTS.md carry the per-directory test counts and re-measured them there,
+#      which turned the file every agent edits into a merge conflict on every change that
+#      added a test. Two collided on it in one night. The counts are generated into
+#      .github/test-inventory.tsv now, by .github/measure-suites.sh — the same script a
+#      person runs, because a generated file nobody can regenerate is worse than the
+#      hand-typed one it replaced. The enforcement did not move: the `docs` job checks the
+#      documented suites against that file, and `suites` re-measures the file itself.
+#   6. Its lint loop pinned each directory to its own config and stopped there. It does not
+#      pin the ANSWER: ruff anchors isort's `src` at the directory you are STANDING IN when
+#      a config is given with `--config`, so one config file returns opposite verdicts about
+#      the same module from two directories — eight I001 findings from inside
+#      detector/labels/pipeline/ that neither documented command produces. The loop above
+#      uses discovery and never saw them. Every config is now run from every directory it
+#      governs and the answers must agree.
+#
 # AND WHAT ITS SIBLING GOT WRONG. The only other CI in this family — the offline checks in
 # the upstream Go2 driver repository — walked a hard-coded `unitree/go2/*/` glob, which
 # silently excluded a whole top-level directory including a test suite. Its own "this
@@ -199,6 +216,33 @@ jobs:
       - name: Install ruff
         run: python -m pip install --disable-pip-version-check --quiet "ruff==0.15.21"
 
+      - name: Shellcheck the scripts this workflow runs
+        # .github/measure-suites.sh is the single implementation of "run every suite and
+        # count the `  ok  ` lines" — the copy CI runs and the copy a person runs are the
+        # same file, which is the whole reason the generated inventory is trustworthy. It
+        # is also the only file here that no ruff.toml can cover, so it gets the linter for
+        # its own language rather than none.
+        #
+        # PINNED, for the reason ruff is pinned: a new shellcheck adds checks and reddens
+        # an unrelated pull request. Installed from PyPI rather than used from the runner
+        # image so that the version is stated here and not inherited from ubuntu-22.04.
+        #
+        # DEFAULT SEVERITY, not `-o all`. The optional checks want ${braces} and [[ ]]
+        # everywhere, which would put the script in a different style from every `run:`
+        # block in this file. Clean at default severity with shellcheck 0.11.0.
+        run: |
+          python -m pip install --disable-pip-version-check --quiet "shellcheck-py==0.11.0.1"
+          # find, not ls: a glob that matches nothing would be passed through literally and
+          # shellcheck would fail on a filename — a red tick for the wrong reason. This
+          # counts first, so "no scripts" is reported as "this step checked nothing".
+          n="$(find .github -maxdepth 1 -name '*.sh' | wc -l | tr -d ' ')"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::no .sh found under .github/ — this step is checking nothing"
+            exit 1
+          fi
+          shellcheck .github/*.sh
+          echo "shellcheck: $n script(s) clean"
+
       - name: Lint each directory from inside itself, against its own config
         # THE DISCOVERY IS THE FIX. A PR reported "ruff clean" after running
         # integration/ruff.toml against robot-stack/unitree/go2/visual_nav/ and shipped 13
@@ -233,6 +277,129 @@ jobs:
           echo "linted $linted directories"
           exit $status
 
+      - name: A config must answer the same from every directory it governs
+        # ONE CONFIG FILE, OPPOSITE VERDICTS. The step above pins a directory to its own
+        # config. It does not pin the ANSWER, because ruff decides isort first-party-ness
+        # from `src`, and `src` is anchored at the PROJECT ROOT — which under
+        # `--config <path>` is THE DIRECTORY YOU ARE STANDING IN, not the directory the
+        # config lives in. (Under plain discovery it is the config's own directory.
+        # Measured with ruff 0.15.21: `--show-settings` prints
+        # `linter.project_root = <cwd>` in the first case and `= <config dir>` in the
+        # second.) A sibling module is therefore first-party from inside a subdirectory and
+        # third-party from above it, and
+        # `cd detector/labels/pipeline && ruff check . --config ../ruff.toml` reported
+        # EIGHT I001 findings that neither documented command produced. Reproduced
+        # 2026-08-26 against the config as it stood before #96 pinned the module by name.
+        #
+        # That is the #78 failure — a lint claim made against the wrong invocation context
+        # — in a form that no amount of care about WHICH config to run would prevent, and
+        # it is a verdict a human gets and CI does not, because the commands the configs
+        # document use `--config` and the loop above uses discovery.
+        #
+        # So this step fixes the invocation rather than trusting it: every config is run
+        # from the directory it lives in, from inside each subdirectory it governs, and
+        # from the repository root, and the three runs must report the same findings.
+        # `known-third-party` pins one module by name; this is what notices the next one.
+        #
+        # A GATE THAT CANNOT FIRE IS A GATE THAT NEVER FIRES. Before comparing anything
+        # real, the step builds a two-directory tree that is KNOWN to answer differently
+        # from two standpoints and asserts the comparison says so, then adds the one line
+        # that fixes it and asserts the comparison goes quiet. Without those, a bug in the
+        # path normalisation that made every comparison trivially equal would leave a green
+        # tick over a check that had stopped checking.
+        run: |
+          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
+          # commands that exit non-zero in the good case; statuses are handled explicitly.
+          set +e
+          set -uo pipefail
+
+          # findings <cwd> <config, relative to cwd> <target, relative to cwd>
+          # -> "path:line:col: CODE ..." per finding, paths made relative to the target so
+          #    that two standpoints are comparable, sorted so that order is not a finding.
+          #    The "Found N errors" summary is dropped: it is the same information counted,
+          #    and its wording differs between a clean run and a dirty one.
+          findings() {
+            ( cd "$1" && ruff check "$3" --config "$2" --output-format concise --no-cache 2>&1 ) \
+              | awk -v pre="$3/" '
+                  { line = $0
+                    if (pre != "./" && index(line, pre) == 1) line = substr(line, length(pre) + 1)
+                    if (line ~ /^[^ ].*:[0-9]+:[0-9]+: [A-Z]+[0-9]+/) print line }' \
+              | sort
+          }
+
+          # ---- self-test: a tree that is known to diverge --------------------------------
+          # sibling.py sits beside user.py inside sub/. Standing in sub/, it is first-party
+          # and isort wants it in its own section; standing in the parent, it is third-party
+          # and belongs in the block user.py already puts it in. Same config, both verdicts.
+          P="$(mktemp -d)"
+          mkdir -p "$P/sub"
+          printf 'line-length = 100\ntarget-version = "py38"\n\n[lint]\nselect = ["I"]\n' > "$P/ruff.toml"
+          printf 'VALUE = 1\n' > "$P/sub/sibling.py"
+          printf 'import os\n\nimport numpy\nimport sibling\n\nprint(os, numpy, sibling.VALUE)\n' > "$P/sub/user.py"
+          if [ "$(findings "$P" ruff.toml sub)" = "$(findings "$P/sub" ../ruff.toml .)" ]; then
+            echo "::error::self-test: the comparison did not notice a config that is KNOWN to answer differently from two directories — it is not checking anything"
+            rm -rf "$P"; exit 1
+          fi
+          printf '\n[lint.isort]\nknown-third-party = ["sibling"]\n' >> "$P/ruff.toml"
+          if [ "$(findings "$P" ruff.toml sub)" != "$(findings "$P/sub" ../ruff.toml .)" ]; then
+            echo "::error::self-test: the comparison reports a difference on a config that is KNOWN to answer the same from both directories — it would fail every pull request"
+            rm -rf "$P"; exit 1
+          fi
+          rm -rf "$P"
+          echo "self-test: the comparison catches a divergent config and clears a pinned one"
+
+          # ---- the real pairs -------------------------------------------------------------
+          # A subdirectory belongs to the NEAREST ruff.toml at or above it — the rule ruff
+          # itself uses — so a subdirectory carrying its own config is not this one's
+          # problem. Derived by globbing, never enumerated, for the same reason as the loop
+          # above: a pair nobody wrote down still gets checked.
+          status=0
+          checked=0
+          for config in $(find . -name ruff.toml -not -path './.git/*' | sort); do
+            d="$(dirname "$config")"; d="${d#./}"
+            for sub in $(find "$d" -type d -not -path '*/__pycache__/*' | sort); do
+              sub="${sub#./}"
+              [ "$sub" = "$d" ] && continue
+              ls "$sub"/*.py >/dev/null 2>&1 || continue
+              probe="$sub"; owner=""
+              while [ "$probe" != "." ] && [ -n "$probe" ]; do
+                if [ -f "$probe/ruff.toml" ]; then owner="$probe"; break; fi
+                probe="$(dirname "$probe")"
+              done
+              [ "$owner" = "$d" ] || continue
+
+              rel="${sub#"$d"/}"
+              back="$(printf '%s\n' "$rel" | sed 's|[^/][^/]*|..|g')"
+              from_config_dir="$(findings "$d" ruff.toml "$rel")"
+              from_subdir="$(findings "$sub" "$back/ruff.toml" .)"
+              from_root="$(findings . "$d/ruff.toml" "$sub")"
+              checked=$((checked + 1))
+
+              if [ "$from_config_dir" != "$from_subdir" ] || [ "$from_config_dir" != "$from_root" ]; then
+                echo "::error file=$d/ruff.toml::this config answers differently about '$sub' depending on where it is invoked from. ruff anchors isort's src at the directory you are standing in; pin the module with [lint.isort] known-third-party, or known-first-party."
+                echo "--- standing in $d          +++ standing in $sub"
+                diff <(printf '%s\n' "$from_config_dir") <(printf '%s\n' "$from_subdir")
+                echo "--- standing in $d          +++ standing in the repository root"
+                diff <(printf '%s\n' "$from_config_dir") <(printf '%s\n' "$from_root")
+                status=1
+              fi
+            done
+          done
+          if [ "$checked" -eq 0 ]; then
+            # Not an error: it is a legitimate state for no config to have a Python-bearing
+            # subdirectory. But an unannounced zero is how "this checked nothing" reads as
+            # "this passed", so say which it is. The self-test above already proved the
+            # comparison itself still works.
+            echo "::warning::no ruff.toml governs a subdirectory that holds Python — there was nothing to compare"
+          elif [ "$status" -eq 0 ]; then
+            echo "$checked config/subdirectory pair(s) answered the same from all three standpoints"
+          else
+            # Never print the reassuring line on the way out of a failure: the count above
+            # is how many pairs were CHECKED, not how many agreed.
+            echo "::error::a ruff.toml answers differently depending on where it is invoked — of $checked pair(s) checked, at least one disagreed"
+          fi
+          exit $status
+
       - name: Report the Python that no config covers
         # Scoped to the WHOLE TREE, not to the directories linted above — that is the
         # sibling repository's exact bug, where the warning about unlinted directories was
@@ -241,18 +408,53 @@ jobs:
         #
         # Warnings, not errors: adopting a config over a directory changes what is a
         # finding, and that is a judgement call for whoever owns the code, not for CI.
-        # The RATCHET below is the compromise — today's 12 are grandfathered, a 13th is
-        # not, so the class can shrink but not grow while nobody is deciding.
+        # The RATCHET below is the compromise — today's are grandfathered, one more is not,
+        # so the class can shrink but not grow while nobody is deciding.
         #
-        # It was 13 when this workflow was written, `detector/` among them. #92 landed
-        # detector/ruff.toml while this PR was open and the number dropped by one on its
-        # own, which is the ratchet working: the only way past it is to add a config.
+        # 13 when this workflow was written, 12 once #92 landed detector/ruff.toml, 8 now.
+        # THE FOUR THAT WENT WERE THE FREE ONES. All twelve were measured on 2026-08-26 at
+        # 3c23299 under the selection every other config in this repository carries
+        # (E,W,F,I,UP,B,C4,SIM,RET,RUF, line-length 100, target py38), and that measurement
+        # is the whole decision:
+        #
+        #   ADOPTED — already clean, so the config cost nothing but the file itself:
+        #     deploy/demo                                    0   -> deploy/ruff.toml
+        #     deploy/markers                                 0   -> deploy/ruff.toml
+        #     evidence/2026-08-24-peer-blue-panel            0   -> its own
+        #     evidence/2026-08-25-peer-runs                  0   -> its own
+        #
+        #   NOT ADOPTED — a config would be red on arrival, and the number is the price of
+        #   adopting one. 41 findings across eight directories:
+        #     robot-stack/unitree/go2/d1_arm                 8   F401 E501x2 SIM105 RUF002 RUF005 RUF046 RUF100
+        #     robot-stack/unitree/go2/lidar_sight            7   F401x2 I001 RUF046x2 SIM105 RUF100
+        #     robot-stack/unitree/go2/deploy                 5   I001x3 SIM105 RUF100
+        #     robot-stack/unitree/go2/locomotion             4   I001 SIM105x2 RUF003
+        #     robot-stack/unitree/go2/controller             3   I001 SIM105 RUF100
+        #     evidence/2026-08-24-peer-capture-and-gait-sweeps/tools
+        #                                                    9   I001x2 RUF010x4 C408x2 E702
+        #     evidence/2026-08-14-first-policy-driven-walk   4   C408x2 RUF001 B007
+        #     evidence/2026-08-19-what-the-policy-sees       1   I001
+        #
+        # NONE OF THE EIGHT IS VENDORED, GENERATED OR THIRD-PARTY — every file carries this
+        # repository's own copyright header — so none is excluded on principle and this list
+        # is debt with a price on it, not an exemption. Two things make it the owner's call
+        # rather than this change's:
+        #
+        #   * Every I001 above was inspected with `ruff check --select I001 --diff` on
+        #     2026-08-26 and none of them hoists an import above the `sys.path.insert` that
+        #     makes it importable — that trap does not apply here. But the one in
+        #     go2/deploy/go2_robot_io.py would DELETE the blank line its author put between
+        #     `numpy` and `arm_dc_robotkit`, i.e. it asserts that the shared core is
+        #     third-party. That is the same first-party judgement the step above exists to
+        #     make explicit, and it is not CI's to make.
+        #   * SIM105 rewrites `try/except/pass` into `contextlib.suppress` in four files
+        #     that talk to a robot's motion service. Equivalent is not the same as reviewed.
         run: |
           # bash -e is GitHub's default for `run:` blocks and the loops below rely on
           # commands that exit non-zero in the good case; statuses are handled explicitly.
           set +e
           set -uo pipefail
-          GRANDFATHERED=12
+          GRANDFATHERED=8
           uncovered=0
           for dir in $(find . -name '*.py' -not -path './.git/*' -not -path '*/__pycache__/*' \
                        -print | sed 's|/[^/]*$||' | sort -u); do
@@ -271,9 +473,130 @@ jobs:
           done
           echo "$uncovered directories hold Python that no ruff.toml covers"
           if [ "$uncovered" -gt "$GRANDFATHERED" ]; then
-            echo "::error::$uncovered unlinted directories, up from the $GRANDFATHERED grandfathered here. Add a ruff.toml, or raise GRANDFATHERED in this workflow and say in the PR why the code should not be linted."
+            echo "::error::$uncovered unlinted directories, up from the $GRANDFATHERED grandfathered here. Add a ruff.toml, or raise GRANDFATHERED in this workflow and say in the PR why the code should not be linted. The comment above prices every directory that is already on the list."
             exit 1
           fi
+
+  # ---------------------------------------------------------------------------------
+  docs:
+    name: AGENTS.md
+    runs-on: ubuntu-22.04
+    # WHAT MOVED, AND WHY THE ENFORCEMENT DID NOT GO WITH IT.
+    #
+    # AGENTS.md's "Before you say you are done" block used to carry a test count per
+    # directory, and the suites job below re-measured every one of them. That caught real
+    # drift: the block read 189 for a directory that measures 196 and 17 for one that
+    # measures 60, never listed three Go2 directories or detector/labels at all, and named
+    # ONE file in a directory of ten — 41 tests existed that the documented command never
+    # ran. Worth keeping.
+    #
+    # The cost was that every change adding a test had to edit AGENTS.md, which is also the
+    # file every agent edits for unrelated reasons. Two changes collided on it in one night
+    # and one had to hand its count diff to the other to apply. So the numbers moved to
+    # .github/test-inventory.tsv — generated by .github/measure-suites.sh, one line per
+    # directory, no total line, so two changes touching different suites touch different
+    # lines and neither has to do arithmetic to resolve.
+    #
+    # The enforcement is now two halves that meet in that file:
+    #
+    #   1. THIS JOB checks that AGENTS.md documents exactly the suites the inventory lists,
+    #      in both directions. It compares two files in the repository and needs no
+    #      interpreter, so it is seconds rather than minutes.
+    #   2. The suites job re-measures the inventory itself and fails on any disagreement.
+    #
+    # Neither half is worth anything alone — 1 on its own is two documents agreeing about
+    # a fiction — and that is exactly why 2 exists and why it runs on every pull request.
+    # The list of DIRECTORIES only changes when a suite is created or deleted, which is
+    # why it can stay in prose; the COUNTS changed on almost every pull request, which is
+    # why they could not.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AGENTS.md documents every suite, and carries no count that can rot
+        run: |
+          # bash -e is GitHub's default for `run:` blocks and several commands below exit
+          # non-zero in the GOOD case — a grep that finds no re-introduced count, a `comm`
+          # with no lines on one side. Statuses are handled explicitly.
+          set +e
+          set -uo pipefail
+          status=0
+          T="$(mktemp -d)"
+
+          INV=.github/test-inventory.tsv
+          if [ ! -f "$INV" ]; then
+            echo "::error::$INV is missing — it is generated by .github/measure-suites.sh --write"
+            exit 1
+          fi
+
+          sed -n '/^## Before you say you are done$/,/^## /p' AGENTS.md > "$T/block.md"
+          [ -s "$T/block.md" ] || { echo "::error file=AGENTS.md::the 'Before you say you are done' section is gone — CI parses it"; exit 1; }
+          # Only the fenced commands, never the prose around them: that prose quotes old
+          # counts on purpose, as the record of what drifted.
+          awk '/^```bash$/{f=1;next} /^```$/{f=0} f' "$T/block.md" > "$T/fenced.sh"
+          [ -s "$T/fenced.sh" ] || { echo "::error file=AGENTS.md::the block holds no fenced bash — CI parses it"; exit 1; }
+
+          # ---- self-test: a comparison that cannot report a difference reports none ------
+          # comm is the whole check. If the two sides were being fed empty files — a parser
+          # that matched nothing, a column that moved — every comparison below would pass
+          # silently. So run it once on a pair that is KNOWN to differ, and once on a pair
+          # that is KNOWN not to.
+          printf 'alpha\nbeta\n' > "$T/probe-a.txt"
+          printf 'alpha\ngamma\n' > "$T/probe-b.txt"
+          if [ -z "$(comm -3 "$T/probe-a.txt" "$T/probe-b.txt")" ]; then
+            echo "::error::self-test: comm reported no difference between two files that differ — this job is not checking anything"
+            exit 1
+          fi
+          if [ -n "$(comm -3 "$T/probe-a.txt" "$T/probe-a.txt")" ]; then
+            echo "::error::self-test: comm reported a difference between a file and itself — this job would fail every pull request"
+            exit 1
+          fi
+          rm -f "$T/probe-a.txt" "$T/probe-b.txt"
+          echo "self-test: the comparison separates two lists that differ and clears two that do not"
+
+          # ---- the two lists ---------------------------------------------------------------
+          awk '/^\(cd /{print $2}' "$T/fenced.sh" | sort -u > "$T/documented.txt"
+          awk -F'\t' '!/^#/ && NF == 2 {print $1}' "$INV" | sort -u > "$T/measured.txt"
+          if [ ! -s "$T/documented.txt" ]; then
+            echo "::error file=AGENTS.md::no '(cd <dir> && ...)' line parsed out of the block — a check that parses nothing passes everything"
+            status=1
+          fi
+          if [ ! -s "$T/measured.txt" ]; then
+            echo "::error file=.github/test-inventory.tsv::no '<dir><TAB><count>' line parsed out of the inventory — a check that parses nothing passes everything"
+            status=1
+          fi
+          echo "AGENTS.md documents $(wc -l < "$T/documented.txt" | tr -d ' ') suites; the inventory lists $(wc -l < "$T/measured.txt" | tr -d ' ')"
+
+          while IFS= read -r d; do
+            [ -z "$d" ] && continue
+            echo "::error file=AGENTS.md::AGENTS.md tells a reader to run tests in '$d', and the inventory records no suite there. Either the line is stale, or the suite is not being measured."
+            status=1
+          done < <(comm -23 "$T/documented.txt" "$T/measured.txt")
+
+          # The direction that caught three Go2 directories and detector/labels: a suite
+          # that runs and that the documented command never reaches.
+          while IFS= read -r d; do
+            [ -z "$d" ] && continue
+            echo "::error file=AGENTS.md::'$d' runs tests and AGENTS.md does not tell anybody to run them — add the line to the block"
+            status=1
+          done < <(comm -13 "$T/documented.txt" "$T/measured.txt")
+
+          # ---- and no number may come back --------------------------------------------------
+          # The counts are generated now. A hand-typed one beside a command is the thing
+          # that rotted, and it would rot again in silence, because nothing downstream reads
+          # it any more.
+          if grep -nE '^\(cd .*#[ \t]*[0-9]+[ \t]*$' "$T/fenced.sh"; then
+            echo "::error file=AGENTS.md::a per-directory test count is back in the block, on the line(s) above. Counts live in .github/test-inventory.tsv, which CI re-measures; a number here is checked by nothing."
+            status=1
+          fi
+          if grep -nE '^#[ \t]*total[ \t]+[0-9]+' "$T/fenced.sh"; then
+            echo "::error file=AGENTS.md::a total is back in the block. It was the one line every test-adding change had to rewrite, which is what made this file a merge collision."
+            status=1
+          fi
+
+          if [ "$status" -eq 0 ]; then
+            echo "AGENTS.md and .github/test-inventory.tsv name the same $(wc -l < "$T/measured.txt" | tr -d ' ') suites, and the block carries no count"
+          fi
+          exit $status
 
   # ---------------------------------------------------------------------------------
   suites:
@@ -339,178 +662,58 @@ jobs:
                 f"cv2 {cv2.__version__}  pillow {PIL.__version__}  pytest {pytest.__version__}")
           EOF
 
-      - name: Run every test file the tree holds
-        # GLOBBED, NEVER ENUMERATED. AGENTS.md used to name
-        # test_lite3_state_probe.py explicitly, in a directory that holds ten test files;
-        # the other nine were never run by the documented command. `find` cannot make that
-        # mistake. The SKIP list below is enumerated, and that direction is safe: a file
-        # nobody has listed gets RUN. Never invert it.
+      - name: Run every test file the tree holds, and check the counts against the inventory
+        # THE DISCOVERY LOOP MOVED INTO .github/measure-suites.sh, AND THAT IS THE CHANGE.
+        # It used to live here, and the per-directory counts it was compared against lived
+        # in AGENTS.md — so every change that added a test had to edit AGENTS.md, and two
+        # changes collided on it in a single night; one had to hand its count diff to the
+        # other to apply. The counts are generated into .github/test-inventory.tsv now.
         #
-        # Each suite is run from its own directory, because each puts that directory on
-        # sys.path to import its siblings; from the repo root they die on the import
-        # rather than on a test.
+        # A generated file is only an improvement if a person can regenerate it. Otherwise
+        # the loop becomes "push, read the CI error, paste the number", which is worse than
+        # the file it replaced. So there is ONE implementation of "run every suite and count
+        # the `  ok  ` lines", and CI runs the same file a person runs:
+        #
+        #     bash .github/measure-suites.sh --write
+        #
+        # A second copy of the loop living here would be the same bug as two ruff.toml files
+        # that are meant to be identical and are not — which is the other half of this
+        # change, and is what put eight I001 findings in front of a reader this morning.
+        #
+        # --check ON THE AUTHORITATIVE LEG ONLY. The 3.8 leg deliberately skips dashboard/,
+        # so its inventory is shorter by construction and comparing it would be wrong. The
+        # script refuses --check below 3.11 itself, and refuses it without numpy, cv2,
+        # Pillow, pytest and aiohttp importable, so neither this workflow nor a person can
+        # write a short inventory by accident and have it read as deleted tests. The 3.8 leg
+        # still RUNS every other suite, which is the entire point of having it.
+        #
+        # The script asks the interpreter what version it is rather than being told by the
+        # matrix: a PY that disagreed with matrix.python would silently measure the wrong
+        # thing, and the two cannot disagree if only one of them is consulted.
         env:
-          PY: ${{ matrix.python }}
+          PY: python
+          MEASURED_OUT: ${{ runner.temp }}/measured.tsv
+          AUTHORITATIVE: ${{ matrix.authoritative }}
         run: |
-          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
-          # commands that exit non-zero in the good case; statuses are handled explicitly.
-          set +e
-          set -uo pipefail
-
-          skip_reason() {
-            case "$1" in
-              ./dashboard/test_robot_driver.py)
-                echo "imports device_connect_edge — the Device Connect edge package is not on PyPI before launch. Fails identically on main."
-                return ;;
-              ./robot-stack/unitree/go2/deploy/test_go2_robot_io.py)
-                echo "imports arm_dc_robotkit — the shared core is not on PyPI before launch. Fails identically on main."
-                return ;;
-            esac
-            # dashboard/ needs Python >= 3.11 (Device Connect). drive_bridge.py is the
-            # deliberate exception: it is the 3.8 half of the two-env bridge and running
-            # its suite on 3.8 is the only thing that proves the split still holds.
-            case "$1" in
-              ./dashboard/test_drive_bridge.py) : ;;
-              ./dashboard/*)
-                if [ "$PY" = "3.8" ]; then
-                  echo "dashboard/ requires Python >= 3.11 (Device Connect); this leg is the robot's 3.8"
-                fi ;;
-            esac
-          }
-
-          status=0; ran=0; skipped=0; total=0
-          : > /tmp/counts.txt
-          : > /tmp/skipped-dirs.txt
-
-          for test in $(find . -name 'test_*.py' -not -path './.git/*' \
-                        -not -path '*/__pycache__/*' | sort); do
-            dir="$(dirname "$test")"
-            reason="$(skip_reason "$test")"
-            if [ -n "$reason" ]; then
-              echo "::warning file=${test#./}::SKIPPED — $reason"
-              echo "$dir" >> /tmp/skipped-dirs.txt
-              skipped=$((skipped + 1))
-              continue
-            fi
-            echo "::group::$test"
-            if out="$( (cd "$dir" && python "$(basename "$test")") 2>&1 )"; then rc=0; else rc=$?; fi
-            printf '%s\n' "$out"
-            echo "::endgroup::"
-            n="$(printf '%s\n' "$out" | grep -c '^  ok  ')"
-            if [ "$rc" -ne 0 ]; then
-              echo "::error file=${test#./}::FAILED (exit $rc) after $n test(s)"
-              status=1
-            elif [ "$n" -eq 0 ]; then
-              # Exit 0 and no "ok" lines means the runner ran nothing. That is the shape
-              # of a green tick over an empty suite, and it is worse than a red one.
-              echo "::error file=${test#./}::exited 0 but printed no '  ok  ' line — it ran no tests"
-              status=1
-            fi
-            # A test that quietly degrades because an import failed is a missing
-            # dependency reading as a pass; surface it where somebody will see it.
-            printf '%s\n' "$out" | grep '^  skip  ' | while IFS= read -r s; do
-              echo "::warning file=${test#./}::a test degraded rather than ran —${s#*skip}"
-            done
-            echo "$dir $n" >> /tmp/counts.txt
-            ran=$((ran + 1)); total=$((total + n))
-          done
-
-          if [ "$ran" -eq 0 ]; then
-            echo "::error::no test suite was run — the discovery loop found nothing"
-            exit 1
+          if [ "$AUTHORITATIVE" = "yes" ]; then
+            bash .github/measure-suites.sh --check
+          else
+            bash .github/measure-suites.sh
           fi
-          echo "ran $ran files, skipped $skipped, $total tests passed"
-          echo "TOTAL=$total" >> "$GITHUB_ENV"
-          exit $status
 
       - name: Per-directory counts
         if: always()
         run: |
-          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
-          # commands that exit non-zero in the good case; statuses are handled explicitly.
+          # bash -e is GitHub's default for `run:` blocks and the commands below exit
+          # non-zero in the good case; statuses are handled explicitly.
           set +e
           set -uo pipefail
           # An empty file here can only mean the step above already failed the job with
           # "the discovery loop found nothing" — that is the empty-loop guard, and this
           # step runs on always(), so do not double-report it as a second error.
-          if [ ! -s /tmp/counts.txt ]; then
+          if [ ! -s "${{ runner.temp }}/measured.tsv" ]; then
             echo "::warning::no counts were recorded — see the step above"
             exit 0
           fi
-          awk '{c[$1]+=$2; t+=$2} END {for (d in c) printf "%6d  %s\n", c[d], d; printf "%6d  TOTAL\n", t}' \
-            /tmp/counts.txt | sort -k2 | tee /tmp/by-dir.txt
-          if [ -s /tmp/skipped-dirs.txt ]; then
-            echo "directories with skipped files:"; sort -u /tmp/skipped-dirs.txt
-          fi
-
-      - name: The numbers here must be the numbers AGENTS.md claims
-        # THE REASON THIS STEP EXISTS. AGENTS.md's "Before you say you are done" block is
-        # the specification for what "done" means, and PRs quote its numbers as evidence.
-        # It had drifted to 189 for a directory that measures 196 and 17 for one that
-        # measures 60, and nothing could notice. Parsing the block and comparing it against
-        # what actually ran makes the document and the measurement the same object: change
-        # the tests and this fails until you change the block, and vice versa.
-        #
-        # Only the authoritative leg compares. The 3.8 leg deliberately skips dashboard/,
-        # so its total is smaller by construction and comparing it would be wrong.
-        if: matrix.authoritative == 'yes'
-        run: |
-          # bash -e is GitHub's default for `run:` blocks and the loops below rely on
-          # commands that exit non-zero in the good case; statuses are handled explicitly.
-          set +e
-          set -uo pipefail
-          status=0
-
-          sed -n '/^## Before you say you are done$/,/^## /p' AGENTS.md > /tmp/block.md
-          [ -s /tmp/block.md ] || { echo "::error file=AGENTS.md::the 'Before you say you are done' section is gone — CI parses it"; exit 1; }
-
-          awk '
-            /^\(cd / {
-              dir = $2
-              if (match($0, /#[ \t]*[0-9]+[ \t]*$/)) {
-                n = substr($0, RSTART); gsub(/[^0-9]/, "", n); print dir, n
-              }
-            }' /tmp/block.md | sort > /tmp/claimed.txt
-          awk '/^#[ \t]*total[ \t]+[0-9]+/ {gsub(/[^0-9]/, "", $0); print}' /tmp/block.md > /tmp/claimed-total.txt
-
-          if [ ! -s /tmp/claimed.txt ]; then
-            echo "::error file=AGENTS.md::no '(cd <dir> ...)   # <count>' lines parsed out of the block — a check that parses nothing passes everything"
-            exit 1
-          fi
-          echo "parsed $(wc -l < /tmp/claimed.txt | tr -d " ") claimed directory counts from AGENTS.md"
-
-          awk '{c[$1]+=$2} END {for (d in c) print substr(d, 3), c[d]}' /tmp/counts.txt | sort > /tmp/measured.txt
-
-          while read -r dir claimed; do
-            measured="$(awk -v d="$dir" '$1==d {print $2}' /tmp/measured.txt)"
-            if [ -z "$measured" ]; then
-              echo "::error file=AGENTS.md::AGENTS.md claims $claimed tests in '$dir', and nothing there ran"
-              status=1
-            elif [ "$measured" != "$claimed" ]; then
-              echo "::error file=AGENTS.md::'$dir': AGENTS.md says $claimed, CI measured $measured"
-              status=1
-            fi
-          done < /tmp/claimed.txt
-
-          # And the other direction — a directory of tests nobody wrote down. Three of
-          # them existed when this workflow was written (go2 controller, d1_arm and
-          # lidar_sight, 28 tests between them) and the documented command ran none.
-          while read -r dir measured; do
-            if ! awk -v d="$dir" '$1==d {found=1} END {exit !found}' /tmp/claimed.txt; then
-              echo "::error file=AGENTS.md::'$dir' ran $measured tests and AGENTS.md does not list it — add it to the block"
-              status=1
-            fi
-          done < /tmp/measured.txt
-
-          claimed_total="$(cat /tmp/claimed-total.txt)"
-          measured_total="$(awk '{t+=$2} END {print t+0}' /tmp/measured.txt)"
-          if [ -z "$claimed_total" ]; then
-            echo "::error file=AGENTS.md::the block has no '# total <n>' line"
-            status=1
-          elif [ "$claimed_total" != "$measured_total" ]; then
-            echo "::error file=AGENTS.md::total: AGENTS.md says $claimed_total, CI measured $measured_total"
-            status=1
-          else
-            echo "AGENTS.md and CI agree: $measured_total tests across $(wc -l < /tmp/measured.txt | tr -d " ") directories"
-          fi
-          exit $status
+          awk -F'\t' '!/^#/ && NF == 2 { printf "%6d  %s\n", $2, $1; t += $2 }
+                      END { printf "%6d  TOTAL\n", t }' "${{ runner.temp }}/measured.tsv"

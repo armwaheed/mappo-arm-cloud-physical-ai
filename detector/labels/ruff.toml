@@ -1,59 +1,23 @@
 # Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
-# Lint settings for detector/labels/. Deliberately identical to detector/ruff.toml, and one
-# rule ahead of integration/ruff.toml and robot-stack/unitree/go2/visual_nav/ruff.toml — a
-# second style across directories that are read together would be noise, and the repo has
-# no root config to inherit. The one rule is FA; see the comment above `select` for what it
-# caught and why it is here first.
+# Lint settings for detector/labels/ — the same object as detector/ruff.toml, not a copy of
+# it.
 #
-#   ruff check . --config ruff.toml
+#   cd detector/labels && ruff check .
+#   cd detector/labels && ruff check . --config ruff.toml   # what #86 recorded; still works
 #
-# Scoped to labels/ rather than to detector/ only because this change does not own the
-# files above it. Measured 2026-08-26: `ruff check . --config labels/ruff.toml` from
-# detector/ is ALSO clean, so widening it later costs nothing — it is a one-line move, not
-# a cleanup. It is left narrow here so that a config does not appear over files another
-# change is mid-edit on.
-line-length = 100
-
-# The robot's Jetson runs Python 3.8 (Ubuntu 20.04 / JetPack 5). Nothing in this directory
-# runs on the robot, but the labelling pipeline and the eval tooling move between here and
-# detector/, and splitting the target by directory is a trap the first time a helper moves.
-target-version = "py38"
-
-[lint]
-# FA IS ONE RULE MORE THAN THE OTHER EIGHT ruff.toml FILES CARRY, AND THAT IS THE POINT.
-# `target-version = "py38"` above does not mean "reject anything newer than 3.8". All it
-# does to annotations is SUPPRESS UP006, the rule that rewrites `List[str]` into
-# `list[str]`; no rule in the set above says the modern form is too NEW for the declared
-# target. So the config silently permitted exactly the thing it was written to forbid, and
-# `detector/labels/pipeline/` shipped five modules -- blobs, build, checks, p4plate, track
-# -- annotated with PEP 585 builtin generics and no `from __future__ import annotations`.
-# Every one raised `TypeError: 'type' object is not subscriptable` at its FIRST `def`
-# under CPython 3.8.20, before any of them did a line of work; nothing noticed, because
-# test_peercap.py parses those modules as source rather than importing them.
+# WHY `extend` AND NOT THE SETTINGS AGAIN. Both files already said, in their own comments,
+# that the two must not drift and that "a diff between them is a bug" — and then one of them
+# shipped without an isort pin the other carried, and a reader who pointed this config at
+# labels/pipeline/ got eight I001 findings that neither documented command produces. That
+# is what a rule enforced by a comment is worth. `extend` makes the drift unrepresentable
+# rather than forbidden: there is ONE set of settings, in detector/ruff.toml, and this file
+# selects it. `ruff check . --show-settings` prints byte-identical linter settings for the
+# two, which is the check that the two files really are one thing.
 #
-# FA102 is the rule that says it. The declared target is right -- CI runs a 3.8 leg over
-# this directory because the Go2's Jetson is Ubuntu 20.04 / JetPack 5 -- so the missing
-# thing was the check, not the target.
-#
-# Measured 2026-08-26 at 900788b, with the five modules fixed: `ruff check . --extend-select
-# FA` is clean in all ten ruff.toml directories. Widening FA to the other eight therefore
-# costs nothing and is a one-line move for whoever owns them; it is left out of this change
-# because this change does not own those files.
-select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF", "FA"]
-
-[lint.per-file-ignores]
-# The test module puts this directory on sys.path before importing check_manifest, so its
-# imports genuinely are not at the top of the file. Same idiom as the repo's other suites.
-"test_*.py" = ["E402"]
-
-[lint.isort]
-# Carried over from detector/ruff.toml, where it already lives, so that the two files
-# genuinely answer the same and not just nearly. peercap.py is a sibling MODULE, not a
-# package, and ruff resolves first-party-ness from the directory it is invoked in: standing
-# in labels/pipeline/ it is first-party and wants its own section; standing here or in
-# detector/ it is third-party and does not. Without this line, pointing THIS config at
-# labels/pipeline/ reported eight I001 findings that neither documented command produces --
-# the #78 failure in miniature, and it caught a reader of this file on 2026-08-26.
-known-third-party = ["peercap"]
+# The path is resolved relative to THIS FILE, not to the working directory, so it holds from
+# anywhere. Kept as a file rather than deleted because #86 recorded
+# `cd detector/labels && ruff check . --config ruff.toml` as the command it verified, and
+# that command has to keep working.
+extend = "../ruff.toml"

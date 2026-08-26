@@ -1,0 +1,28 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint settings for deploy/. Same selection and line length as the rest of the repository —
+# there is no root config to inherit, so every directory that is linted carries its own.
+#
+#   cd deploy && ruff check .
+#
+# ONE FILE HERE RATHER THAN ONE PER SUBDIRECTORY. deploy/demo and deploy/markers are two
+# standalone scripts with no shared code, and two identical configs are two files that can
+# drift — which is not hypothetical: detector/ruff.toml and detector/labels/ruff.toml each
+# said in their own comments that the two must not drift, and then one of them shipped
+# without an isort pin the other carried.
+#
+# IT SURFACES NOTHING, AND THAT IS THE POINT. Measured 2026-08-26 against `main` at 3c23299
+# with ruff 0.15.21, before this file existed: both scripts were already clean under this
+# selection. So this is a gate, not a cleanup — there was no debt here, only no check. Both
+# directories were among the twelve that CI could previously only warn about.
+#
+# NO per-file-ignores. make_marker_sheet.py does import below a `sys.path.insert`, which is
+# the idiom the other configs exempt — but it already carries its own `# noqa: E402` on
+# that line, so adding `"*.py" = ["E402"]` here would not silence anything. It would make
+# that noqa redundant and turn RUF100 red instead.
+line-length = 100
+target-version = "py38"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]

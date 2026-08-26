@@ -1,0 +1,25 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# GENERATED — DO NOT EDIT BY HAND. Regenerate with:
+#
+#     bash .github/measure-suites.sh --write
+#
+# One line per directory that runs tests: <directory> TAB <number of "  ok  " lines>.
+# CI re-measures this on every pull request and fails if a number here disagrees, in
+# either direction, including a directory of tests this file does not list. Do not edit a
+# number to make CI pass; the number is the measurement.
+#
+# There is no total line on purpose: a total is a line every test-adding change collides on.
+dashboard	110
+detector/labels	13
+detector/labels/pipeline	14
+integration	196
+policy	33
+robot-stack/deep_robotics/lite3/commissioning	188
+robot-stack/deep_robotics/lite3/locomotion	64
+robot-stack/deep_robotics/lite3/visual_nav	64
+robot-stack/unitree/go2/controller	6
+robot-stack/unitree/go2/d1_arm	15
+robot-stack/unitree/go2/lidar_sight	7
+robot-stack/unitree/go2/visual_nav	336

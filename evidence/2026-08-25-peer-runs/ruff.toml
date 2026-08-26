@@ -1,0 +1,21 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint settings for this evidence directory. Same selection and line length as
+# evidence/2026-08-25-expansion-as-a-false-positive-filter/ruff.toml, which is the precedent
+# for linting an evidence run's tooling rather than leaving it uncovered.
+#
+#   cd evidence/2026-08-25-peer-runs && ruff check .
+#
+# bearings.py was already clean under this selection before this file was added (measured
+# 2026-08-26 at 3c23299, ruff 0.15.21), so nothing here was rewritten to make a gate green.
+# This directory was one of the twelve CI could previously only warn about.
+#
+# NO per-file-ignores, unlike the expansion directory's config: bearings.py imports nothing
+# but the standard library and has no `sys.path.insert` at all, so an E402 exemption here
+# would be a rule that can never fire.
+line-length = 100
+target-version = "py38"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
