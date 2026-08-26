@@ -277,14 +277,70 @@ class Lite3CameraSource:
             self._camera.stop()
 
 
+class HttpCameraSource:
+    """Frames pulled from an HTTP endpoint that returns one JPEG per GET.
+
+    ⚠️ THIS IS A LIVE CAMERA, NOT A REPLAY, AND IT IS DELIBERATELY UNLABELLED.
+    :class:`ReplayCameraSource` burns a label into every frame because a recording shown
+    as a live feed is a false claim. This is the opposite case: the frames are live, so
+    stamping them would be the false claim.
+
+    It exists because of a version wall. `device-connect-edge` needs Python >= 3.11 and
+    the Go2's Jetson has 3.8.10 and 3.9.5, so the driver cannot run on the robot and
+    :class:`Go2CameraSource` -- which needs `unitree_sdk2py` -- cannot run off it. The SDK
+    call stays on the robot behind a small HTTP server; only the encoded frame crosses.
+
+    Read-only by construction: it issues GETs. There is no write path, so no configuration
+    of this source can move a robot.
+    """
+
+    width, height = 0, 0
+
+    def __init__(self, url, timeout=4.0):
+        self._url = url
+        self._timeout = timeout
+        try:
+            self.read()
+        except CameraUnavailable:
+            raise
+        except Exception as exc:
+            raise CameraUnavailable(f"camera url {url!r} is not answering: {exc!r}") from exc
+
+    def read(self):
+        import urllib.error
+        import urllib.request
+        try:
+            with urllib.request.urlopen(self._url, timeout=self._timeout) as response:
+                if response.status != 200:
+                    raise CameraUnavailable(
+                        f"camera url {self._url!r} answered HTTP {response.status}")
+                body = response.read()
+        except urllib.error.HTTPError as exc:
+            raise CameraUnavailable(
+                f"camera url {self._url!r} answered HTTP {exc.code}") from exc
+        except OSError as exc:
+            raise CameraUnavailable(f"camera url {self._url!r} unreachable: {exc}") from exc
+        # A JPEG starts FF D8 FF. Checking is worth two bytes: an HTML error page is a
+        # 200 with a body, and it would otherwise reach the viewport as a broken image.
+        if not body[:3] == b"\xff\xd8\xff":
+            raise CameraUnavailable(
+                f"camera url {self._url!r} returned {len(body)} bytes that are not a JPEG")
+        return body
+
+    def close(self):
+        return None
+
+
 def open_source(platform, *, iface="eth0", source=0, pose_fn=None, replay_dir=None,
-                replay_label="REPLAY"):
+                replay_label="REPLAY", camera_url=None):
     """The camera for one platform, or :class:`CameraUnavailable` saying why not.
 
     ``replay_dir`` overrides everything: a directory of JPEGs is served in place of a
     camera, labelled in the pixels. That is how a demo host with no robot shows real
     footage without anybody being able to mistake it for a live feed.
     """
+    if camera_url:
+        return HttpCameraSource(camera_url)
     if replay_dir:
         return ReplayCameraSource(replay_dir, label=replay_label)
     if platform == "sim":
