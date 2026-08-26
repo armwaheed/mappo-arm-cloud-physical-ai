@@ -33,41 +33,74 @@ current, and it documents three mappings that are *not* the obvious ones.
 ## Before you say you are done
 
 Every suite prints one `  ok  <name>` line per test and a `<name>: N/N passed` summary.
-The counts below are those `ok` lines. CI re-measures every one of them on each push, so
-the block is the count for the commit you are reading rather than for a commit named here
-— which is what a fixed SHA stopped being the moment the next PR added a test.
-Run each line from the repository root; the parentheses are load-bearing, because the
-directories are nested and a bare `cd` would run the next line from inside the last one.
+Run everything, from the repository root, with the same script CI runs:
 
 ```bash
-(cd policy && for t in test_*.py; do python3 "$t"; done)                                         #   33
-(cd integration && for t in test_*.py; do python3 "$t"; done)                                    #  196
-(cd detector/labels && for t in test_*.py; do python3 "$t"; done)                                #   13
-(cd detector/labels/pipeline && for t in test_*.py; do python3 "$t"; done)                       #   14
-(cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 "$t"; done)             #  336
-(cd robot-stack/unitree/go2/controller && for t in test_*.py; do python3 "$t"; done)             #    6
-(cd robot-stack/unitree/go2/d1_arm && for t in test_*.py; do python3 "$t"; done)                 #   15
-(cd robot-stack/unitree/go2/lidar_sight && for t in test_*.py; do python3 "$t"; done)            #    7
-(cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 "$t"; done)     #   64
-(cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)     #   64
-(cd robot-stack/deep_robotics/lite3/commissioning && for t in test_*.py; do python3 "$t"; done)  #  188
-(cd dashboard && for t in test_*.py; do python3 "$t"; done)                                      #  110
-#                                                                                          total 1046
+bash .github/measure-suites.sh            # run every suite
+bash .github/measure-suites.sh --write    # ...and refresh .github/test-inventory.tsv
+bash .github/measure-suites.sh --check    # ...and fail if it disagrees — what CI runs
 ```
 
-Then `ruff check .` from inside **every** directory that holds a `ruff.toml` — there are
-ten, and running one directory's config against another directory's code is how a PR came
-to report "ruff clean" while shipping 13 findings. Twelve directories still hold Python
-that no `ruff.toml` covers at all: the five Go2 directories beside `visual_nav`, both of
-`deploy/`, and five `evidence/` run directories. CI names each of them in a warning, and
-fails if a thirteenth appears — the count can shrink, and cannot grow unnoticed.
+`--write` and `--check` need **Python >= 3.11** with `numpy`, `opencv-python`, `Pillow`,
+`pytest` and `aiohttp` importable, and refuse to run otherwise rather than writing an
+inventory that is short by however many suites the interpreter could not reach. Plain
+`bash .github/measure-suites.sh` runs on 3.8 and still fails on a broken suite; it just
+does not touch the counts. Or run one suite at a time — the parentheses are load-bearing,
+because the directories are nested and a bare `cd` would run the next line from inside the
+last one:
 
-**CI enforces this block rather than trusting it.**
+```bash
+(cd policy && for t in test_*.py; do python3 "$t"; done)
+(cd integration && for t in test_*.py; do python3 "$t"; done)
+(cd detector/labels && for t in test_*.py; do python3 "$t"; done)
+(cd detector/labels/pipeline && for t in test_*.py; do python3 "$t"; done)
+(cd robot-stack/unitree/go2/visual_nav && for t in test_*.py; do python3 "$t"; done)
+(cd robot-stack/unitree/go2/controller && for t in test_*.py; do python3 "$t"; done)
+(cd robot-stack/unitree/go2/d1_arm && for t in test_*.py; do python3 "$t"; done)
+(cd robot-stack/unitree/go2/lidar_sight && for t in test_*.py; do python3 "$t"; done)
+(cd robot-stack/deep_robotics/lite3/locomotion && for t in test_*.py; do python3 "$t"; done)
+(cd robot-stack/deep_robotics/lite3/visual_nav && for t in test_*.py; do python3 "$t"; done)
+(cd robot-stack/deep_robotics/lite3/commissioning && for t in test_*.py; do python3 "$t"; done)
+(cd dashboard && for t in test_*.py; do python3 "$t"; done)
+```
+
+**There are no counts in this file, and putting one back fails the build.** They are in
+`.github/test-inventory.tsv`, one line per directory and no total, because the counts were
+here until they made *this* file a merge conflict on every change that added a test — two
+collided on it in one night and one had to hand its count diff to the other to apply. A
+generated file only helps if you can regenerate it, which is what `--write` above is for;
+never hand-edit a number into it.
+
+**CI enforces both halves rather than trusting either.**
 [`.github/workflows/offline-checks.yml`](.github/workflows/offline-checks.yml) discovers
-every `test_*.py` and every `ruff.toml` in the tree by globbing, re-measures each number
-above, and fails if a number here and a number it measured disagree — in either direction,
-including a directory of tests that this block does not list. Do not edit a count here to
-make CI pass; the count is the measurement.
+every `test_*.py` and every `ruff.toml` by globbing, re-measures every count in the
+inventory and fails on any disagreement in either direction; and separately checks that the
+list of `(cd …)` lines above and the list of directories in the inventory are the same set,
+so a suite that runs and is not documented here is an error, and so is a line here that
+runs nothing. That list changes when a *directory* appears, not when a test does, which is
+why it can live in prose and the numbers cannot.
+
+Then `ruff check .` from inside **every** directory that holds a `ruff.toml` — there are
+thirteen, and running one directory's config against another directory's code is how a PR
+came to report "ruff clean" while shipping 13 findings.
+
+**A `ruff.toml` given with `--config` is resolved against the directory you are standing
+in, not the directory it lives in.** ruff anchors isort's `src` at the project root, and
+under `--config` the project root is your current directory (under plain discovery it is
+the config's own directory). So a sibling module is first-party from inside a subdirectory
+and third-party from above it, and one config file returns opposite verdicts:
+`cd detector/labels/pipeline && ruff check . --config ../ruff.toml` reported eight `I001`
+findings that neither documented command produces. `known-third-party` pins the module by
+name; CI now runs every config from every directory it governs, and from the repository
+root, and fails if the three disagree — because that is a verdict a human gets and CI's own
+lint loop, which uses discovery, does not.
+
+Eight directories still hold Python that no `ruff.toml` covers at all: five Go2 directories
+beside `visual_nav`, and three `evidence/` run directories. CI names each in a warning and
+fails if a ninth appears — the count can shrink, and cannot grow unnoticed. The workflow
+comment beside the ratchet prices each of the eight: 41 findings between them, which is why
+they are still warnings and not gates, and none of them is vendored, generated or
+third-party.
 
 ### What is not counted, and why
 
@@ -76,7 +109,7 @@ make CI pass; the count is the measurement.
   PyPI before launch, so both die at `ModuleNotFoundError` rather than at a test, and both
   fail that way on `main` today. CI skips them and says so with a `::warning::`. **A
   missing dependency is not a pass and is not a regression — install it or say so.**
-- `dashboard/`'s other 110 need **Python >= 3.11**, which is what Device Connect requires,
+- `dashboard/`'s other suites need **Python >= 3.11**, which is what Device Connect requires,
   and that is why `dashboard/drive_bridge.py` is a separate Python 3.8 process rather than
   an import. CI runs a `3.8` leg and a `3.11` leg for exactly this reason: the Go2's Jetson
   is Ubuntu 20.04 / JetPack 5, so 3.8 is what the robot code has to import under, and the
