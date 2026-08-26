@@ -12,7 +12,7 @@
 #
 # There is no total line on purpose: a total is a line every test-adding change collides on.
 dashboard	110
-detector/labels	13
+detector/labels	28
 detector/labels/pipeline	14
 integration	234
 policy	33
@@ -22,4 +22,4 @@ robot-stack/deep_robotics/lite3/visual_nav	75
 robot-stack/unitree/go2/controller	6
 robot-stack/unitree/go2/d1_arm	15
 robot-stack/unitree/go2/lidar_sight	7
-robot-stack/unitree/go2/visual_nav	368
+robot-stack/unitree/go2/visual_nav	388

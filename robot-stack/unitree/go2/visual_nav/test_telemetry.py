@@ -15,16 +15,27 @@ Pure stdlib. Run: ``python3 test_telemetry.py``
 """
 from __future__ import annotations
 
+import io
 import json
 import math
 import os
+import statistics
 import sys
 import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from avoidance import Command, Obstacle
-from telemetry import SCHEMA, TelemetryWriter
+from telemetry import (
+    SCHEMA,
+    TICK_STAGES,
+    TelemetryWriter,
+    TickProfiler,
+    read_run,
+    report,
+    summarise,
+)
 
 POSE = (1.25, -0.5, 0.3)
 GOAL = (3.195, 0.398)
@@ -377,6 +388,245 @@ def test_a_goal_source_without_a_crop_records_null_rather_than_failing():
         _tick(writer)
         assert _read(directory)[1]["perception"]["goal_crop"] is None
         assert _read(directory)[1]["sightings"] == []
+
+
+# ── Where the tick went ─────────────────────────────────────────────────────
+class _Clock:
+    """A monotonic clock that only moves when told, in seconds."""
+
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, milliseconds: float) -> None:
+        self.now += milliseconds / 1000.0
+
+
+def test_the_profile_names_every_stage_including_the_ones_that_did_not_run():
+    """A stale-perception hold runs no planner and records no frame. Emitting only the
+    stages that fired makes every consumer decide for itself whether a missing key means
+    "free" or "did not happen", and they will not all decide the same way."""
+    clock = _Clock()
+    profiler = TickProfiler(clock)
+    profiler.begin()
+    with profiler.stage("plan"):
+        clock.advance(40.0)
+    stages = profiler.snapshot()["stages"]
+    assert sorted(stages) == sorted(TICK_STAGES), stages
+    assert stages["plan"] == 40.0
+    assert stages["record"] == 0.0 and stages["command"] == 0.0
+
+
+def test_a_stage_entered_twice_in_one_tick_adds_rather_than_replaces():
+    """`perceive` is entered on both sides of the `result is None` branch. Replacing
+    would report whichever half ran last and silently halve the stage."""
+    clock = _Clock()
+    profiler = TickProfiler(clock)
+    profiler.begin()
+    with profiler.stage("perceive"):
+        clock.advance(3.0)
+    with profiler.stage("perceive"):
+        clock.advance(7.0)
+    assert profiler.snapshot()["stages"]["perceive"] == 10.0
+
+
+def test_a_stage_name_that_is_not_in_the_list_is_refused():
+    """A typo would otherwise create a stage nothing sums and nothing prints — a hole in
+    the accounting that reads as a fast tick."""
+    profiler = TickProfiler(_Clock())
+    profiler.begin()
+    try:
+        with profiler.stage("planner"):
+            pass
+    except KeyError as error:
+        assert "planner" in str(error), error
+    else:
+        raise AssertionError("an unknown stage name should be refused")
+
+
+def test_tick_ms_is_measured_from_the_instant_the_caller_names():
+    """The loop's own `tick_start`, so `tick_ms` and the trailing sleep are measured
+    against the same instant. Taking a second timestamp inside `begin` would put the gap
+    between them into neither."""
+    clock = _Clock()
+    profiler = TickProfiler(clock)
+    started = clock.now
+    clock.advance(5.0)                    # the loop did something before calling begin
+    profiler.begin(started)
+    clock.advance(20.0)
+    assert profiler.snapshot()["tick_ms"] == 25.0
+
+
+def test_the_unaccounted_remainder_is_what_no_stage_covered():
+    """A large `other_ms` means the stage list has a hole in it, which is the failure
+    mode of every hand-placed profiler. It has to be visible, not absorbed."""
+    clock = _Clock()
+    profiler = TickProfiler(clock)
+    profiler.begin()
+    with profiler.stage("plan"):
+        clock.advance(30.0)
+    clock.advance(12.0)                   # something the loop does that no stage wraps
+    snapshot = profiler.snapshot()
+    assert snapshot["tick_ms"] == 42.0
+    assert snapshot["other_ms"] == 12.0
+
+
+def test_the_telemetry_write_is_priced_on_the_following_tick():
+    """A record cannot contain the time it took to write itself, and the field name has
+    to say so rather than quietly attributing it to the wrong tick."""
+    clock = _Clock()
+    profiler = TickProfiler(clock)
+    profiler.begin()
+    assert profiler.snapshot()["write_prev_ms"] == 0.0
+    profiler.wrote(1.75)
+    profiler.begin()
+    assert profiler.snapshot()["write_prev_ms"] == 1.75
+
+
+def test_the_profile_reaches_the_record_and_is_null_without_one():
+    """A file written by anything that does not profile itself must still parse. Every
+    committed run predates this and carries `"profile": null`."""
+    with tempfile.TemporaryDirectory() as directory:
+        writer = _writer(directory)
+        writer.write_header(live=False)
+        profiler = TickProfiler(_Clock())
+        profiler.begin()
+        _tick(writer, profile=profiler.snapshot())
+        _tick(writer)
+        records = _read(directory)
+    assert records[1]["profile"]["stages"]["plan"] == 0.0
+    assert records[1]["profile"]["tick_ms"] == 0.0
+    assert records[2]["profile"] is None
+
+
+def test_the_perception_cycle_and_its_wait_sit_beside_detect_ms():
+    """`detect_ms` covers the goal pass, the tiered detect and colour segmentation and
+    nothing else, so on its own it cannot say whether that thread is compute-bound or
+    camera-bound. Both are optional: a caller that cannot measure them writes null rather
+    than a zero that reads as "instant"."""
+    with tempfile.TemporaryDirectory() as directory:
+        writer = _writer(directory)
+        writer.write_header(live=False)
+        _tick(writer, cycle_ms=311.2, wait_ms=104.9)
+        _tick(writer)
+        records = _read(directory)
+    assert records[1]["perception"]["cycle_ms"] == 311.2
+    assert records[1]["perception"]["wait_ms"] == 104.9
+    assert records[2]["perception"]["cycle_ms"] is None
+    assert records[2]["perception"]["wait_ms"] is None
+
+
+# ── Reading one back ────────────────────────────────────────────────────────
+def _run_file(directory, ticks, header=None):
+    path = os.path.join(directory, "read.jsonl")
+    lines = [json.dumps({"type": "header", "control_hz": 10.0, **(header or {})})]
+    lines += [json.dumps(tick) for tick in ticks]
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+    return path
+
+
+def _synthetic_tick(t, video_frame, profile=None, stale=False):
+    return {"type": "tick", "t": t, "profile": profile,
+            "perception": {"seq": 1, "video_frame": video_frame, "detect_ms": 200.0,
+                           "frame_age_s": 0.3, "stale": stale, "cycle_ms": None,
+                           "wait_ms": None}}
+
+
+def test_summarise_takes_the_rate_from_the_tick_times():
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_synthetic_tick(0.0, 0), _synthetic_tick(0.25, 1),
+                                     _synthetic_tick(0.5, 2)])
+        header, ticks = read_run(path)
+    summary = summarise(header, ticks)
+    assert summary["ticks"] == 3
+    assert math.isclose(summary["measured_hz"], 4.0)
+    assert summary["configured_hz"] == 10.0
+    assert summary["interval_ms"] == [250.0, 250.0]
+
+
+def test_a_truncated_last_line_costs_one_tick_and_not_the_run():
+    """The normal way one of these ends is Ctrl-C or a safety abort, and that is exactly
+    the window that explains why the run ended."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_synthetic_tick(0.0, 0)])
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write('{"type": "tick", "t": 0.1, "percep')
+        _header, ticks = read_run(path)
+    assert len(ticks) == 1
+
+
+def test_a_file_with_no_profile_is_split_by_the_recorder_gate_instead():
+    """What the 26 committed runs can still be asked. The recording gate and the
+    perception-consumption gate are the SAME gate, so this cannot separate the MP4 encode
+    from the tracker update — and the report has to say so rather than name a cause."""
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_synthetic_tick(0.0, 0), _synthetic_tick(0.25, None),
+                                     _synthetic_tick(0.35, 1), _synthetic_tick(0.60, None),
+                                     _synthetic_tick(0.70, 2)])
+        header, ticks = read_run(path)
+    out = io.StringIO()
+    assert report(header, ticks, out=out) == 0
+    text = out.getvalue()
+    assert "no per-stage profile" in text
+    assert "wrote a frame" in text and "wrote none" in text
+    assert "150.0 ms difference" in text, text
+    assert "It cannot say which." in text
+
+
+def test_a_file_with_a_profile_is_reported_stage_by_stage():
+    profile = {"tick_ms": 250.0, "other_ms": 2.0, "write_prev_ms": 0.4,
+               "stages": {"perceive": 4.0, "obstacles": 1.0, "plan": 98.0,
+                          "command": 0.5, "record": 144.5}}
+    with tempfile.TemporaryDirectory() as directory:
+        path = _run_file(directory, [_synthetic_tick(0.0, 0, profile),
+                                     _synthetic_tick(0.25, 1, profile)])
+        header, ticks = read_run(path)
+    out = io.StringIO()
+    assert report(header, ticks, out=out) == 0
+    text = out.getvalue()
+    assert "no per-stage profile" not in text
+    for name in TICK_STAGES:
+        assert name in text, name
+    assert "144.5" in text and "98.0" in text
+
+
+def test_the_committed_hero_run_still_measures_what_issue_18_recorded():
+    """The number this instrumentation exists for, pinned against the file it came from.
+
+    3.15 Hz against a declared 10 Hz, and a median tick of 250.9 ms against a 100 ms
+    period. The split is the finding: the 57 ticks that wrote a video frame took 251.4 ms
+    and the one that wrote none took 100.3 ms — the configured period — while `detect_ms`
+    on the same ticks was 201.8 ms on a thread that is not this one.
+    """
+    path = (Path(os.path.abspath(__file__)).parents[4]
+            / "evidence" / "2026-08-25-peer-runs" / "hero-run-telemetry.jsonl")
+    header, ticks = read_run(path)
+    summary = summarise(header, ticks)
+    assert summary["ticks"] == 59 and summary["configured_hz"] == 10.0
+    assert round(summary["measured_hz"], 2) == 3.15
+    assert round(statistics.median(summary["interval_ms"]), 1) == 250.9
+    assert round(statistics.median(summary["recorded_ms"]), 1) == 251.4
+    assert [round(x, 1) for x in summary["plain_ms"]] == [100.3]
+    assert round(statistics.median(summary["detect_ms"]), 1) == 201.8
+    assert summary["profiles"] == [], "this run predates the profiler"
+
+
+def test_the_committed_dry_run_holds_the_design_rate_with_the_higher_detect_ms():
+    """The control. `dryrun-corridor-scene-check` passes no `--record`, holds 9.86 Hz for
+    195 ticks, and carries a HIGHER median `detect_ms` (262.4 ms) than either live run —
+    which is what rules detection out of the control tick rather than assuming it out."""
+    path = (Path(os.path.abspath(__file__)).parents[4]
+            / "evidence" / "2026-08-17-corridor-and-room-runs"
+            / "dryrun-corridor-scene-check.jsonl")
+    header, ticks = read_run(path)
+    summary = summarise(header, ticks)
+    assert round(summary["measured_hz"], 2) == 9.86
+    assert round(statistics.median(summary["interval_ms"]), 1) == 100.7
+    assert round(statistics.median(summary["detect_ms"]), 1) == 262.4
+    assert summary["recorded_ms"] == [], "this run recorded no video"
 
 
 if __name__ == "__main__":

@@ -33,13 +33,32 @@ JOINING TO THE VIDEO. ``video_frame`` is the index of the annotated frame writte
 per PERCEPTION cycle and the controller runs faster). That is the join key between this
 file and the MP4 — the honest way to carry "camera data" without putting pixels in a log.
 
+WHERE THE TICK WENT. ``profile`` carries the wall clock of each stage of one control
+tick, because issue #18 spent eight days unable to say. The loop measured 3.15 Hz and
+3.46 Hz against a configured 10 Hz on the 2026-08-25 runs, and the tree contained no
+``perf_counter``, no ``cProfile`` and no stage timer at all: the only number anywhere was
+``detect_ms``, which times the PERCEPTION thread and therefore explains none of the
+control tick. It is written on every tick rather than behind a flag, because five clock
+reads cost microseconds and a profiler you have to remember to switch on is off during
+every run anyone later wants to explain. See :class:`TickProfiler`.
+
+READING ONE BACK is ``python3 telemetry.py <run.jsonl>`` — the rate, the staleness margin
+and where the tick went. It lives in this file, beside the writer, so the field names have
+exactly one definition; a reader in another module is a second copy of the schema, and
+this repository has already shipped a manifest and a frame-key convention that drifted
+from the code meant to read them.
+
 Pure stdlib, no robot: ``python3 test_telemetry.py``.
 """
 
 from __future__ import annotations
 
+import argparse
+import contextlib
 import json
 import math
+import statistics
+import sys
 import time
 from pathlib import Path
 
@@ -61,6 +80,102 @@ FRAMES = {
     "command": "body",              # vx forward, vy left, wz CCW
     "measured": "body",             # the estimator's own body-frame velocity
 }
+
+
+#: Stages of one control tick, in the order ``VisualNavigator.run`` executes them.
+#: ENUMERATED HERE rather than left to the call sites, for two reasons. A reader of a
+#: telemetry file needs one place that says what each name covers; and a stage that did not
+#: run on a given tick — ``plan`` on a stale-perception hold, ``record`` on the four ticks
+#: in five that write no frame — must still appear, as ``0.0``, or every consumer has to
+#: decide for itself whether a missing key means "free" or "did not happen".
+TICK_STAGES = (
+    "perceive",     # latest() + consuming a new result: tracker predict/update, static map
+    "obstacles",    # pose() + extrapolating and inflating the tracks
+    "plan",         # planner.plan() — for MAPPO this is the policy and both rollouts
+    "command",      # handing the velocity to the locomotion transport
+    "record",       # overlay drawing and the MP4 encode, on the CONTROL thread
+)
+
+
+class TickProfiler:
+    """Wall clock of each stage of one control tick, for the record.
+
+    WHAT THE RECORDED TELEMETRY COULD ALREADY PROVE, and why this is still needed. Across
+    the 21 committed runs, every tick that wrote a video frame took 173-299 ms and every
+    tick that did not took 100.2-103.7 ms — the configured period, to the jitter. The two
+    dry runs, which pass no ``--record`` at all, hold 9.86 Hz for 195 and 145 ticks while
+    carrying the HIGHEST ``detect_ms`` in the corpus (262 and 269 ms median). So detection
+    does not enter the control tick, and the deficit is on the ticks that record.
+
+    That is as far as a recorded file goes, and it is not far enough. The recording gate
+    and the perception-consumption gate are the same gate, so nothing already written can
+    separate the MP4 encode from the tracker update; and everything on a non-recording
+    tick is hidden under the trailing sleep, which absorbs any body shorter than the
+    period. Both of those are exactly one measurement away, and this is the measurement.
+
+    Usage, once per tick::
+
+        profiler.begin()
+        with profiler.stage("plan"):
+            command = planner.plan(...)
+        ...
+        telemetry.write_tick(..., profile=profiler.snapshot())
+        profiler.wrote(ms)
+
+    Args:
+        clock: monotonic source, injected for tests.
+    """
+
+    def __init__(self, clock=time.monotonic) -> None:
+        self._clock = clock
+        self._started = clock()
+        self._stages: dict = {}
+        self._write_ms = 0.0
+
+    def begin(self, at: float | None = None) -> None:
+        """Start a tick. ``at`` is the loop's own ``tick_start``, so ``tick_ms`` is
+        measured against the same instant the trailing sleep is."""
+        self._started = self._clock() if at is None else at
+        self._stages = {}
+
+    @contextlib.contextmanager
+    def stage(self, name: str):
+        """Time one stage. Re-entering a name within a tick ADDS, so a stage the loop runs
+        on two branches is not silently reduced to whichever ran last."""
+        if name not in TICK_STAGES:
+            raise KeyError(f"unknown tick stage {name!r}; add it to TICK_STAGES")
+        started = self._clock()
+        try:
+            yield
+        finally:
+            elapsed = (self._clock() - started) * 1000.0
+            self._stages[name] = self._stages.get(name, 0.0) + elapsed
+
+    def wrote(self, milliseconds: float) -> None:
+        """How long the last telemetry write took, for the NEXT tick to carry."""
+        self._write_ms = float(milliseconds)
+
+    def snapshot(self) -> dict:
+        """The tick's profile, as it goes into the record.
+
+        ``write_prev_ms`` is the PREVIOUS tick's telemetry write, and the name says so
+        because a record cannot contain the time it took to write itself. It is here at
+        all because the write is a ``json.dumps`` and a deliberate ``flush`` at 10 Hz —
+        the module docstring argues for that syscall, and nothing had ever priced it.
+
+        ``other_ms`` is the remainder: everything in the tick body that no stage covers.
+        A large one usually means the stage list has a hole in it, which is the failure
+        mode of every hand-placed profiler. One large one is expected and correct — the
+        tick that stands the robot up blocks for about three seconds on the vendor
+        RecoveryStand and BalanceStand, which is a posture change and not a stage of a
+        control tick.
+        """
+        elapsed = (self._clock() - self._started) * 1000.0
+        stages = {name: round(self._stages.get(name, 0.0), 3) for name in TICK_STAGES}
+        return {"tick_ms": round(elapsed, 3),
+                "other_ms": round(elapsed - sum(self._stages.values()), 3),
+                "write_prev_ms": round(self._write_ms, 3),
+                "stages": stages}
 
 
 def _finite(value):
@@ -130,7 +245,8 @@ class TelemetryWriter:
                    detect_ms: float, standing: bool, live: bool,
                    video_frame: int | None = None, stale: bool = False,
                    measured=None, health=None, sightings=(),
-                   goal_crop: float | None = None) -> None:
+                   goal_crop: float | None = None, profile: dict | None = None,
+                   cycle_ms: float | None = None, wait_ms: float | None = None) -> None:
         """One control tick, whether or not it commanded motion.
 
         EVERY tick is written, including holds, stale-perception skips and the
@@ -193,6 +309,16 @@ class TelemetryWriter:
                            else None,
                            "frame_age_s": round(float(frame_age_s), 4),
                            "detect_ms": round(float(detect_ms), 2),
+                           # The WHOLE perception cycle, and the part of it spent blocked
+                           # waiting for the camera. `detect_ms` covers the goal pass, the
+                           # tiered detect and colour segmentation and nothing else, so on
+                           # its own it cannot say whether that thread is compute-bound or
+                           # camera-bound — and the 2026-08-25 runs show a third of the
+                           # cycle outside it (317 ms per cycle against 202 ms of detect).
+                           "cycle_ms": (None if cycle_ms is None
+                                        else round(float(cycle_ms), 2)),
+                           "wait_ms": (None if wait_ms is None
+                                       else round(float(wait_ms), 2)),
                            "video_frame": video_frame,
                            # The robot is BLIND this tick and holding, but it has not
                            # forgotten its goal. Distinguishing the two matters: a null
@@ -207,6 +333,9 @@ class TelemetryWriter:
             "measured": (None if measured is None else
                          {"vx": _finite(measured[0]), "vy": _finite(measured[1]),
                           "wz": _finite(measured[2])}),
+            # Where this tick's wall clock went. Null on a file written by anything that
+            # does not profile itself; see TICK_STAGES for what each name covers.
+            "profile": profile,
             "posture": ("standing" if standing else "prone"),
             "live": bool(live),
             "health": (None if health is None else {
@@ -230,3 +359,158 @@ class TelemetryWriter:
 
     def __exit__(self, *exc_info) -> None:
         self.close()
+
+
+# ── Reading one back ────────────────────────────────────────────────────────
+def read_run(path: str | Path) -> tuple[dict, list]:
+    """``(header, ticks)`` from a run file, tolerating a truncated last line.
+
+    The writer flushes every record, but a run that ends on a power cut can still lose
+    its final one — and the normal way one of these ends is Ctrl-C or a safety abort, so
+    refusing a whole file over its last byte would throw away the run being explained.
+    """
+    header: dict = {}
+    ticks: list = []
+    with open(path, encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if record.get("type") == "header":
+                header = record
+            elif record.get("type") == "tick":
+                ticks.append(record)
+    return header, ticks
+
+
+def _percentile(values: list, fraction: float) -> float:
+    """Nearest-rank percentile. Not interpolated: these are latencies with a handful of
+    samples, and an interpolated p90 of eight ticks is a number nobody measured."""
+    if not values:
+        return float("nan")
+    ordered = sorted(values)
+    return ordered[min(len(ordered) - 1, int(fraction * len(ordered)))]
+
+
+def summarise(header: dict, ticks: list) -> dict:
+    """Every number the report prints, so a caller can assert on them instead of on prose."""
+    times = [tick["t"] for tick in ticks]
+    span = (times[-1] - times[0]) if len(times) > 1 else 0.0
+    intervals = [b - a for a, b in zip(times, times[1:])]
+    perception = [tick.get("perception", {}) for tick in ticks]
+
+    def field(name):
+        return [p[name] for p in perception if p.get(name) is not None]
+
+    recorded = [intervals[i] for i in range(len(intervals))
+                if perception[i].get("video_frame") is not None]
+    plain = [intervals[i] for i in range(len(intervals))
+             if perception[i].get("video_frame") is None]
+    profiles = [tick["profile"] for tick in ticks if tick.get("profile")]
+    stages = {name: statistics.median([p.get("stages", {}).get(name, 0.0)
+                                       for p in profiles])
+              for name in TICK_STAGES} if profiles else {}
+    return {
+        "ticks": len(ticks),
+        "span_s": span,
+        "measured_hz": (len(intervals) / span) if span else float("nan"),
+        "configured_hz": header.get("control_hz"),
+        "interval_ms": [x * 1000.0 for x in intervals],
+        "stale": sum(1 for p in perception if p.get("stale")),
+        "cycles": len({p["seq"] for p in perception if p.get("seq") is not None}),
+        "detect_ms": field("detect_ms"),
+        "cycle_ms": field("cycle_ms"),
+        "wait_ms": field("wait_ms"),
+        "frame_age_s": field("frame_age_s"),
+        "recorded_ms": [x * 1000.0 for x in recorded],
+        "plain_ms": [x * 1000.0 for x in plain],
+        "profiles": profiles,
+        "stages_ms": stages,
+    }
+
+
+def _line(label: str, values: list, out) -> None:
+    if not values:
+        return
+    print(f"  {label:<16} median {statistics.median(values):7.1f}   "
+          f"p90 {_percentile(values, 0.9):7.1f}   max {max(values):7.1f}", file=out)
+
+
+def report(header: dict, ticks: list, out=sys.stdout) -> int:
+    """Print where the loop's time went. Returns a process exit code."""
+    if not ticks:
+        print("no ticks in this file", file=out)
+        return 1
+    summary = summarise(header, ticks)
+    configured = summary["configured_hz"]
+    print(f"{summary['ticks']} ticks over {summary['span_s']:.2f} s — "
+          f"{summary['measured_hz']:.2f} Hz measured"
+          + (f", {configured:.1f} Hz configured" if configured else ""), file=out)
+    _line("tick interval", summary["interval_ms"], out)
+    _line("detect_ms", summary["detect_ms"], out)
+    _line("perception cycle", summary["cycle_ms"], out)
+    _line("  of it, waiting", summary["wait_ms"], out)
+    ages = [x * 1000.0 for x in summary["frame_age_s"]]
+    _line("frame age", ages, out)
+    print(f"  {'perception':<16} {summary['cycles']} cycles, "
+          f"{summary['cycles'] / summary['span_s'] if summary['span_s'] else 0:.2f} Hz; "
+          f"{summary['stale']} of {summary['ticks']} ticks stale", file=out)
+    print("  detect_ms times the PERCEPTION thread, not the control tick.", file=out)
+
+    print("\nwhere the tick went", file=out)
+    if summary["profiles"]:
+        for name in TICK_STAGES:
+            print(f"  {name:<16} {summary['stages_ms'][name]:7.1f} ms", file=out)
+        for name in ("other_ms", "write_prev_ms", "tick_ms"):
+            values = [p[name] for p in summary["profiles"] if name in p]
+            label = {"other_ms": "(unaccounted)", "write_prev_ms": "telemetry write",
+                     "tick_ms": "tick body"}[name]
+            if values:
+                print(f"  {label:<16} {statistics.median(values):7.1f} ms", file=out)
+        return 0
+
+    # No profile: say what the recorder gate alone implies, and no more than that.
+    print("  this file carries no per-stage profile. What the recorder gate implies:",
+          file=out)
+    for label, values in (("wrote a frame", summary["recorded_ms"]),
+                          ("wrote none", summary["plain_ms"])):
+        if values:
+            print(f"    {len(values):3d} tick(s) that {label:<14} "
+                  f"median {statistics.median(values):7.1f} ms", file=out)
+    if summary["recorded_ms"] and summary["plain_ms"]:
+        delta = statistics.median(summary["recorded_ms"]) - statistics.median(summary["plain_ms"])
+        print(f"    the {delta:.1f} ms difference is everything a recording tick does and "
+              f"the other does not:\n"
+              f"    consume the perception result, update the tracker and the static map, "
+              f"draw the\n    overlay and encode one frame — all of it on the control "
+              f"thread. It cannot say which.", file=out)
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Where a recorded run's control loop spent its time.")
+    parser.add_argument("run", type=Path, nargs="+", help="telemetry .jsonl")
+    return parser
+
+
+def main(argv: list | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    missing = [str(path) for path in args.run if not path.is_file()]
+    if missing:
+        raise SystemExit("not a file: " + ", ".join(missing))
+    code = 0
+    for path in args.run:
+        if len(args.run) > 1:
+            print(f"\n=== {path}")
+        header, ticks = read_run(path)
+        code |= report(header, ticks)
+    return code
+
+
+if __name__ == "__main__":
+    sys.exit(main())
