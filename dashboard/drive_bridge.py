@@ -35,9 +35,10 @@ Commands are **duration-bounded and open-loop**, and the result reports what the
 actually did: pose before, pose after, distance travelled, and the fraction of the commanded
 speed that was delivered. Closed-loop distance control was the alternative and it was
 rejected deliberately — it would hide exactly the number this repository has spent the most
-time on. This Go2 delivers roughly 0.45 of what it is commanded, the Lite3 about 0.74
-forward and 0.27 laterally, and a "walk 1 m" button that quietly ran longer to get there
-would have made the gait floor take another five runs to find. A button that says
+time on. This Go2 delivers roughly 0.45 of what it is commanded when derated and 0.70 at
+full forward command, and about 0.27 laterally (issue #42); **no Lite3 has produced any of
+these numbers, or any number at all.** A "walk 1 m" button that quietly ran longer to get
+there would have made the gait floor take another five runs to find. A button that says
 "commanded 0.35 for 1.5 s, travelled 0.012 m" diagnoses itself.
 
 ## What refuses to run
@@ -48,6 +49,10 @@ would have made the gait floor take another five runs to find. A button that say
   stands still while every instrument insists it is fine (``avoidance.MIN_GAIT_COMMAND_M_S``
   and the table in ``deploy/README.md``). This is the single most expensive failure in the
   repository's history and the worker refuses to reproduce it silently.
+* **Any motion on a platform whose gait has never been measured**, unless ``--force``. That
+  is the Lite3 today: issue #13's measurements are all still open, and a borrowed floor is
+  worse than no floor because it arrives with an air of authority. See
+  :data:`GAIT_FLOORS`.
 * **Reverse beyond a short bounded nudge.** The planner never samples reverse because the
   robot has no rear sensing, and issue #40 caught the policy commanding it. A back button
   exists because it was asked for; it is capped at :data:`MAX_REVERSE_SECONDS` and it says
@@ -93,22 +98,39 @@ MAX_POSE_STREAM_HZ = 20.0
 #: Measured gait floors. These are per-platform and per-axis, and the two axes genuinely
 #: differ — see issue #42, which is about a calibration interface that assumed they did not.
 #:
-#: ``forward`` for the Go2 is ``avoidance.MIN_GAIT_COMMAND_M_S``, measured over five runs at
-#: 0.21 m/s (no gait) against one at 0.35 (2.07 m in 9 s). The Lite3's forward floor was
-#: measured at 0.35 and its lateral floor bracketed to (0.15, 0.25] — 0.20 walked 3 of 3.
+#: ⚠️ ``None`` means NOT MEASURED. It is not a default and it is not zero; it is the absence
+#: of a number. The one thing this table must never do is hand one robot another robot's
+#: measurement, because a floor is a property of a specific machine on a specific floor —
+#: issue #13 opens by saying "do not copy values between units".
 #:
-#: ⚠️ The Go2's LATERAL floor has never been measured. ``None`` records that honestly rather
-#: than borrowing the forward number, which is the exact conflation issue #42 is about. A
-#: strafe on a Go2 is therefore unguarded and the result says so.
+#: **Go2 — both entries come from the same evening.** ``forward`` 0.35 is
+#: ``avoidance.MIN_GAIT_COMMAND_M_S``, five runs at 0.21 m/s (no gait) against one at 0.35
+#: (2.07 m in 9 s). ``lateral`` 0.20 is issue #42's table, measured 2026-08-19 with a forward
+#: step as a same-session control: vy 0.15 travelled 0.010 m in 1.5 s (no gait), vy 0.20
+#: travelled 0.087 / 0.076 / 0.080 m — walked, 3 of 3. Both are LOWEST-OBSERVED-TO-WORK
+#: values rather than located thresholds: the true lateral floor lies in (0.15, 0.20], and
+#: the forward one is contested by a run that sustained 0.295 m/s (issue #26). Erring high
+#: refuses a little more than strictly necessary, which is the safe direction. ``yaw`` has
+#: never been measured on either robot.
+#:
+#: **Lite3 — nothing has been measured, on any axis.** Neither event robot has moved under
+#: this stack at all: ``robot-stack/deep_robotics/lite3/README.md`` records "gait floor |
+#: required as ``--gait-floor`` | not measured", and issue #13 still carries "Lowest forward
+#: command that sustains a gait" as an open box. This row read
+#: ``{"forward": 0.35, "lateral": 0.20}`` until it was checked — the Go2's pair verbatim,
+#: presented as a Lite3 measurement. See :func:`check_gait_floor` for what an all-unmeasured
+#: platform now does with a motion command.
 GAIT_FLOORS = {
-    "go2":   {"forward": 0.35, "lateral": None, "yaw": None},
-    "lite3": {"forward": 0.35, "lateral": 0.20, "yaw": None},
+    "go2":   {"forward": 0.35, "lateral": 0.20,  "yaw": None},
+    "lite3": {"forward": None, "lateral": None, "yaw": None},
     "sim":   {"forward": 0.0,  "lateral": 0.0,  "yaw": 0.0},
 }
 
-#: Default speeds for a dashboard nudge, chosen to be at or above the floor where one is
-#: known. ``max_vy`` 0.20 is the envelope's lateral cap (``avoidance.Limits``) and it is
-#: BELOW the forward floor — that is a property of the robot, not a mistake here.
+#: Default speeds for a dashboard nudge, chosen to be at or above the Go2's floors — the only
+#: floors anybody has. ``DEFAULT_VY`` 0.20 is both the Go2's measured lateral floor and the
+#: envelope's lateral cap (``avoidance.Limits.max_vy``); those coincide, and that coincidence
+#: is load-bearing in ``integration/mappo_drive.py``. On a Lite3 these defaults are refused,
+#: which is the point: there is no Lite3 speed anybody can say is safe to press.
 DEFAULT_VX = 0.35
 DEFAULT_VY = 0.20
 DEFAULT_WZ = 0.70
@@ -281,14 +303,46 @@ def safe_stop_guard(loco, name="dashboard"):
     return SafeStop(loco.stop, name=name, verbose=False)
 
 
+def _nothing_measured(platform):
+    """True when NO axis on this platform has a measured gait floor.
+
+    Derived from :data:`GAIT_FLOORS` rather than kept as a second list of platform names,
+    so it cannot drift out of step with the row it describes: the first measurement to land
+    on a Lite3 turns this off by itself, and nobody has to remember to edit two places.
+    """
+    floors = GAIT_FLOORS.get(platform, {})
+    return bool(floors) and all(value is None for value in floors.values())
+
+
 def check_gait_floor(platform, axis, speed, force=False):
     """Refuse a command measured not to produce a gait. Returns a warning string or None.
 
-    Returns rather than raises for the axis with no measured floor: an unguarded axis is a
-    thing the operator should be TOLD about on every press, not a thing that blocks them.
+    Three states, not two, because "not measured" is not one thing:
+
+    * **A measured floor.** Below it, refuse. This is the single most expensive failure in
+      the repository's history and the worker will not reproduce it silently.
+    * **One unmeasured axis on a robot that has walked** (the Go2's yaw). Warn, do not
+      block: the operator should be TOLD on every press that this control's behaviour is
+      unknown, but a robot with a proven gait is not a robot you refuse to turn.
+    * **A robot where nothing has been measured at all** (the Lite3). Refuse. Nothing about
+      this machine's gait is known, it has never moved under this stack, and its own
+      navigator already fails closed the same way — ``lite3/visual_nav/robot_bindings.py``
+      answers a live run with no ``--gait-floor`` with "REFUSING TO WALK: missing".
+      A dashboard button is not a weaker authority than that, so it does not get a weaker
+      rule. ``--force`` is the operator's documented way past it, as everywhere else here.
     """
     floor = GAIT_FLOORS.get(platform, {}).get(axis)
     if floor is None:
+        if _nothing_measured(platform):
+            if force:
+                return (f"no {axis} gait floor exists for the {platform} — no axis on this "
+                        "platform has ever been measured; forced")
+            raise BridgeError(
+                f"no gait floor has ever been measured on the {platform}: not on {axis}, "
+                "and not on any other axis. This robot has never moved under this stack, so "
+                "there is no speed here that is known to walk and none that is known not "
+                "to. Measure it first (issue #13, and the evidence table in "
+                "robot-stack/deep_robotics/lite3/README.md), or pass --force and watch it.")
         return (f"no {axis} gait floor has been measured on the {platform}; this command "
                 "may produce no movement at all and that would not be a fault")
     if abs(speed) >= floor or floor == 0.0:

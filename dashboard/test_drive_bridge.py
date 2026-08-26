@@ -91,26 +91,90 @@ def test_the_floor_can_be_overridden_but_says_so():
 
 
 def test_an_axis_with_no_measured_floor_warns_instead_of_refusing():
-    """The Go2's lateral floor has never been measured — issue #42.
+    """The Go2's YAW floor has never been measured, and a Go2 that walks may still turn.
 
-    Borrowing the forward number would be the exact conflation that issue is about, and
-    refusing outright would block a control whose behaviour is simply unknown. So: allow,
-    and say on every press that it may do nothing.
+    Refusing outright would block a control whose behaviour is simply unknown on a robot
+    whose gait is not. So: allow, and say on every press that it may do nothing. Kept on
+    yaw because the lateral axis stopped being the example — see the test below.
     """
-    warning = check_gait_floor("go2", "lateral", 0.20)
-    assert warning is not None and "no lateral gait floor" in warning, warning
-    assert GAIT_FLOORS["go2"]["lateral"] is None
+    warning = check_gait_floor("go2", "yaw", 0.70)
+    assert warning is not None and "no yaw gait floor" in warning, warning
+    assert GAIT_FLOORS["go2"]["yaw"] is None
+    # the warn branch must not be the only branch a robot with a real floor can reach
+    assert GAIT_FLOORS["go2"]["forward"] is not None
 
 
-def test_the_lite3_lateral_floor_is_the_measured_one():
-    """Measured 2026-08-19: 0.15 produced no gait, 0.20 walked 3 of 3."""
-    assert GAIT_FLOORS["lite3"]["lateral"] == 0.20
-    assert check_gait_floor("lite3", "lateral", 0.20) is None
+def test_the_lateral_floor_of_2026_08_19_belongs_to_the_go2_that_produced_it():
+    """Issue #42's table: vy 0.15 travelled 0.010 m (no gait), vy 0.20 walked 3 of 3.
+
+    That session is a Go2 session — same-evening control step at vx 0.35, the 85.27 deg
+    HFOV and the 0.32 m camera height are the Go2's, and `integration/mappo_drive.py`
+    already treats 0.20 as the Go2's lateral floor (`lateral floor 0.20 == max_vy`). The
+    table used to record it against the LITE3, which has never moved at all, while telling
+    the Go2 its own lateral floor had never been measured. This pins the owner.
+    """
+    assert GAIT_FLOORS["go2"]["lateral"] == 0.20
+    assert check_gait_floor("go2", "lateral", 0.20) is None
     try:
-        check_gait_floor("lite3", "lateral", 0.15)
-    except BridgeError:
-        return
-    raise AssertionError("0.15 m/s lateral was allowed on a Lite3")
+        check_gait_floor("go2", "lateral", 0.15)
+    except BridgeError as exc:
+        assert "0.200" in str(exc), str(exc)
+    else:
+        raise AssertionError("0.15 m/s lateral was allowed on a Go2")
+    assert GAIT_FLOORS["lite3"]["lateral"] is None
+
+
+def test_no_lite3_axis_carries_a_number_it_did_not_produce():
+    """Issue #13's measurements are all open and neither Venture has moved under this stack.
+
+    The failure this pins is not "the value is wrong" — it is a value being present at all.
+    Any float here, however plausible, came from somewhere else, because there is nowhere
+    on a Lite3 it could have come from.
+    """
+    assert GAIT_FLOORS["lite3"] == {"forward": None, "lateral": None, "yaw": None}
+    for axis, go2_value in GAIT_FLOORS["go2"].items():
+        assert GAIT_FLOORS["lite3"][axis] != go2_value or go2_value is None, axis
+
+
+def test_a_platform_with_nothing_measured_refuses_rather_than_warns():
+    """The Lite3's own navigator answers a live run with no --gait-floor by refusing.
+
+    A dashboard button carries no more authority than that, so it does not get a softer
+    rule. The refusal has to fire at a HIGH speed too: the failure mode here is not "too
+    slow", it is "nobody knows", and a fast command is no better informed than a slow one.
+    """
+    for axis, speed in (("forward", 0.35), ("lateral", 0.20), ("yaw", 0.70),
+                        ("forward", 2.0)):
+        try:
+            check_gait_floor("lite3", axis, speed)
+        except BridgeError as exc:
+            assert "ever been measured on the lite3" in str(exc), (axis, str(exc))
+            assert "issue #13" in str(exc), (axis, str(exc))
+        else:
+            raise AssertionError(f"a lite3 {axis} command at {speed} was allowed")
+
+
+def test_the_uncommissioned_refusal_is_derived_from_the_table_not_a_second_list():
+    """A hand-kept list of "platforms with nothing measured" is a gate that goes stale.
+
+    The first real Lite3 measurement must switch this off by itself. Simulated here by
+    putting one number into the row and checking the other axes drop back to warning —
+    the same treatment the Go2's yaw gets.
+    """
+    original = dict(GAIT_FLOORS["lite3"])
+    try:
+        GAIT_FLOORS["lite3"] = dict(original, forward=0.30)
+        assert check_gait_floor("lite3", "forward", 0.30) is None
+        warning = check_gait_floor("lite3", "lateral", 0.20)
+        assert warning is not None and "no lateral gait floor" in warning, warning
+    finally:
+        GAIT_FLOORS["lite3"] = original
+
+
+def test_forcing_past_an_uncommissioned_platform_says_what_it_forced():
+    warning = check_gait_floor("lite3", "forward", 0.35, force=True)
+    assert warning and "forced" in warning, warning
+    assert "never been measured" in warning or "no axis" in warning, warning
 
 
 # ── planning ─────────────────────────────────────────────────────────────────
