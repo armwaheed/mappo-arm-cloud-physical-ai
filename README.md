@@ -206,15 +206,21 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 - **No rear view.** ~85° of camera, and the robot never reverses. Everything else reads
   clear — the optimistic direction. A policy that learned to back out of a dead end will
   believe the space behind it is empty.
-- **A peer has no *name* the camera can give it, and inferring one is not worth doing.**
-  Another quadruped is not a shipped detector class and not a colour profile. Two fine-tunes
-  were taken to the end — a linear probe on frozen features, then the backbone unfrozen over
-  twelve 40-epoch runs — and the second does lift the first's ceiling. Neither beats the
-  robot's own **stock, unmodified** weights read *class-agnostically*: **64% of 1,903
-  labelled peer frames get a box on the peer, at 18% false alarms over 897 peer-free
-  frames**, against the best fine-tune's 53% at 38% on the same frames. The labels are
-  nonsense (`motorbike`, `chair`, `aeroplane`) and correctly placed, which is what a planner
-  needs — see [`detector/FROZEN-FEATURE-CEILING.md`](detector/FROZEN-FEATURE-CEILING.md).
+- **A peer has no *name* the camera can give it.** Another quadruped is not a shipped detector
+  class and not a colour profile. The labels the stock network puts on one are nonsense
+  (`motorbike` 613, `chair` 372, `aeroplane` 200) and correctly placed, which is what a planner
+  needs, so the deployed stack routes on box shape and not on the name (PR #73). `horse` is not
+  the head-on exception it looked like: read at the raw softmax over 1,903 labelled frames it
+  clears 0.25 on **0** and reaches the top three on **0**.
+  **Whether to fine-tune is open again, and was closed on a bad comparison.** This bullet used
+  to read *"inferring one is not worth doing"*, on the strength of the stock weights scoring
+  **64% of 1,903 labelled peer frames at 18% false alarms over 897 peer-free frames** against
+  the best fine-tune's **53% at 38%** — both of them the fine-tune's own training day, with the
+  stock model never scored on the held-out day at all. Scored there, one rule for every model:
+  the stock weights read **68% recall at 57% false alarms** and every fine-tune beats them on the
+  peer, while every fine-tune loses 2 to 11 of the 15 people the shipped network sees. Neither
+  route is deployable today — see
+  [`detector/FROZEN-FEATURE-CEILING.md`](detector/FROZEN-FEATURE-CEILING.md).
   Peers today arrive as **their own published pose over the Device Connect mesh** — see
   *Peers over the mesh* below — which is what the trained policy describes, since the VMAS
   agents it learned against observed each other's true positions rather than running
@@ -241,8 +247,8 @@ Stated here because a range vector *looks* like a LiDAR scan and is not one:
 | ✅ Policy on Go2 hardware, empty lane | arrived 0.77 m from the chair after 2.78 m; policy drove 53/53 ticks, 0 vetoed, 0 stopped; obstacle run remains open |
 | ⚠️ Arriving at the chair past the bin | needs ~0.3 m more lane than this corridor has |
 | ⚠️ D1 arm latch | its servo bus does not energise (tracked in the upstream Go2 stack); runs use `--no-latch-arm`, and the arm creeps a few degrees off the dorsal line each run |
-| ⛔ Peers from the camera, as a trained class | closed as a negative result. A frozen-feature head and a fully unfrozen fine-tune both land below the **stock** model read class-agnostically — 64% recall at 18% false alarms over 1,903/897 frames, against the best fine-tune's 53% at 38% on the same frames. A marker and a colour panel were ruled out earlier |
-| ⏳ Peers from the camera, class-agnostically | the boxes exist and are correctly placed; `PersonDetector` is configured `classes=("person",)` and drops them before anything downstream. Not yet wired: a range prior for a box with no meaningful label, and which of the 18% the static map should hold rather than the tracker carry as a mover |
+| ⚠️ Peers from the camera, as a trained class | **reopened 2026-08-26 — better on peers, not deployable on people.** Held-out Aug-20 split (47 peer-present, 134 peer-free), one rule for every model: four fine-tunes read 66-74% peer recall at 1-19% false alarms, the **stock** model 68% at 57% — and every fine-tune loses 2 to 11 of the 15 people the shipped network sees at 0.45, where stock loses none. The earlier verdict ("64% at 18% against 53% at 38%") was scored on the fine-tune's own training day. Gate for any candidate: 15/15 people. A marker and a colour panel were ruled out earlier |
+| ⏳ Peers from the camera, class-agnostically | the boxes exist and are correctly placed; `PersonDetector` is configured `classes=("person",)` and drops them before anything downstream. Not yet wired: a range prior for a box with no meaningful label, and which of the false alarms the static map should hold rather than the tracker carry as a mover — 18% of frames on staged empty corridor, **57%** cross-day in a furnished one |
 | ✅ Peers over the Device Connect mesh | the peer publishes its own pose at 10 Hz and the navigator consumes it as an ordinary obstacle — no detector, no marker, no training. 66 offline tests, 11 of them mutation-checked; **no two-robot hardware run yet** |
 | ✅ Lite3 Venture offline port | high-level ROS locomotion, RGB camera, fail-closed health gate, calibration and MAPPO entry points; 30 platform tests |
 | ⏳ Lite3 hardware commissioning | [#13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13): neither event robot has been run; gait floor, actuator gain, loaded radius, camera model/source and health publisher remain measured inputs |

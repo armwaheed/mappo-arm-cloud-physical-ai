@@ -19,6 +19,15 @@ limit is real and unfreezing lifts it.
 > **53% recall at 38% false alarms** against the stock model's **64% at 18%**. It loses on
 > both axes, from a training run that cost a day of GB10 time, to a file that was already on
 > the robot. See *The comparison that ended this* below.
+>
+> ⚠️ **Corrected 2026-08-26. Both rows in that block are the Aug-24 capture, which is this
+> page's own training day, and the stock model had never been scored on the held-out day at
+> all.** Scored on the Aug-20 split with one rule applied to every model, the shipped weights
+> get **68% recall at 57% false alarms** and *every* checkpoint on this page beats them on the
+> peer. The half of the recommendation that survives is the other half: every one of those
+> checkpoints loses people the shipped network keeps, and none of them is deployable. See
+> *Correction, 2026-08-26* below. The block is left standing because it is what was believed,
+> and on what evidence.
 
 Two things on this page outlive the recommendation, and both are the reason it is being
 merged rather than deleted: **fine-tuning on a one-class corpus teaches the network that
@@ -61,6 +70,78 @@ That is the same failure as the refusal gate one level up, and the same failure 
 fifteen stills one level down: **the evidence set was too small and too like itself, three
 times in a row, and each time it flattered the thing being tested.**
 
+## ⛔ Correction, 2026-08-26: the comparison that ended this was never scored cross-day
+
+Both rows of the table above are the Aug-24 capture. **1,343 of those 1,903 positives and 705 of
+those 897 negatives are this fine-tune's own training frames** — the section above says so, calls
+its own row "the generous one", and then rules on it anyway. The one number on this page that is
+honestly out-of-sample for the fine-tune is the Aug-20 split, 72% at 4%, and **the stock model had
+no Aug-20 number to put beside it.** Nobody had ever run it there. So the recommendation compared a
+training-day row against a training-day row, with the cross-day row of one model and no cross-day
+row of the other, and the section above it admits the two cannot be reconciled.
+
+It has now been run. **Aug-20 held-out split: 47 peer-present frames and 134 peer-free**, scored
+through the deployed `cv2.dnn` path at the prototxt's own `confidence_threshold: 0.25`, with one
+rule applied identically to every row — **a frame counts as a fire if any detection at >= 0.25 has
+box aspect h/w < 2.0.** That is not person-shaped, which is what `mappo_bridge` routes to the
+policy as an obstacle instead of holding for (`person_detector.PERSON_ASPECT_MIN`, PR #73), so the
+column below is the thing the deployed stack would actually do. `people kept` counts, out of the 15
+test frames where the **shipped** network detects a person at >= 0.45 — the confidence the
+navigator runs at — how many the candidate still detects.
+
+| model | peer recall | false alarms | precision | people kept |
+| --- | ---: | ---: | ---: | ---: |
+| **stock 21-class, as shipped** | **68%** (32/47) | **57%** (76/134) | 30% | **15/15** |
+| `l_full_bb02` ep015 | 70% | 19% | 56% | 13/15 |
+| `j_full_distil03` ep015 | 66% | 6% | 79% | 11/15 |
+| `i_full_pseudo` ep020 | 74% | 8% | 76% | 8/15 |
+| `f_full_distil01` ep020 | 74% | 1% | 95% | 4/15 |
+
+**On the peer, every fine-tune beats the shipped weights.** Recall 70, 66, 74 and 74 against 68 —
+three of the four above it and the fourth two points under. False alarms 19, 6, 8 and 1 against
+**57**. Precision 56-95% against 30%. There is no reading of the peer axis on which the shipped
+weights win, and the recommendation below is wrong on the axis it was argued.
+
+### ⚠️ 18% and 57% are the same model on two different negative sets
+
+The 18% that this fine-tune was measured against is not a property of the network. **705 of those
+897 Aug-24 peer-free frames are the `neg_prone` and `neg_standing` sets** — corridor deliberately
+cleared and shot as training negatives. The Aug-20 negatives are the same corridor furnished and
+in use, ArUco office chair included, and the same weights at the same threshold through the same
+code path fire on 57% of them.
+
+That is this page's own lesson pointed the other way — *a test that shares its conditions with the
+thing it is testing measures nothing*, and negatives staged to be empty share a condition with
+nothing the robot drives through. An empty-corridor false-alarm rate is not a false-alarm rate for
+a room.
+
+### The half of the recommendation that holds, and it is the safety half
+
+**Every fine-tune buys its peer numbers with people.** `f_full_distil01` — the best peer precision
+on the table, 95% — keeps **4 of the 15** people the shipped network sees at the navigator's own
+0.45. The warning below, *Fine-tuning on a one-class corpus teaches the network that people are
+background*, was right and understated: it was written from 2 of 15 lost on one checkpoint, and
+the spread across four checkpoints is 2 to 11 of 15.
+
+**So nothing on this page is deployable, and nothing above changes that.** A checkpoint that finds
+more peers and drops a person is not an improvement to a stack whose first job is not to walk into
+someone. The open objective is the one no run has hit: **hold 15/15 people while keeping the peer
+gains.** A wave-5 sweep testing exactly that combination — the two levers that each moved person
+retention on their own, plus three augmentations no wave has run — is running as this is written.
+No conclusion about its outcome is recorded here, and none should be until it has numbers.
+
+### ⚠️ Read the denominators before quoting any of this
+
+**47 positives and 134 negatives, one corridor, one day.** The same objection that invalidated the
+refusal gate (0 of 705 on same-session negatives), the fifteen stills (nine of which held no peer),
+and the 47-positive ranking above applies to the table in this section: it is small, and it is one
+building. What it is good for is the comparison it makes — every row scored the same way on the
+same frames on the same day — and not for the absolute values.
+
+**Two frames are unaccounted for.** The manifest's test split holds **136** peer-free frames and
+this sweep scored **134**; the difference is not explained here. It is 1.5 points of false-alarm
+rate, well inside the gaps being argued and well outside "do not state it".
+
 ## The cross-day number, on its own terms
 
 Every row is the **held-out test split**: 47 frames containing a Go2 Wheel and 136 containing
@@ -93,7 +174,10 @@ carries `confidence_threshold: 0.25` and has already discarded weaker boxes befo
 `forward()` returns.
 
 **Does it beat the frozen head? Yes, and the axis is precision.** 30% -> 85% at the same
-recall; 60% -> 4% false positives. It does not beat the stock model — see above. On the original fifteen-still protocol — its original
+recall; 60% -> 4% false positives. It does not beat the stock model **on the Aug-24 capture** —
+see above; on the held-out Aug-20 day, with the deployed shape rule applied to both, it does, and
+so does every other checkpoint here. See *Correction, 2026-08-26*.
+On the original fifteen-still protocol — its original
 labels, its original JPEGs, so nothing is re-baselined — the fine-tune scores **5 of 15 at
 0 of 159 false positives** against the published **8 of 15 at 60 of 159**. Fewer fires, and
 not one of them on the 159 frames that hold nothing. Precision 12% -> 100%.
@@ -241,6 +325,9 @@ valuable frames in the set. `--neg-floor 32` is what lets them contribute.
 * **`person` is close to par but not at it.** 2 of 15 lost against the frozen head's 1. Two
   frames is two frames. This was written up as a shadow-run candidate; it is not one any
   more, because the stock model needs no shadow run and costs `person` nothing at all.
+  ⚠️ *Two frames was the best case, not the case.* The four checkpoints scored cross-day on
+  2026-08-26 lose 2, 4, 7 and 11 of the same 15. "Close to par" describes one checkpoint of
+  four, and the sentence should never have been written about the approach.
 * **A new false `person`, on the peer.** On `peer_cross5` frame 039 the shipped model calls
   the peer `chair 0.291` and this model calls it **`person 0.543`** — above the deployed
   threshold. It fails safe (the navigator holds) but routes a peer into the always-hold path
@@ -263,7 +350,11 @@ valuable frames in the set. `--neg-floor 32` is what lets them contribute.
 * **One corridor, one day of training data, one day of test data**, 47 held-out positives.
   Everything above is a claim about this building.
 
-## The recommendation
+## ⛔ The recommendation as published, 2026-08-25 — half of it is now wrong
+
+Kept verbatim, because it is what the repository acted on for a day and the correction is only
+readable next to it. The peer half is reversed by *Correction, 2026-08-26* above; the
+`person` half is not.
 
 **Do not fine-tune this detector, and do not deploy any checkpoint on this page.** Read the
 stock one class-agnostically instead: it wins on both axes over 40x the frames, it costs no
@@ -281,6 +372,29 @@ furniture the static map should hold rather than the tracker carry as a mover.
 was produced; a conclusion nobody can re-derive is an opinion. It also remains the only route
 if a class ever has to be added for a reason no stock VOC label can serve, and the
 people-are-background finding above applies to any such run.
+
+## The recommendation, corrected 2026-08-26
+
+**Still do not deploy any checkpoint on this page — and the reason is `person`, not the peer.**
+The three sentences that changed:
+
+* **"It loses to the stock model."** It does not. On the held-out day, with the deployed shape
+  rule applied to both, `l_full_bb02` reads 70% of peers at 19% false alarms against the shipped
+  weights' 68% at 57%. Every checkpoint here beats them on the peer.
+* **"18% false alarms."** That was staged empty corridor. The shipped weights fire on **57%** of
+  furnished peer-free frames, which is the number the class-agnostic route has to answer for.
+* **"It costs `person` two frames."** Across four checkpoints it costs between 2 and 11 of 15,
+  and that is the blocker. The shipped weights keep 15 of 15 by construction.
+
+So fine-tuning is an open line of work again, with one gate on it, and the gate is not a peer
+number: **lose none of the 15 people the shipped network sees at 0.45.** Nothing that drops a
+person is a candidate, however good its peer columns. A wave-5 sweep is testing that combination
+now; this page records no result for it, because it has none yet.
+
+Neither route is deployable today. What the class-agnostic stock read still owes is unchanged
+except in size: a range prior for a box with no meaningful label, and a decision about which of
+the false alarms are furniture the static map should hold rather than the tracker carry as a
+mover — 18% of them on staged empty corridor, **57%** in a furnished room.
 
 ## Reproducing
 

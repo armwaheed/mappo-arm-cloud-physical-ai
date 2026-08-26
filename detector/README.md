@@ -43,6 +43,83 @@ Both fine-tunes were taken to the end first — the frozen-feature head, then th
 unfrozen over twelve 40-epoch runs, which does lift the first's ceiling and still loses to
 the stock model on the same frames ([`UNFROZEN-FINE-TUNE.md`](UNFROZEN-FINE-TUNE.md)).
 
+### ⛔ That recommendation is wrong on the peer, right on `person` — corrected 2026-08-26
+
+The paragraph above is left standing because it is what this repository acted on, and because
+the way it was reached is the lesson. **It compares two models that were never scored on the
+same day.** "64% at 18%" and the fine-tune's "53% at 38%" are both the Aug-24 capture, which is
+the fine-tune's own training day; its honest held-out number is the Aug-20 split, and **the stock
+model had no Aug-20 number at all.** `UNFROZEN-FINE-TUNE.md` says in its own words that "47
+positives and 136 negatives could not rank anything" and the recommendation was issued anyway.
+
+Scored on the **Aug-20 held-out split — 47 peer-present frames, 134 peer-free** — with one rule
+applied identically to every model: **a frame counts as a fire if any detection at >= 0.25 has box
+aspect h/w < 2.0.** That is "not person-shaped", which is what the deployed stack routes to the
+policy as an obstacle rather than holding for (`person_detector.PERSON_ASPECT_MIN`, PR #73).
+`people kept` counts, of the 15 frames where the **shipped** network sees a person at >= 0.45 —
+the confidence the navigator runs at — how many the candidate still sees.
+
+| model | peer recall | false alarms | precision | people kept |
+| --- | ---: | ---: | ---: | ---: |
+| **stock 21-class (shipped)** | **68%** (32/47) | **57%** (76/134) | 30% | **15/15** |
+| `l_full_bb02` ep015 | 70% | 19% | 56% | 13/15 |
+| `j_full_distil03` ep015 | 66% | 6% | 79% | 11/15 |
+| `i_full_pseudo` ep020 | 74% | 8% | 76% | 8/15 |
+| `f_full_distil01` ep020 | 74% | 1% | 95% | 4/15 |
+
+Two things follow, and both of them are the finding:
+
+1. **On the peer, every fine-tune beats the shipped weights cross-day.** Three of the four are
+   above its 68% recall and the fourth is two points under, at 1-19% false alarms against its
+   **57%**. The 57% is the number that moved: the class-agnostic stock read fires on 57% of
+   peer-free corridor frames, not 18%. That 18% was measured against *staged* empty-corridor
+   negatives — 705 of those 897 Aug-24 peer-free frames are the `neg_prone` and `neg_standing`
+   sets, corridor cleared and shot for the purpose — and a furnished room is not an empty one.
+   So "do not fine-tune" does not survive on the axis it was argued.
+2. **Every fine-tune buys that with people.** `f_full_distil01`, the best peer precision on the
+   table, keeps **4 of 15**. `FROZEN-FEATURE-CEILING.md` already warns that one-class fine-tuning
+   teaches the network that people are background; that warning was right and understated at 2 of
+   15. **Nothing here is deployable.** The open objective is to hold 15/15 people while keeping
+   the peer gains — a sweep testing exactly that is running as this is written, and no conclusion
+   about it is recorded here.
+
+⚠️ **47 and 134 are small, and this is one corridor on one day.** Three evidence sets in this work
+have already been too small and too like themselves — the 0-of-705 refusal gate, the fifteen
+stills of which nine held no peer, and the 47-positive ranking — and each flattered the thing being
+tested. The table above is worth what it compares, not what it measures: every row scored the same
+way on the same frames. (The manifest's test split holds 136 peer-free frames; this sweep scored
+134. Two frames are unaccounted for, worth 1.5 points of false-alarm rate.)
+
+### ⚠️ `horse` is not a viable label for a quadruped, and counting emitted labels could not tell you
+
+A Go2 Wheel head-on at 1.3 m is labelled `horse 0.28` in the hero run of 2026-08-25, and the
+proposal that followed — use `horse` as the VOC label that means "quadruped robot" — was reasonable
+on that evidence. **Counting emitted labels could not settle it.** `horse` never appears in the
+1,294 detections that landed on the peer, but per the confidence-floor correction above **nothing
+below 0.25 has ever left this network**, so a `horse` logit sitting at 0.20 on every head-on frame
+would look identical to no `horse` logit at all. The other objection was that the Aug-24 corpus is
+broadside-dominated — which is why `motorbike` wins it — and therefore holds no head-on peer to
+test the idea against.
+
+Read properly — prototxt threshold patched **0.25 → 0.01** and the full 21-way softmax taken over
+all **1,903 labelled frames** — it is not there:
+
+| | `horse` |
+| --- | --- |
+| frames where it clears 0.25 | **0** |
+| frames where it reaches the top three | **0** |
+
+In every staged group, and the second objection does not hold either: **`p2_close_headon_stand` is
+98 frames of the peer square to the camera**, which is exactly the view the proposal was about, and
+`horse` scores zero there too. Across the four live runs of 2026-08-25 — 412 sightings — `horse`
+appears six times, and those six are six consecutive ticks of one approach in one run, not six
+observations.
+
+What the label was tracking is box shape, which is measured directly and scale-free by
+`person_detector.person_shaped`. Routing on `horse` would put a noisy proxy in front of a clean
+measurement, and re-introduce the label routing PR #73 removed. Closes
+[#76](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/76).
+
 Everything below this line is still accurate about *how* to add a class, and remains the
 route if one ever has to be added for a reason a stock label cannot serve.
 
