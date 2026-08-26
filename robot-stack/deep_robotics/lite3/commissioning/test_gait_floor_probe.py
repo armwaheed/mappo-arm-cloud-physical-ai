@@ -55,7 +55,7 @@ _CONTEXT = ["--robot-id", "LITE3-A", "--firmware", "V1.0.8", "--payload", "none"
 #: The modules in this directory that could hold a velocity default, and so the ones a
 #: Go2 gait floor could be pasted into and be used.
 VELOCITY_MODULES = ("gait_floor_probe.py", "actuator_gain_probe.py", "measurement.py",
-                    "robot_link.py", "commission.py")
+                    "robot_link.py", "commission.py", "axis_primitive_probe.py")
 
 
 def _args(*extra):
@@ -265,19 +265,24 @@ def test_no_ladder_top_means_refuse_rather_than_borrow_the_go2s_number():
 
 
 def test_no_go2_gait_floor_constant_is_executable_anywhere_in_this_directory():
-    """Structural, and it covers the whole directory rather than one file.
+    """Structural, and it covers every module in this directory that commands a velocity.
 
     The Go2's measured floors are 0.35 m/s forward and 0.20 m/s lateral. Naming them in
     prose is how this code explains why they are not defaults here; evaluating them is
     how the next robot silently inherits them. So the check is over the AST, not the
-    text: a *literal* 0.35 or 0.20 in any non-test module in this directory fails the
+    text: a *literal* 0.35 or 0.20 in any module in :data:`VELOCITY_MODULES` fails the
     suite, and the docstrings that argue against them do not.
 
-    Scoped to the modules where a velocity default could live. 0.2 elsewhere in this
-    directory is a socket timeout in seconds, and widening the check to catch those would
-    make it noise that somebody eventually deletes.
+    Scoped to the modules where a velocity default could live -- which is a hand-kept
+    list, and so the one thing here that can rot. ``axis_primitive_probe.py`` was added
+    to it in the same change that added the module: a probe that commands velocities is
+    exactly what this list is for, and a new one that nobody remembers to add is a hole
+    the size of a whole file. 0.2 elsewhere in this directory is a socket timeout in
+    seconds, and widening the check to catch those would make it noise that somebody
+    eventually deletes.
 
-    Verified by mutation: adding ``FLOOR = 0.35`` to gait_floor_probe.py turns this red.
+    Verified by mutation: adding ``FLOOR = 0.35`` to gait_floor_probe.py turns this red,
+    and so does adding it to axis_primitive_probe.py.
     """
     banned = (0.35, 0.20)
     offenders = []
