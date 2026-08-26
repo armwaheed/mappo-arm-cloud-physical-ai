@@ -294,3 +294,78 @@ here.
   22-frame retention denominator, is recorded here as attributed rather than verified.
 * Wave 6, running: `--pseudo-labels` 0.1 / 0.2 / 0.3, augmentation on, with a paired control
   on the winner's configuration. No result.
+
+---
+
+# Wave 6 — the pseudo-label threshold, swept, on the whole held-out day
+
+The sweep above identified `--pseudo-labels` as the lever and left it there. This is the
+sweep of it: 0.1, 0.2 and 0.3, all with augmentation, plus 0.2 at a lower backbone learning
+rate, at `k_full_pseudo03`'s other hyperparameters. Four runs, 40 epochs each.
+
+⚠️ **Scored on the WHOLE Aug-20 day, not the `test` split.** Every wave-6 run post-dates the
+selection that used the `select` split, so `select` is a clean second holdout for all of
+them, and the honest denominator is **60 peer-present / 218 peer-free** instead of 47/136.
+This matters: for `k_full_pseudo03` the two splits disagreed by twenty points of recall
+(89% on `test`, 69% on `select`), and every headline this project published before tonight
+used the flattering half. Both splits are still reported separately in
+`wave6_wholeday.json` so the disagreement stays visible.
+
+The person denominator is likewise the whole day: **54** frames on which the shipped
+network sees a person at 0.25, not 22.
+
+![the sweep](wave6-pseudo-label-sweep.png)
+
+## Result
+
+| model | recall | false alarms | people |
+| --- | ---: | ---: | ---: |
+| **stock — what ships today** | 68% | **49%** | **54/54** |
+| **`s_pseudo02_aug` ep020** | **80%** | **11%** | **50/54** |
+| `s_pseudo02_aug` ep015 | 80% | 14% | 50/54 |
+| `s_pseudo02_aug` ep010 | 83% | 16% | 50/54 |
+| `r_pseudo01_aug` ep010 | 78% | 19% | **51/54** |
+| `r_pseudo01_aug` ep020 | 83% | 15% | 47/54 |
+| `k_full_pseudo03` ep030 | 80% | 20% | 49/54 |
+
+**24 of the 30 scored checkpoints beat the shipped weights on both peer axes.**
+`s_pseudo02_aug/20` is the best candidate this project has produced: **+12 points of recall
+at a 4.5x lower false-alarm rate, retaining 93% of the people.**
+
+**0.2 is the sweet spot, and the curve is not monotonic.** 0.1 carries the most teacher
+boxes (348 vs 312) and does *not* do best — it buys one more person at ep010 and gives back
+recall and precision everywhere else.
+
+## ⚠️ Augmentation is not uniformly good, and this run is the counter-example
+
+`t_pseudo03_aug` and `k_full_pseudo03` share every hyperparameter and differ only in the
+three augmentations. Epoch-matched, augmentation **costs** people here:
+
+| epoch | 10 | 15 | 20 | 25 | 30 | 40 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| people, augmentation off | 48 | 48 | 47 | 47 | 49 | 45 |
+| people, augmentation on | 44 | 38 | 34 | 37 | 36 | 38 |
+| **delta** | **-4** | **-10** | **-13** | **-10** | **-13** | **-7** |
+
+In wave 5, at `--pseudo-labels 0.5` and backbone-LR 0.2, the same three augmentations
+*helped* by 0 to 4 people. Here, at 0.3 and backbone-LR 0.5, they cost 4 to 13.
+
+**So "augmentation improves person retention" is false as a general claim.** It interacts
+with the pseudo-label threshold, and a single paired comparison — which is what wave 5 was —
+could not have revealed that. See `augmentation-paired-by-epoch.png` for the wave-5 pairs,
+which are honest and epoch-matched; an earlier version of that figure drew one arrow between
+*different* epochs and reported the most flattering of sixteen available pairings.
+
+## Still not deployable
+
+`s_pseudo02_aug/20` loses **4 of 54** people the shipped network sees. The property this
+robot ships is *gives way to people*, and 93% is not 100%. What has changed is the size of
+the remaining gap: from 18 of 22 lost at the start of the night to 4 of 54.
+
+## Provenance
+
+`wave6_wholeday.json` is the scorer's own output, copied byte-for-byte. The corpus pixels,
+the checkpoints and the scoring scripts are **not in this repository** — they live on
+`arm-seattle-spark-02` under `~/ssdft/` and `~/go2-peer-dataset-20260824/`, and the
+load-bearing subset is archived at `armwaheed/go2-peer-detector` on Hugging Face under
+`reproduce/`. Nothing here is re-derivable from a clone alone.
