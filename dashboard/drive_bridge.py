@@ -253,10 +253,44 @@ def _wrap(angle):
     return (angle + math.pi) % (2.0 * math.pi) - math.pi
 
 
+def _require_virtualenv(component):
+    """Refuse a system-Python run before the vendor SDK import that would fail obscurely.
+
+    Placed here rather than at module import so ``--platform sim`` never needs
+    ``robot-stack`` on disk, and so the guard covers ``status`` too: ``status`` opens DDS
+    and imports ``unitree_sdk2py``, so from the system Python it produces exactly the
+    ``ModuleNotFoundError`` that an agent then reaches for ``pip install`` to silence.
+
+    The refusal is raised as :class:`BridgeError` so it reaches the dashboard as
+    ``refused: true`` with the whole message in ``error`` -- a bare ``SystemExit`` would
+    print to stderr and exit with no JSON, and ``robot_driver`` would surface only the
+    last 400 characters of it. It is echoed to stderr as well, for a person running this
+    worker by hand who wants it laid out rather than JSON-escaped.
+    """
+    preflight_dir = os.path.join(_stack_dir(), "preflight")
+    if preflight_dir not in sys.path:
+        sys.path.insert(0, preflight_dir)
+    try:
+        from venv_guard import evaluate
+    except ImportError as exc:
+        raise BridgeError(
+            f"cannot import the virtualenv guard from {_stack_dir()}/preflight "
+            f"({exc}). This worker needs robot-stack/ beside it -- the same tree "
+            "_load_go2 and _load_lite3 import their locomotion from. Set "
+            "MAPPO_STACK_DIR if it is deployed elsewhere.") from exc
+    decision = evaluate(component, reaching_hardware=True)
+    if decision.refuse:
+        print(decision.message, file=sys.stderr)
+        raise BridgeError(decision.message)
+    return decision
+
+
 def load_platform(platform, iface="eth0", operator_ready=False):
     if platform == "go2":
+        _require_virtualenv("drive_bridge --platform go2")
         return _load_go2(iface)
     if platform == "lite3":
+        _require_virtualenv("drive_bridge --platform lite3")
         return _load_lite3(operator_ready)
     if platform == "sim":
         loco = SimLocomotion()

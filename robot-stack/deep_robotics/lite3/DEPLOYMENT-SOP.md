@@ -115,6 +115,93 @@ longer be tied to a commit, and evidence recorded from it becomes unattributable
 需要迭代时，把上一个版本 `cp -r` 成新目录，然后改副本。被原地改过的版本目录无法再对应到
 某个提交，从它录出的证据也就无法溯源。
 
+**EN** — 🛑 **Python on a robot runs in a virtualenv, and a live run now refuses if it does
+not.** `visual_nav --live` and `drive_bridge.py` call
+[`robot-stack/preflight/venv_guard.py`](../../preflight/venv_guard.py) before they open a
+transport; from a system Python on a robot that is a `SystemExit`, not a warning. Create the
+venv once, here in Phase 0, and activate it in every later phase of this document:
+
+**中文** —— 🛑 **机器人上的 Python 必须跑在虚拟环境（virtualenv）里，否则实机运行会直接拒绝。**
+`visual_nav --live` 和 `drive_bridge.py` 在打开任何传输通道之前都会调用
+[`robot-stack/preflight/venv_guard.py`](../../preflight/venv_guard.py)；在机器人上用系统
+Python 运行会直接 `SystemExit`，不是告警。在阶段 0 建一次虚拟环境，后续每个阶段都先激活它：
+
+```bash
+python3 -m venv --system-site-packages $HOME/mappo-lite3-stage/venv
+source $HOME/mappo-lite3-stage/venv/bin/activate
+export PYTHONPATH=$HOME/mappo-lite3-stage/python     # unchanged — still needed for cv2
+export MAPPO_ROBOT_HOST=1                            # see below
+python3 "$release/robot-stack/preflight/venv_guard.py"   # prints this machine's verdict
+```
+
+**EN** — Three things about that block, each of which has a reason:
+
+- **`--system-site-packages` is required, not decoration.** The Lite3 stage relies on
+  `PYTHONPATH=$HOME/mappo-lite3-stage/python` for `cv2` and the rest of the AArch64
+  wheels, and `PYTHONPATH` keeps working inside a venv. The flag additionally keeps the
+  vendor's own system packages visible, which is what the Go2's deployed venv does
+  (`pyvenv.cfg: include-system-site-packages = true`).
+- **`PYTHONPATH` on its own is NOT a virtualenv and the guard will refuse it.** Earlier
+  revisions of this SOP set only `PYTHONPATH`; that is a search-path overlay, and
+  `sys.prefix` still equals `sys.base_prefix`. It also leaves `pip install` defaulting to
+  the user site directory (`~/.local/lib/python3.*/site-packages`), which on a robot where
+  everything runs as one user shadows packages for every process that user starts —
+  including the vendor stack. The venv is what makes an install undoable by deleting a
+  directory.
+- **`MAPPO_ROBOT_HOST=1` is what arms the guard on a Lite3.** Detection is positive-only
+  and the only markers measured so far (`/etc/nv_tegra_release`, a Tegra device-tree
+  model) were measured on the **Go2**. Nobody has measured a marker on a Lite3, so rather
+  than guess one, this host declares itself. Without this export the guard prints
+  `venv-guard: not enforced` on every live run and refuses nothing.
+
+**中文** —— 上面这段有三点，各有其理由：
+
+- **`--system-site-packages` 是必需项，不是可有可无。** Lite3 的暂存目录依赖
+  `PYTHONPATH=$HOME/mappo-lite3-stage/python` 来提供 `cv2` 和其余 AArch64 wheel，
+  而 `PYTHONPATH` 在虚拟环境里照常生效。这个参数还能让厂商自带的系统包保持可见 ——
+  Go2 上已部署的虚拟环境就是这么做的（`pyvenv.cfg: include-system-site-packages = true`）。
+- **只设 `PYTHONPATH` 不算虚拟环境，预检（请确认：preflight）会拒绝。** 本 SOP 早期版本
+  只设了 `PYTHONPATH`；那只是搜索路径叠加（请确认：search-path overlay），
+  `sys.prefix` 仍然等于 `sys.base_prefix`。而且这种情况下 `pip install` 会默认装到用户目录
+  `~/.local/lib/python3.*/site-packages`；机器人上所有进程都以同一个用户运行，于是它会对该用户
+  启动的每一个进程遮蔽（请确认：shadow）掉原有的包 —— 包括厂商栈。有了虚拟环境，装错了只要删掉
+  一个目录就能撤销。
+- **`MAPPO_ROBOT_HOST=1` 是在 Lite3 上启用这道闸门的开关。** 检测只认正面证据，而目前测到的
+  标志（`/etc/nv_tegra_release`、Tegra 设备树型号）都是在 **Go2** 上测的。还没有人在 Lite3 上
+  测到可用标志，因此这里不去猜，而是由主机自己声明。不做这个 export，实机运行每次都会打印
+  `venv-guard: not enforced`，什么都不会拒绝。
+
+> **EN** — ⚠️ **Not yet exercised on a Lite3.** The refusal and its tests were built and
+> mutation-checked offline, and the measurements behind them were taken on the Go2. The
+> venv step above has not been run through a full Lite3 deployment. Report what it does on
+> the first one in [issue #13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13).
+>
+> **中文** —— ⚠️ **尚未在 Lite3 上实际走过。** 这条拒绝规则及其测试是离线构建并做过变异校验
+> （请确认：mutation-checked）的，背后的测量数据来自 Go2。上面这步建虚拟环境的操作还没有在
+> 一次完整的 Lite3 部署中跑过。第一台机器人跑完请把结果写到
+> [issue #13](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/13)。
+
+**EN** — ⛔ **`device-connect-edge` does not run on the robot, and no virtualenv changes
+that.** It requires Python >= 3.11. A venv is built *from* an interpreter and cannot supply
+one the machine does not have — on the Go2, measured 2026-08-26, the whole inventory is
+3.8.10 and 3.9.5, `apt-cache policy python3.11` returns nothing, and `python3.10` has no
+candidate. So the Device Connect driver runs **off-robot** on a workstation and reaches the
+robot by running `dashboard/drive_bridge.py` — Python 3.8, standard library only — as a
+subprocess in the robot's SDK environment. That is what `--bridge-python` points at. Do not
+spend a deployment morning trying to install 3.11 on a robot; see
+[`../../../deploy/README.md`](../../../deploy/README.md) for the measurements.
+
+**中文** —— ⛔ **`device-connect-edge` 不在机器人上运行，虚拟环境也改变不了这一点。**
+它要求 Python >= 3.11。虚拟环境是**基于**某个解释器创建的，无法凭空提供机器上没有的版本 ——
+Go2 上（2026-08-26 实测）全部可用版本只有 3.8.10 和 3.9.5，`apt-cache policy python3.11`
+没有任何输出，`python3.10` 也没有候选版本。因此 Device Connect 驱动运行在**机器人之外**的
+工作站上，通过在机器人的 SDK 环境里以子进程方式运行 `dashboard/drive_bridge.py`
+（Python 3.8，仅标准库）来控制机器人。`--bridge-python` 指的就是这个解释器。不要把部署当天的
+上午花在给机器人装 3.11 上；测量数据见
+[`../../../deploy/README.md`](../../../deploy/README.md)。
+
+---
+
 **EN** — The four robot-side checks, in order. Do not proceed past a failed check.
 
 **中文** —— 机器人侧的四项检查，按顺序做。任何一项不过，不要往下走。
@@ -142,6 +229,7 @@ longer be tied to a commit, and evidence recorded from it becomes unattributable
 
    ```bash
    release=$HOME/mappo-lite3-stage/releases/<TAG>
+   source $HOME/mappo-lite3-stage/venv/bin/activate
    export PYTHONPATH=$HOME/mappo-lite3-stage/python
    python3 "$release/robot-stack/deep_robotics/lite3/visual_nav/lite3_vision_shadow.py" \
        --camera-source rtsp://127.0.0.1:8554/test \
@@ -303,7 +391,10 @@ The live command, with every robot-specific value in `<angle brackets>`:
 
 ```bash
 cd $HOME/mappo-lite3-stage/releases/<TAG>/robot-stack/deep_robotics/lite3/visual_nav
-PYTHONPATH=$HOME/mappo-lite3-stage/python python3 lite3_visual_nav.py \
+source $HOME/mappo-lite3-stage/venv/bin/activate      # Phase 0 — --live REFUSES without it
+export PYTHONPATH=$HOME/mappo-lite3-stage/python
+export MAPPO_ROBOT_HOST=1
+python3 lite3_visual_nav.py \
     --camera-source rtsp://127.0.0.1:8554/test \
     --model-dir $HOME/mappo-lite3-stage/models/mobilenet-ssd \
     --calibration <VALIDATED_CALIBRATION_JSON> \
@@ -383,6 +474,9 @@ between runs.
 | `REFUSING TO MOVE: no battery on '/battery_state'` | The locomotion combinator broke `battery_level` delegation; fixed in PR #98. / 运动组合器断掉了 `battery_level` 委托；PR #98 已修复。 | Deploy a tree that contains the fix. Do not patch around it on the robot. / 部署包含该修复的代码。不要在机器人上临时绕。 |
 | `REFUSING TO MOVE: no battery from the locomotion state stream, whose reader raised on N polls: ...` | The state stream is not reaching the health poller. The refusal now names the raise it saw on the first poll, and that text is the diagnosis. / 状态流没有到达健康轮询。拒绝信息里已带上第一次轮询看到的异常，该文本就是诊断依据。 | Read the quoted exception. `Lite3LinkLost ... silent for Ns` is the link (row 1). Anything else is a code fault — record it in issue #13 rather than patching on the robot. / 看引用的异常。`Lite3LinkLost ... silent for Ns` 属于链路问题（见第 1 行）。其它情况是代码缺陷，请记录到 issue #13，不要在机器人上临时改。 |
 | `Lite3 health stale by Ns` mid-run / 运行中途报健康数据过期 | The state stream stopped while the run was in progress; the gate now sees it within ~2 s instead of holding a frozen reading. / 运行中状态流中断；该门限现在约 2 秒内即可发现，而不再停留在冻结的旧值上。 | Treat as a link failure: check the cable and `network.toml` before re-running. / 按链路故障处理：重跑前先查网线和 `network.toml`。 |
+| `[venv-guard] REFUSING TO RUN` at the start of a live run / 实机运行一开始就报此拒绝 | The venv was not activated — this is a system Python on a robot. / 没有激活虚拟环境 —— 这是在机器人上用系统 Python 运行。 | `source $HOME/mappo-lite3-stage/venv/bin/activate`, then re-run the same command. The message names the venv and the command to build one. **Do not `pip install` past it.** / 先 `source $HOME/mappo-lite3-stage/venv/bin/activate`，再原样重跑。拒绝信息里已经写明了用哪个虚拟环境、以及如何新建。**不要用 `pip install` 绕过去。** |
+| `venv-guard: not enforced` on a live run / 实机运行时打印该行 | `MAPPO_ROBOT_HOST=1` was not exported, so the guard found no robot-host evidence. No Lite3 marker has been measured, so this host must declare itself. / 没有 export `MAPPO_ROBOT_HOST=1`，闸门找不到任何机器人主机证据。Lite3 上还没有测到可用标志，所以必须由主机自己声明。 | Export it (Phase 0) and re-run. The line is printed on purpose — a gate that is not firing has to say so. / 按阶段 0 加上该 export 再重跑。这行是故意打印的 —— 没有生效的闸门必须自己说出来。 |
+| tempted to install Python 3.11 on the robot / 想在机器人上装 Python 3.11 | `device-connect-edge` needs >= 3.11 and the robot cannot provide it; a venv cannot supply a Python the machine lacks. / `device-connect-edge` 需要 >= 3.11，而机器人给不了；虚拟环境无法凭空提供机器上没有的 Python 版本。 | **Stop.** The driver runs off-robot and reaches the robot through `drive_bridge.py`. See `deploy/README.md`. / **停手。** 驱动运行在机器人之外，通过 `drive_bridge.py` 控制机器人。见 `deploy/README.md`。 |
 | `robot_basic_state=98` (or any non-`6` basic state) | Mode state left by previous handling; not a code bug. / 之前的操作留下的模式状态；不是代码 bug。 | Per the Deep Robotics engineer: re-zero on the controller in the vendor app, then stand. Live needs `basic_state=6`. / 按云深处工程师指导：在厂商 app 里先回零再站立。实机需要 `basic_state=6`。 |
 | `goal never sighted in 20 s` | Chair off the camera axis, half-occluded, or too far. / 椅子偏出相机中轴、被半遮、或太远。 | Re-place the chair (Phase 3), then retry. Only then consider `--goal-confidence 0.40`. / 先按阶段 3 重摆椅子再重试，之后才考虑 `--goal-confidence 0.40`。 |
 | run holds in corridor / stall, no motion / 运行卡在走廊判定、不动 | Obstacle too close to the robot→goal line. / 障碍物离"机器人→目标"连线太近。 | Box centre ≥ 0.9 m off the line, computed from **measured** radii (robot 0.40 m, box 0.28–0.33 m). / 箱心离连线 ≥ 0.9 m，按**实测**半径计算（机器人 0.40 m、箱子 0.28–0.33 m）。 |

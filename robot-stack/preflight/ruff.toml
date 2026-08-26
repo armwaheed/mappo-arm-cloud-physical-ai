@@ -1,0 +1,24 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint settings for robot-stack/preflight/. The same selection every other config in this
+# repository carries, for the reason dashboard/ruff.toml gives: these directories are read
+# together and a second style would be noise.
+#
+# `target-version = "py38"` is not inherited boilerplate here, it is the subject. This
+# module's whole job is to be importable by the interpreter the ROBOT has, and the Go2's
+# Jetson has 3.8.10 and 3.9.5 and nothing newer (measured 2026-08-26; see
+# ../../deploy/README.md). A guard that needs 3.10 syntax to explain why you are on 3.8
+# would die at the SyntaxError it exists to prevent.
+line-length = 100
+target-version = "py38"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
+
+[lint.per-file-ignores]
+# The suite puts its own directory on sys.path before importing the module under test, so
+# that import genuinely is not at the top of the file. Every other config in this tree
+# carries the same ignore for the same reason -- and `ruff --fix` will hoist the import
+# above the sys.path line if this is removed, which has broken two files here already.
+"test_*.py" = ["E402"]
