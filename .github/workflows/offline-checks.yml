@@ -1,0 +1,487 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The first CI this repository has had. It runs everything that does not need a robot:
+# the naming embargo, the ruff configs, and every offline test suite. Nothing here talks
+# to DDS, opens a camera, or moves a leg.
+#
+# WHAT IT IS FOR. Twenty PRs merged on hand measurement alone, and hand measurement missed
+# four things that this file exists to make impossible:
+#
+#   1. A PR reported "ruff clean" having run one directory's config against a different
+#      directory's code. The lint loop below therefore derives its directory list FROM THE
+#      ruff.toml FILES THEMSELVES, so a directory and the config it is linted against are
+#      paired by construction rather than by whoever wrote the command.
+#   2. AGENTS.md named one test file by name in a directory that holds ten, so the nine
+#      siblings were never run by the documented command. Every loop here globs.
+#   3. A suite that dies at ModuleNotFoundError printed nothing anybody read. Skips are
+#      announced as ::warning:: annotations, which land on the run summary rather than on
+#      line 400 of a collapsed log.
+#   4. A forbidden name reached the tree by being copied in from an upstream repository and
+#      nothing detected it. The `naming` job below greps for it — see that job's comment.
+#
+# AND WHAT ITS SIBLING GOT WRONG. The only other CI in this family — the offline checks in
+# the upstream Go2 driver repository — walked a hard-coded `unitree/go2/*/` glob, which
+# silently excluded a whole top-level directory including a test suite. Its own "this
+# directory has no ruff.toml" warning was scoped to the same glob, so the warning that
+# existed to catch the omission could never fire for it. That was fixed there; this file
+# inherits the fixed version, not the original. Nothing below is scoped to a prefix. If
+# you find yourself adding one, you are re-introducing that bug.
+
+name: offline checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------------------------------------------------------------------------------
+  naming:
+    name: naming embargo
+    runs-on: ubuntu-22.04
+    # AGENTS.md's Naming section is absolute: no earlier internal name for Arm Device
+    # Connect and no originating company name may appear anywhere in this repository —
+    # code, comments, docs, filenames, branch names, commit messages, or PR text. The
+    # repository is shared with Deep Robotics and with Arm's China teams BEFORE the
+    # standard launches publicly, which is why it is a rule and not a style preference.
+    #
+    # THE PATTERNS ARE WRITTEN AS CHARACTER CLASSES ON PURPOSE. This file is inside the
+    # tree it greps. Spelling a forbidden string here would make the check fail on itself
+    # forever, and would put the string in the repository — which is the thing being
+    # forbidden. `[Mm][Hh][Ss]` matches the abbreviation without containing it.
+    #
+    # A GREP THAT CANNOT MATCH IS A GATE THAT NEVER FIRES, so the step below builds each
+    # forbidden string from parts at run time and asserts the pattern finds it, and builds
+    # two near-misses and asserts it does not. Without that, a typo in a character class
+    # would leave a green tick over a check that had stopped checking.
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # commit messages in this PR's range are in scope
+
+      - name: No forbidden name in the tree, the paths, this branch, or its commits
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -uo pipefail
+
+          # Underscore is a word character to grep -E, so \b will not separate a_bbr_b.
+          # Both patterns therefore spell the separator out as "not alphanumeric".
+          ABBR='(^|[^A-Za-z0-9])[Mm][Hh][Ss]([^A-Za-z0-9]|$)'
+          PHRASE='[Mm]odel[^A-Za-z0-9]{0,2}[Hh]ardware[^A-Za-z0-9]{0,2}[Ss]tandard'
+          # A leading boundary only: "philanthropic" and "misanthropic" must not match,
+          # but a trailing "...ic.com" or "...ics" must.
+          ORIGIN='(^|[^A-Za-z])[Aa]nthropic'
+          PATTERN="$ABBR|$PHRASE|$ORIGIN"
+
+          # ---- positive and negative controls -------------------------------------
+          fail=0
+          probe_abbr="$(printf 'arm-%s%s%s-unitree-go2' m h s)"
+          probe_phrase="$(printf '%sodel%sardware%standard' M H S)"
+          probe_origin="$(printf '%sn%sropic' A th)"
+          for probe in "$probe_abbr" "$probe_phrase" "$probe_origin"; do
+            if ! printf '%s\n' "$probe" | grep -qE "$PATTERN"; then
+              echo "::error::the embargo pattern no longer matches a string it must match"
+              fail=1
+            fi
+          done
+          for near in philanthropic misanthropic "the standard" "hardware model"; do
+            if printf '%s\n' "$near" | grep -qE "$PATTERN"; then
+              echo "::error::the embargo pattern matches '$near', which is not forbidden"
+              fail=1
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then
+            echo "::error::self-test failed — fix the pattern before trusting this job"
+            exit 1
+          fi
+          echo "self-test: pattern matches all 3 forbidden forms and none of 4 near-misses"
+
+          status=0
+
+          # ---- 1. file contents ----------------------------------------------------
+          # -I so a JPEG that happens to contain the bytes is not a finding. Only the
+          # location is printed, never the match: this log is a public artefact too.
+          hits="$(grep -rInE "$PATTERN" --exclude-dir=.git . 2>/dev/null)"
+          if [ -n "$hits" ]; then
+            while IFS= read -r hit; do
+              file="${hit%%:*}"; rest="${hit#*:}"; line="${rest%%:*}"
+              echo "::error file=${file#./},line=${line}::AGENTS.md Naming: a forbidden name appears on this line. Re-run the greps in .github/workflows/offline-checks.yml locally to see it."
+            done <<< "$hits"
+            echo "$(printf '%s\n' "$hits" | wc -l | tr -d " ") occurrence(s) in tracked content"
+            status=1
+          fi
+
+          # ---- 2. paths ------------------------------------------------------------
+          paths="$(git ls-files | grep -E "$PATTERN")"
+          if [ -n "$paths" ]; then
+            while IFS= read -r p; do
+              echo "::error file=${p}::AGENTS.md Naming: this path contains a forbidden name"
+            done <<< "$paths"
+            status=1
+          fi
+
+          # ---- 3. commit messages, SCOPED TO THIS CHANGE ---------------------------
+          # Deliberately not `git log --all`. main already carries one occurrence, in the
+          # squash message of the very PR that removed the name from the tree: that PR
+          # verified "the history grep returns 0" before it wrote the message that made it
+          # 1. It cannot be removed without rewriting history already shared with Deep
+          # Robotics, so a whole-history gate would be permanently red and un-fixable,
+          # and a permanently red gate gets ignored. Scoping to the pushed range keeps the
+          # rule enforceable where it can still be obeyed: on the commits being added.
+          range=""
+          if [ -n "${BASE_SHA:-}" ]; then
+            range="${BASE_SHA}..HEAD"
+          elif [ -n "${PUSH_BEFORE:-}" ] && [ "${PUSH_BEFORE}" != "0000000000000000000000000000000000000000" ]; then
+            range="${PUSH_BEFORE}..HEAD"
+          fi
+          if [ -n "$range" ] && git rev-list "$range" >/dev/null 2>&1; then
+            n_commits="$(git rev-list --count "$range")"
+            for sha in $(git rev-list "$range"); do
+              if git log -1 --format='%B%n%an%n%ae' "$sha" | grep -qE "$PATTERN"; then
+                echo "::error::commit ${sha} has a forbidden name in its message or author"
+                status=1
+              fi
+            done
+            echo "checked $n_commits commit message(s) in $range"
+          else
+            echo "::warning::no commit range for this event — commit messages were not checked"
+          fi
+
+          # ---- 4. branch name and PR text ------------------------------------------
+          for pair in "branch name|${HEAD_REF:-}" "PR title|${PR_TITLE:-}" "PR body|${PR_BODY:-}"; do
+            what="${pair%%|*}"; value="${pair#*|}"
+            [ -z "$value" ] && continue
+            if printf '%s\n' "$value" | grep -qE "$PATTERN"; then
+              echo "::error::the $what contains a forbidden name"
+              status=1
+            fi
+          done
+
+          if [ "$status" -eq 0 ]; then
+            echo "clean: tree, paths, commit messages, branch name, PR title and body"
+          else
+            echo "::error::AGENTS.md Naming is absolute. Remove the name and say so in the PR."
+          fi
+          exit $status
+
+  # ---------------------------------------------------------------------------------
+  lint:
+    name: ruff
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # PINNED. ruff is the one tool here whose verdict can change without anybody
+      # touching this repository: a new release adds rules and reddens an unrelated PR.
+      # Bumping it should be its own change, with the findings in the body. The version
+      # of the INTERPRETER is irrelevant to the verdict — every ruff.toml in this tree
+      # sets `target-version = "py38"` itself, so ruff lints for the robot's Python no
+      # matter what runs it.
+      - name: Install ruff
+        run: python -m pip install --disable-pip-version-check --quiet "ruff==0.15.21"
+
+      - name: Lint each directory from inside itself, against its own config
+        # THE DISCOVERY IS THE FIX. A PR reported "ruff clean" after running
+        # integration/ruff.toml against robot-stack/unitree/go2/visual_nav/ and shipped 13
+        # findings. Deriving the list from `find . -name ruff.toml` makes that combination
+        # unrepresentable: the directory linted is the directory the config lives in.
+        # `ruff check .` from inside it is exactly the command AGENTS.md documents.
+        run: |
+          set -uo pipefail
+          status=0
+          linted=0
+          for config in $(find . -name ruff.toml -not -path './.git/*' | sort); do
+            dir="$(dirname "$config")"
+            # A config over no Python is a green tick that checked nothing.
+            n_py="$(find "$dir" -name '*.py' -not -path '*/__pycache__/*' | wc -l | tr -d ' ')"
+            if [ "$n_py" -eq 0 ]; then
+              echo "::error file=${config#./}::this ruff.toml governs no .py files — it lints nothing"
+              status=1
+              continue
+            fi
+            echo "::group::ruff check . ($dir, $n_py files)"
+            (cd "$dir" && ruff check .) || status=1
+            echo "::endgroup::"
+            linted=$((linted + 1))
+          done
+          if [ "$linted" -eq 0 ]; then
+            echo "::error::no directory was linted — the discovery loop found nothing"
+            exit 1
+          fi
+          echo "linted $linted directories"
+          exit $status
+
+      - name: Report the Python that no config covers
+        # Scoped to the WHOLE TREE, not to the directories linted above — that is the
+        # sibling repository's exact bug, where the warning about unlinted directories was
+        # scoped to the same glob that skipped them. A file is covered if any ancestor
+        # directory inside the repo holds a ruff.toml; ruff resolves configs the same way.
+        #
+        # Warnings, not errors: adopting a config over a directory changes what is a
+        # finding, and that is a judgement call for whoever owns the code, not for CI.
+        # The RATCHET below is the compromise — today's 13 are grandfathered, a 14th is
+        # not. `detector/` is the one worth deciding about: it holds 8 files including
+        # peer_recall.py, and it was measured clean under its own labels/ruff.toml on
+        # 2026-08-26, so adopting one there costs nothing today.
+        run: |
+          set -uo pipefail
+          GRANDFATHERED=13
+          uncovered=0
+          for dir in $(find . -name '*.py' -not -path './.git/*' -not -path '*/__pycache__/*' \
+                       -print | sed 's|/[^/]*$||' | sort -u); do
+            probe="$dir"
+            covered=""
+            while [ "$probe" != "." ] && [ -n "$probe" ]; do
+              if [ -f "$probe/ruff.toml" ]; then covered="$probe"; break; fi
+              probe="$(dirname "$probe")"
+            done
+            [ -f "./ruff.toml" ] && covered="${covered:-.}"
+            if [ -z "$covered" ]; then
+              n_py="$(ls "$dir"/*.py 2>/dev/null | wc -l | tr -d ' ')"
+              echo "::warning file=${dir#./}::$n_py Python file(s) here, and no ruff.toml at or above them — this directory is not linted"
+              uncovered=$((uncovered + 1))
+            fi
+          done
+          echo "$uncovered directories hold Python that no ruff.toml covers"
+          if [ "$uncovered" -gt "$GRANDFATHERED" ]; then
+            echo "::error::$uncovered unlinted directories, up from the $GRANDFATHERED grandfathered here. Add a ruff.toml, or raise GRANDFATHERED in this workflow and say in the PR why the code should not be linted."
+            exit 1
+          fi
+
+  # ---------------------------------------------------------------------------------
+  suites:
+    name: suites (Python ${{ matrix.python }} — ${{ matrix.why }})
+    runs-on: ubuntu-22.04
+    # TWO INTERPRETERS, BECAUSE THIS REPOSITORY GENUINELY SPANS TWO.
+    #
+    # 3.8 is not an oversight and must not be "fixed" upward. The Go2's Jetson runs
+    # Ubuntu 20.04 / JetPack 5, policy/requirements.txt is written around the last numpy
+    # that supports it (1.24.x), and every ruff.toml here sets target-version = "py38".
+    # A newer interpreter would pass code the robot cannot import, and that breakage
+    # surfaces on the robot, mid-run.
+    #
+    # 3.11 is not optional either: dashboard/ needs >= 3.11 because that is what Device
+    # Connect requires, which is the entire reason dashboard/drive_bridge.py is a separate
+    # 3.8 process rather than an import. One job cannot cover both, so this is a matrix.
+    #
+    # The two legs also resolve different numpy majors — 1.24.x on 3.8, matching the
+    # robot; 2.x on 3.11, matching a workstation — and measuring both was worth doing:
+    # every suite gives an identical count under each, so nothing here depends on a
+    # numpy 2 behaviour change.
+    #
+    # ubuntu-22.04, not ubuntu-latest: 3.8 is no longer in the 24.04 tool cache.
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - python: "3.8"
+            why: the robot's interpreter
+            # dashboard/ is skipped on this leg (see skip_reason); it needs >= 3.11.
+            extra_deps: ""
+            authoritative: "no"
+          - python: "3.11"
+            why: Device Connect's floor
+            extra_deps: "aiohttp"
+            authoritative: "yes"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install what the offline suites import
+        # INSTALLED: numpy (policy and the geometry), opencv-python-headless (headless
+        # because there is no display and no test opens a window), Pillow (three tests in
+        # dashboard/test_camera_source.py degrade to a printed "skip" without it — they
+        # still print "ok", which is a missing dependency reading as a pass, so it is
+        # installed rather than annotated), pytest (one file imports it),
+        # aiohttp on the 3.11 leg only (dashboard/test_server.py, and dashboard does not
+        # run on 3.8).
+        #
+        # NOT INSTALLED, and not installable here: device-connect-edge and
+        # arm-dc-robotkit. Neither is on PyPI before launch. The two suites that need
+        # them are skipped, loudly, and named in the step below with the reason.
+        run: |
+          python -m pip install --disable-pip-version-check --quiet --upgrade pip
+          python -m pip install --disable-pip-version-check --quiet \
+            numpy opencv-python-headless Pillow pytest ${{ matrix.extra_deps }}
+          python - <<'EOF'
+          import numpy, cv2, PIL, pytest, sys
+          print(f"python {sys.version.split()[0]}  numpy {numpy.__version__}  "
+                f"cv2 {cv2.__version__}  pillow {PIL.__version__}  pytest {pytest.__version__}")
+          EOF
+
+      - name: Run every test file the tree holds
+        # GLOBBED, NEVER ENUMERATED. AGENTS.md used to name
+        # test_lite3_state_probe.py explicitly, in a directory that holds ten test files;
+        # the other nine were never run by the documented command. `find` cannot make that
+        # mistake. The SKIP list below is enumerated, and that direction is safe: a file
+        # nobody has listed gets RUN. Never invert it.
+        #
+        # Each suite is run from its own directory, because each puts that directory on
+        # sys.path to import its siblings; from the repo root they die on the import
+        # rather than on a test.
+        env:
+          PY: ${{ matrix.python }}
+        run: |
+          set -uo pipefail
+
+          skip_reason() {
+            case "$1" in
+              ./dashboard/test_robot_driver.py)
+                echo "imports device_connect_edge — the Device Connect edge package is not on PyPI before launch. Fails identically on main."
+                return ;;
+              ./robot-stack/unitree/go2/deploy/test_go2_robot_io.py)
+                echo "imports arm_dc_robotkit — the shared core is not on PyPI before launch. Fails identically on main."
+                return ;;
+            esac
+            # dashboard/ needs Python >= 3.11 (Device Connect). drive_bridge.py is the
+            # deliberate exception: it is the 3.8 half of the two-env bridge and running
+            # its suite on 3.8 is the only thing that proves the split still holds.
+            case "$1" in
+              ./dashboard/test_drive_bridge.py) : ;;
+              ./dashboard/*)
+                if [ "$PY" = "3.8" ]; then
+                  echo "dashboard/ requires Python >= 3.11 (Device Connect); this leg is the robot's 3.8"
+                fi ;;
+            esac
+          }
+
+          status=0; ran=0; skipped=0; total=0
+          : > /tmp/counts.txt
+          : > /tmp/skipped-dirs.txt
+
+          for test in $(find . -name 'test_*.py' -not -path './.git/*' \
+                        -not -path '*/__pycache__/*' | sort); do
+            dir="$(dirname "$test")"
+            reason="$(skip_reason "$test")"
+            if [ -n "$reason" ]; then
+              echo "::warning file=${test#./}::SKIPPED — $reason"
+              echo "$dir" >> /tmp/skipped-dirs.txt
+              skipped=$((skipped + 1))
+              continue
+            fi
+            echo "::group::$test"
+            if out="$( (cd "$dir" && python "$(basename "$test")") 2>&1 )"; then rc=0; else rc=$?; fi
+            printf '%s\n' "$out"
+            echo "::endgroup::"
+            n="$(printf '%s\n' "$out" | grep -c '^  ok  ')"
+            if [ "$rc" -ne 0 ]; then
+              echo "::error file=${test#./}::FAILED (exit $rc) after $n test(s)"
+              status=1
+            elif [ "$n" -eq 0 ]; then
+              # Exit 0 and no "ok" lines means the runner ran nothing. That is the shape
+              # of a green tick over an empty suite, and it is worse than a red one.
+              echo "::error file=${test#./}::exited 0 but printed no '  ok  ' line — it ran no tests"
+              status=1
+            fi
+            # A test that quietly degrades because an import failed is a missing
+            # dependency reading as a pass; surface it where somebody will see it.
+            printf '%s\n' "$out" | grep '^  skip  ' | while IFS= read -r s; do
+              echo "::warning file=${test#./}::a test degraded rather than ran —${s#*skip}"
+            done
+            echo "$dir $n" >> /tmp/counts.txt
+            ran=$((ran + 1)); total=$((total + n))
+          done
+
+          if [ "$ran" -eq 0 ]; then
+            echo "::error::no test suite was run — the discovery loop found nothing"
+            exit 1
+          fi
+          echo "ran $ran files, skipped $skipped, $total tests passed"
+          echo "TOTAL=$total" >> "$GITHUB_ENV"
+          exit $status
+
+      - name: Per-directory counts
+        if: always()
+        run: |
+          set -uo pipefail
+          [ -s /tmp/counts.txt ] || { echo "::error::no counts were recorded"; exit 1; }
+          awk '{c[$1]+=$2; t+=$2} END {for (d in c) printf "%6d  %s\n", c[d], d; printf "%6d  TOTAL\n", t}' \
+            /tmp/counts.txt | sort -k2 | tee /tmp/by-dir.txt
+          if [ -s /tmp/skipped-dirs.txt ]; then
+            echo "directories with skipped files:"; sort -u /tmp/skipped-dirs.txt
+          fi
+
+      - name: The numbers here must be the numbers AGENTS.md claims
+        # THE REASON THIS STEP EXISTS. AGENTS.md's "Before you say you are done" block is
+        # the specification for what "done" means, and PRs quote its numbers as evidence.
+        # It had drifted to 189 for a directory that measures 196 and 17 for one that
+        # measures 60, and nothing could notice. Parsing the block and comparing it against
+        # what actually ran makes the document and the measurement the same object: change
+        # the tests and this fails until you change the block, and vice versa.
+        #
+        # Only the authoritative leg compares. The 3.8 leg deliberately skips dashboard/,
+        # so its total is smaller by construction and comparing it would be wrong.
+        if: matrix.authoritative == 'yes'
+        run: |
+          set -uo pipefail
+          status=0
+
+          sed -n '/^## Before you say you are done$/,/^## /p' AGENTS.md > /tmp/block.md
+          [ -s /tmp/block.md ] || { echo "::error file=AGENTS.md::the 'Before you say you are done' section is gone — CI parses it"; exit 1; }
+
+          awk '
+            /^\(cd / {
+              dir = $2
+              if (match($0, /#[ \t]*[0-9]+[ \t]*$/)) {
+                n = substr($0, RSTART); gsub(/[^0-9]/, "", n); print dir, n
+              }
+            }' /tmp/block.md | sort > /tmp/claimed.txt
+          awk '/^#[ \t]*total[ \t]+[0-9]+/ {gsub(/[^0-9]/, "", $0); print}' /tmp/block.md > /tmp/claimed-total.txt
+
+          if [ ! -s /tmp/claimed.txt ]; then
+            echo "::error file=AGENTS.md::no '(cd <dir> ...)   # <count>' lines parsed out of the block — a check that parses nothing passes everything"
+            exit 1
+          fi
+          echo "parsed $(wc -l < /tmp/claimed.txt | tr -d " ") claimed directory counts from AGENTS.md"
+
+          awk '{c[$1]+=$2} END {for (d in c) print substr(d, 3), c[d]}' /tmp/counts.txt | sort > /tmp/measured.txt
+
+          while read -r dir claimed; do
+            measured="$(awk -v d="$dir" '$1==d {print $2}' /tmp/measured.txt)"
+            if [ -z "$measured" ]; then
+              echo "::error file=AGENTS.md::AGENTS.md claims $claimed tests in '$dir', and nothing there ran"
+              status=1
+            elif [ "$measured" != "$claimed" ]; then
+              echo "::error file=AGENTS.md::'$dir': AGENTS.md says $claimed, CI measured $measured"
+              status=1
+            fi
+          done < /tmp/claimed.txt
+
+          # And the other direction — a directory of tests nobody wrote down. Three of
+          # them existed when this workflow was written (go2 controller, d1_arm and
+          # lidar_sight, 28 tests between them) and the documented command ran none.
+          while read -r dir measured; do
+            if ! awk -v d="$dir" '$1==d {found=1} END {exit !found}' /tmp/claimed.txt; then
+              echo "::error file=AGENTS.md::'$dir' ran $measured tests and AGENTS.md does not list it — add it to the block"
+              status=1
+            fi
+          done < /tmp/measured.txt
+
+          claimed_total="$(cat /tmp/claimed-total.txt)"
+          measured_total="$(awk '{t+=$2} END {print t+0}' /tmp/measured.txt)"
+          if [ -z "$claimed_total" ]; then
+            echo "::error file=AGENTS.md::the block has no '# total <n>' line"
+            status=1
+          elif [ "$claimed_total" != "$measured_total" ]; then
+            echo "::error file=AGENTS.md::total: AGENTS.md says $claimed_total, CI measured $measured_total"
+            status=1
+          else
+            echo "AGENTS.md and CI agree: $measured_total tests across $(wc -l < /tmp/measured.txt | tr -d " ") directories"
+          fi
+          exit $status

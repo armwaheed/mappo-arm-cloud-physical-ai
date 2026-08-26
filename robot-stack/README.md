@@ -63,13 +63,14 @@ Registry entry: **`arm-dc-unitree-go2`** in the DC registry.
 ## Install & run (pre-launch)
 
 The `dc` package is **not yet on PyPI** (pre-launch), so install the SDK editable
-from a clone of
-[`modelhardwarestandard/python-sdk`](https://github.com/modelhardwarestandard/python-sdk),
-then the shared core and this package editable:
+from a clone of the DC Python SDK repository — ask @armwaheed for it; the GitHub org it
+is still hosted under is named for the pre-launch internal name, which AGENTS.md's
+**Naming** section does not allow to be written here. Then the shared core and this
+package, editable:
 
 ```bash
 # 1) DC Python SDK, editable from a local clone (pick your wire transport)
-git clone https://github.com/modelhardwarestandard/python-sdk
+git clone <the DC Python SDK repository — see above>
 pip install -e "./python-sdk[wire,nats]"
 
 # 2) the shared core, then this driver (editable)
