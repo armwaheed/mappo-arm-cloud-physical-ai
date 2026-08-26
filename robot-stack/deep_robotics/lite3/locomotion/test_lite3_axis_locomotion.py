@@ -477,6 +477,38 @@ def test_axis_locomotion_refuses_undocumented_or_unhealthy_vendor_state():
             raise AssertionError(f"accepted unsafe vendor state {(basic, gait, policy, motion)}")
 
 
+def test_the_vendor_state_gate_refuses_a_snapshot_that_stopped_arriving():
+    """``prepare_motion`` calls this gate at pre-flight with no age check ahead of it.
+
+    ``set_velocity`` checks ``state_age()`` and then calls the gate, so a stale snapshot
+    never reaches it that way. ``Lite3Bindings.prepare_motion`` calls it directly, and a
+    link that died between ``connect()`` and pre-flight would otherwise authorise motion
+    from a frozen ``basic=6`` recorded seconds earlier.
+    """
+    clock = _Clock()
+    loco = Lite3AxisLocomotion(
+        axis_profile=_load_profile(_profile_data()),
+        motion_host="127.0.0.1",
+        command_port=43893,
+        state_port=0,
+        bind="127.0.0.1",
+        clock=clock,
+        state_timeout_s=0.1,
+    )
+    # Everything the gate inspects is healthy and permitted; only the age is wrong.
+    loco._state = SimpleNamespace(
+        received_at=clock.now, error_state=0, mode=(6, 0, 0, 0))
+    loco.assert_axis_state_ready()  # fresh: must not raise
+
+    clock.now += 0.11
+    try:
+        loco.assert_axis_state_ready()
+    except Lite3LinkLost as error:
+        assert "silent" in str(error)
+    else:
+        raise AssertionError("authorised axis motion from a snapshot that stopped arriving")
+
+
 def test_set_velocity_checks_the_vendor_state_before_it_creates_a_streamer():
     """``assert_axis_state_ready`` is well covered; that it is *called* was not.
 

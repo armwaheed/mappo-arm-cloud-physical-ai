@@ -202,7 +202,11 @@ class Lite3Bindings:
         if getattr(args, "locomotion_transport", "udp") in ("udp", "axis"):
             # Late-bound: the navigator may build the monitor before the locomotion, and
             # the link is not up until connect(). The poller treats a raise as "no
-            # sample", so the staleness gate covers the gap rather than a fabricated one.
+            # sample", and battery_level() raises on a link that has GONE silent as well
+            # as on one that never started -- see Lite3UdpLocomotion._require_fresh_state.
+            # Without that second case the staleness gate covers nothing: the poller
+            # re-stamps a frozen snapshot at 10 Hz, so HEALTH_STALE_S measures the age of
+            # the stamp rather than the age of the frame and can never elapse.
             def battery_source():
                 if self._locomotion is None:
                     return None

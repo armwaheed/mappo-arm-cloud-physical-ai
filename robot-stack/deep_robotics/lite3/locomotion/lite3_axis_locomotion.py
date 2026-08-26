@@ -556,11 +556,19 @@ class Lite3AxisLocomotion(Lite3UdpLocomotion):
         self._streamer.set_axes(axes)
 
     def assert_axis_state_ready(self) -> None:
-        """Require the documented manual/moving state before nonzero axis motion."""
+        """Require the documented manual/moving state before nonzero axis motion.
+
+        The freshness bound is part of the gate, not an extra: ``prepare_motion`` calls
+        this at pre-flight with no age check ahead of it, so a link that died between
+        ``connect()`` and the gate would otherwise authorise motion from a frozen
+        ``basic=6`` recorded seconds earlier. ``set_velocity`` checks the age first and
+        then calls this, so the check is redundant on that path and load-bearing on the
+        other.
+        """
         profile = self._axis_profile
         if profile is None:
             raise AxisProfileError("a local axis profile is required before axis commands")
-        state = self._require_state()
+        state = self._require_fresh_state()
         basic, gait, policy, motion = state.mode
         if state.error_state != 0:
             raise Lite3LinkLost(f"Lite3 error_state={state.error_state}; refusing axis motion")
