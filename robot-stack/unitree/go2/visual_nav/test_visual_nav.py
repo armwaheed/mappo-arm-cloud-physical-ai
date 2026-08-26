@@ -76,6 +76,7 @@ from visual_nav import (
     PerceptionResult,
     PerceptionWorker,
     VisualNavigator,
+    blocked_stop,
     build_camera_model,
     build_parser,
     static_detect_prior,
@@ -1837,6 +1838,143 @@ def test_no_committed_run_carries_the_split_yet():
                  if line.strip()]
         ticks = [t for t in ticks if t["type"] == "tick"]
         assert ticks and all("pass_ms" not in t["perception"] for t in ticks)
+
+
+# ── Resting the legs when the way stays blocked (issue #118) ────────────────
+class _OnePlanner:
+    """Returns the SAME command every tick, so the loop's dispatch is what is measured.
+
+    The scenes that produce a ``veto-hold`` or a stopped ``veto-avoid`` live in
+    ``integration/test_mappo_drive.py`` and are measured there; driving the real policy
+    from here would make this a test of what a checkpoint happens to decide.
+    """
+
+    config = PlannerConfig()
+
+    def __init__(self, command: Command):
+        self._command = command
+
+    def plan(self, *_args, **_kwargs):
+        return self._command
+
+
+def _rest_run(command: Command, ticks: int = 40, rest_after_s: float = 0.05):
+    """Drive the real control loop with one fixed command. Returns what got laid down.
+
+    Starts STANDING and LIVE, because the rest branch is guarded on ``self._standing``
+    and a dry run never reaches ``lie_down_fn`` at all — a version of this test that
+    forgot either passed against a robot that was already prone.
+
+    ``rest_after_s`` is 0.05 s against a 100 Hz loop, so the timer needs about five
+    ticks of the forty available. A threshold the fixture's step divides exactly is how
+    a gate comes to never fire, so it is left with 8x of margin rather than 1x.
+    """
+    loco = _FakeLoco()
+    rested: list = []
+    navigator = VisualNavigator(
+        loco=loco, perception=_FakePerception(), planner=_OnePlanner(command),
+        tracker=ObstacleTracker(), goal_source=_FakeGoal(), health=_FakeHealth(ticks),
+        config=NavConfig(live=True, control_hz=100.0, initially_standing=True,
+                         rest_after_s=rest_after_s),
+        lie_down_fn=lambda _loco: rested.append("lie_down"))
+    with contextlib.redirect_stdout(io.StringIO()):
+        navigator.run()
+    return rested, loco, navigator
+
+
+def test_a_vetoed_hold_still_rests_the_legs():
+    """⚠️ THE DEFECT IN ISSUE #118, at the site that decides the posture.
+
+    ``integration/mappo_drive.py`` qualifies a vetoed tick's reason instead of replacing
+    it, so the planner's own hold reaches this loop as ``veto-hold``. The dispatch tested
+    ``command.reason == "hold"``, which is False for it, so ``rest_after_s`` never
+    elapsed and the Go2 stood braced under a 3.15 kg arm for the rest of the run — with
+    no fault raised, because both stall gates decline a zero command by construction.
+
+    Put ``command.reason == "hold"`` back and this goes red.
+    """
+    rested, _loco, navigator = _rest_run(
+        Command(0.0, 0.0, 0.0, reason="veto-hold", gap_m=0.2, feasible=0, evaluated=330))
+    assert rested == ["lie_down"], (
+        "a vetoed hold left the robot standing: the rest-after-blocked timer never "
+        "started, and nothing else in the loop would have said so")
+    assert not navigator._standing
+
+
+def test_a_vetoed_stop_labelled_avoid_still_rests_the_legs():
+    """The half a prefix-only fix would miss, and the one the staged scene produces.
+
+    Measured on the drive path: a policy walking at a bin 2.6 m ahead is vetoed at
+    1.11 m of surface gap, and from 1.06 m the command is ``v=(0.00, 0.00, 0.00)`` on
+    every remaining tick — labelled ``veto-avoid``, because the stopping-distance cap
+    had ratcheted the dynamic window down until the best sampled candidate was zero and
+    ``avoid`` is a label applied after that choice. ``base_reason(...) == "hold"`` is
+    False on all of them, so teaching the dispatch only about ``veto-hold`` leaves the
+    robot braced in exactly the scene the demo runs.
+    """
+    rested, _loco, _navigator = _rest_run(
+        Command(0.0, 0.0, 0.0, reason="veto-avoid", gap_m=1.06, feasible=330,
+                evaluated=330))
+    assert rested == ["lie_down"], (
+        "a stopped robot labelled `veto-avoid` stayed standing; the label is not the "
+        "wheels, and this is the scene the veto actually produces")
+
+
+def test_a_moving_command_never_rests_the_legs():
+    """The counter-example that gives the two above their meaning.
+
+    Same loop, same forty ticks, same tiny ``rest_after_s`` — only the velocity changed.
+    A rule that lay the robot down here would be worse than the defect it replaced: it
+    would stop a run that was walking perfectly well.
+    """
+    rested, loco, navigator = _rest_run(
+        Command(0.30, 0.0, 0.0, reason="veto-avoid", gap_m=1.5, feasible=300,
+                evaluated=330))
+    assert rested == [], "the robot was walking; nothing should have laid it down"
+    assert navigator._standing
+    assert any(c[0] > 0.0 for c in loco.commands), (
+        f"the fixture never drove the legs, so nothing was proved: {loco.commands}")
+
+
+def test_arriving_is_not_being_blocked():
+    """``arrived`` is the one stop that is not a failure to get on.
+
+    ``mappo_drive`` maps the policy's ``STOP_GOAL_REACHED`` to it, and that can land
+    while the stack's own ``arrive_tolerance_m`` is not yet met — so it does reach this
+    dispatch, and lying down on it would be the robot going prone because it thinks it
+    has finished.
+    """
+    rested, _loco, navigator = _rest_run(
+        Command(0.0, 0.0, 0.0, reason="arrived", gap_m=float("inf"), feasible=330,
+                evaluated=330))
+    assert rested == [], "an arrival is not a blocked hold"
+    assert navigator._standing
+
+
+def test_blocked_stop_is_decided_by_the_legs_and_by_one_word():
+    """The unit behind the four loop tests above, and where the strictness lives.
+
+    Two failure modes, both of which look right written inline. Comparing the whole
+    string misses every qualified reason. Searching for a substring — ``"hold" in
+    reason`` — fires on a reason that merely contains the letters, which is a different
+    decision taken for a spelling coincidence.
+    """
+    def stop(reason):
+        return Command(0.0, 0.0, 0.0, reason=reason, gap_m=1.0)
+
+    assert blocked_stop(stop("hold"))
+    assert blocked_stop(stop("veto-hold")), "the reason this issue exists"
+    assert blocked_stop(stop("veto-avoid")), "a stop is a stop, whatever labelled it"
+    assert blocked_stop(stop("policy")), "the policy commanding zero is still a stop"
+    assert not blocked_stop(stop("arrived"))
+
+    # Moving, however it is labelled. A `hold` that is not a stop cannot happen from
+    # this planner — both hold branches command zero directly — but the rule has to be
+    # the legs rather than the word, or a future producer can lie the robot down while
+    # it is walking.
+    assert not blocked_stop(Command(0.30, 0.0, 0.0, reason="hold", gap_m=1.0))
+    assert not blocked_stop(Command(0.0, 0.12, 0.0, reason="veto-hold", gap_m=1.0))
+    assert not blocked_stop(Command(0.0, 0.0, 0.35, reason="hold", gap_m=1.0))
 
 
 if __name__ == "__main__":

@@ -34,8 +34,17 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
                                 "visual_nav"))
-from avoidance import MIN_GAIT_COMMAND_M_S, Command, Limits, Obstacle, PlannerConfig
+from avoidance import (
+    MIN_GAIT_COMMAND_M_S,
+    PLANNER_REASONS,
+    Command,
+    Limits,
+    Obstacle,
+    PlannerConfig,
+    base_reason,
+)
 
+import mappo_bridge
 from mappo_bridge import external_hold
 from mappo_drive import (
     _STOP_REASONS,
@@ -190,6 +199,123 @@ def test_an_empty_scene_is_never_vetoed():
     planner = _planner(supervised=True, runner=_StubRunner((0.35, 0.0, 0.0)))
     planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
     assert planner.counts["vetoed"] == 0
+
+
+def test_the_reason_a_veto_writes_is_one_base_reason_can_read():
+    """⚠️ THE PRODUCER HALF OF ISSUE #118. The veto QUALIFIES the planner's reason
+    rather than replacing it, which is right — one string then says both what the
+    planner decided and that the policy's command was refused, and the telemetry needs
+    both. It is only safe while every consumer can get the planner's word back out.
+
+    Three could not: ``visual_nav``'s rest-after-blocked dispatch, both of the planner's
+    Schmitt triggers, and ``mappo_bridge.external_hold``. This drives every branch of
+    ``_choose`` that can produce a qualified reason and pins the round trip.
+
+    Change the separator, or qualify with a word ``PLANNER_REASONS`` does not name, and
+    this goes red at the point of writing rather than in a run nobody is watching.
+    """
+    close = Obstacle(x=0.6, y=0.0, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
+                     object_id="landmark-1")
+    qualified = {}
+    for name, obstacles, last in (("hold", [close], "goal"),
+                                  ("avoid", [BIN], "goal"),
+                                  ("avoid-continuing", [BIN], "veto-avoid")):
+        planner = _planner(supervised=True, runner=_StubRunner((0.35, 0.0, 0.0)))
+        command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), obstacles,
+                               last_reason=last)
+        assert planner.counts["vetoed"] == 1, (name, planner.counts)
+        qualified[name] = command.reason
+
+    assert qualified["hold"] == "veto-hold", qualified
+    assert set(qualified.values()) >= {"veto-hold", "veto-avoid"}, (
+        f"the scenes must produce more than one qualified word or the round trip below "
+        f"is tested on one case: {qualified}")
+    for name, reason in qualified.items():
+        assert reason.startswith("veto-"), (name, reason)
+        assert base_reason(reason) in PLANNER_REASONS, (
+            f"{name}: `{reason}` does not strip back to a word the planner issues, so "
+            f"every consumer comparing it will silently never match")
+        assert base_reason(reason) == reason[len("veto-"):], (name, reason)
+
+
+def test_a_supervised_approach_parks_under_a_veto_that_is_not_a_hold():
+    """WHY ``visual_nav.blocked_stop`` MEASURES THE LEGS AND NOT ONLY THE LABEL (#118).
+
+    A prefix-aware fix that still asked ``base_reason(...) == "hold"`` would leave the
+    robot braced in the scene the demo actually runs, and this is the run that says so.
+    A policy walking straight at a bin 2.6 m ahead, pose integrated at the 0.45 factor
+    this robot delivers, 10 Hz: the veto starts firing at about 1.1 m of surface gap,
+    and within half a second the command it substitutes is EXACTLY zero and stays there
+    — because the planner's stopping-distance cap has ratcheted the dynamic window down
+    until the best sampled candidate is zero, and ``avoid`` is a label applied after
+    that choice.
+
+    So the terminal state of this approach is a robot stopped dead, indefinitely, under
+    a reason whose planner word is ``avoid``. The bounds below are loose because they
+    are describing a trajectory rather than pinning a constant; what is not loose is the
+    two facts the design rests on: it is a stop, and it is not a hold.
+    """
+    planner = _planner(supervised=True, runner=_StubRunner((0.35, 0.0, 0.0)))
+    bin_ = Obstacle(x=2.6, y=0.0, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
+                    object_id="landmark-1")
+    pose, last, last_reason, dt = [0.0, 0.0, 0.0], (0.0, 0.0, 0.0), "goal", 0.1
+    trail = []
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _ in range(120):
+            command = planner.plan(tuple(pose), (4.0, 0.0), last, [bin_],
+                                   control_dt=dt, last_reason=last_reason)
+            trail.append(command)
+            last, last_reason = (command.vx, command.vy, command.wz), command.reason
+            # The measured delivery factor, not the command: this robot walks about 0.45
+            # of what it is told, which is why the veto has time to fire at all.
+            pose[0] += command.vx * 0.45 * dt
+            pose[1] += command.vy * 0.45 * dt
+            pose[2] += command.wz * dt
+
+    assert any(c.reason == "policy" for c in trail), (
+        "the policy never drove, so this is not the scene the test describes")
+    parked = [c for c in trail if c.is_stop]
+    # It parks at about tick 71 of 120 and never moves again. A handful of stopped
+    # ticks would be a deceleration; thirty of them in a row is the braced robot.
+    assert len(parked) >= 30, (
+        f"the approach did not park, so it says nothing about a braced robot: "
+        f"{len(parked)} stopped ticks of {len(trail)}")
+    assert all(c.is_stop for c in trail[-30:]), (
+        "the stop must be terminal, not a pause in the middle of an approach")
+
+    final = trail[-1]
+    assert final.is_stop, final
+    assert final.reason.startswith("veto-"), final
+    assert base_reason(final.reason) != "hold", (
+        f"this run's terminal reason IS a hold, so the scene no longer demonstrates "
+        f"what it was added for — re-measure before relaxing `blocked_stop`: {final}")
+    assert base_reason(final.reason) in PLANNER_REASONS, final
+
+    surface_gap = math.hypot(bin_.x - pose[0], bin_.y - pose[1]) - bin_.radius_m - 0.25
+    assert 0.8 < surface_gap < 1.4, (
+        f"the robot parked {surface_gap:.2f} m off the bin's surface, which is outside "
+        f"the band this scene was measured in")
+
+
+def test_the_bridges_copy_of_the_reason_rule_matches_the_planners():
+    """``mappo_bridge`` carries its own ``base_reason`` because it is stdlib-only and
+    ``avoidance`` is numpy from its first line. A copy is only safe while something
+    compares the two, so this does — over the vocabulary, over both qualifiers anyone
+    writes, and over the near-misses a substring test would get wrong.
+
+    Built from ``PLANNER_REASONS`` rather than written out, so a fifth word added to the
+    vocabulary is covered here without anyone remembering to extend a list.
+    """
+    assert mappo_bridge.PLANNER_REASONS == PLANNER_REASONS, (
+        f"the bridge names a different vocabulary: {mappo_bridge.PLANNER_REASONS}")
+    words = [*PLANNER_REASONS, "policy", "threshold", "holding_pattern",
+             "withhold", "", "-", "veto-"]
+    cases = [*words, *(f"{q}-{w}" for q in ("veto", "peer", "") for w in words)]
+    for reason in cases:
+        assert mappo_bridge.base_reason(reason) == base_reason(reason), reason
+    # Anti-vacuity: the comparison has to run over cases where the rule actually does
+    # something, or two broken copies agreeing would pass.
+    assert sum(1 for r in cases if base_reason(r) != r) >= len(PLANNER_REASONS), cases
 
 
 def test_the_real_checkpoint_needs_the_veto_at_the_shipped_command_scale():

@@ -139,6 +139,7 @@ from avoidance import (
     Limits,
     Obstacle,
     PlannerConfig,
+    base_reason,
 )
 from camera_model import GO2_CAMERA_HEIGHT_M, FisheyeCamera
 from colour_detector import (
@@ -478,6 +479,53 @@ def control_interval_s(previous_tick_s: float | None, now_s: float,
     return min(MAX_CONTROL_DT_S, max(period_s, now_s - previous_tick_s))
 
 
+def blocked_stop(command) -> bool:
+    """Whether this tick leaves the robot standing still because it cannot get on.
+
+    What starts the rest-after-blocked timer, which is what puts the Go2 prone instead
+    of braced. Getting it wrong is expensive and silent: this robot carries a 3.15 kg
+    D1 arm on its back, a standing posture holds that arm on the leg joints for as long
+    as the run lasts, and NOTHING FAULTS while it does. Both stall gates decline a zero
+    command by construction — :meth:`VisualNavigator._blocked_reason` returns ``None``
+    below :data:`PROGRESS_MIN_COMMAND_M_S` ("not asking it to go anywhere") and
+    ``mappo_drive._note_sub_floor`` returns on ``speed <= 0.0`` ("a stop is a stop") —
+    so a robot that never lies down also never says why, and the run ends on its own
+    clock as a timeout.
+
+    TWO THINGS THIS TEST USED TO BE, AND IS NOT.
+
+    **Not ``command.reason == "hold"``.** ``integration/mappo_drive.py`` QUALIFIES a
+    vetoed tick's reason rather than replacing it, so the planner's own hold arrives
+    here as ``"veto-hold"`` and the equality never matched: every policy-driven run
+    stood braced for the rest of its budget. :func:`avoidance.base_reason` recovers the
+    planner's word, and it strips one qualifier rather than searching for a substring —
+    ``"hold" in reason`` would also fire on a reason that merely contains the letters,
+    which is a worse bug than the one it fixes.
+
+    **Not the label alone either.** Measured offline on the drive path: a stub policy
+    walking at a bin 2.6 m ahead is vetoed at 1.11 m of surface gap and from 1.06 m the
+    command is ``v=(0.00, 0.00, 0.00)`` on every remaining tick — labelled
+    ``veto-avoid``, not ``veto-hold``, because the stopping-distance cap had ratcheted
+    the dynamic window down until the best sampled candidate was zero and ``avoid`` is a
+    label applied after that choice. ``base_reason(...) == "hold"`` is False on all of
+    them, and a robot that has stopped dead is exactly what the timer is for.
+    ``avoidance._window``'s own comment reached the same conclusion from the other
+    direction, about a stop labelled ``goal``: "it stands there under load until the run
+    times out". So does ``_coast_budget_s`` in ``test_visual_nav``: "Timing the label
+    rather than the wheels made this budget read ~50% longer than the robot actually
+    managed."
+
+    So the test is what the LEGS are told, plus the one reason a stop is not a failure
+    to get on: ``arrived``. Anything else that stops the robot rests it, which is the
+    safe direction — lying down costs one 3 s stand-up on the next moving tick, and
+    bracing costs the remainder of the run. The qualifier is stripped off ``arrived``
+    too, defensively: nothing produces ``veto-arrived`` today, because ``mappo_drive``
+    returns ``arrived`` from a branch above its veto, and the point of reading it
+    through :func:`avoidance.base_reason` is that the next wrapper cannot re-open this.
+    """
+    return command.is_stop and base_reason(command.reason) != "arrived"
+
+
 class VisualNavigator:
     """Drives a quadruped to a goal on camera alone through injected robot bindings."""
 
@@ -756,8 +804,11 @@ class VisualNavigator:
             self._last_reason = command.reason
 
             # Rest the legs whenever the way stays blocked — the arm makes standing
-            # expensive, so a long hold is spent lying down rather than braced.
-            if command.reason == "hold":
+            # expensive, so a long hold is spent lying down rather than braced. What
+            # counts as blocked is `blocked_stop`, which is a named function and not an
+            # expression here because the two mistakes it is avoiding both LOOK right
+            # inline; read it before changing this.
+            if blocked_stop(command):
                 # `hold_since or now` would restart the timer on a monotonic clock that
                 # happened to read 0.0. Vanishingly unlikely, but the explicit test is
                 # the same length and says what it means.

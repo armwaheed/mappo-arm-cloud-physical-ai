@@ -129,8 +129,11 @@ from avoidance import (  # noqa: E402
 )
 
 #: Statuses that mean "stop", mapped to the reason string the vendored loop understands.
-#: ``hold`` is not cosmetic there: it is what starts the rest-after-blocked timer that
-#: puts the robot prone instead of standing braced, and the arm makes standing expensive.
+#: The word is not cosmetic there. ``visual_nav.blocked_stop`` rests the legs on a stop
+#: whose reason is anything but ``arrived``, so ``STOP_GOAL_REACHED`` is the one status
+#: in this table that leaves the robot standing and the other three put it prone rather
+#: than braced under the arm. A status the table does not know falls back to ``hold``,
+#: i.e. to resting, which is the safe direction for an unrecognised stop.
 _STOP_REASONS = {
     "STOP_EXTERNAL_HOLD": "hold",
     "STOP_STALE_INPUT": "hold",
@@ -521,6 +524,15 @@ class MappoPlanner(DynamicWindowPlanner):
         if self._supervised and not self.is_feasible(pose, proposed, obstacles,
                                                      horizon_s=self._veto_horizon_s):
             self.counts["vetoed"] += 1
+            # The reason is QUALIFIED, not replaced, so that one string says both what
+            # the planner decided and that the policy's command was refused. That makes
+            # it wrong to compare against a vocabulary word with ``==``: five reads in
+            # three files did, `"veto-hold" != "hold"`, and both of the planner's
+            # Schmitt triggers, the whole rest-after-blocked timer and the bridge's
+            # mover hold were inert on every policy-driven run (issue #118).
+            # `avoidance.base_reason` is what a consumer reads it
+            # through, and `test_the_reason_a_veto_writes_is_one_base_reason_can_read`
+            # is what keeps this end of the contract honest.
             return Command(planned.vx, planned.vy, planned.wz,
                            reason=f"veto-{planned.reason}", gap_m=planned.gap_m,
                            feasible=planned.feasible, evaluated=planned.evaluated)
