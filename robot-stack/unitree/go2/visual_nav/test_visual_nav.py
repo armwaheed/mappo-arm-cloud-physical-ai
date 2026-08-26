@@ -69,12 +69,14 @@ from tracker import (
     observation_from,
 )
 from visual_nav import (
+    STATIC_DETECT_LABEL,
     NavConfig,
     PerceptionResult,
     PerceptionWorker,
     VisualNavigator,
     build_camera_model,
     build_parser,
+    static_detect_prior,
 )
 
 CAMERA = FisheyeCamera.from_hfov(1920, 1080, 85.27)
@@ -480,6 +482,11 @@ def test_a_detector_that_throws_does_not_kill_perception():
 
     class _Boom:
         def detect(self, _image):
+            raise RuntimeError("detector exploded")
+
+        def detect_tiered(self, _image):
+            # The worker calls THIS. Without it the test passes on an AttributeError,
+            # i.e. it proves the method is missing rather than that a throw survives.
             raise RuntimeError("detector exploded")
 
     class _OneFrameCamera:
@@ -1247,6 +1254,149 @@ def test_the_uncalibrated_fallback_names_the_go2s_lens_height_rather_than_inheri
     printed = out.getvalue()
     assert "NOMINAL" in printed and "GO2" in printed, printed
     assert "un-calibrated" in printed, printed
+
+
+# ── The sub-threshold static detection tier ────────────────────────────────
+class _TieredDetector:
+    """A detector that offers one mover and one static candidate per frame."""
+
+    def __init__(self, movers=(), statics=()):
+        self.movers = list(movers)
+        self.statics = list(statics)
+        self.calls = 0
+
+    def detect_tiered(self, _image):
+        self.calls += 1
+        return list(self.movers), list(self.statics)
+
+
+class _OneFrame:
+    def __init__(self):
+        self.seq = 0
+
+    def wait_for_new(self, after_seq, timeout):
+        self.seq += 1
+        return Frame(image=np.zeros((1080, 1920, 3), np.uint8),
+                     capture_time=time.monotonic(), seq=self.seq,
+                     stamp=(0.0, 0.0, 0.0))
+
+
+class _NoGoalSource:
+    def update(self, _image, _pose):
+        return None
+
+
+#: A box that clears every gate in `static_shaped`, at the corpus frame size.
+_STATIC_BOX = person_detector.Detection(x1=700.0, y1=300.0, x2=1100.0, y2=880.0,
+                                        score=0.12, label="chair")
+_BOX_PRIOR = person_detector.SizePrior(height_m=0.40, width_m=0.35)
+
+
+def _one_cycle(**kwargs) -> PerceptionResult:
+    worker = PerceptionWorker(_OneFrame(), kwargs.pop("detector"), CAMERA,
+                              _NoGoalSource(), lambda: (0.0, 0.0, 0.0), **kwargs)
+    worker.start()
+    deadline = time.monotonic() + 2.0
+    while worker.latest() is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    result = worker.latest()
+    worker.stop()
+    assert result is not None, "perception produced nothing"
+    return result
+
+
+def test_a_static_detection_reaches_the_map_and_never_the_tracker():
+    """The whole routing argument in one assertion. A detection this close to the
+    network's noise floor must not be differentiated into a velocity, must not be able
+    to HOLD the robot, and must earn a second agreeing sighting before the planner sees
+    it — all three of which follow from it being a landmark rather than a track."""
+    result = _one_cycle(detector=_TieredDetector(statics=[_STATIC_BOX]),
+                        static_prior=_BOX_PRIOR)
+    assert result.observations == [], "a static candidate must not become a track"
+    assert len(result.static_observations) == 1
+    assert result.static_observations[0].label == STATIC_DETECT_LABEL
+
+
+def test_the_tier_is_inert_without_a_measured_prior():
+    """FAIL CLOSED. `range_detections` turns a size prior into metres; with no prior
+    there is no defensible number to put in the map, and a default would put a landmark
+    at a range nothing measured. Offering candidates is not enough to map them."""
+    result = _one_cycle(detector=_TieredDetector(statics=[_STATIC_BOX]),
+                        static_prior=None)
+    assert result.static_observations == []
+    assert result.observations == []
+
+
+def test_movers_still_reach_the_tracker_with_the_tier_on():
+    """The mover tier is unchanged. If enabling static detection could quietly divert a
+    person into the map, the feature would disable giving way to people."""
+    person = person_detector.Detection(x1=800.0, y1=200.0, x2=950.0, y2=900.0,
+                                       score=0.8, label="person")
+    result = _one_cycle(detector=_TieredDetector(movers=[person],
+                                                 statics=[_STATIC_BOX]),
+                        static_prior=_BOX_PRIOR)
+    assert len(result.observations) == 1
+    assert result.observations[0].label == "person"
+    assert len(result.static_observations) == 1
+
+
+def test_the_static_label_is_not_the_voc_label():
+    """`StaticObstacleMap` keys its plan-view radii by label. The same recycling bin
+    comes back `tvmonitor` in one frame and `chair` in the next, so carrying VOC through
+    would split one object into two landmarks with two different radii."""
+    other = person_detector.Detection(x1=700.0, y1=300.0, x2=1100.0, y2=880.0,
+                                      score=0.13, label="tvmonitor")
+    result = _one_cycle(detector=_TieredDetector(statics=[_STATIC_BOX, other]),
+                        static_prior=_BOX_PRIOR)
+    assert {o.label for o in result.static_observations} == {STATIC_DETECT_LABEL}
+
+
+def test_the_tier_is_off_by_default():
+    """Nothing that changes what a robot does may arrive enabled."""
+    args = build_parser().parse_args([])
+    assert args.static_detect is False
+    assert static_detect_prior(args) is None
+
+
+def test_the_tier_refuses_to_start_without_measured_dimensions():
+    """An inferred width comes from a standing adult's aspect ratio. A cardboard box is
+    squatter than a person, so the inference is wronger for it than for the peer it
+    already misranged into the robot's own footprint."""
+    for flags in (["--static-detect"],
+                  ["--static-detect", "--static-detect-height", "0.4"],
+                  ["--static-detect", "--static-detect-width", "0.35"]):
+        args = build_parser().parse_args(flags)
+        try:
+            static_detect_prior(args)
+        except SystemExit:
+            continue
+        raise AssertionError(f"started the tier with an unmeasured prior: {flags}")
+
+
+def test_the_radius_defaults_to_the_objects_own_footprint():
+    """Half the measured width, with no clearance added. The planner adds its own and
+    double-counting it is how a prop grows a disc it does not have."""
+    args = build_parser().parse_args(
+        ["--static-detect", "--static-detect-height", "0.40",
+         "--static-detect-width", "0.35"])
+    prior, radius = static_detect_prior(args)
+    assert math.isclose(prior.height_m, 0.40)
+    assert math.isclose(prior.width_m, 0.35)
+    assert math.isclose(radius, 0.175)
+
+
+def test_a_nonsense_dimension_is_refused():
+    """Every range scales linearly on the height, so a zero or a NaN does not degrade
+    the estimate, it destroys it."""
+    for value in ("0", "-0.4", "nan"):
+        args = build_parser().parse_args(
+            ["--static-detect", "--static-detect-height", value,
+             "--static-detect-width", "0.35"])
+        try:
+            static_detect_prior(args)
+        except SystemExit:
+            continue
+        raise AssertionError(f"accepted --static-detect-height {value}")
 
 
 if __name__ == "__main__":

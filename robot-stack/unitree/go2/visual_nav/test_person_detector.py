@@ -29,14 +29,22 @@ from camera_model import (
     FisheyeCamera,
 )
 from person_detector import (
+    DEFAULT_CONFIDENCE,
+    DEFAULT_STATIC_CONFIDENCE,
     FILLS_FRAME_RANGE_M,
     PERSON_ASPECT_MIN,
     PERSON_PRIOR,
+    STATIC_ASPECT_MIN,
+    STATIC_CLASSES,
+    STATIC_MAX_AREA_FRAC,
+    STATIC_MIN_AREA_FRAC,
     Detection,
     RangedDetection,
     SizePrior,
     estimate_range,
     object_fit_range,
+    prototxt_with_floor,
+    static_shaped,
 )
 
 WIDTH, HEIGHT = 1920, 1080
@@ -235,14 +243,6 @@ def test_the_cap_is_reported_as_its_own_source_only_when_it_binds():
     assert range_m < fit
 
 
-if __name__ == "__main__":
-    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for t in tests:
-        t()
-        print(f"  ok  {t.__name__}")
-    print(f"person_detector: {len(tests)}/{len(tests)} passed")
-
-
 # ── Routing on shape rather than on the label ───────────────────────────────
 def _ranged(x1, y1, x2, y2, label="person"):
     """A RangedDetection with a given box. Range and bearing are irrelevant here —
@@ -332,3 +332,168 @@ def test_the_width_prior_is_not_inferred_when_it_is_measured():
     measured = SizePrior.of_height(0.514, 0.31)
     assert measured.width_m == pytest.approx(0.31)
     assert measured.height_m == pytest.approx(0.514)
+
+
+# ── The sub-threshold STATIC tier ──────────────────────────────────────────
+#: The DetectionOutput stanza as the published MobileNet-SSD prototxt ships it. Trimmed
+#: to the layer under test; the real file is ~1,900 lines and carries this exactly once.
+_DETECTION_OUT = """layer {
+  name: "detection_out"
+  type: "DetectionOutput"
+  detection_output_param {
+    num_classes: 21
+    nms_param {
+      nms_threshold: 0.45
+      top_k: 100
+    }
+    keep_top_k: 100
+    confidence_threshold: 0.25
+  }
+}
+"""
+
+#: The cardboard box as MobileNet-SSD actually saw it, at input 300, on the only frame of
+#: one that exists: a Lite3 dry run in the Shanghai office, 1280x720. Score 0.1221,
+#: labelled `chair`, box [535,165,800,547]. ONE OBSERVATION — it demonstrates the
+#: mechanism and sets nothing.
+_LITE3_FRAME = (1280, 720)
+_LITE3_BOX = (535.0, 165.0, 800.0, 547.0)
+_LITE3_SCORE = 0.1221
+
+
+def _det(x1, y1, x2, y2, label="chair", score=0.12):
+    return Detection(x1=x1, y1=y1, x2=x2, y2=y2, score=score, label=label)
+
+
+def test_the_network_floor_is_lowered_not_the_python_one():
+    """The 0.25 lives in DetectionOutput and is applied inside forward(), so a Python
+    threshold can only ever discard what the layer already passed. Lowering the layer is
+    the entire mechanism; if this substitution stops happening the tier sees nothing."""
+    assert "confidence_threshold: 0.25" in _DETECTION_OUT
+    patched = prototxt_with_floor(_DETECTION_OUT, 0.10)
+    assert "confidence_threshold: 0.1" in patched
+    assert "confidence_threshold: 0.25" not in patched
+    # Everything else about the layer is untouched — nms_threshold is a number in the
+    # same stanza and a sloppier pattern would eat it.
+    assert "nms_threshold: 0.45" in patched
+    assert "keep_top_k: 100" in patched
+    assert "num_classes: 21" in patched
+
+
+def test_the_floor_is_never_raised():
+    """A caller asking for a permissive static tier must not be able to make the PERSON
+    tier blinder as a side effect. Above the baked value the file comes back unchanged."""
+    assert prototxt_with_floor(_DETECTION_OUT, 0.40) == _DETECTION_OUT
+    assert prototxt_with_floor(_DETECTION_OUT, 0.25) == _DETECTION_OUT
+
+
+def test_an_ambiguous_prototxt_is_refused_rather_than_guessed():
+    """Two thresholds would leave one of them silently authoritative, and the run would
+    look like it had lowered the floor while DetectionOutput still dropped the box."""
+    with pytest.raises(ValueError):
+        prototxt_with_floor(_DETECTION_OUT + _DETECTION_OUT, 0.10)
+    with pytest.raises(ValueError):
+        prototxt_with_floor("layer { type: \"DetectionOutput\" }", 0.10)
+
+
+def test_the_one_box_that_exists_passes_the_gate():
+    """The Lite3 cardboard box, at its measured geometry. This is a DEMONSTRATION that
+    the mechanism reaches the object, not evidence that the thresholds are right: one
+    frame cannot set a threshold and this test must never be read as if it had."""
+    assert static_shaped(_det(*_LITE3_BOX), *_LITE3_FRAME) is True
+    assert _LITE3_SCORE >= DEFAULT_STATIC_CONFIDENCE
+    assert _LITE3_SCORE < DEFAULT_CONFIDENCE, "below the mover tier, which is the point"
+
+
+def test_a_person_shaped_box_is_refused_entry_to_the_static_map():
+    """THE SAFETY-CRITICAL HALF. A landmark is planned with person_shaped=False, so a
+    person routed into the map is a person the robot never holds for — the one behaviour
+    it ships. `chair` at close range on a real person's legs is a measured occurrence,
+    not a hypothetical."""
+    tall = _det(500.0, 100.0, 800.0, 100.0 + 300.0 * PERSON_ASPECT_MIN + 10.0)
+    frac = (tall.width_px * tall.height_px) / (1920.0 * 1080.0)
+    assert STATIC_MIN_AREA_FRAC <= frac <= STATIC_MAX_AREA_FRAC, "area must not decide"
+    assert static_shaped(tall, 1920, 1080) is False
+
+
+def test_a_vertically_clipped_box_is_refused_for_the_reason_person_shaped_holds():
+    """Clipping the head SHORTENS the box, so the aspect falls toward furniture at exactly
+    the range where being wrong costs most. `person_shaped` holds on that; this must
+    refuse on it, or the two rules disagree and a close person becomes scenery."""
+    clipped_top = _det(500.0, 0.0, 900.0, 700.0)
+    clipped_bottom = _det(500.0, 300.0, 900.0, 1080.0)
+    assert static_shaped(clipped_top, 1920, 1080) is False
+    assert static_shaped(clipped_bottom, 1920, 1080) is False
+
+
+def test_the_person_refusal_uses_the_same_threshold_person_shaped_does():
+    """Not a parallel constant. If these drift apart a band opens between them that is
+    neither held for nor mapped, or worse is both."""
+    # Wide enough that the AREA gate is not what answers — this test is about the
+    # aspect boundary and must not pass for the other gate's reason.
+    width = 300.0
+    just_under = _det(500.0, 100.0, 500.0 + width,
+                      100.0 + width * (PERSON_ASPECT_MIN - 0.1))
+    just_over = _det(500.0, 100.0, 500.0 + width,
+                     100.0 + width * (PERSON_ASPECT_MIN + 0.1))
+    assert static_shaped(just_under, 1920, 1080) is True
+    assert static_shaped(just_over, 1920, 1080) is False
+    ranged = RangedDetection(detection=just_over, range_m=2.0, bearing_rad=0.0,
+                             source="height")
+    assert ranged.person_shaped(1920, 1080) is True
+
+
+def test_a_horizontal_slab_is_not_a_floor_standing_object():
+    """A skirting rail, a window mullion, the wall-wide `aeroplane` at aspect 0.19 in the
+    Lite3 frame. Wide and flat is the corridor, not something in it."""
+    slab = _det(200.0, 400.0, 1500.0, 560.0)
+    frac = (slab.width_px * slab.height_px) / (1920.0 * 1080.0)
+    assert STATIC_MIN_AREA_FRAC <= frac <= STATIC_MAX_AREA_FRAC, "area must not decide"
+    assert slab.height_px / slab.width_px < STATIC_ASPECT_MIN
+    assert static_shaped(slab, 1920, 1080) is False
+
+
+def test_a_small_distant_blob_is_below_the_area_floor():
+    """The gate with margin. This pipeline has no depth sensor and ranges by a prior it
+    must be told, so a small far blob is both the least trustworthy detection and the
+    least urgent. Keeping the tier to the near field is what makes its false-alarm rate
+    nil on empty corridor."""
+    small = _det(900.0, 500.0, 1000.0, 620.0)
+    frac = (small.width_px * small.height_px) / (1920.0 * 1080.0)
+    assert frac < STATIC_MIN_AREA_FRAC
+    assert static_shaped(small, 1920, 1080) is False
+
+
+def test_a_box_covering_the_frame_is_the_detector_describing_the_corridor():
+    """The 0.1475 `person` covering 81% of the Lite3 frame is the worked example. Mapped
+    as a landmark it puts a disc on top of the robot."""
+    huge = _det(200.0, 5.0, 1750.0, 1075.0)
+    frac = (huge.width_px * huge.height_px) / (1920.0 * 1080.0)
+    aspect = huge.height_px / huge.width_px
+    # The AREA ceiling must be what refuses this. An earlier version of this box was
+    # 0.585 wide-and-flat, so the slab rule rejected it first and the test passed while
+    # STATIC_MAX_AREA_FRAC did nothing — green for a reason it was not testing.
+    assert STATIC_ASPECT_MIN <= aspect < PERSON_ASPECT_MIN, "aspect must not decide"
+    assert frac > STATIC_MAX_AREA_FRAC
+    assert static_shaped(huge, 1920, 1080) is False
+
+
+def test_a_degenerate_box_is_refused_rather_than_dividing_by_zero():
+    """`person_shaped` fails SAFE by holding; this fails safe by declining to map. Both
+    directions are 'do not quietly treat it as scenery'."""
+    assert static_shaped(_det(700.0, 200.0, 700.0, 800.0), 1920, 1080) is False
+    assert static_shaped(_det(700.0, 200.0, 900.0, 200.0), 1920, 1080) is False
+
+
+def test_person_is_not_a_static_class():
+    """A label saying `person` outright is a configuration error, not a shape question.
+    The default set must never contain it, whatever else it holds."""
+    assert "person" not in STATIC_CLASSES
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+        print(f"  ok  {t.__name__}")
+    print(f"person_detector: {len(tests)}/{len(tests)} passed")
