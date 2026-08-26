@@ -162,6 +162,17 @@ def _record_refusal(path: Path | None, reason: str, detail: dict) -> None:
               file=sys.stderr)
 
 
+def _axis_reach(value: float, limit: float) -> float:
+    """One axis's share of the envelope ellipse; ``0`` for an axis that is switched off.
+
+    A zero ``limit`` means the robot cannot move on this axis at all, and the envelope
+    clamp in :meth:`MappoPlanner.plan` has already forced ``value`` to zero to match, so
+    reporting no extent is a statement of fact rather than a fallback. Dividing instead
+    raises ``ZeroDivisionError`` even for ``0.0 / 0.0``.
+    """
+    return 0.0 if limit <= 0.0 else value / limit
+
+
 class MappoPlanner(DynamicWindowPlanner):
     """A planner-shaped object that asks the policy first.
 
@@ -511,7 +522,27 @@ class MappoPlanner(DynamicWindowPlanner):
         # A pure strafe is the case this exists to serve: (0.000, 0.108) has a normalised
         # radius of 0.54, so it scales to (0.000, 0.200) — the measured lateral floor,
         # direction untouched. That is the swerve, executed as a crab step.
-        reach = math.hypot(vx / self.limits.max_vx, vy / self.limits.max_vy)
+        # A zero limit is an AXIS THE ROBOT DOES NOT HAVE, and dividing by it raised
+        # ZeroDivisionError right here — `0.0 / 0.0` raises like any other. `--max-vy 0`
+        # is how `robot-stack/deep_robotics/lite3/DEPLOYMENT-SOP.md` switches the strafe
+        # axis off on a Lite3, and `--policy-gait-floor` is what reaches this line at all
+        # (`deploy/run-peer-supervised.sh` ships it at 0.35), so the two together are a
+        # configuration somebody will assemble.
+        #
+        # Contributing zero is the correct answer rather than a convenient one. The
+        # envelope clamp in `plan()` runs BEFORE this and has already forced the
+        # component on a zero-limit axis to zero, so the vector arriving here has no
+        # extent on that axis to normalise. The ellipse degenerates to a segment on the
+        # surviving axis, and scaling the whole vector — which is what happens below —
+        # is the projection onto it. A pure strafe under `--max-vy 0` never gets this
+        # far: the clamp zeroes it and `speed <= 0.0` returns above, which is right,
+        # because a robot with no lateral axis has no way to execute one.
+        #
+        # Symmetric on both axes. `--max-vx 0` is not documented as a thing anyone does,
+        # but the degenerate case is identical and a one-sided guard would be a second
+        # rule to remember.
+        reach = math.hypot(_axis_reach(vx, self.limits.max_vx),
+                           _axis_reach(vy, self.limits.max_vy))
         if reach >= 1.0:
             # Already on or outside the ellipse: it walks as proposed. `speed < floor`
             # can still hold here, because a mostly-lateral command reaches the lateral

@@ -307,6 +307,43 @@ def test_a_commanded_stop_is_never_turned_into_a_walk():
     assert planner.counts["speed_raised"] == 0
 
 
+def test_a_switched_off_strafe_axis_does_not_divide_by_zero():
+    """``--max-vy 0`` is how ``robot-stack/deep_robotics/lite3/DEPLOYMENT-SOP.md``
+    disables the strafe axis on a Lite3, and ``--policy-gait-floor`` is what reaches the
+    ellipse at all — ``deploy/run-peer-supervised.sh`` ships it at 0.35. Together they
+    raised ``ZeroDivisionError`` on the drive path, from ``0.0 / 0.0``: the envelope
+    clamp has already zeroed ``vy``, so it is the degenerate ratio and not a stray
+    lateral command that divides.
+
+    The surviving axis still gets the floor, at the direction asked for — with no
+    lateral axis, straight ahead is the only direction there is.
+    """
+    planner = _planner(limits=Limits(max_vx=0.35, max_vy=0.0), gait_floor_m_s=0.35)
+    vx, vy, wz = planner._at_least_walking_pace((0.05, 0.0, 0.1))
+    assert math.isclose(vx, 0.35, abs_tol=1e-9), "forward should reach the forward floor"
+    assert (vy, wz) == (0.0, 0.1)
+    assert planner.counts["speed_raised"] == 1
+
+
+def test_a_switched_off_forward_axis_leaves_the_lateral_floor_intact():
+    """The guard is symmetric. ``--max-vx 0`` is not documented as a thing anyone does,
+    but a one-sided guard is a second rule to remember, and this pins that the surviving
+    axis is still scaled to ITS OWN measured floor rather than to the forward one."""
+    planner = _planner(limits=Limits(max_vx=0.0, max_vy=0.20), gait_floor_m_s=0.35)
+    assert planner._at_least_walking_pace((0.0, 0.108, 0.0)) == (0.0, 0.20, 0.0)
+
+
+def test_a_plan_with_no_lateral_axis_completes():
+    """The unit above pins the arithmetic; this pins that the whole drive path survives
+    the configuration, because the crash was reached through ``plan()`` and a guard that
+    only the helper's own test exercises is a guard nobody proved the caller reaches."""
+    planner = _planner(supervised=False, limits=Limits(max_vx=0.55, max_vy=0.0),
+                       gait_floor_m_s=0.35)
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 1.0), (0.0, 0.0, 0.0), [])
+    assert command.vy == 0.0, "an envelope with no lateral axis must command no strafe"
+    assert abs(command.vx) <= 0.55 + 1e-9
+
+
 def test_the_gait_floor_scaling_is_off_unless_asked_for():
     """Default off: it is a deliberate override of what the policy asked for, and the
     runs that arrived on 2026-08-18 did not need it."""
