@@ -93,11 +93,19 @@ def test_heartbeat_packet_matches_the_vendor_simple_command_head():
 
 
 def test_velocity_triplet_matches_the_bridges_yaw_sign():
-    command = VelocityCommand(0.1, 0.0, 0.0, 1.0, 10.0)
+    """The yaw value must be NONZERO here: in Python ``-0.0 == 0.0``.
+
+    Asserting ``-0.0`` for ``wz=0.0`` could not tell the inversion from its absence, so
+    dropping the minus sign in ``velocity_triplet`` left the suite green. This is the
+    sign ``lite3_udp_locomotion.py`` calls out as "a heading servo that runs away from
+    its target rather than toward it". ``validate()`` still refuses a nonzero ``--wz``
+    on the bounded CLI; the encoder is pinned here so that gate can be lifted safely.
+    """
+    command = VelocityCommand(0.1, -0.05, 0.2, 1.0, 10.0)
     assert [_COMMAND.unpack(packet) for packet in velocity_triplet(command)] == [
         (FORWARD_VELOCITY_CODE, 8, 1, 0.1),
-        (LATERAL_VELOCITY_CODE, 8, 1, 0.0),
-        (YAW_VELOCITY_CODE, 8, 1, -0.0),
+        (LATERAL_VELOCITY_CODE, 8, 1, -0.05),
+        (YAW_VELOCITY_CODE, 8, 1, -0.2),
     ]
 
 

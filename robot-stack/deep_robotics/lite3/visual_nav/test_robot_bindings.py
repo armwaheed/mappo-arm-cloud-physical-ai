@@ -7,7 +7,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
+import io
 import json
 import os
 import sys
@@ -90,7 +92,7 @@ def test_the_udp_transport_can_be_pointed_at_a_second_robot():
     assert implementation._state_port == 43898
 
 
-def _axis_profile(path: Path):
+def _axis_profile(path: Path, **overrides):
     path.write_text(json.dumps({
         "schema": "lite3-axis-profile/v1",
         "input_deadband": {"linear_m_s": 0.05, "yaw_rad_s": 0.1},
@@ -106,6 +108,7 @@ def _axis_profile(path: Path):
             "yaw_positive": None,
             "yaw_negative": None,
         },
+        **overrides,
     }))
 
 
@@ -190,6 +193,85 @@ def test_live_axis_transport_refuses_protocol_rate_and_ttl_violations():
                 assert expected in str(error)
             else:
                 raise AssertionError(f"accepted invalid axis transport option {flag}={value}")
+
+
+def test_a_primitive_measured_above_the_derated_envelope_is_refused_at_preflight():
+    """``--derate`` cannot reach a sign-only mapping, so preflight is where it is honoured.
+
+    The one primitive with physical evidence behind it, ``+32767``, measured 0.729 m/s
+    peak. A run derated to 0.20 m/s plans a sweep for a robot that will travel 3.6x
+    further than the safety veto assumed.
+    """
+    binding = Lite3Bindings()
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(profile, measured_m_s={"forward_positive": 0.729})
+        common = ("--locomotion-transport", "axis", "--axis-profile", str(profile),
+                  "--max-vy", "0", "--max-wz", "0")
+
+        args = _live_args(*common, "--max-vx", "0.30", "--derate", "0.2")
+        try:
+            binding.preflight_navigation(args, None, _Health())
+        except SystemExit as error:
+            message = str(error)
+            assert "forward_positive measured 0.729 m/s" in message
+            assert "0.060 m/s ceiling" in message
+        else:
+            raise AssertionError("accepted a primitive that outruns the derated envelope")
+
+        # Same profile, an envelope it actually fits inside.
+        Lite3Bindings().preflight_navigation(
+            _live_args(*common, "--max-vx", "0.80", "--derate", "1.0"), None, _Health())
+
+
+def test_an_unmeasured_axis_primitive_says_the_envelope_was_never_checked():
+    """Silence here would read as "checked and fine". The measurement is optional; the
+    admission that there isn't one is not."""
+    binding = Lite3Bindings()
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(profile)
+        args = _live_args("--locomotion-transport", "axis", "--axis-profile", str(profile),
+                          "--max-vy", "0", "--max-wz", "0")
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            binding.preflight_navigation(args, None, _Health())
+        printed = stdout.getvalue()
+        assert "AXIS SPEEDS ARE NOT VERIFIED AGAINST THE ENVELOPE" in printed
+        assert "forward_positive" in printed
+
+
+def test_prepare_motion_checks_the_vendor_state_before_the_axis_transport_moves():
+    """Deleting the ``assert_axis_state_ready()`` call here left this suite at 24/24."""
+    from deep_robotics.lite3.locomotion.lite3_udp_locomotion import Lite3LinkLost
+
+    class _Loco:
+        def __init__(self, ready=True):
+            self.calls = []
+            self._ready = ready
+
+        def prepare_motion(self):
+            self.calls.append("prepare_motion")
+
+        def assert_axis_state_ready(self):
+            self.calls.append("assert_axis_state_ready")
+            if not self._ready:
+                raise Lite3LinkLost("Lite3 gait_state=2; axis profile allows (0,)")
+
+    binding = Lite3Bindings()
+    blocked = _Loco(ready=False)
+    try:
+        binding.prepare_motion(_args("--locomotion-transport", "axis"), blocked)
+    except Lite3LinkLost as error:
+        assert "gait_state=2" in str(error)
+    else:
+        raise AssertionError("prepared axis motion without checking the vendor state")
+    assert blocked.calls == ["prepare_motion", "assert_axis_state_ready"]
+
+    # The legacy transport has no such state contract and must not be asked for one.
+    udp = _Loco()
+    binding.prepare_motion(_args(), udp)
+    assert udp.calls == ["prepare_motion"]
 
 
 def test_telemetry_does_not_persist_camera_source_credentials():

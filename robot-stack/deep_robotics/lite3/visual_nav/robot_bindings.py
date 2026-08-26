@@ -332,6 +332,56 @@ class Lite3Bindings:
                 "[lite3] REFUSING TO WALK: axis profile lacks evidenced primitives for "
                 + ", ".join(missing)
             )
+        self._validate_axis_profile_speeds(args, profile)
+
+    @staticmethod
+    def _validate_axis_profile_speeds(args, profile) -> None:
+        """Enforce the derated envelope on a mapping that cannot scale to it.
+
+        ``AxisProfile.map_velocity`` is sign-only: a primitive leaves at the speed it was
+        measured at whatever the planner asked for, so ``--derate`` and ``--max-vx`` never
+        reach the wire. This is where they are honoured instead. A profile that declares
+        ``measured_m_s``/``measured_rad_s`` above the derated ceiling is refused, because
+        the alternative is a safety veto reasoning about a command the robot will not
+        execute. A profile that declares nothing says so on stdout: it is not a claim
+        that the envelope holds, only that nobody checked.
+        """
+        measured = profile.measured_speeds
+        enabled = []
+        if args.derate > 0.0:
+            if args.max_vx > 0.0:
+                enabled += [(name, args.max_vx * args.derate, "m/s")
+                            for name in ("forward_positive", "forward_negative")]
+            if args.max_vy > 0.0:
+                enabled += [(name, args.max_vy * args.derate, "m/s")
+                            for name in ("lateral_positive", "lateral_negative")]
+            if args.max_wz > 0.0:
+                enabled += [(name, args.max_wz * args.derate, "rad/s")
+                            for name in ("yaw_positive", "yaw_negative")]
+
+        over = []
+        unmeasured = []
+        for name, ceiling, unit in enabled:
+            if getattr(profile, name) is None:
+                continue
+            speed = measured.get(name)
+            if speed is None:
+                unmeasured.append(name)
+            elif speed > ceiling:
+                over.append(f"{name} measured {speed:.3f} {unit} against a "
+                            f"{ceiling:.3f} {unit} ceiling")
+        if over:
+            raise SystemExit(
+                "[lite3] REFUSING TO WALK: the axis mapping is sign-only, so --derate "
+                "cannot scale these primitives down to the envelope: " + "; ".join(over)
+            )
+        if unmeasured:
+            print("[lite3] AXIS SPEEDS ARE NOT VERIFIED AGAINST THE ENVELOPE: "
+                  + ", ".join(unmeasured))
+            print("[lite3]   the axis mapping is sign-only, so --derate and --max-vx do "
+                  "not reach the wire.")
+            print("[lite3]   Add measured_m_s/measured_rad_s to the profile once these "
+                  "primitives are timed.")
 
     def preflight_calibration(self, args, health) -> None:
         if not args.spin:
@@ -478,6 +528,7 @@ class Lite3Bindings:
                 "yaw_positive": profile.yaw_positive,
                 "yaw_negative": profile.yaw_negative,
             },
+            "measured_speeds": profile.measured_speeds,
             "evidence": dict(profile.evidence),
         }
 
