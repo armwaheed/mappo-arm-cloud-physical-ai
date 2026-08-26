@@ -297,6 +297,79 @@ No robot? Everything above works against a bench double:
 python3 robot_driver.py --platform sim --package ../policy --allow-motion
 ```
 
+### The whole thing on one laptop, including Cloud AI
+
+Three processes and a browser. Nothing here needs a robot, a bucket or AWS credentials —
+the last of which is why `model_server.py` exists. Run each in its own terminal, from
+`dashboard/`, on Python ≥ 3.11:
+
+```bash
+pip install device-connect-edge device-connect-agent-tools aiohttp numpy Pillow
+
+# 1. the checkpoint source, standing in for the bucket. It WRITES sources.json.
+python3 model_server.py --models-dir ../policy/models \
+        --emit-sources /tmp/sources.json --label "Arm AGI CPU server"
+
+# 2. a robot. Use a COPY of ../policy — arming a checkpoint rewrites its config.json.
+python3 robot_driver.py --platform sim --package /tmp/package \
+        --model-sources /tmp/sources.json --allow-motion
+
+# 3. the dashboard
+python3 server.py --port 8080          # then open http://127.0.0.1:8080
+```
+
+**A working screen** has `MESH UP` in the top bar and the robot on a fleet row with a green
+`LIVE` badge and a pose; `STOP ALL (1)` counts what it will hit. The checkpoint table lists
+what is on the robot with one row marked `ARMED`. Under **Load from Cloud AI** the Source
+picker reads *Arm AGI CPU server*, the address field is already filled in, and pressing
+**Browse** returns a row saying `served by mappo-model-server` — that round trip is the
+proof that the robot, not your browser, can reach the source. Press `E` for the event
+drawer; a `walk_forward` should produce a `motion_started` line and then a
+`motion_completed` line below it carrying `travelled_m` and `delivered_fraction`.
+
+Add a second, differently-ruled robot to see the platform asymmetry on one page — a
+simulated Go2 refuses `strafe_left 0.15` with its own measured 0.200 floor while the bench
+double accepts it:
+
+```bash
+python3 robot_driver.py --platform go2 --simulate --package /tmp/package \
+        --allow-motion --device-id mappo-go2-sim
+```
+
+See [`../evidence/2026-08-26-dashboard-local-trial/`](../evidence/2026-08-26-dashboard-local-trial/)
+for a capture of exactly this, and for what it does and does not prove.
+
+⚠️ **`--host 127.0.0.1` on the model server is unreachable from a robot**, and the server
+says so at startup. The download runs on the robot, so an address that only the laptop can
+resolve gives a field that looks right and fails on fetch. Bind a LAN address for a real
+robot.
+
+### When the bucket arrives, nothing here changes
+
+A checkpoint source is a **base address in a file on the robot**, not a code path. The robot
+advertises it and `cloud_models.parse_source` dispatches on its scheme, so today's local
+server and tomorrow's bucket are the same feature configured twice:
+
+```jsonc
+{"sources": [
+  {"label": "Arm AGI CPU server", "location": "the demo LAN",         // now
+   "index_url": "http://192.168.123.50:8800/index.json"},
+  {"label": "Cloud AI", "location": "eu-west-1",                      // when it exists
+   "bucket": "mappo-checkpoints", "prefix": "go2/"}
+]}
+```
+
+Both are listed at once and the operator picks by name. `list_cloud_models` already branches
+on which key is present, `download_model` already routes `s3://` through `fetch_s3` and
+`http(s)://` through `fetch_http`, and `ModelStore.install` inspects the bytes either way —
+so adopting the bucket is an edit to that file plus `pip install boto3`, and the fallback
+does not have to be removed to do it.
+
+Per-model URLs in the index are **relative**, resolved by the client against the address it
+fetched the index from, so the server never has to know its own public name. `--base-url`
+overrides that only for a reverse proxy or a NAT hop, where the files are reachable at a
+different address from the index.
+
 ## The four things worth knowing before you use it
 
 **A swap takes effect on the next run, not on the one in progress.** `MappoController` loads
@@ -344,6 +417,7 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 | `peer_link.py` | The other direction: subscribe to peers' poses on the mesh and spool them for a Python 3.8 control loop. Runs on the robot, Python ≥ 3.11. |
 | `model_store.py` | Checkpoints on disk: what is here, what is armed, what may replace it. |
 | `cloud_models.py` | S3 and http(s) fetch, with the refusals that make a URL field on a web page safe. |
+| `model_server.py` | The other end of that fetch: a directory of checkpoints served as a Cloud AI source, for a demo floor with no bucket. Stdlib only. |
 | `camera_source.py` | Front-camera frames per platform — live, synthetic, or a labelled replay — with the ceilings and the who-is-watching lifecycle. |
 | `server.py` | The dashboard: discovery, an invoke allow-list, the SSE event fan-out, and the MJPEG stream. |
 | `templates/`, `static/` | The page. It renders from `get_capabilities()`, so it never hard-codes what a robot can do. |
@@ -351,21 +425,34 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 ## Tests
 
 ```bash
-for t in test_*.py; do python3 $t; done       # 139
+for t in test_*.py; do python3 $t; done       # 160
 ruff check .                                  # must be clean
 ```
 
 Needs `device-connect-edge`, `device-connect-agent-tools`, `aiohttp` and `numpy`; `boto3`
 only for the S3 path, and `Pillow` only for the sim camera. `test_drive_bridge.py`,
-`test_model_store.py` and `test_peer_link.py` run without the Device Connect packages —
-and `test_peer_link.py` runs the real spooler, the real spool file and the real reader in
-`../integration/peer_source.py` end to end, which is the only thing that proves the writer
-and the reader agree about the format.
+`test_model_store.py`, `test_peer_link.py` and `test_model_server.py` run without the
+Device Connect packages — and two of them are end-to-end against the real counterpart
+rather than against a second opinion about the format. `test_peer_link.py` runs the real
+spooler, the real spool file and the real reader in `../integration/peer_source.py`;
+`test_model_server.py` starts a real server and reads it with the real
+`cloud_models.list_http_index` and `cloud_models.fetch`, then hands the bytes to
+`model_store.inspect_model`, so "the transfer completed" and "what arrived is drivable" are
+separate assertions.
 
-Ten guards are mutation-tested rather than assumed — see
+⚠️ **`device-connect-edge` and `device-connect-agent-tools` are now on PyPI** — 0.2.5,
+installed with a plain `pip install`. `AGENTS.md` and `.github/measure-suites.sh` still say
+the edge package is not, and the latter therefore skips `test_robot_driver.py`; its 35 tests
+pass and are **not** in the inventory's count for this directory. `arm_dc_robotkit` really
+is still absent from PyPI.
+
+Seventeen guards are mutation-tested rather than assumed — the ten in
 [`../evidence/2026-08-21-device-connect-dashboard/`](../evidence/2026-08-21-device-connect-dashboard/),
-which also records the two defects the bring-up run found and what the run does **not**
-prove. No robot has moved under this yet.
+which also records the two defects the bring-up run found, and seven in
+[`../evidence/2026-08-26-dashboard-local-trial/`](../evidence/2026-08-26-dashboard-local-trial/),
+which records the first hardware contact — **read-only, no robot moved** — and the defect it
+exposed: the event stream orders a batch by the emitting device's own clock, and the Go2 it
+was run against had no working RTC and reported 1970. **No robot has moved under this yet.**
 
 ## Two traps, written down because both cost real time
 

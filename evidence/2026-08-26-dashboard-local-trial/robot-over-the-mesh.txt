@@ -1,0 +1,98 @@
+############ REAL GO2 (192.168.123.18) OVER THE DEVICE CONNECT MESH — READ-ONLY ############
+# Started WITHOUT --allow-motion. Identify, health, telemetry, checkpoint listing only.
+# The driver runs on the workstation because the robot has no Python >= 3.11;
+# --bridge-python executes the robot's own byte-identical drive_bridge.py over SSH.
+
+=== get_status  (real odometry off the robot's own estimator) ===
+{
+  "ok": true,
+  "platform": "go2",
+  "pose": {
+    "x": 2.7970218658447266,
+    "y": 2.0479397773742676,
+    "yaw": 3.069704055786133
+  },
+  "velocity": [
+    -1.4264794678808812e-08,
+    4.186009039397476e-10,
+    -0.0010652643395587802
+  ],
+  "mode": "mcf",
+  "error": null,
+  "active_model": "mappo_actor_3agent_1910000.npz",
+  "motion_enabled": false,
+  "busy": false
+}
+
+=== get_capabilities ===
+{
+  "platform": "go2",
+  "simulated": false,
+  "motion_enabled": false,
+  "gait_floors_m_s": {
+    "forward": 0.35,
+    "lateral": 0.2,
+    "yaw": null
+  },
+  "unmeasured_axes": [
+    "yaw"
+  ],
+  "lie_down_changes_posture": true,
+  "posture_note": "Go2 lie_down issues StandDown.",
+  "reverse_supported": true,
+  "reverse_note": "no rear sensing on either platform; reverse is open-loop into unobserved space and is capped at 2 s",
+  "camera": {
+    "available": true,
+    "synthetic": false,
+    "replay": false,
+    "default_fps": 6.0,
+    "max_fps": 15.0,
+    "error": "",
+    "note": "the Go2 video service is shared, so a run and this can both read"
+  },
+  "cloud": {
+    "sources": [
+      {
+        "label": "Arm AGI CPU server",
+        "location": "this laptop (stand-in)",
+        "index_url": "http://127.0.0.1:8800/index.json",
+        "default_model": "http://127.0.0.1:8800/models/mappo_actor_3agent_1910000.npz"
+      }
+    ],
+    "resolved_by": "the robot, not the browser"
+  },
+  "max_seconds": 5.0,
+  "bridge_python": "/tmp/mappo-trial/ssh-bridge-python",
+  "package_dir": "/private/tmp/mappo-trial/package"
+}
+
+=== list_models ===
+{
+  "ok": true,
+  "models": [
+    {
+      "name": "mappo_actor_3agent_1910000.npz",
+      "size_bytes": 268063,
+      "sha256": "7327f72401adfdfa1931a516e85aeee62b5bee0e06e976c13600515ca2d2ca11",
+      "loadable": true,
+      "problems": [],
+      "trained_lidar_range_vmas": 0.35,
+      "trained_agent_radius_vmas": 0.1,
+      "rays": 12,
+      "training_frames": 1910000,
+      "training_n_agents": 3,
+      "active": true,
+      "compatible_with_config": true
+    }
+  ],
+  "active": "mappo_actor_3agent_1910000.npz",
+  "config_path": "/private/tmp/mappo-trial/package/config.json",
+  "free_bytes": 19211587584
+}
+
+=== walk_forward WITH MOTION DISABLED — must refuse, and nothing may move ===
+{
+  "ok": false,
+  "refused": true,
+  "error": "this device was started without --allow-motion, so it is status-and-checkpoints only"
+}

@@ -392,7 +392,12 @@ class MappoRobotDriver(DeviceDriver):
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                     text=True)
             # Published so stop() can terminate it. Only motion workers are worth
-            # interrupting; a status read is milliseconds and killing it gains nothing.
+            # interrupting: a status read holds no velocity, so killing it gains nothing.
+            # ⚠️ It is NOT milliseconds, which this comment claimed until it was measured.
+            # On the Go2's Jetson `drive_bridge.py status` costs 1.93-1.98 s over three
+            # runs (2026-08-26), nearly all of it the cold SDK import and DDS discovery
+            # that every invocation pays. Against STATE_INTERVAL_S of 5.0 s that is ~39%
+            # of the poll period with a DDS client on the bus.
             if command not in ("status", "stop"):
                 with self._worker_guard:
                     self._worker = proc

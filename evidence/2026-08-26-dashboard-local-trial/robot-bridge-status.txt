@@ -1,0 +1,14 @@
+interpreter: /home/unitree/robotics-connect-envs/armwaheed/bin/python3  Python 3.8.10
+run 1  1.946155360s  {"ok": true, "platform": "go2", "pose": {"x": 2.7969961166381836, "y": 2.047956943511963, "yaw": 3.0691070556640625}, "velocity": [1.4641106993451558e-08, 1.8471502105654736e-11, -0.0010652643395587802], "mode": "mcf", "error": null}
+run 2  1.931431872s  {"ok": true, "platform": "go2", "pose": {"x": 2.7970099449157715, "y": 2.0479445457458496, "yaw": 3.069427251815796}, "velocity": [2.453897707255237e-08, -2.445876556844695e-10, -0.0010652643395587802], "mode": "mcf", "error": null}
+run 3  1.954037504s  {"ok": true, "platform": "go2", "pose": {"x": 2.797024726867676, "y": 2.047934055328369, "yaw": 3.0697925090789795}, "velocity": [1.1263408955519694e-10, -1.0855571996870594e-09, -0.0010652643395587802], "mode": "mcf", "error": null}
+--- thermals ---
+CPU-therm	50062
+GPU-therm	46687
+CV0-therm	48437
+CV1-therm	48718
+--- clock ---
+1970-01-16T19:31:54Z
+                 RTC time: Thu 1970-01-01 00:43:35    
+System clock synchronized: no                         
+          RTC in local TZ: no                         

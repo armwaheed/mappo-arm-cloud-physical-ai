@@ -1,0 +1,11 @@
+2026-08-26 15:56:00,219  model_server  INFO     serving 1 checkpoint(s) from /private/tmp/mappo-trial/served
+2026-08-26 15:56:00,220  model_server  INFO         mappo_actor_3agent_1910000.npz  268063 bytes  sha256:7327f72401ad
+2026-08-26 15:56:00,220  model_server  INFO     index:  http://127.0.0.1:8800/index.json
+2026-08-26 15:56:00,220  model_server  WARNING  bound to loopback: a ROBOT cannot fetch from this address. The download runs on the robot. Pass --host with a LAN address for that.
+2026-08-26 15:56:00,220  model_server  INFO     wrote /tmp/mappo-trial/sources.json — pass it as robot_driver.py --model-sources
+2026-08-26 15:56:04,909  model_server  INFO     127.0.0.1 "GET /index.json HTTP/1.1" 200 -
+2026-08-26 15:56:11,399  model_server  INFO     127.0.0.1 "GET /index.json HTTP/1.1" 200 -
+2026-08-26 15:56:11,403  model_server  INFO     127.0.0.1 "GET /models/mappo_actor_3agent_1910000.npz HTTP/1.1" 200 -
+2026-08-26 15:56:46,029  model_server  INFO     127.0.0.1 "GET /index.json HTTP/1.1" 200 -
+2026-08-26 15:56:53,997  model_server  INFO     127.0.0.1 "GET /index.json HTTP/1.1" 200 -
+2026-08-26 15:57:00,925  model_server  INFO     127.0.0.1 "GET /index.json HTTP/1.1" 200 -
