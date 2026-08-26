@@ -273,6 +273,10 @@ cover the complete physical obstacle plus documented measurement uncertainty.
 
 ## Read the robot before installing anything on it
 
+Bringing up a **new** robot end to end — robot-side staging, commissioning, calibration,
+scene layout, live run, evidence recovery — follows
+[`DEPLOYMENT-SOP.md`](DEPLOYMENT-SOP.md), once per robot.
+
 `192.168.1.120` is the **motion host**, and it is not supposed to have ROS 2, a
 `Lite3_ROS` checkout or outbound DNS. Start with
 [`commissioning/`](commissioning/README.md): it decodes the state the robot already
