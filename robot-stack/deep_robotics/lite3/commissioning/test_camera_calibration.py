@@ -12,8 +12,11 @@ camera.
 
 The assertion test is the one carried from the Go2 corpus: a probe run at a different
 detector input size from production sets a threshold that describes nothing. The lens
-height test is the one this tree needed: ``FisheyeCamera.height_m`` defaults to the Go2's
-0.32 m and nothing on the calibration path has ever asked for a Lite3 value.
+height tests are the ones this tree needed: nothing on the calibration path has ever asked
+for a Lite3 lens height, so the file arrives carrying whatever the shared camera model left
+in ``height_m`` -- the Go2's 0.32 m where that default is still in place, and ``null``
+where #96 removed it. Both shapes are exercised below, because pinning only the one the
+fitter used to write is how this wrapper's own prose went stale without a test noticing.
 """
 
 from __future__ import annotations
@@ -28,17 +31,19 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE.parents[2]))
 
+from deep_robotics.lite3.commissioning import camera_calibration
 from deep_robotics.lite3.commissioning.camera_calibration import (
     PLATFORM,
     assert_matches_production,
     build_parser,
     delegated_argv,
+    describe_replaced,
     main,
     probe_inference_config,
     selected_mode,
     stamp_lens_height,
 )
-from deep_robotics.lite3.commissioning.measurement import Refusal, run_main
+from deep_robotics.lite3.commissioning.measurement import Refusal, new_record, run_main
 
 _CONTEXT = ["--robot-id", "LITE3-A", "--firmware", "V1.0.8", "--payload", "none"]
 _LENS = ["--lens-height", "0.31", "--lens-height-source", "tape, standing"]
@@ -165,6 +170,7 @@ def _written_calibration(directory, **extra):
 
 
 def test_the_go2s_inherited_lens_height_is_replaced_and_the_old_value_is_kept():
+    """The pre-#96 file shape, which a Go2 fitter still writes and is still on disk."""
     with tempfile.TemporaryDirectory() as directory:
         path = _written_calibration(directory)
         result = stamp_lens_height(path, 0.31, "tape, standing", {"robot_id": "LITE3-A"})
@@ -174,6 +180,51 @@ def test_the_go2s_inherited_lens_height_is_replaced_and_the_old_value_is_kept():
         assert data["height_m_source"] == "tape, standing"
         assert data["commissioning_robot_id"] == "LITE3-A"
         assert result["lens_height_replaced"] == 0.32
+
+
+def test_a_fitter_that_left_no_lens_height_is_reported_as_unset_rather_than_as_None():
+    """The other shape, and the one this wrapper's own prose had stopped describing.
+
+    #96 gave ``FisheyeCamera.height_m`` no default, and the shared model writes an unset
+    height into the file as ``null`` rather than omitting it. So a Lite3 fit run through
+    this repository's copy of the fitter now arrives here with ``height_m: null``, not
+    with 0.32 -- while five sentences in ``camera_calibration.py`` still said every
+    calibration in the tree carries the Go2's number, and the operator paste block
+    rendered the absence as "Lens height was **None m**".
+
+    Nothing failed, because the fixture above pins the shape the fitter used to write.
+    That is the whole mechanism: a test that shares its premise with the code it tests
+    stays green through exactly the change it exists to catch.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        path = _written_calibration(directory, height_m=None)
+        result = stamp_lens_height(path, 0.31, "tape, standing", {})
+        assert result["lens_height_replaced"] is None
+        data = json.loads(path.read_text())
+        assert data["height_m"] == 0.31
+        assert data["height_m_replaced"] is None  # the absence is recorded, not dropped
+
+    assert describe_replaced(None) == "unset (null)"
+    assert describe_replaced(0.32) == "0.32 m"
+
+
+def test_the_operator_is_never_told_the_lens_height_was_None_m():
+    """The paste block is copied into issue #13 verbatim, so it is the artefact.
+
+    "None m" reads as a defect in this script rather than as a fact about the
+    calibration, on the one line the operator is being asked to act on.
+    """
+    record = new_record("LITE3-A", firmware="V1.0.8", payload="none", camera_source="0")
+    result = {"focal_px": 470.0, "hfov_deg": 85.0, "width": 1280, "height": 720,
+              "method": "marker", "samples": 20, "lens_height_m": 0.31,
+              "lens_height_replaced": None, "lens_height_source": "tape, standing",
+              "calibration_path": "/tmp/cal.json"}
+    note = camera_calibration._paste(record, result, {"applicable": False})
+    assert "None m" not in note
+    assert "unset (null)" in note
+
+    result["lens_height_replaced"] = 0.32
+    assert "0.32 m" in camera_calibration._paste(record, result, {"applicable": False})
 
 
 def test_a_calibration_that_is_not_lite3_tagged_is_refused():
