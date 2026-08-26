@@ -20,6 +20,7 @@ look:
 from __future__ import annotations
 
 import argparse
+import ast
 import contextlib
 import io
 import json
@@ -275,6 +276,147 @@ def test_only_one_transport_claims_to_have_walked_a_venture():
     assert walked == {"axis"}
     assert not robot_link.TRANSPORTS["axis"].preserves_magnitude
     assert robot_link.TRANSPORTS["udp"].preserves_magnitude
+
+
+# ── the invariant that has to survive a copy of this directory ──────────────────────────
+#
+# WHY THIS IS OVER THE SOURCE AND NOT OVER A LIST OF MODULE NAMES.
+#
+# The failure being pinned is not a bad edit, it is a PARTIAL COPY of this directory. This
+# harness shipped once without any transport argument at all, hard-wired to the legacy
+# velocity interface -- the one this robot does not move on -- and the fix that gave it
+# ``--locomotion-transport`` and these three guards landed as a separate change. Anyone who
+# copies this directory into another repository at the earlier of those two points gets a
+# harness that runs, refuses nothing, and reports the bottom rung of its own ladder as this
+# robot's gait floor.
+#
+# A hand-kept list of module names is exactly what such a copy silently shortens, so the
+# set of modules under audit is derived from what each module ASKS FOR: taking
+# ``moving=True`` is a module saying it intends to command a velocity, and that is the
+# thing that has to be paired with asking which transport the velocity is going out on.
+#
+# The internal per-robot Lite3 repository carries the same audit one directory UP, OUTSIDE
+# this one, so that a copy which replaces this directory wholesale cannot take the check
+# away with it. This one is the copy that TRAVELS: it is here so that a future consumer who
+# takes this directory gets the invariant along with the code.
+
+#: The two guards that answer "is the measurement this module makes even defined on the
+#: selected transport". A moving module must call one of them.
+DEFINEDNESS_GUARDS = ("require_magnitude_transport", "require_sign_only_transport")
+
+#: The guard that answers "has any Venture ever walked on the selected transport". Every
+#: moving module must call it: on a transport that does not actuate, every segment reports
+#: 0.000 m/s, which reads exactly like a floor above the whole ladder.
+WALKED_GUARD = "require_walked_transport"
+
+
+def called_function_names(tree) -> set:
+    """Every name this module calls, whether bare or through a module attribute."""
+    names = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            function = node.func
+            if isinstance(function, ast.Attribute):
+                names.add(function.attr)
+            elif isinstance(function, ast.Name):
+                names.add(function.id)
+    return names
+
+
+def takes_moving_authority(tree) -> bool:
+    """True when the module calls ``add_link_arguments(..., moving=True)``."""
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        function = node.func
+        name = function.attr if isinstance(function, ast.Attribute) else \
+            getattr(function, "id", None)
+        if name != "add_link_arguments":
+            continue
+        for keyword in node.keywords:
+            if keyword.arg == "moving" and isinstance(keyword.value, ast.Constant) \
+                    and keyword.value.value is True:
+                return True
+    return False
+
+
+def audit_transport_guards(directory) -> list:
+    """Modules that take the authority to move without asking which transport they are on.
+
+    Returns a list of human-readable findings, empty when the directory is whole. Reading
+    the source rather than importing it is deliberate: a directory that has been partially
+    copied may not import at all, and a guard that cannot run on the broken case is not a
+    guard.
+    """
+    findings = []
+    for path in sorted(Path(directory).glob("*.py")):
+        if path.name.startswith("test_"):
+            continue
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        if not takes_moving_authority(tree):
+            continue
+        called = called_function_names(tree)
+        missing = []
+        if WALKED_GUARD not in called:
+            missing.append(WALKED_GUARD)
+        if not any(guard in called for guard in DEFINEDNESS_GUARDS):
+            missing.append(" or ".join(DEFINEDNESS_GUARDS))
+        if missing:
+            findings.append(
+                f"{path.name} takes moving authority (add_link_arguments(moving=True)) "
+                f"but never calls " + ", ".join(missing))
+    return findings
+
+
+def test_every_probe_that_may_move_the_robot_asks_which_transport_it_is_on():
+    findings = audit_transport_guards(_HERE)
+    assert findings == [], (
+        "a commissioning probe can command a velocity without consulting "
+        "robot_link.TRANSPORTS. On the axis transport that probe does not crash: the "
+        "mapping is sign-only, so every rung of a ladder fires the same primitive, walks "
+        "at the same speed, passes every anchor and drift control, and reports the bottom "
+        "rung as this robot's gait floor. Findings: " + "; ".join(findings))
+
+
+def test_the_audit_fails_on_a_probe_that_skips_the_guards():
+    """The audit above passes on a whole directory, so prove here that it can fail.
+
+    Without this, the day the audit stops finding anything -- because a rename moved
+    ``add_link_arguments``, or because someone shortened its argument -- looks identical
+    to the day the directory is correct.
+    """
+    unguarded = ("import robot_link\n"
+                 "def build_parser(parser):\n"
+                 "    robot_link.add_link_arguments(parser, moving=True)\n")
+    with tempfile.TemporaryDirectory() as directory:
+        (Path(directory) / "new_walking_probe.py").write_text(unguarded, encoding="utf-8")
+        findings = audit_transport_guards(directory)
+    assert len(findings) == 1, findings
+    assert "new_walking_probe.py" in findings[0]
+    assert "require_walked_transport" in findings[0]
+    assert "require_magnitude_transport" in findings[0]
+
+
+def test_a_probe_that_asks_for_no_authority_to_move_is_not_audited():
+    """``moving=False`` is the whole population this check must not fire on."""
+    passive = ("import robot_link\n"
+               "def build_parser(parser):\n"
+               "    robot_link.add_link_arguments(parser, moving=False)\n")
+    with tempfile.TemporaryDirectory() as directory:
+        (Path(directory) / "passive_probe.py").write_text(passive, encoding="utf-8")
+        assert audit_transport_guards(directory) == []
+
+
+def test_the_three_guards_the_audit_names_all_exist():
+    """The audit is over names, so a rename must break it loudly rather than silently.
+
+    A guard renamed in ``robot_link`` and not here leaves ``audit_transport_guards``
+    looking for a call nobody makes -- which reports every moving probe as broken, and is
+    the safe direction. A guard DELETED from ``robot_link`` while the probes keep calling
+    it fails at import instead. This pins the pairing either way.
+    """
+    for name in (*DEFINEDNESS_GUARDS, WALKED_GUARD):
+        assert callable(getattr(robot_link, name)), name
 
 
 def test_the_preflight_reports_which_transport_it_is_about_to_command_through():

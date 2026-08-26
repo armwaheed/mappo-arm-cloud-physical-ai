@@ -34,13 +34,26 @@ inference configuration to mismatch. That is why it is the recommended mode here
 the assertion prints "not applicable" rather than passing quietly.
 
 **2. It measures the lens height instead of inheriting the Go2's.**
-``FisheyeCamera.height_m`` defaults to **0.32 m**, which is the height of the *Go2's*
-camera when the *Go2* stands. Every calibration this tree has ever written carries that
-number, including the Lite3-tagged ones, because nothing on the calibration path ever asks
-for it. It is not overlay-only: ``person_detector.object_fit_range`` uses it to bound a
+Nothing on the shared fitting path asks for a lens height, so a Lite3-tagged calibration
+file carries whatever ``FisheyeCamera.height_m`` happened to hold. What that is depends on
+which copy of the shared tree the fit ran through, and neither answer is this robot's:
+
+* where the field still carries its default, that default is **0.32 m** -- the height of
+  the *Go2's* camera when the *Go2* stands. Checked 2026-08-26: the upstream per-robot Go2
+  repository still declares ``height_m: float = 0.32`` in
+  ``unitree/go2/visual_nav/camera_model.py``.
+* where the default has been removed -- this repository's own copy, since #96, which names
+  the constant ``GO2_CAMERA_HEIGHT_M`` and gives the field no default -- an unset height is
+  written into the file as ``null`` rather than omitted.
+
+Both arrive here, so both are reported, in words: ``describe_replaced`` renders an
+inherited ``0.32`` and an unset ``null`` differently because they tell the next reader
+different things. They are not interchangeable and neither is a Lite3 measurement.
+
+It is not overlay-only: ``person_detector.object_fit_range`` uses the height to bound a
 width-derived range, so a wrong lens height moves a range bound on a real robot. This
-script requires ``--lens-height`` and ``--lens-height-source``, and rewrites the field
-after the fit, reporting what it replaced.
+script requires ``--lens-height`` and ``--lens-height-source`` either way, and rewrites the
+field after the fit, reporting what it replaced.
 
 **3. It ties the result to a robot.** The shared calibrator stamps ``platform`` but not
 which of the two Ventures it was. Issue #13 is explicit that nothing transfers between
@@ -203,13 +216,29 @@ def selected_mode(args) -> str:
     return f"spin-{args.spin_target}"
 
 
+def describe_replaced(value) -> str:
+    """How to say what the fitter left in ``height_m``, including nothing at all.
+
+    ``None`` here is not a missing key. The shared model writes an unset lens height as
+    ``null`` rather than omitting it, precisely so this wrapper can read the absence back
+    out, so ``None`` means "the fitter considered the height and had nothing to put
+    there". Interpolated straight into a sentence it renders as "None m", which reads as a
+    defect in this script rather than as a fact about the calibration -- and it is the one
+    the operator is being asked to act on.
+    """
+    return "unset (null)" if value is None else f"{value} m"
+
+
 def stamp_lens_height(path, lens_height_m: float, source: str, context: dict) -> dict:
     """Rewrite the calibration's ``height_m`` with the measured value, and say what it was.
 
     Reads the file the shared calibrator just wrote, refuses it if it is not Lite3-tagged,
     replaces the lens height, and records both the old value and where the new one came
-    from. The old value is worth keeping in the file: seeing 0.32 sitting there is how the
-    next person learns that the default was the Go2's all along.
+    from. The old value is worth keeping in the file, and there are two of them: ``0.32``
+    sitting there is how the next person learns that the fitter's default was the Go2's,
+    and ``null`` is how they learn that the fitter considered the height and had nothing to
+    put there. ``height_m_replaced`` records which it was, so the difference survives into
+    the artefact.
     """
     destination = Path(path)
     try:
@@ -281,8 +310,8 @@ def build_parser() -> argparse.ArgumentParser:
     lens = parser.add_argument_group("lens height (nothing on the fitting path asks for this)")
     lens.add_argument("--lens-height", type=float, default=None, metavar="M",
                       help="optical centre above the floor with the robot STANDING. No "
-                           "default: the 0.32 m already in every calibration file is the "
-                           "Go2's")
+                           "default here, and nothing worth inheriting from the fitter: "
+                           "it leaves either the Go2's 0.32 m or nothing at all")
     lens.add_argument("--lens-height-source", default=None,
                       help="how you measured it, e.g. 'tape, standing, floor to lens "
                            "centre'. Recorded in the calibration file")
@@ -308,8 +337,9 @@ def _validate(args) -> None:
     if not args.lens_height_source or not args.lens_height_source.strip():
         raise Refusal(
             "--lens-height-source is required. A height with no method attached is a "
-            "number somebody will later assume was measured, and the 0.32 m already in "
-            "every calibration file in this tree is exactly what that looks like."
+            "number somebody will later assume was measured, and the Go2's 0.32 m sitting "
+            "in a calibration file because the shared fitter defaulted it is exactly what "
+            "that looks like."
         )
     if args.marker is not None:
         refuse_unmeasured(**{"--marker-size": args.marker_size})
@@ -343,11 +373,13 @@ def _paste(record, result, assertion) -> str:
         ("calibration file", f"`{Path(result['calibration_path']).name}`"),
     ]
     notes = [
-        f"- Lens height was **{result['lens_height_replaced']} m** in the file the shared "
-        f"fitter wrote and has been replaced with the measured "
+        f"- Lens height was **{describe_replaced(result['lens_height_replaced'])}** in "
+        f"the file the shared fitter wrote and has been replaced with the measured "
         f"{result['lens_height_m']:.3f} m ({result['lens_height_source']}). Nothing on "
-        f"the fitting path asks for this value, so every calibration in this tree "
-        f"inherits the Go2's default until it is overwritten.",
+        f"the fitting path asks for this value, so a calibration carries whatever the "
+        f"shared camera model left in the field -- the Go2's 0.32 m where that default "
+        f"is still in place, and `null` where it has been removed -- until it is "
+        f"overwritten here.",
     ]
     if assertion.get("applicable"):
         notes.append(f"- Inference config asserted equal to production: "
@@ -421,7 +453,7 @@ def main(argv=None) -> int:
     print(f"  focal      {result['focal_px']:.1f} px")
     print(f"  HFOV       {result['hfov_deg']:.2f} deg")
     print(f"  lens height {result['lens_height_m']:.3f} m "
-          f"(replaced the fitter's {result['lens_height_replaced']})")
+          f"(replaced the fitter's {describe_replaced(result['lens_height_replaced'])})")
 
     record = new_record(args.robot_id, firmware=args.firmware, payload=args.payload,
                         camera_source=str(args.camera_source), mode=mode,
