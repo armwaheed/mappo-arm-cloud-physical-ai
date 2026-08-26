@@ -149,6 +149,61 @@ SPDX-License-Identifier: Apache-2.0
     <pre id="motion-result" class="result" aria-live="polite"></pre>
   </section>
 
+  <!-- Starting a run is a different act from nudging the robot, so it is a different panel.
+       The motion pad is direct and bounded; this hands the legs to a policy for as long as
+       the run lasts, and while it does the pad above is refused. -->
+  <section class="panel" id="run-panel">
+    <div class="panel-head">
+      <h2>MAPPO run</h2>
+      <span class="badge muted" id="control-badge">control —</span>
+    </div>
+    <p class="hint">
+      The default press is the <strong>scene check</strong>: perception, the policy and the
+      planner's veto, with no <code>--live</code> — so it has no way to command a leg at all.
+      Moving the robot needs the driver to have been started with
+      <code>--allow-motion</code> <em>and</em> the arm below. Missing either is a refusal,
+      never a quiet dry run.
+    </p>
+
+    <div class="row">
+      <label class="field">
+        <span>Seconds</span>
+        <input id="run-seconds" type="number" min="1" max="120" step="1" value="30">
+      </label>
+      <label class="field">
+        <span>Policy</span>
+        <select id="run-mode">
+          <option value="supervised">supervised — planner keeps its veto</option>
+          <option value="raw">raw — NO veto, empty arena only</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>Heading servo</span>
+        <select id="run-servo"><option value="off">off</option></select>
+      </label>
+    </div>
+
+    <div class="row">
+      <label class="field check arm" id="run-arm-field"
+             title="The second of two gates. The first is --allow-motion on the driver.">
+        <input id="run-arm" type="checkbox">
+        <span>⛔ arm motion — the policy drives the legs</span>
+      </label>
+      <button class="btn" id="run-start">Start run</button>
+      <button class="btn stop-all" id="run-stop">■ Stop run &amp; take control</button>
+    </div>
+
+    <!-- The command BEFORE the press, not in the reply after it. The tree it runs in is not
+         a checkout, so this is the only thing about the run that can actually be named. -->
+    <details class="preview" id="run-preview-box">
+      <summary>the exact command this will run <span id="run-where"></span></summary>
+      <pre id="run-preview" class="result"></pre>
+    </details>
+
+    <div id="run-notes" class="notes"></div>
+    <pre id="run-result" class="result" aria-live="polite"></pre>
+  </section>
+
   </div>
 
   <div class="col" id="col-right">

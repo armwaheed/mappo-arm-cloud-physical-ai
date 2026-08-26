@@ -3,7 +3,7 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""One test, about one bug class: a "hidden" that cannot hide.
+"""Two bug classes in the page's own assets, neither visible by looking at the page.
 
 `.hidden { display: none }` and `.safety { display: flex }` carry the SAME CSS specificity,
 so whichever is declared later wins. Giving a component a `display` therefore silently
@@ -27,6 +27,11 @@ import re
 HERE = os.path.dirname(os.path.abspath(__file__))
 CSS = os.path.join(HERE, "static", "dashboard.css")
 JS = os.path.join(HERE, "static", "dashboard.js")
+HTML = os.path.join(HERE, "templates", "index.html")
+
+#: ``$("some-id")`` in the script, and ``id="some-id"`` in the markup.
+_LOOKUP = re.compile(r'\$\("([a-z0-9-]+)"\)')
+_MARKUP_ID = re.compile(r'\bid="([a-z0-9-]+)"')
 
 _HIDES = re.compile(
     r'classList\.(?:toggle|add|remove)\(\s*"hidden"'      # .classList.toggle("hidden", ...)
@@ -80,6 +85,34 @@ def test_the_script_still_hides_things_this_way():
     assert _HIDES.search(js), (
         "nothing in the script hides an element by class or attribute any more — this test "
         "guards a pattern that no longer exists and should be deleted, not left green")
+
+
+def test_every_element_the_script_reaches_for_exists_in_the_page():
+    """``$("run-arm")`` on an id the markup does not have returns ``null``, and the failure
+    lands on the NEXT line as "cannot read properties of null" — in a browser console
+    nobody has open, halfway through ``init()``, which stops wiring every listener after it.
+
+    So a typo in one id silently disables the rest of the page, and the visible symptom is
+    a control elsewhere that does nothing. Made to fail by renaming any id in the markup
+    without renaming it in the script.
+    """
+    with open(JS) as handle:
+        wanted = set(_LOOKUP.findall(handle.read()))
+    with open(HTML) as handle:
+        present = set(_MARKUP_ID.findall(handle.read()))
+    missing = sorted(wanted - present)
+    assert not missing, (
+        f"the script reaches for {missing}, which the markup does not define. Each one is a "
+        f"null dereference that stops the script where it happens.")
+
+
+def test_the_id_check_is_reading_a_page_that_has_ids():
+    """Keeps the test above from passing because a regex stopped matching anything."""
+    with open(HTML) as handle:
+        present = set(_MARKUP_ID.findall(handle.read()))
+    with open(JS) as handle:
+        wanted = set(_LOOKUP.findall(handle.read()))
+    assert len(present) > 20 and len(wanted) > 20, (len(present), len(wanted))
 
 
 if __name__ == "__main__":

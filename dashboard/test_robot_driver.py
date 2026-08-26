@@ -32,6 +32,7 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from device_connect_edge.drivers import DeviceDriver
 
+import run_control
 from robot_driver import PEER_FOOTPRINT_M, MappoRobotDriver
 
 #: The checkpoint this repository actually ships, served as-is by the model-server tests.
@@ -63,7 +64,8 @@ def _driver(tmp, events=None, **kwargs):
     ``@emit`` raises if the driver is not mounted, so an unmounted driver cannot be tested
     at all without this. ``set_event_callback`` is the SDK's own seam for it.
     """
-    driver = MappoRobotDriver(platform="sim", package_dir=str(_package(tmp)), **kwargs)
+    driver = MappoRobotDriver(platform=kwargs.pop("platform", "sim"),
+                              package_dir=str(_package(tmp)), **kwargs)
     sink = events if events is not None else []
     driver.set_event_callback(lambda name, payload: sink.append((name, payload)))
     return driver
@@ -802,6 +804,587 @@ def test_a_failed_estimator_read_is_published_rather_than_swallowed():
     assert record is not None
     assert record["ok"] is False
     assert record["pose"] == {} and record["velocity"] == []
+
+
+# ── starting a run, and who has the legs while it goes ───────────────────────
+class _RunPipe:
+    """A pipe that yields queued lines and then blocks until the process exits.
+
+    ⚠️ NOT named ``_FakeStdout``. This file already has one of those, further up, for the
+    pose worker — and it does the opposite thing at EOF: it returns ``b""`` immediately,
+    because a pose worker that has printed its lines has exited. A second class of the same
+    name down here silently replaced the first for every caller in the file, and
+    ``test_each_worker_line_becomes_one_peer_pose_carrying_an_age_not_a_timestamp`` hung
+    forever on a pipe that was waiting for a process that does not exist. Nothing failed;
+    the suite simply stopped, thirteen tests in.
+    """
+
+    def __init__(self, lines):
+        self._lines = [bytes(line) for line in lines]
+        self.closed = asyncio.Event()
+
+    async def readline(self):
+        if self._lines:
+            return self._lines.pop(0)
+        await self.closed.wait()
+        return b""
+
+
+class _RunProcess:
+    """A subprocess that never existed, with the surface the driver actually uses."""
+
+    def __init__(self, lines=()):
+        self.pid = 4242
+        self.stdout = _RunPipe(lines)
+        self.returncode = None
+        self.terminated = 0
+        self._exited = asyncio.Event()
+
+    def terminate(self):
+        self.terminated += 1
+        if self.returncode is None:
+            self.exit(-15)
+
+    def exit(self, code=0):
+        self.returncode = code
+        self._exited.set()
+        self.stdout.closed.set()
+
+    async def wait(self):
+        await self._exited.wait()
+        return self.returncode
+
+    async def communicate(self):
+        await self._exited.wait()
+        return (b"", b"")
+
+
+class _RunSpawner:
+    """Stands in for ``asyncio.create_subprocess_exec`` and records every command.
+
+    The FIRST spawn is the run. Every later one is a helper — the remote stop — and exits
+    at once, which is what a working ``kill -TERM`` over SSH looks like from here.
+    ``confirm`` off models the other case: the signal went out and the run did not die.
+    """
+
+    def __init__(self, lines=(), confirm=True):
+        self.commands = []
+        self.processes = []
+        self._lines = list(lines)
+        self.confirm = confirm
+
+    async def __call__(self, *command, **_kwargs):
+        self.commands.append(list(command))
+        first = not self.processes
+        process = _RunProcess(self._lines if first else ())
+        self.processes.append(process)
+        if not first:
+            process.exit(0)                       # the helper returns
+            if self.confirm:
+                self.processes[0].exit(-15)       # ...and the run really did stop
+        return process
+
+    @property
+    def run(self):
+        return self.processes[0]
+
+    def drive(self, main):
+        """Run one coroutine in a fresh loop and leave no fake process pending.
+
+        ⚠️ Without the ``finally``, every test that starts a run costs four real seconds.
+        ``asyncio.run`` cancels the output pump on the way out, the pump's own ``finally``
+        reports the run, and reporting it waits ``RUN_STOP_TIMEOUT_S`` for an exit status
+        that a process which never existed will never produce. A dozen of those is a suite
+        that takes a minute to say the same thing.
+        """
+        async def wrapper():
+            try:
+                return await main()
+            finally:
+                for process in self.processes:
+                    if process.returncode is None:
+                        process.exit(0)
+                await asyncio.sleep(0)
+        return _run(wrapper())
+
+
+class _PatchSpawn:
+    """Swap ``asyncio.create_subprocess_exec`` for the duration of one test."""
+
+    def __init__(self, spawner):
+        self.spawner = spawner
+
+    def __enter__(self):
+        self._real = asyncio.create_subprocess_exec
+        asyncio.create_subprocess_exec = self.spawner
+        return self.spawner
+
+    def __exit__(self, *_exc):
+        asyncio.create_subprocess_exec = self._real
+        return False
+
+
+#: The deployment shape this feature exists for: the driver on a workstation, the run on the
+#: robot, ssh in between. See ``run_control``'s module docstring for why it cannot be local.
+_REMOTE = run_control.RunProfile(
+    label="lab go2", workdir="/home/unitree/mappo-run/integration",
+    python="/home/unitree/robotics-connect-envs/armwaheed/bin/python3",
+    script="mappo_drive.py", package="/home/unitree/mappo-run/policy",
+    launch_prefix=("ssh", "unitree@192.168.123.18"),
+    extra_args=("--robot-radius", "0.25"), output_dir="/home/unitree/dashboard-runs")
+
+
+def _first(emitted, name):
+    """The FIRST payload emitted under ``name``.
+
+    ``dict(emitted)`` would keep the LAST, and a run that starts and then ends emits
+    ``control_changed`` twice — so the collapsed dict reports the hand-back and the test
+    asserting the hand-over reads it as a failure to hand over.
+    """
+    for emitted_name, payload in emitted:
+        if emitted_name == name:
+            return dict(payload)
+    raise AssertionError(f"{name} was never emitted; saw {[n for n, _ in emitted]}")
+
+
+def _sport(*_a, **_k):
+    """A bridge whose robot is in a sport mode, so the preflight passes."""
+    return {"ok": True, "mode": "normal", "pose": {"x": 0.0, "y": 0.0, "yaw": 0.0},
+            "velocity": [0.0, 0.0, 0.0]}
+
+
+def _runner(tmp, events=None, **kwargs):
+    kwargs.setdefault("run_profile", _REMOTE)
+    kwargs.setdefault("allow_motion", True)
+    driver = _driver(tmp, events=events, **kwargs)
+    driver._bridge_blocking = _sport
+    return driver
+
+
+async def _start(driver, **kwargs):
+    result = await driver.start_run(**kwargs)
+    # Let the output pump reach its first await, so a test that then stops the run is
+    # stopping a run that is genuinely being read rather than one that never started.
+    await asyncio.sleep(0)
+    return result
+
+
+#: ⚠️ Anything about a RUNNING run has to be asserted INSIDE the loop.
+#:
+#: ``asyncio.run`` cancels whatever is still pending when its main coroutine returns, and
+#: ``_pump_run``'s ``finally`` then reports the run and hands control back. So a test that
+#: starts a run, lets ``_run`` return and then checks ``_control_owner`` reads ``operator``
+#: every time — including when the driver never took control at all, which is the state
+#: those tests are trying to distinguish. It is the same shape as ``_settle``: a background
+#: task the assertions depend on, and a green that would otherwise be luck.
+
+
+def test_a_run_cannot_be_started_without_motion_enabled_and_nothing_is_spawned():
+    """⛔ THE gate, at the driver. Same shape as ``walk_forward``'s and same two properties:
+    it refuses, and it refuses WITHOUT spawning anything.
+
+    Made to fail by passing ``allow_motion=True`` into ``build_run_argv`` from ``start_run``
+    instead of ``self.allow_motion``: the run is then launched from a device that was
+    started status-and-checkpoints only. (``run_control`` holds the second copy of this
+    gate, and ``test_run_control`` covers that one — two processes with one shared
+    assumption is one process with an unwritten contract.)
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, allow_motion=False)
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            result = spawner.drive(lambda: _start(driver, arm_motion=True))
+        assert result["ok"] is False and result["refused"] is True, result
+        assert "--allow-motion" in result["error"], result["error"]
+        assert not spawner.commands, "a run was spawned despite the gate"
+        assert driver._control_owner == "operator"
+
+
+def test_arming_motion_on_an_ungated_driver_refuses_instead_of_downgrading():
+    """A silent downgrade would start a run the operator believes is driving.
+
+    They asked for motion, they watched a run start, and they are now watching a robot that
+    was never going to move — which is the same thing they would see from ``mode='mcf'``,
+    from a flat battery and from a sub-gait-floor command, and they would spend the demo
+    telling those apart. Made to fail by dropping ``arm_motion`` to False and starting a dry
+    run when the gate is shut.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, allow_motion=False, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            result = spawner.drive(lambda: _start(driver, arm_motion=True))
+        assert result["ok"] is False and result["refused"] is True, result
+        assert "--allow-motion" in result["error"], result["error"]
+        assert not spawner.commands, "a downgraded run was started anyway"
+
+
+def test_a_run_is_refused_on_a_robot_that_would_accept_it_and_never_step():
+    """The Go2 answered ``mode='mcf'`` on 2026-08-26. ``Move`` is ignored there, so the run
+    would command velocities for its whole length against a robot that never moves.
+
+    Made to fail by dropping the ``check_control_mode`` call from ``start_run``.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        driver._bridge_blocking = lambda *a, **k: {"ok": True, "mode": "mcf"}
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            result = spawner.drive(lambda: _start(driver, arm_motion=True))
+        assert result["refused"] is True and "mcf" in result["error"], result
+        assert not spawner.commands, "a run was spawned at a robot that would ignore it"
+
+
+def test_a_started_run_reports_the_command_and_claims_no_commit():
+    """The deployed tree is not a checkout, so the run can be named by its COMMAND and by
+    nothing else. Made to fail by dropping ``argv`` from the reply or the event."""
+    with tempfile.TemporaryDirectory() as tmp:
+        emitted = []
+        driver = _runner(tmp, events=emitted, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            result = spawner.drive(lambda: _start(driver, seconds=20,
+                                                  arm_motion=True))
+        assert result["ok"] is True and result["started"] is True, result
+        assert result["named_commit"] is None
+        assert "--live" in result["argv"] and "--max-seconds" in result["argv"]
+        assert spawner.commands[0][0] == "ssh", spawner.commands[0]
+        payload = _first(emitted, "run_started")
+        assert payload["argv"] == result["argv"]
+        assert payload["command"][0] == "ssh"
+        assert "not a git checkout" in payload["note"]
+
+
+def test_a_live_run_takes_the_legs_and_says_so():
+    with tempfile.TemporaryDirectory() as tmp:
+        emitted = []
+        driver = _runner(tmp, events=emitted, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                return driver._control_owner
+            owner = spawner.drive(main)
+        assert owner == "policy", owner
+        announced = _first(emitted, "control_changed")
+        assert announced["owner"] == "policy", announced
+
+
+def test_the_default_run_takes_no_flags_no_gate_and_cannot_move_the_robot():
+    """``start_run()`` with nothing at all is the scene check, and it is the first thing
+    anybody presses.
+
+    Three properties in one: it works on a driver started WITHOUT ``--allow-motion``, the
+    command line it builds carries no ``--live`` — so it has no path to a leg at all — and
+    it does not take the motion pad, because a run that cannot command a leg has no claim on
+    it. Made to fail by defaulting ``arm_motion`` to True, or by handing control over
+    unconditionally in ``_launch``.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, allow_motion=False, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                started = await _start(driver)          # no arguments: the scene check
+                return started, driver._control_owner
+            result, owner = spawner.drive(main)
+        assert result["ok"] is True, result
+        assert "--live" not in result["argv"]
+        assert owner == "operator", "a dry run took the motion pad away from the operator"
+        assert spawner.commands, "a dry run did not start"
+
+
+def test_a_manual_command_is_refused_while_the_policy_is_driving():
+    """One authority at a time. A manual nudge and a policy tick would both write a velocity
+    on the same bus at 10 Hz and the last writer would win — an arbitration with no owner
+    and no record.
+
+    Made to fail by deleting the ``_control_owner`` check in ``_move``: the walk is then
+    accepted and the worker is started underneath a running policy.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        emitted = []
+        driver = _runner(tmp, events=emitted, platform="go2")
+        started = []
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                driver._bridge_blocking = lambda *a, **k: (
+                    started.append(a) or {"ok": True, "travelled_m": 0.3})
+                return await driver.walk_forward(seconds=1.0)
+            refusal = spawner.drive(main)
+        assert refusal["ok"] is False and refusal["policy_driving"] is True, refusal
+        assert "stop_run" in refusal["error"], refusal["error"]
+        assert not started, "a manual nudge reached the worker while the policy was driving"
+        assert "motion_refused" in [name for name, _ in emitted]
+
+
+def test_stop_is_never_gated_by_the_policy_holding_the_legs():
+    """The one command that must work in every state. Made to fail by moving the ownership
+    check above ``stop``'s own path."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                return await driver.stop()
+            result = spawner.drive(main)
+        assert result["ok"] is True, result
+        assert result["ended_run"] is True
+
+
+def test_stop_ends_a_running_policy_before_it_commands_zero():
+    """⛔ The mutation this test exists for.
+
+    ``stop`` used to address the motion pad and nothing else, and a ``mappo_drive`` run is
+    the second thing that can be commanding this robot — the more urgent of the two, because
+    it holds the legs indefinitely and refreshes its velocity every tick. A stop that only
+    commanded zero would be overwritten inside one control period and the robot would
+    visibly pause and carry on: the exact failure ``_terminate_worker`` exists for, in a form
+    no test covered until the run existed.
+
+    ``STOP ALL`` and every per-row stop invoke this same function, so they inherit it.
+
+    Made to fail by deleting the ``await self._end_run("stop")`` line from ``stop()``:
+    ``ended_run`` comes back False, the run process is never signalled, and the policy is
+    still driving after the operator pressed stop.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        order = []
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                driver._bridge_blocking = lambda *a, **k: (
+                    order.append("zeroed") or {"ok": True, "stopped": True})
+                return await driver.stop()
+            result = spawner.drive(main)
+
+        assert result["ended_run"] is True, result
+        assert result["run_stop_confirmed"] is True, result
+        # The remote stop went out, and it went out BEFORE the velocity was zeroed.
+        stop_commands = [c for c in spawner.commands[1:] if "kill -TERM" in " ".join(c)]
+        assert stop_commands, f"the run was never signalled: {spawner.commands}"
+        assert order == ["zeroed"], order
+        assert driver._control_owner == "operator"
+        assert driver._run is None
+
+
+def test_an_unconfirmed_run_stop_makes_the_reply_a_failure():
+    """The dashboard classifies a stop by ``ok``. A policy that may still be driving must
+    not come back as a tick — the operator has to be sent to the physical abort.
+
+    Made to fail by leaving ``result["ok"]`` alone when ``confirmed`` is False.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        original = run_control.RUN_STOP_TIMEOUT_S
+        run_control.RUN_STOP_TIMEOUT_S = 0.05     # do not sit out the real budget
+        try:
+            with _PatchSpawn(_RunSpawner(confirm=False)) as spawner:
+                async def main():
+                    await _start(driver, arm_motion=True)
+                    driver._bridge_blocking = lambda *a, **k: {"ok": True, "stopped": True}
+                    return await driver.stop()
+                result = spawner.drive(main)
+        finally:
+            run_control.RUN_STOP_TIMEOUT_S = original
+        assert result["ok"] is False, result
+        assert result["run_stop_confirmed"] is False
+        assert "STILL DRIVING" in result["error"], result["error"]
+
+
+def test_stopping_the_run_hands_the_pad_back_and_the_next_press_is_accepted():
+    """Taking control is one deliberate call, and afterwards the keys work.
+
+    Made to fail by not handing control back in ``_end_run``: the pad stays dead after the
+    run has been stopped, which is the state an operator cannot get out of.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                stopped = await driver.stop_run(reason="taking manual control")
+                driver._bridge_blocking = lambda *a, **k: {"ok": True, "travelled_m": 0.3}
+                walk = await driver.walk_forward(seconds=1.0)
+                await _settle(driver)
+                return stopped, walk
+            stopped, walk = spawner.drive(main)
+        assert stopped["was_running"] is True and stopped["ok"] is True, stopped
+        assert driver._control_owner == "operator"
+        assert walk["ok"] is True and walk["accepted"] is True, walk
+
+
+def test_the_pad_comes_back_even_when_the_stop_did_not_confirm():
+    """The state an operator cannot get out of, and the reason ``_end_run`` hands control
+    back BEFORE it waits.
+
+    A remote stop is a second SSH round trip and it can fail to confirm — the policy may
+    still be driving. Waiting for that before releasing the pad means an operator whose stop
+    did not land also cannot press a key, which is precisely backwards: they need the keys
+    more, not less. (``_finish_run`` hands the pad back too, but only once the run's pipe
+    closes, and an unconfirmed run's pipe may never close. That is why the sibling test with
+    a confirming stop cannot catch this and this one can.)
+
+    Made to fail by deleting the ``_hand_control`` call from ``_end_run``.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        original = run_control.RUN_STOP_TIMEOUT_S
+        run_control.RUN_STOP_TIMEOUT_S = 0.05
+        try:
+            with _PatchSpawn(_RunSpawner(confirm=False)) as spawner:
+                async def main():
+                    await _start(driver, arm_motion=True)
+                    stopped = await driver.stop_run()
+                    owner = driver._control_owner
+                    driver._bridge_blocking = lambda *a, **k: {"ok": True, "travelled_m": 0.1}
+                    walk = await driver.walk_forward(seconds=1.0)
+                    await _settle(driver)
+                    return stopped, owner, walk
+                stopped, owner, walk = spawner.drive(main)
+        finally:
+            run_control.RUN_STOP_TIMEOUT_S = original
+        assert stopped["confirmed"] is False, stopped
+        assert owner == "operator", (
+            "the stop did not confirm and the motion pad was left locked; the operator can "
+            "neither drive nor stop driving")
+        assert walk["ok"] is True and walk["accepted"] is True, walk
+
+
+def test_stopping_a_run_that_is_not_running_is_not_an_error():
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp)
+        result = _run(driver.stop_run())
+        assert result["ok"] is True and result["was_running"] is False, result
+
+
+def test_a_second_run_is_refused_rather_than_started_on_top_of_the_first():
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                return await driver.start_run()
+            second = spawner.drive(main)
+        assert second["refused"] is True and "already in flight" in second["error"], second
+        assert len(spawner.commands) == 1, spawner.commands
+
+
+def test_a_run_that_ends_by_itself_is_reported_once_and_gives_the_pad_back():
+    with tempfile.TemporaryDirectory() as tmp:
+        emitted = []
+        driver = _runner(tmp, events=emitted, platform="go2")
+        with _PatchSpawn(_RunSpawner(lines=[b"[mappo_drive] policy supervised\n"])) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                spawner.run.exit(0)
+                await driver._run_task
+            spawner.drive(main)
+        names = [name for name, _ in emitted]
+        assert names.count("run_finished") == 1, names
+        finished = _first(emitted, "run_finished")
+        assert finished["reason"] == "the run completed", finished
+        assert driver._control_owner == "operator" and driver._run is None
+        assert "run_output" in names, names
+
+
+def test_the_watchdog_ends_a_run_that_outlives_its_bound():
+    """A nudge is capped at 5 s by the worker. A run's cap is its own ``--max-seconds``, and
+    this is what happens when the run does not honour it — a wedged camera open, a stalled
+    detector, or a tree 43 commits behind whose flag means something else.
+
+    Driven directly rather than by waiting: the budget is the run's length plus 30 s of
+    startup, and a test that slept through it would be a minute long.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                driver._run_deadline_task.cancel()
+                await driver._run_deadline(driver._run, 0.0)
+            spawner.drive(main)
+        assert driver._run is None or driver._run.finished_reason
+        assert any("kill -TERM" in " ".join(c) for c in spawner.commands[1:]), (
+            "the watchdog did not signal the run")
+
+
+def test_the_periodic_state_poll_is_skipped_for_the_whole_of_a_run():
+    """One ``status`` is 1.94 s of cold SDK import and DDS discovery on the Go2's Jetson —
+    39% of the 5 s poll period — and a run holds the bus at 10 Hz for its whole length.
+    Putting a second client on it buys a pose the fleet row could do without.
+
+    Made to fail by dropping ``or self._run is not None`` from ``publish_state``.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                polled = []
+                driver._bridge_blocking = lambda *a, **k: (
+                    polled.append(a) or {"ok": True, "mode": "normal"})
+                await driver.publish_state()
+                return polled
+            polled = spawner.drive(main)
+        assert not polled, "the state poll ran a DDS client against a live control loop"
+
+
+def test_get_status_says_who_has_the_legs_and_what_is_running():
+    """The page cannot render an unambiguous "who is in charge" from an absence."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        idle = _run(driver.get_status())
+        assert idle["control"]["owner"] == "operator"
+        assert idle["control"]["manual_motion_allowed"] is True
+        assert idle["run"]["active"] is False and idle["run"]["supported"] is True
+
+        with _PatchSpawn(_RunSpawner()) as spawner:
+            async def main():
+                await _start(driver, arm_motion=True)
+                return await driver.get_status()
+            busy = spawner.drive(main)
+        assert busy["control"]["owner"] == "policy", busy["control"]
+        assert busy["control"]["manual_motion_allowed"] is False
+        assert busy["run"]["active"] is True and busy["run"]["live"] is True
+        assert busy["run"]["named_commit"] is None
+        assert "elapsed_s" in busy["run"] and "started_at" not in busy["run"]
+
+
+def test_get_status_reports_a_mode_that_would_ignore_every_command():
+    """``mode='mcf'`` is the answer to "why is nothing happening", and a page that cannot
+    say it sends the operator to look for a tether."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        driver._bridge_blocking = lambda *a, **k: {"ok": True, "mode": "mcf"}
+        result = _run(driver.get_status())
+        assert result["mode_accepts_motion"] is False
+        assert "mcf" in result["mode_note"]
+
+        driver._bridge_blocking = _sport
+        assert _run(driver.get_status())["mode_accepts_motion"] is True
+
+
+def test_a_driver_with_no_run_profile_refuses_and_advertises_that_it_cannot():
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, allow_motion=True, run_profile=None)
+        driver._bridge_blocking = _sport
+        result = _run(driver.start_run())
+        assert result["refused"] is True and "--run-profile" in result["error"], result
+        assert _run(driver.get_capabilities())["run"]["supported"] is False
+
+
+def test_the_capabilities_show_both_commands_a_press_could_run():
+    """The page can show the operator the command BEFORE the press rather than in the reply
+    after it, and it can show which of the two an arm would change it into."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _runner(tmp, platform="go2")
+        caps = _run(driver.get_capabilities())["run"]
+        assert caps["supported"] is True and caps["remote"] is True
+        assert "--live" not in caps["command_preview"], caps["command_preview"]
+        assert "--live" in caps["armed_command_preview"]
+        assert caps["named_commit"] is None
+
+        ungated = _driver(tmp, allow_motion=False, run_profile=_REMOTE, platform="go2")
+        gated = _run(ungated.get_capabilities())["run"]
+        assert gated["armed_command_preview"] is None, (
+            "a device that will refuse an armed run advertised one anyway")
 
 
 if __name__ == "__main__":

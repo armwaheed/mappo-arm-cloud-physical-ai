@@ -28,7 +28,14 @@ from aiohttp.test_utils import TestClient, TestServer
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import server as dashboard
-from server import ALLOWED_FUNCTIONS, Mesh, _in_time_order, _shape_event
+from server import (
+    ALLOWED_FUNCTIONS,
+    STOP_FUNCTIONS,
+    STOP_TIMEOUT_S,
+    Mesh,
+    _in_time_order,
+    _shape_event,
+)
 
 
 class _FakeMesh(Mesh):
@@ -196,6 +203,24 @@ def test_the_page_is_served():
 
 
 # ── the stop lane ────────────────────────────────────────────────────────────
+class _RoutingMesh(Mesh):
+    """A Mesh that records which pool a call was handed to, and calls nothing.
+
+    Exercises the routing rather than grepping for it. The previous version of this test
+    asserted that the string `function == "stop"` appeared in `Mesh.invoke`'s source, which
+    went red the moment the same rule was expressed as a set membership and would have gone
+    GREEN for a rule that named the wrong pool.
+    """
+
+    def __init__(self):
+        super().__init__(allow_insecure=True)
+        self.routed = []
+
+    async def _call(self, fn, *args, _pool=None, _timeout=None, **kwargs):
+        self.routed.append((args[1] if len(args) > 1 else None, _pool, _timeout))
+        return {"ok": True}
+
+
 def test_a_stop_is_routed_to_the_dedicated_lane_wherever_it_is_issued_from():
     """The routing is by FUNCTION NAME, not by endpoint.
 
@@ -203,12 +228,56 @@ def test_a_stop_is_routed_to_the_dedicated_lane_wherever_it_is_issued_from():
     the endpoint would leave one path where a stop can queue behind a walk. Measured before
     this existed: a stop to a second robot took 4.23 s because a single-worker pool held it
     behind a 5 s walk.
+
+    ``stop_run`` is on the same lane and for the same reason: it is the call that takes the
+    legs back from a policy that is driving them, and an operator pressing it has already
+    decided the run must stop now. Made to fail by dropping either name from
+    ``STOP_FUNCTIONS``.
     """
-    import inspect
-    source = inspect.getsource(Mesh.invoke)
-    assert 'function == "stop"' in source, (
-        "Mesh.invoke no longer routes stop to the dedicated pool")
-    assert "_stop_pool" in source
+    mesh = _RoutingMesh()
+    try:
+        for function in sorted(STOP_FUNCTIONS):
+            asyncio.run(mesh.invoke("mappo-go2", function, {}))
+        asyncio.run(mesh.invoke("mappo-go2", "walk_forward", {}))
+    finally:
+        for pool in (mesh._pool, mesh._stop_pool, mesh._event_pool, mesh._camera_pool):
+            pool.shutdown(wait=False)
+
+    for function, pool, timeout in mesh.routed[:len(STOP_FUNCTIONS)]:
+        assert pool is mesh._stop_pool, f"{function} queued on the general pool"
+        assert timeout == STOP_TIMEOUT_S, (function, timeout)
+    assert mesh.routed[-1][1] is None, "an ordinary command took the stop lane"
+
+
+#: Named ``stop_*`` and deliberately NOT on the stop lane, with the reason.
+#:
+#: An allow-list of exceptions rather than a cleverer name test, for the reason
+#: ``_DELIBERATE_OVERRIDES`` in ``test_robot_driver.py`` exists: the next function called
+#: ``stop_something`` should have to be argued about here rather than silently matching or
+#: silently not matching a pattern.
+_NOT_A_STOP_OF_THE_LEGS = {
+    # Ends a video feed. Nothing is moving because of it, and a browser closing a tab fires
+    # it — putting that on the two-worker lane the emergency stop depends on would let an
+    # ordinary page close contend with an operator's stop.
+    "stop_camera",
+}
+
+
+def test_the_stop_lane_carries_every_function_that_takes_authority_away():
+    """Keeps the set above honest against the driver.
+
+    A driver RPC whose whole job is to stop a robot, sitting on the general pool, is the
+    4.23 s defect with a different name on it. Made to fail by removing ``stop_run`` from
+    ``STOP_FUNCTIONS``, or by adding a leg-stopping RPC and not listing it.
+    """
+    assert STOP_FUNCTIONS <= ALLOWED_FUNCTIONS, sorted(STOP_FUNCTIONS - ALLOWED_FUNCTIONS)
+    named = {f for f in ALLOWED_FUNCTIONS if f == "stop" or f.startswith("stop_")}
+    assert named - _NOT_A_STOP_OF_THE_LEGS == set(STOP_FUNCTIONS), (
+        f"{sorted(named - _NOT_A_STOP_OF_THE_LEGS - set(STOP_FUNCTIONS))} look like stops "
+        f"and are not on the stop lane, or {sorted(set(STOP_FUNCTIONS) - named)} is on it "
+        f"and no longer exists")
+    assert not (_NOT_A_STOP_OF_THE_LEGS & set(STOP_FUNCTIONS)), (
+        "a function is both exempted and on the lane")
 
 
 def test_the_three_pools_are_separate_objects():

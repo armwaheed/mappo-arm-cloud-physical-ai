@@ -58,6 +58,36 @@ rewrites one field in ``config.json`` and takes effect on the NEXT run — a liv
 which is where that argument is made properly and where the compatibility check that makes
 a swap safe actually lives.
 
+## Starting a run, and who is in charge while it is going
+
+``select_model`` arms a checkpoint *for the next run*, and until ``start_run`` there was no
+way to begin one: the run was a person typing ``mappo_drive.py`` over SSH. ``start_run`` /
+``stop_run`` are that pair. The command line they build, where it runs, and why a remote
+subprocess is the honest shape are all in ``run_control.py``; what lives here is the process,
+the events, and the arbitration.
+
+**One authority at a time, and it is named.** :attr:`_control_owner` is ``operator`` or
+``policy``, never both and never neither. ``start_run(live=True)`` moves it to ``policy``;
+``stop_run`` and ``stop`` move it back. While it is ``policy``, **the motion RPCs are
+refused** — the refusal names the run and names ``stop_run``, and it is emitted as
+``motion_refused`` like every other turn-down.
+
+Refusing is the choice, and the alternative is what makes it one. If a manual nudge and a
+policy tick both ran, both would write ``set_velocity`` at 10 Hz on the same bus and the last
+writer would win — an arbitration with no owner, no record, and nothing an operator could
+watch. Silently killing the run on a key press is the other alternative and it is worse: the
+operator's press would end a run they may not have known was happening. So the pad goes
+inert, loudly, and taking it back is one deliberate call.
+
+**Nothing in that gates a stop.** ``stop`` and ``stop_run`` are ungated in every state, and
+``stop`` is the one an operator reaches for: they take the legs away from the policy first,
+the in-flight nudge second, and command zero last.
+
+**A run does not transfer control when it is not driving.** ``start_run(live=False)`` is the
+shadow rung: perception, policy and telemetry with no ``--live``, so nothing commands a leg
+and the pad stays with the operator. Claiming otherwise would put a lock on the page for a
+process that could not have moved anything.
+
 ## What the event stream carries
 
 ``motion_started`` / ``motion_completed`` / ``motion_refused`` / ``motion_interrupted`` —
@@ -97,6 +127,7 @@ import subprocess
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -107,6 +138,7 @@ from device_connect_edge.types import DeviceIdentity, DeviceStatus
 
 import camera_source
 import cloud_models
+import run_control
 from camera_source import CameraUnavailable
 from cloud_models import CloudFetchError
 from drive_bridge import (
@@ -161,6 +193,18 @@ PEER_FOOTPRINT_M = {"go2": 0.40, "lite3": 0.36, "sim": 0.40}
 #: same budget — measured in tens of seconds, not in control periods.
 POSE_FIRST_LINE_S = BRIDGE_TIMEOUT_S
 
+#: Lines of a run's output kept for :meth:`get_status`. A ring, not a log: the run writes
+#: its own telemetry to a file named in ``run_started``, and this is only what an operator
+#: sees on the page without going and fetching it.
+RUN_LOG_LINES = 40
+
+#: Cap on ``run_output`` events per run, after which the ring is the only copy. ``mappo_drive``
+#: prints a startup banner, its warnings and a per-run report, but the vendored stack under it
+#: can be chattier than that — and a driver that turned a talkative run into thousands of mesh
+#: events would be competing for the channel a ``motion_refused`` has to arrive on. Same
+#: argument as the camera being events on their own subject rather than RPC replies.
+RUN_OUTPUT_EVENTS = 120
+
 #: How long to wait before restarting a dead pose worker. Short, because every second it
 #: is down is a second the robot avoiding this one is stopped — but not zero, or a worker
 #: that fails on startup becomes a spawn loop nobody can read the log of.
@@ -177,7 +221,8 @@ class MappoRobotDriver(DeviceDriver):
                  iface: str = "eth0", allow_motion: bool = False,
                  operator_ready: bool = False, allow_http: bool = True,
                  simulate: bool = False, camera_replay_dir: str = "", camera_url: str = "",
-                 model_sources: list | None = None, publish_pose_hz: float = 0.0) -> None:
+                 model_sources: list | None = None, publish_pose_hz: float = 0.0,
+                 run_profile=None) -> None:
         super().__init__()
         self.platform = platform
         self.bridge_script = bridge_script
@@ -231,6 +276,25 @@ class MappoRobotDriver(DeviceDriver):
         #: invisible, to a channel whose entire job is to not be silently absent.
         self._pose_hz = min(float(publish_pose_hz or 0.0), MAX_POSE_STREAM_HZ)
         self._pose_task = None
+        #: Where an autonomous run happens and what is constant about it, or ``None`` for a
+        #: driver that cannot start one. See ``run_control.RunProfile``: this is a property
+        #: of the DEPLOYMENT and never of a request, which is what keeps a browser out of
+        #: the robot's command line.
+        self.run_profile = run_profile
+        #: The run in flight, as ``run_control.RunRecord``, or ``None``.
+        self._run = None
+        self._run_proc = None
+        self._run_task = None
+        self._run_deadline_task = None
+        self._run_lines: deque = deque(maxlen=RUN_LOG_LINES)
+        self._run_emitted = 0
+        #: Who is allowed to command a leg right now — ``operator`` or ``policy``, never
+        #: both and never neither. It is a single value rather than two flags on purpose: a
+        #: pair of booleans has a state meaning "both" and a state meaning "neither", and
+        #: neither of those is a thing this robot can be in.
+        self._control_owner = "operator"
+        self._control_reason = "no run has been started"
+        self._control_since = time.monotonic()
 
     # ── identity ─────────────────────────────────────────────────────────────
     @property
@@ -275,6 +339,19 @@ class MappoRobotDriver(DeviceDriver):
             # is no velocity to leave latched either way — see `command_pose_stream`.
             self._pose_task.cancel()
             self._pose_task = None
+        # BEFORE the bridge stop, and for the same reason ``stop`` does it in that order:
+        # the policy refreshes the velocity at its own rate, so a zero commanded while it is
+        # still running is overwritten before anybody sees it.
+        #
+        # ⚠️ This runs on a CLEAN shutdown. A driver that is hard-killed never reaches it,
+        # and a run launched over SSH is a process on another machine that does not die with
+        # its launcher — see ``run_control``'s module docstring. What bounds it then is the
+        # run's own ``--max-seconds`` and ``visual_nav``'s teardown, not this line.
+        if self._run is not None:
+            try:
+                await self._end_run("the driver is shutting down")
+            except Exception as exc:
+                log.warning("ending the run on shutdown failed: %r", exc)
         if self.allow_motion:
             try:
                 await self._bridge("stop")
@@ -331,6 +408,50 @@ class MappoRobotDriver(DeviceDriver):
     @emit()
     async def model_deleted(self, name: str, freed_bytes: int):
         """A checkpoint was removed from the robot."""
+
+    @emit()
+    async def run_started(self, run_id: str, live: bool, policy_mode: str,
+                          heading_servo: str, seconds: float, remote: bool,
+                          argv: list, command: list, outputs: dict, note: str):
+        """An autonomous MAPPO run was started, with the command line it was started with.
+
+        ``argv`` and ``command`` are both here and they are not the same thing. ``argv`` is
+        what a person reads; ``command`` is what was handed to the operating system, SSH
+        prefix and shell line included, and on a remote run reporting only the first would
+        describe a local run that never happened.
+
+        There is no commit in this payload and there cannot be: the deployed tree is not a
+        checkout. ``note`` says so. What this event can name is the command.
+        """
+
+    @emit()
+    async def run_output(self, run_id: str, line: str, truncated: bool):
+        """One line the run printed. Capped at ``RUN_OUTPUT_EVENTS`` per run."""
+
+    @emit()
+    async def run_finished(self, run_id: str, reason: str, exit_code: int,
+                           elapsed_s: float, tail: list):
+        """A run ended, whether by itself, by an operator, or by the watchdog.
+
+        ``reason`` distinguishes those, in the same spirit ``motion_interrupted`` is separate
+        from ``motion_refused``: an operator scanning the stream should not see their own
+        stop in the colour of a crash.
+        """
+
+    @emit()
+    async def run_refused(self, reason: str):
+        """A run was turned down — by the motion gate, by a mode the robot would ignore, or
+        because something was already in flight."""
+
+    @emit()
+    async def control_changed(self, owner: str, reason: str):
+        """Who may command a leg: ``operator`` or ``policy``.
+
+        Its own event and not a field on ``robot_state``, because ``robot_state`` is a
+        periodic poll that is SKIPPED while a run is driving — which is precisely the
+        interval during which this is the thing an operator most needs to be told. A state
+        that only appears on a timer that stops is a state nobody is told about.
+        """
 
     @emit()
     async def camera_frame(self, jpeg_b64: str, seq: int, fps: float):
@@ -490,6 +611,12 @@ class MappoRobotDriver(DeviceDriver):
             await self._announce(self.motion_refused, action=action, reason=reason)
             return {"ok": False, "refused": True, "error": reason}
 
+        if self._control_owner != "operator":
+            reason = self._policy_has_the_legs(action)
+            await self._announce(self.motion_refused, action=action, reason=reason)
+            return {"ok": False, "refused": True, "policy_driving": True,
+                    "control_owner": self._control_owner, "error": reason}
+
         if self._motion_lock.locked():
             reason = "the robot is already executing a motion command"
             await self._announce(self.motion_refused, action=action, reason=reason)
@@ -537,6 +664,21 @@ class MappoRobotDriver(DeviceDriver):
             await self._announce(self.motion_refused, action=action, reason=repr(exc))
         finally:
             self._motion_lock.release()
+
+    def _policy_has_the_legs(self, action: str) -> str:
+        """Why a manual command is refused while the policy is driving.
+
+        Long, and deliberately so. The one thing an operator must not have to work out
+        mid-run is who is in charge, and a two-word refusal ("busy") is how they would end
+        up pressing the key again to find out.
+        """
+        run_id = self._run.run_id if self._run is not None else "?"
+        return (f"the MAPPO policy is driving this robot (run {run_id}), so {action} is "
+                f"refused. It is not queued and it was not sent: a manual command and a "
+                f"policy tick would both write a velocity on the same bus at 10 Hz and the "
+                f"last writer would win, which is not an arbitration anybody can watch. "
+                f"To drive by hand, call stop_run — it ends the run and hands the pad back. "
+                f"To stop the robot now, press stop; neither of those is gated.")
 
     def _terminate_worker(self) -> bool:
         """SIGTERM the in-flight motion worker, if there is one. Returns whether there was.
@@ -685,20 +827,462 @@ class MappoRobotDriver(DeviceDriver):
 
     @rpc()
     async def stop(self) -> dict:
-        """Stop the robot immediately. Never gated — a stop is always allowed.
+        """Stop the robot immediately: the policy, the nudge, and the velocity. Never gated.
 
         Deliberately outside the motion lock: if a nudge is in flight, this must not wait
         for it. The worker is a separate process and a zero velocity from a second one is
         still a zero velocity on the bus.
+
+        **There are two things that can be commanding this robot and this ends both.** Until
+        ``start_run`` existed there was only the nudge worker, and this method terminated it.
+        A ``mappo_drive`` run is the second, and it is the more urgent of the two: it holds
+        the legs indefinitely and refreshes its velocity every tick, so a stop that only
+        commanded zero would be overwritten inside one control period and the robot would
+        visibly pause and carry on — the exact failure this method was written for, in a form
+        that no test covered until the run existed. ``STOP ALL`` and every per-row stop on
+        the dashboard invoke THIS function, so they inherit it rather than growing a second
+        implementation that could disagree.
+
+        The order is: policy, then nudge, then zero. Commanding zero first would be
+        commanding it into a bus that two other processes are still writing to.
+
+        ⚠️ **A run stop that does not confirm makes this reply a failure.** A remote run is
+        signalled over a second SSH round trip, and if that does not come back the policy may
+        still be driving. The dashboard classifies a stop by ``ok``, so an unconfirmed one has
+        to be ``ok: false`` — the operator needs to be sent to the physical abort, not shown a
+        tick.
         """
-        # Terminate the in-flight nudge BEFORE commanding zero. Its worker refreshes the
-        # velocity at 10 Hz, so a stop issued while it is still running is overwritten
-        # within 100 ms — the robot would visibly pause and carry on.
+        ended = await self._end_run("stop")
+        # Then the in-flight nudge. Its worker refreshes the velocity at 10 Hz too, so a stop
+        # issued while it is still running is overwritten within 100 ms.
         interrupted = self._terminate_worker()
         result = await self._bridge("stop")
         result["action"] = "stop"
         result["interrupted_motion"] = interrupted
+        result["ended_run"] = bool(ended.get("was_running"))
+        result["run_stop_confirmed"] = ended.get("confirmed")
+        if ended.get("was_running") and not ended.get("confirmed"):
+            result["ok"] = False
+            result["error"] = (
+                f"the velocity was zeroed, but run {ended.get('run_id')} did NOT confirm it "
+                f"stopped within {run_control.RUN_STOP_TIMEOUT_S:.0f}s. Assume the policy is "
+                f"STILL DRIVING and use the physical abort. " + str(ended.get("error") or ""))
         return result
+
+    # ── run control ──────────────────────────────────────────────────────────
+    @rpc()
+    async def start_run(self, seconds: float = run_control.DEFAULT_RUN_SECONDS,
+                        policy_mode: str = "supervised", heading_servo: str = "off",
+                        arm_motion: bool = False) -> dict:
+        """Start a MAPPO run. **By default it cannot move the robot**, and that is the point.
+
+        ⛔ ``robot-stack/SAFETY.md`` governs this.
+
+        **With no arguments this is the scene check**, the same command line
+        ``run-smoke.sh scene`` builds: the camera, the detector, the policy, the planner's
+        veto and the telemetry, with no ``--live``. ``--live`` is the only flag in
+        ``mappo_drive.py`` that commands a leg, so a run without it has no path to one —
+        an absent capability rather than a checked permission. It needs no ``--allow-motion``
+        and it is the right thing to press first, every time.
+
+        **Motion is opted into twice.** The driver must have been started with
+        ``--allow-motion`` (an operator's decision, at a command line, with somebody on the
+        abort), AND this call must pass ``arm_motion``. Missing either is a **refusal with
+        the reason in it, never a quiet dry run** — a run that starts and cannot move looks
+        exactly like a run that starts and will not, and the difference is a demo spent
+        diagnosing a robot.
+
+        It also carries one bound a nudge does not need. A nudge is capped at 5 s by the
+        worker; an autonomous run has no ceiling of its own, so ``seconds`` is clamped, sent
+        as ``--max-seconds``, and backstopped by a watchdog here.
+
+        The reply carries the whole command line. It cannot carry a commit — the deployed
+        tree is not a git checkout, and on 2026-08-26 the lab Go2's ``~/mappo-main`` matched
+        no single commit on ``main``: 67 commits behind on ``mappo_drive.py``, 95 on
+        ``config.json``. Read ``argv``.
+
+        Args:
+            seconds: how long the run may last, clamped to 120 s. Passed as
+                ``--max-seconds`` and backstopped by a watchdog here.
+            policy_mode: ``supervised`` keeps the planner's feasibility veto. ``raw`` removes
+                it, and in the closed-loop simulation the raw policy collided in every
+                configuration tested while the supervised one did not.
+            heading_servo: ``off`` (the default, and the only setting that has not driven a
+                robot into something), ``goal``, or ``travel`` — issue #16's control law.
+                Always sent explicitly, because the deployed tree's default is whatever it
+                was on the day it was copied.
+            arm_motion: ⛔ the second of two gates. ``true`` adds ``--live`` and hands the
+                legs to the policy, and needs the driver to have been started with
+                ``--allow-motion``. Default ``false``: a scene check that cannot move.
+        """
+        live = bool(arm_motion)
+        if self.run_profile is None:
+            return await self._refuse_run(run_control.unsupported()["reason"])
+        if self._run is not None:
+            return await self._refuse_run(
+                f"run {self._run.run_id} is already in flight; stop it before starting "
+                f"another. Two policies on one robot is not a thing this driver will build.")
+        if self._motion_lock.locked():
+            return await self._refuse_run(
+                "the robot is executing a manual motion command; a run must not start on top "
+                "of one. Wait for it, or press stop.")
+
+        # Cheap refusals first: the gate, the parameter check and the argv are all decided
+        # from a table, and connecting to DDS to find out otherwise would cost seconds on a
+        # Jetson and put a client on the bus for a run that was never going to start. Same
+        # ordering, and the same reason, as `drive_bridge.dispatch` planning before it loads.
+        run_id = run_control.new_run_id()
+        try:
+            argv = run_control.build_run_argv(
+                self.run_profile, seconds=seconds, policy_mode=policy_mode,
+                heading_servo=heading_servo, live=live, allow_motion=self.allow_motion,
+                run_id=run_id)
+        except run_control.RunRefused as exc:
+            return await self._refuse_run(str(exc))
+
+        # The preflight is a READ, and it is the only place a robot that would accept this
+        # run and never act on it gets to say so. One bridge round trip — 1.94 s on the lab
+        # Go2, measured, nearly all of it cold SDK import and DDS discovery.
+        #
+        # ⚠️ It BLOCKS the command channel for that time: the edge runtime dispatches one
+        # RPC at a time per device, which is the measurement the whole non-blocking motion
+        # design comes from. It is acceptable here and only here, because of what is true
+        # during the window: no run is in flight (refused above), no nudge holds the lock
+        # (refused above), and nothing has been spawned yet. The robot is stationary, so a
+        # `stop` arriving 1.9 s late has nothing it arrived late for. The moment anything
+        # IS moving — after `_launch` — this method has already returned.
+        state = await self._bridge("status")
+        if not state.get("ok"):
+            return await self._refuse_run(
+                "the pre-run status read failed, so nothing is known about the state of this "
+                "robot: " + str(state.get("error") or "the worker returned no result"))
+        try:
+            mode_note = run_control.check_control_mode(
+                self.platform, state.get("mode"), simulated=self.simulate)
+        except run_control.RunRefused as exc:
+            return await self._refuse_run(str(exc))
+
+        return await self._launch(run_id, argv, live=live, policy_mode=policy_mode,
+                                  heading_servo=heading_servo,
+                                  seconds=run_control.clamp_seconds(seconds),
+                                  mode_note=mode_note or "")
+
+    @rpc()
+    async def stop_run(self, reason: str = "the operator took control") -> dict:
+        """End the autonomous run and give the motion pad back. Never gated.
+
+        **This is how a person takes control mid-run**, and it is one call rather than two
+        because there is exactly one authority and moving it is one act. A separate
+        "take control" that did not end the run would leave two things able to command a leg
+        and call that an arbitration.
+
+        It stops the robot as well as the policy: SIGTERM to the run first, so its own
+        teardown damps, then a zero velocity as the backstop. It never sends SIGKILL —
+        ``SAFETY.md`` §0 — because a hard kill is the opposite of a stop.
+
+        ``stop`` does everything this does and also terminates an in-flight manual nudge. Use
+        that one in an emergency; this is the one for taking the robot back.
+
+        Args:
+            reason: recorded in ``run_finished`` and in the event stream, so a stopped run
+                says who stopped it and why.
+        """
+        ended = await self._end_run(str(reason or "the operator took control"))
+        if not ended.get("was_running"):
+            return {"ok": True, "was_running": False,
+                    "note": "no run was in flight; the motion pad was already the operator's",
+                    "control_owner": self._control_owner}
+        # A zero after the policy is gone, for the same reason `stop` commands one: the run
+        # is another process and this driver cannot see what it left on the bus.
+        zeroed = await self._bridge("stop")
+        ended["ok"] = bool(ended.get("confirmed")) and bool(zeroed.get("ok"))
+        ended["velocity_zeroed"] = bool(zeroed.get("ok"))
+        ended["control_owner"] = self._control_owner
+        if not ended.get("confirmed"):
+            ended["error"] = (
+                f"run {ended.get('run_id')} did not confirm it stopped within "
+                f"{run_control.RUN_STOP_TIMEOUT_S:.0f}s. Assume the policy is STILL DRIVING "
+                f"and use the physical abort. " + str(ended.get("error") or ""))
+        return ended
+
+    # ── run control internals ────────────────────────────────────────────────
+    async def _refuse_run(self, reason: str) -> dict:
+        """Turn a run down, and put the turn-down on the event stream.
+
+        Same rule as ``motion_refused``: a refusal is the interesting event, and a stream
+        that carries only the runs that started teaches an operator that nothing happened.
+        """
+        await self._announce(self.run_refused, reason=reason)
+        return {"ok": False, "refused": True, "error": reason}
+
+    async def _hand_control(self, owner: str, reason: str) -> bool:
+        """Move the single authority, and announce it only when it actually moved.
+
+        Re-asserting the current owner updates the explanation and emits nothing. An event
+        per assertion would put a ``control_changed`` on the stream every time a run ended
+        that had never taken control, which trains an operator to ignore the one event on
+        this device that says who is driving.
+        """
+        if owner == self._control_owner:
+            self._control_reason = reason
+            return False
+        self._control_owner = owner
+        self._control_reason = reason
+        self._control_since = time.monotonic()
+        log.warning("control -> %s (%s)", owner, reason)
+        await self._announce(self.control_changed, owner=owner, reason=reason)
+        return True
+
+    def _control_snapshot(self) -> dict:
+        """Who has the legs, as ``get_status`` reports it.
+
+        ``held_s`` is a DURATION measured between two readings of this host's monotonic
+        clock, and it must not become a timestamp — the same rule ``peer_pose`` follows, for
+        the same measured reason: the lab Go2 has no working RTC and its wall clock was 56
+        years behind on 2026-08-26.
+        """
+        return {
+            "owner": self._control_owner,
+            "reason": self._control_reason,
+            "held_s": round(max(0.0, time.monotonic() - self._control_since), 1),
+            "manual_motion_allowed": self._control_owner == "operator",
+        }
+
+    def _run_snapshot(self) -> dict:
+        if self._run is None:
+            return {"active": False, "supported": self.run_profile is not None}
+        snapshot = self._run.snapshot(time.monotonic(), tail=list(self._run_lines)[-10:])
+        snapshot["active"] = True
+        snapshot["supported"] = True
+        return snapshot
+
+    async def _launch(self, run_id: str, argv: list, *, live: bool, policy_mode: str,
+                      heading_servo: str, seconds: float, mode_note: str) -> dict:
+        """Spawn one run and start reporting it. Everything that could refuse already has."""
+        profile = self.run_profile
+        pidfile = run_control.pidfile_for(profile, run_id) if profile.launch_prefix else ""
+        command = run_control.launch_command(profile, argv, pidfile)
+        # ``cwd`` applies to the process THIS machine starts. On a remote run that process
+        # is ``ssh`` and the directory that matters is the ``cd`` inside the shell line;
+        # setting cwd here would apply this machine's path to the other machine's tree.
+        cwd = None if profile.launch_prefix else (profile.workdir or None)
+        # A remote run gets its variables from `export` lines inside the shell command, a
+        # local one from the spawn — same source, two renderings, because there is
+        # deliberately no shell in the local path to sit between a SIGTERM and the run.
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *command, cwd=cwd, env=run_control.local_env(profile),
+                stdout=asyncio.subprocess.PIPE,
+                # Merged, not separate: ``visual_nav`` warns on stderr and ``mappo_drive``
+                # reports on stdout, and an operator reading two interleaved streams out of
+                # order is how a warning ends up under the line it was about.
+                stderr=asyncio.subprocess.STDOUT)
+        except OSError as exc:
+            return await self._refuse_run(
+                f"could not start the run: {exc}. The command was {command[0]!r}; on a "
+                f"remote profile that is the ssh client, and on a local one it is the "
+                f"interpreter that has to be able to import this robot's stack.")
+
+        record = run_control.RunRecord(
+            run_id=run_id, argv=list(argv), command=list(command), live=bool(live),
+            policy_mode=policy_mode, heading_servo=heading_servo, seconds=seconds,
+            remote=bool(profile.launch_prefix), pidfile=pidfile,
+            outputs=run_control.output_paths(profile, run_id),
+            started_at=time.monotonic())
+        record.pid = process.pid
+        self._run = record
+        self._run_proc = process
+        self._run_lines = deque(maxlen=RUN_LOG_LINES)
+        self._run_emitted = 0
+        # Only a LIVE run takes the legs. A dry run commands nothing, so locking the motion
+        # pad against it would be a claim about who is driving that is not true.
+        if live:
+            await self._hand_control(
+                "policy", f"run {run_id} is driving ({policy_mode}, servo {heading_servo})")
+        note = " ".join(part for part in (mode_note, run_control.TREE_NOTE) if part)
+        await self._announce(
+            self.run_started, run_id=run_id, live=bool(live), policy_mode=policy_mode,
+            heading_servo=heading_servo, seconds=seconds, remote=record.remote,
+            argv=record.argv, command=record.command, outputs=record.outputs, note=note)
+
+        self._run_task = asyncio.create_task(self._pump_run(record, process))
+        budget = seconds + run_control.RUN_STARTUP_GRACE_S
+        self._run_deadline_task = asyncio.create_task(self._run_deadline(record, budget))
+        return {
+            "ok": True, "started": True, "run_id": run_id, "live": bool(live),
+            "arm_motion": bool(live),
+            "can_move": bool(live),
+            "policy_mode": policy_mode, "heading_servo": heading_servo, "seconds": seconds,
+            "remote": record.remote, "pid": process.pid, "argv": record.argv,
+            "command": record.command, "outputs": record.outputs,
+            "control_owner": self._control_owner, "watchdog_s": round(budget, 1),
+            "named_commit": None, "note": note,
+            "outcome": "the run's output arrives as run_output events and its end as "
+                       "run_finished; this reply only says it was launched",
+        }
+
+    async def _pump_run(self, record, process) -> None:
+        """Turn the run's output into events, and its exit into exactly one run_finished.
+
+        The only place a run is finalised, whoever ended it. ``_end_run`` signals the
+        process and returns; the pipe then closes, this loop falls out, and the report
+        happens here. Two reporters would be two ``run_finished`` events for one run, and
+        the second would be the one an operator saw.
+        """
+        try:
+            while True:
+                line = await process.stdout.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", "replace").rstrip()
+                if not text:
+                    continue
+                self._run_lines.append(text)
+                await self._emit_run_line(record, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.warning("the run's output pump failed: %r", exc)
+        finally:
+            with contextlib.suppress(Exception):
+                await self._finish_run(record, process)
+
+    async def _emit_run_line(self, record, text: str) -> None:
+        """One output line as an event, until the cap, then one line saying so."""
+        if self._run_emitted < RUN_OUTPUT_EVENTS:
+            self._run_emitted += 1
+            await self._announce(self.run_output, run_id=record.run_id, line=text,
+                                 truncated=False)
+            return
+        if self._run_emitted == RUN_OUTPUT_EVENTS:
+            self._run_emitted += 1
+            await self._announce(
+                self.run_output, run_id=record.run_id, truncated=True,
+                line=(f"[dashboard] this run has printed more than {RUN_OUTPUT_EVENTS} "
+                      f"lines; the rest are in get_status's tail and in the run's own "
+                      f"telemetry, not on the event stream"))
+
+    async def _finish_run(self, record, process) -> None:
+        """Report one ended run and give the pad back."""
+        try:
+            exit_code = await asyncio.wait_for(process.wait(), run_control.RUN_STOP_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            exit_code = process.returncode
+        except Exception as exc:
+            log.warning("could not read the run's exit status: %r", exc)
+            exit_code = process.returncode
+        record.exit_code = exit_code
+        reason = record.finished_reason or _natural_end(exit_code)
+        elapsed = round(max(0.0, time.monotonic() - record.started_at), 2)
+        if self._run is record:
+            self._run = None
+            self._run_proc = None
+            if self._run_deadline_task is not None:
+                self._run_deadline_task.cancel()
+                self._run_deadline_task = None
+        await self._hand_control("operator", f"run {record.run_id} ended: {reason}")
+        log.info("run %s ended after %.1f s: %s (exit %s)",
+                 record.run_id, elapsed, reason, exit_code)
+        await self._announce(
+            self.run_finished, run_id=record.run_id, reason=reason,
+            # -1 rather than None: the field is an integer in the schema, and a run whose
+            # exit status could not be read is not a run that exited 0.
+            exit_code=-1 if exit_code is None else int(exit_code),
+            elapsed_s=elapsed, tail=list(self._run_lines)[-10:])
+
+    async def _end_run(self, reason: str) -> dict:
+        """Take the legs back from the policy. Never raises, never sends SIGKILL.
+
+        Returns ``{"was_running": False}`` when there is nothing to end, so both callers can
+        treat "no run" as an ordinary outcome rather than an error — pressing stop on an idle
+        robot is not a mistake.
+
+        ⛔ **There is no escalation to SIGKILL here or anywhere in this path.** ``SAFETY.md``
+        §0 is the cardinal rule and it was written from an incident: a hard kill leaves the
+        last command latched with nothing left to update or damp it. A run that ignores
+        SIGTERM is reported as unstopped, which sends the operator to the physical abort —
+        the right place — instead of this driver improvising a kill.
+        """
+        record, process = self._run, self._run_proc
+        if record is None or process is None:
+            return {"was_running": False}
+        if not record.finished_reason:
+            record.finished_reason = reason
+
+        # The pad comes back BEFORE the waiting. The policy has been signalled; making an
+        # operator sit out an SSH round trip before their keys work again would be a lock
+        # held for the convenience of the reporting.
+        await self._hand_control("operator", f"run {record.run_id} stopped: {reason}")
+
+        error = ""
+        stop_cmd = (run_control.stop_command(self.run_profile, record.pidfile)
+                    if self.run_profile is not None else None)
+        if stop_cmd is not None:
+            # A REMOTE run. Signalling the local ssh client closes a socket; the process on
+            # the far end never hears about it. So the stop is a second connection that
+            # signals the pid the launch recorded.
+            error = await self._signal_remote(stop_cmd)
+        else:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                process.terminate()
+
+        confirmed = True
+        try:
+            await asyncio.wait_for(process.wait(), run_control.RUN_STOP_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            confirmed = False
+            error = error or (
+                f"the run had not exited {run_control.RUN_STOP_TIMEOUT_S:.0f}s after SIGTERM")
+            if record.remote:
+                # Close this side's connection so the driver stops holding a dead one. It
+                # does NOT stop the run: that is the point of reporting it unconfirmed.
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    process.terminate()
+        return {"was_running": True, "run_id": record.run_id, "confirmed": confirmed,
+                "reason": record.finished_reason, "error": error, "remote": record.remote}
+
+    async def _signal_remote(self, command: list) -> str:
+        """Run one remote stop command. Returns "" on success or why not."""
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command, stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE)
+        except OSError as exc:
+            return f"could not run the remote stop ({command[0]!r}): {exc}"
+        try:
+            _out, err = await asyncio.wait_for(proc.communicate(),
+                                               run_control.RUN_STOP_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                proc.terminate()
+            return (f"the remote stop did not answer within "
+                    f"{run_control.RUN_STOP_TIMEOUT_S:.0f}s")
+        if proc.returncode:
+            tail = (err or b"").decode("utf-8", "replace")[-200:]
+            return f"the remote stop exited {proc.returncode}: {tail!r}"
+        return ""
+
+    async def _run_deadline(self, record, budget: float) -> None:
+        """End a run that outlived its bound. The nudge's 5 s cap, at a run's scale.
+
+        A backstop and not the primary bound: ``--max-seconds`` is passed to the run itself
+        and the run is expected to honour it. This fires when it does not — a stalled
+        detector, a wedged camera open, a stale tree whose ``--max-seconds`` means something
+        else — and those are exactly the cases where nothing else would end it.
+        """
+        try:
+            await asyncio.sleep(budget)
+        except asyncio.CancelledError:
+            return
+        if self._run is not record:
+            return
+        log.warning("run %s outlived its %.1f s budget; ending it", record.run_id, budget)
+        await self._end_run(
+            f"the watchdog ended this run: it outlived its {budget:.0f}s budget "
+            f"(--max-seconds {record.seconds:g} plus {run_control.RUN_STARTUP_GRACE_S:.0f}s "
+            f"of startup). It did not stop itself.")
+        with contextlib.suppress(Exception):
+            await self._bridge("stop")
 
     # ── camera ───────────────────────────────────────────────────────────────
     @rpc()
@@ -877,7 +1461,20 @@ class MappoRobotDriver(DeviceDriver):
     # ── status ───────────────────────────────────────────────────────────────
     @rpc()
     async def get_status(self) -> dict:
-        """Pose, measured velocity, controller mode, and the armed checkpoint."""
+        """Pose, velocity, controller mode, the armed checkpoint — and who is driving.
+
+        ``control`` is the field to read before deciding what a button should do. It says
+        whether the legs belong to the ``operator`` or to the ``policy``, why, and for how
+        long; ``run`` says what the policy is running if it is. Both are here rather than on
+        ``robot_state`` because ``robot_state`` is a timer that is SKIPPED while a run is in
+        flight, which is the exact interval this matters in.
+
+        ``mode_accepts_motion`` is the Go2 finding turned into a field. On 2026-08-26 this
+        robot answered ``mode='mcf'`` — not a sport mode — in which ``SportClient.Move`` is
+        ignored, so a robot in that state accepts every command and never steps. It is
+        ``false`` there, with the whole sentence in ``mode_note``, so a page can say so
+        before an operator spends a demo diagnosing a tether.
+        """
         result = await self._bridge("status")
         try:
             result["active_model"] = self.store.active_model()
@@ -886,6 +1483,18 @@ class MappoRobotDriver(DeviceDriver):
             result["model_error"] = str(exc)
         result["motion_enabled"] = self.allow_motion
         result["busy"] = self._motion_lock.locked()
+        result["control"] = self._control_snapshot()
+        result["run"] = self._run_snapshot()
+        try:
+            note = run_control.check_control_mode(self.platform, result.get("mode"),
+                                                  simulated=self.simulate)
+            result["mode_accepts_motion"] = True
+            result["mode_note"] = note or ""
+        except run_control.RunRefused as exc:
+            # Reported, not raised. ``get_status`` is the call a page makes on a robot that
+            # is not moving, and the answer to "why is nothing happening" belongs in it.
+            result["mode_accepts_motion"] = False
+            result["mode_note"] = str(exc)
         return result
 
     @rpc()
@@ -947,6 +1556,13 @@ class MappoRobotDriver(DeviceDriver):
             "max_seconds": MAX_SECONDS,
             "bridge_python": self.bridge_python,
             "package_dir": str(self.store.package_dir),
+            # How, and whether, this robot can be handed to the policy. Advertised by the
+            # ROBOT for the same reason ``cloud.sources`` is: the machine, the interpreter
+            # and the tree are properties of the deployment, and two robots on one mesh do
+            # not share them. ``command_preview`` is what start_run would run right now,
+            # gate included, so the page can show the command BEFORE the press.
+            "run": (run_control.describe(self.run_profile, allow_motion=self.allow_motion)
+                    if self.run_profile is not None else run_control.unsupported()),
         }
 
     # ── checkpoint RPCs ──────────────────────────────────────────────────────
@@ -1081,11 +1697,20 @@ class MappoRobotDriver(DeviceDriver):
     async def publish_state(self) -> None:
         """Emit ``robot_state`` on a timer so the dashboard is live rather than a form.
 
-        Skipped while a motion command holds the lock. Each of these is a subprocess that
-        connects to DDS, reads and exits, and starting a second one while the robot is
-        walking would put two clients on the bus for no benefit.
+        Skipped while a motion command holds the lock, and skipped for the whole of an
+        autonomous run. Each of these is a subprocess that connects to DDS, reads and exits,
+        and starting a second one while the robot is walking would put two clients on the
+        bus for no benefit. A run makes that argument stronger, not weaker: it holds the
+        camera, the estimator and the bus for its whole length at 10 Hz, and on the Go2's
+        Jetson one ``status`` costs 1.94 s of cold SDK import and DDS discovery — 39% of
+        this interval, spent competing with a control loop.
+
+        The cost is that pose and mode go stale on the fleet row for the length of a run.
+        That is the right trade and it is not a blackout: ``run_output``, ``run_finished``
+        and ``control_changed`` carry the run, and ``--publish-pose`` is the channel built
+        for a pose that is needed while the robot is moving.
         """
-        if self._motion_lock.locked():
+        if self._motion_lock.locked() or self._run is not None:
             return
         try:
             state = await self._bridge("status")
@@ -1103,6 +1728,17 @@ class MappoRobotDriver(DeviceDriver):
                              velocity=state.get("velocity") or [],
                              mode=state.get("mode") or "",
                              active_model=active)
+
+
+def _natural_end(exit_code) -> str:
+    """How a run that nobody stopped ended, in words an operator can act on."""
+    if exit_code is None:
+        return "the run ended and its exit status could not be read"
+    if exit_code == 0:
+        return "the run completed"
+    if exit_code < 0:
+        return f"the run was ended by signal {-exit_code}"
+    return f"the run exited {exit_code}; read its output for why"
 
 
 def _load_sources(path: str) -> list:
@@ -1163,6 +1799,15 @@ def build_parser() -> argparse.ArgumentParser:
                              f"capped at {MAX_POSE_STREAM_HZ}. Off unless asked for: it "
                              "holds a persistent SDK worker on the DDS bus. It needs no "
                              "--allow-motion, because it only reads.")
+    parser.add_argument("--run-profile", default="",
+                        help="JSON file describing where an autonomous MAPPO run happens: "
+                             "the machine, the interpreter, the working directory and the "
+                             "deployment's own flags. Without it start_run refuses, because "
+                             "there is nothing to start. ⚠️ On a Go2 the run CANNOT be a "
+                             "child of this driver -- mappo_drive.py needs the robot's "
+                             "Python 3.8 SDK and this driver needs 3.11 -- so its "
+                             "launch_prefix is an ssh command and the run is a subprocess "
+                             "on the robot. See dashboard/run_control.py.")
     parser.add_argument("--camera-url", default="",
                         help="pull frames from an HTTP endpoint that returns one JPEG "
                              "per GET, instead of opening a camera locally. For a robot "
@@ -1203,11 +1848,28 @@ def main(argv=None) -> int:
         simulate=args.simulate, camera_replay_dir=args.camera_replay_dir,
         camera_url=args.camera_url,
         model_sources=_load_sources(args.model_sources),
-        publish_pose_hz=args.publish_pose)
+        publish_pose_hz=args.publish_pose,
+        run_profile=run_control.load_profile(args.run_profile) if args.run_profile else None)
 
     if args.allow_motion:
         log.warning("MOTION IS ENABLED. robot-stack/SAFETY.md applies: clear area, operator "
                     "on the abort, tether slack checked.")
+    if driver.run_profile is not None:
+        # Printed at startup rather than only in an RPC reply, because the person reading
+        # this line is the one who can still fix a wrong path before a demo, and because a
+        # remote launch is a command on somebody else's machine that nobody else will see.
+        preview = run_control.describe(driver.run_profile, allow_motion=args.allow_motion)
+        where = ("the robot, over " + " ".join(driver.run_profile.launch_prefix)
+                 if driver.run_profile.launch_prefix else "this machine")
+        log.info("start_run() runs, on %s:", where)
+        log.info("    %s", " ".join(preview["command_preview"]))
+        if preview["armed_command_preview"]:
+            log.warning("start_run(arm_motion=true) runs, and it MOVES THE ROBOT:")
+            log.warning("    %s", " ".join(preview["armed_command_preview"]))
+        else:
+            log.info("start_run(arm_motion=true) is REFUSED: no --allow-motion on this "
+                     "driver. The scene check above still runs.")
+        log.warning("  %s", preview["tree_note"])
 
     runtime = DeviceRuntime(
         driver=driver,
