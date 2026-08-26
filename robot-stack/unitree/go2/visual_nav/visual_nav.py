@@ -173,7 +173,7 @@ from person_detector import (
 )
 from robot_bindings import Go2Bindings, warn_if_below_go2_gait_floor
 from static_map import StaticObstacleMap
-from telemetry import TelemetryWriter
+from telemetry import TelemetryWriter, TickProfiler
 from tracker import PROCESS_ACCEL_SIGMA, ObstacleTracker, observation_from
 
 DEFAULT_MODEL_DIR = Path.home() / "go2_models"
@@ -241,6 +241,13 @@ class PerceptionResult:
     goal_fix: object = None
     image: np.ndarray | None = None
     detect_ms: float = 0.0
+    #: The WHOLE cycle's compute, and the part of it spent blocked on the camera.
+    #: ``detect_ms`` covers the goal pass, the tiered detect and colour segmentation and
+    #: nothing else, so it cannot say whether this thread is compute-bound or
+    #: camera-bound. Measured on the 2026-08-25 runs, a third of the cycle is outside it
+    #: — 317 ms per cycle against 202 ms of detect — and nothing said where.
+    cycle_ms: float = 0.0
+    wait_ms: float = 0.0
 
 
 class PerceptionWorker:
@@ -334,10 +341,13 @@ class PerceptionWorker:
 
     def _cycle(self, last_seq: int) -> int:
         """One perception cycle. Returns the sequence number to wait past next."""
+        wait_started = time.monotonic()
         frame = self._camera.wait_for_new(last_seq, timeout=0.5)
+        wait_ms = (time.monotonic() - wait_started) * 1000.0
         if frame is None:
             return last_seq
         last_seq = frame.seq
+        cycle_started = time.monotonic()
         # Pose sampled at the camera adapter boundary, not after inference — see the
         # module docstring. The adapters do not claim a sensor shutter timestamp.
         pose = frame.stamp if frame.stamp is not None else self._pose_fn()
@@ -413,7 +423,8 @@ class PerceptionWorker:
             observations=observations,
             ranged=ranged + static_ranged + neural_ranged,
             static_observations=static_observations, goal_fix=goal_fix,
-            image=frame.image, detect_ms=detect_ms)
+            image=frame.image, detect_ms=detect_ms, wait_ms=wait_ms,
+            cycle_ms=(time.monotonic() - cycle_started) * 1000.0)
         with self._lock:
             self._result = result
         return last_seq
@@ -460,7 +471,8 @@ class VisualNavigator:
                  telemetry: TelemetryWriter | None = None,
                  stand_up_fn=None, lie_down_fn=None,
                  expansion: ExpansionConsistency | None = None,
-                 raw_recorder: cv2.VideoWriter | None = None) -> None:
+                 raw_recorder: cv2.VideoWriter | None = None,
+                 profiler: TickProfiler | None = None) -> None:
         self._loco = loco
         self._perception = perception
         self._planner = planner
@@ -482,6 +494,14 @@ class VisualNavigator:
         self._expansion = expansion
         self._stand_up_fn = stand_up_fn or self._default_stand_up
         self._lie_down_fn = lie_down_fn or self._default_lie_down
+        #: Always present, never optional. A profiler behind a flag is off during every
+        #: run anyone later wants to explain — issue #18 spent eight days on a loop that
+        #: had run a hundred times and never been timed. Injectable only so the tests can
+        #: drive it from a fake clock. LAST in the signature for the same reason
+        #: ``raw_recorder`` is: ``integration/mappo_drive.py`` builds this class through
+        #: ``navigator_factory`` and says in its own docstring that no positional argument
+        #: may be added.
+        self._profiler = profiler if profiler is not None else TickProfiler()
 
         self._standing = config.initially_standing and config.live
         self._frames_written = 0
@@ -606,6 +626,9 @@ class VisualNavigator:
 
         while True:
             tick_start = time.monotonic()
+            # Against the loop's OWN t0, not the profiler's, so `tick_ms` and the trailing
+            # sleep are measured from the same instant.
+            self._profiler.begin(tick_start)
             now = tick_start
             elapsed = now - started
             control_dt = control_interval_s(last_tick, now, period)
@@ -628,7 +651,8 @@ class VisualNavigator:
                            f"cycles ({self._perception.errors} errors)")
                 break
 
-            result = self._perception.latest()
+            with self._profiler.stage("perceive"):
+                result = self._perception.latest()
             if result is None:
                 if elapsed > 5.0:
                     outcome = "no perception result"
@@ -636,30 +660,36 @@ class VisualNavigator:
                 time.sleep(period)
                 continue
 
-            if result.seq > self._consumed_seq:
-                self._tracker.predict(max(0.0, result.capture_time - self._tracker_time))
-                # Static props first: the map they build is what tells the tracker a
-                # person who vanished did so BEHIND something rather than by leaving.
-                # Both consume the same cycle's pose, so the order is bookkeeping, not
-                # a one-frame lag.
-                occluders = ()
-                if self._static_map is not None:
-                    self._static_map.observe(result.static_observations,
-                                             result.capture_time, *result.pose)
-                    occluders = tuple(self._static_map.occluders(*result.pose))
-                self._tracker.update(result.observations, result.capture_time,
-                                     *result.pose, occluders=occluders)
-                self._tracker_time = result.capture_time
-                self._consumed_seq = result.seq
+            # A second `perceive` block rather than one around both: the `result is None`
+            # branch above has to `continue` from between them. `stage` ADDS on re-entry
+            # precisely so a stage split across a branch is not reduced to its last part.
+            with self._profiler.stage("perceive"):
+                if result.seq > self._consumed_seq:
+                    self._tracker.predict(
+                        max(0.0, result.capture_time - self._tracker_time))
+                    # Static props first: the map they build is what tells the tracker a
+                    # person who vanished did so BEHIND something rather than by leaving.
+                    # Both consume the same cycle's pose, so the order is bookkeeping, not
+                    # a one-frame lag.
+                    occluders = ()
+                    if self._static_map is not None:
+                        self._static_map.observe(result.static_observations,
+                                                 result.capture_time, *result.pose)
+                        occluders = tuple(self._static_map.occluders(*result.pose))
+                    self._tracker.update(result.observations, result.capture_time,
+                                         *result.pose, occluders=occluders)
+                    self._tracker_time = result.capture_time
+                    self._consumed_seq = result.seq
 
             # Pose and obstacles are read BEFORE the branches below, not inside the one
             # that happens to need them. Every path through this loop is a tick that a
             # consumer has to be able to see — a stale-perception skip and a goal search
             # are as much a part of the episode as a stride — and the plan-view inset
             # went blank on exactly the paths that used to skip this.
-            pose_obj = self._loco.pose()
-            pose = (pose_obj.x, pose_obj.y, pose_obj.yaw)
-            obstacles = self._obstacles(now)
+            with self._profiler.stage("obstacles"):
+                pose_obj = self._loco.pose()
+                pose = (pose_obj.x, pose_obj.y, pose_obj.yaw)
+                obstacles = self._obstacles(now)
 
             frame_age = now - result.capture_time
             if frame_age > config.perception_timeout_s:
@@ -701,9 +731,10 @@ class VisualNavigator:
                                      frame_age, result, video_frame=frame)
                 break
 
-            command = self._planner.plan(pose, goal_xy, self._last_command,
-                                         obstacles, control_dt=control_dt,
-                                         last_reason=self._last_reason)
+            with self._profiler.stage("plan"):
+                command = self._planner.plan(pose, goal_xy, self._last_command,
+                                             obstacles, control_dt=control_dt,
+                                             last_reason=self._last_reason)
             self._last_reason = command.reason
 
             # Rest the legs whenever the way stays blocked — the arm makes standing
@@ -842,6 +873,10 @@ class VisualNavigator:
         """
         if self._telemetry is None:
             return
+        # The snapshot is taken as an ARGUMENT, i.e. before the write starts, and the
+        # write's own cost is handed to the profiler for the next tick to carry: a record
+        # cannot contain the time it took to write itself.
+        started = time.monotonic()
         self._telemetry.write_tick(
             elapsed_s=elapsed, pose=pose, goal_xy=goal_xy,
             goal_distance_m=distance, command=command, obstacles=obstacles,
@@ -849,7 +884,10 @@ class VisualNavigator:
             detect_ms=result.detect_ms, standing=self._standing,
             live=self._config.live, video_frame=video_frame, stale=stale,
             measured=self._measured_velocity(), health=self._health.latest(),
-            sightings=result.ranged, goal_crop=self._goal_crop())
+            sightings=result.ranged, goal_crop=self._goal_crop(),
+            profile=self._profiler.snapshot(), cycle_ms=result.cycle_ms,
+            wait_ms=result.wait_ms)
+        self._profiler.wrote((time.monotonic() - started) * 1000.0)
 
     def _goal_crop(self) -> float | None:
         """The crop the goal source used last, or ``None`` if it does not have one.
@@ -875,8 +913,12 @@ class VisualNavigator:
             return None
 
     def _command(self, velocity: tuple[float, float, float]) -> None:
-        if self._config.live and self._standing:
-            self._loco.set_velocity(*velocity)
+        # Timed HERE and not at the five call sites: every path through the loop commands
+        # something, including the ones that command a stop, and a stage wired in at four
+        # of five places reads as a cheap transport.
+        with self._profiler.stage("command"):
+            if self._config.live and self._standing:
+                self._loco.set_velocity(*velocity)
         self._last_command = velocity
 
     def _log(self, elapsed: float, command, distance: float,
@@ -921,6 +963,15 @@ class VisualNavigator:
         been the bug: the moment one recorder skipped a cycle the other's indices would
         silently mean a different thing.
         """
+        with self._profiler.stage("record"):
+            return self._write_frame(result, pose, command, obstacles)
+
+    def _write_frame(self, result: PerceptionResult, pose, command,
+                     obstacles: Sequence[Obstacle] = ()) -> int | None:
+        """The body of :meth:`_record`, split out only so the stage timer wraps every
+        early return as well as the encode. A timer around the encode alone would report
+        the four ticks in five that write nothing as free, which they are — and would
+        leave the fifth's overlay drawing outside the number."""
         if (self._recorder is None and self._raw_recorder is None) or result.image is None:
             return None
         if result.seq <= self._recorded_seq:

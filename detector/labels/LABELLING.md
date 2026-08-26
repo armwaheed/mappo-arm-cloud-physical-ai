@@ -151,9 +151,22 @@ edge on 165 of those 412 frames.
 
 ## Reproducing
 
-Scripts are in `../peercap_work/`, all lint-clean under
-`ruff check --select E,W,F,I,UP,B,C4,SIM,RET,RUF --line-length 100`, run with
-`../caffevenv/bin/python`:
+Scripts are in [`pipeline/`](pipeline/), lint-clean under `cd detector/labels/pipeline &&
+ruff check . --config ../ruff.toml`. They take no path arguments: every one resolves the
+capture from `PEERCAP_FRAMES` and **refuses** with the locations the corpus is reported to
+be in when it is unset (`pipeline/peercap.py`). Nothing here hard-codes a directory, and
+`test_peercap.py` walks the AST of every module here to keep it that way.
+
+```
+export PEERCAP_FRAMES=~/go2-peer-dataset-20260824      # the 2,800 jpg
+python3 buildplate.py                                  # then the pipeline below
+```
+
+⚠️ This block used to say the scripts were in `../peercap_work/` and ran under
+`../caffevenv/bin/python`. Neither path has ever existed in a checkout — `ls
+detector/peercap_work detector/caffevenv` fails on `main` — and this is the block a reader
+pastes. Same defect class as the manifest that named a scratchpad and had 2,800 frames
+declared lost over it (#86, #92, issue #77).
 
 ```
 buildplate.py                                   # corridor background plate
@@ -168,3 +181,28 @@ view.py <frame> <out> x0 y0 x1 y1 [step] [scale] [enh] [box...]   # seeding tool
 ```
 
 The anchor seeds are the `track.py` argument lists recorded in `checks.py:BOXES`.
+
+## Auto-labelling a recorded run
+
+The above is a *hand*-labelling pipeline for one staged capture. Every live run of
+`visual_nav.py` also carries labels already — the pixel box, the label, the score, the
+range, the bearing and the ranging prior are in each telemetry tick, keyed to the recorded
+video by `perception.video_frame`. [`autolabel_run.py`](autolabel_run.py) is the join, and
+it writes a manifest in the `records` shape this directory already uses, so
+`check_manifest.py` and `eval_class_agnostic.py` read it unchanged:
+
+```
+python3 autolabel_run.py RUN.jsonl --frames-dir OUT --manifest OUT/labels.json \
+    --classes person --label go2wheel
+python3 check_manifest.py OUT/labels.json --frames-dir OUT        # both directions
+```
+
+⛔ **These are detector boxes.** They inherit the shipped network's recall — 64%
+class-agnostic at the deployed 0.25 — so this cannot benchmark that network, and a frame
+it found nothing in is an *unlabelled* frame, not a peer-free one. `autolabel_run.py`
+therefore extracts only the frames that kept a sighting, and prints how many it left
+behind. Good for range and aspect statistics over real runs, and for producing frames a
+human corrects rather than draws. Not a test set. Issue #77.
+
+It also refuses the `--record` video by name: that file has an orange box drawn around
+every detection, at exactly the place the label goes. Use `--record-raw` (#84).

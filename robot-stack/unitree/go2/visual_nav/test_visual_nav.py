@@ -61,7 +61,7 @@ from colour_detector import PROFILES
 from goal import ArucoGoal, OdomWaypoint
 from person_detector import PERSON_ASPECT_MIN, Detection, RangedDetection
 from static_map import StaticObstacleMap
-from telemetry import TelemetryWriter
+from telemetry import TICK_STAGES, TelemetryWriter
 from tracker import (
     PROCESS_ACCEL_SIGMA,
     Observation,
@@ -996,14 +996,28 @@ def test_record_raw_is_off_by_default_and_is_its_own_flag():
     assert args.record_raw == "raw.mp4" and args.record is None
 
 
-def test_raw_recorder_is_the_last_parameter_so_the_vendored_call_still_works():
-    """`integration/mappo_drive.py` calls this constructor positionally through
-    `navigator_factory` and states that a new positional argument must not be added.
+def test_the_constructor_keeps_the_positional_prefix_the_vendored_call_passes():
+    """`integration/mappo_drive.py` builds this class through `navigator_factory` and says
+    in its own docstring that a new positional argument must not be added. `main` passes
+    ten of them positionally; everything since — `raw_recorder`, `profiler` — comes after
+    and is passed by keyword.
+
+    THE PREFIX IS THE INVARIANT, and the proxy this test used before was not. It asserted
+    `raw_recorder` was the LAST parameter, which fails the first time a second optional
+    argument is appended perfectly correctly — as `profiler` was — while still passing if
+    someone inserted a positional one in the middle, which is the defect it was written to
+    catch. Pinning the prefix and the defaults catches that and nothing else.
     """
-    parameters = list(inspect.signature(VisualNavigator.__init__).parameters)
-    assert parameters[-1] == "raw_recorder", parameters
-    assert parameters.index("static_map") < parameters.index("raw_recorder")
-    assert parameters.index("telemetry") < parameters.index("raw_recorder")
+    parameters = inspect.signature(VisualNavigator.__init__).parameters
+    names = list(parameters)
+    assert names[:11] == ["self", "loco", "perception", "planner", "tracker",
+                          "goal_source", "health", "config", "recorder", "static_map",
+                          "telemetry"], names
+    optional = names[11:]
+    assert set(optional) >= {"stand_up_fn", "lie_down_fn", "expansion", "raw_recorder",
+                             "profiler"}, optional
+    for name in optional:
+        assert parameters[name].default is not inspect.Parameter.empty, name
 
 # ── The routing seam: shape decides, and it has to survive the whole chain ──
 FRAME_W, FRAME_H = 1920, 1080
@@ -1397,6 +1411,180 @@ def test_a_nonsense_dimension_is_refused():
         except SystemExit:
             continue
         raise AssertionError(f"accepted --static-detect-height {value}")
+
+
+# ── Where the tick went (issue #18) ──────────────────────────────────────────
+#: A stage cost the test can see against a real monotonic clock. `time.sleep` is a LOWER
+#: bound, so the assertions below are all "at least"; ten times the period keeps a slow
+#: machine's scheduler jitter well clear of the threshold either way.
+SLOW_MS = 25.0
+
+
+def _burn(_self=None, *_args, **_kwargs):
+    time.sleep(SLOW_MS / 1000.0)
+
+
+class _SlowWriter(_FakeWriter):
+    """A recorder that costs what a 1920x1080 mp4v encode costs on the Jetson."""
+
+    def write(self, frame) -> None:
+        _burn()
+        super().write(frame)
+
+
+class _SlowPlanner(_FakePlanner):
+    def plan(self, *args, **kwargs):
+        _burn()
+        return super().plan(*args, **kwargs)
+
+
+class _ImagePerception(_FakePerception):
+    """One perception cycle carrying pixels, so the recorder has something to encode.
+
+    The seq never advances, which is deliberate: `_record` writes once per PERCEPTION
+    cycle, so exactly one tick of the run records and the rest do not. That is the shape
+    of every live run in `evidence/` — 72 to 98% of ticks record, and the ones that do not
+    land on the configured period.
+    """
+
+    def __init__(self, age_s: float = 0.0) -> None:
+        self._age = age_s
+        self._image = np.zeros((60, 80, 3), dtype=np.uint8)
+
+    def latest(self):
+        return PerceptionResult(seq=1, capture_time=time.monotonic() - self._age,
+                                pose=(0.0, 0.0, 0.0), observations=[], ranged=[],
+                                image=self._image, detect_ms=200.0,
+                                cycle_ms=311.0, wait_ms=104.0)
+
+
+def _profiled_run(directory, *, planner=None, recorder=None, perception=None, ticks=4):
+    """Run the real loop with a real telemetry writer; return the tick records."""
+    path = os.path.join(directory, "profiled.jsonl")
+    writer = TelemetryWriter(path)
+    writer.write_header(control_hz=100.0)
+    navigator = VisualNavigator(
+        loco=_FakeLoco(), perception=perception or _ImagePerception(),
+        planner=planner or _FakePlanner(), tracker=ObstacleTracker(),
+        goal_source=_FakeGoal(), health=_FakeHealth(ticks),
+        config=NavConfig(live=True, control_hz=100.0),
+        recorder=recorder, telemetry=writer)
+    with contextlib.redirect_stdout(io.StringIO()):
+        navigator.run()
+    writer.close()
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle
+                if line.strip() and json.loads(line)["type"] == "tick"]
+
+
+def test_every_tick_carries_a_stage_profile():
+    """Issue #18 sat for eight days on a loop nobody could attribute, because there was
+    no `perf_counter`, no `cProfile` and no stage timer anywhere in the tree. Always on,
+    because a profiler behind a flag is off during every run worth explaining."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory)
+    assert ticks, "the loop wrote no ticks"
+    for tick in ticks:
+        assert tick["profile"] is not None, tick
+        assert sorted(tick["profile"]["stages"]) == sorted(TICK_STAGES)
+        assert tick["profile"]["tick_ms"] >= 0.0
+
+
+def test_the_recorder_lands_in_the_record_stage_and_the_other_ticks_stay_cheap():
+    """THE FINDING THIS EXISTS TO CONFIRM ON A REAL RUN. Across the 21 committed runs,
+    every tick that wrote a video frame took 173-299 ms and every tick that did not took
+    100.2-103.7 ms — the configured period. Nothing recorded could say whether that was
+    the overlay, the encode or the tracker update, because the recording gate and the
+    perception-consumption gate are the same gate. This separates them.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory, recorder=_SlowWriter())
+    recording = [t for t in ticks if t["perception"]["video_frame"] is not None]
+    rest = [t for t in ticks if t["perception"]["video_frame"] is None]
+    assert len(recording) == 1 and rest, [t["perception"]["video_frame"] for t in ticks]
+    assert recording[0]["profile"]["stages"]["record"] >= SLOW_MS * 0.8, recording[0]
+    assert recording[0]["profile"]["tick_ms"] >= SLOW_MS * 0.8
+    for tick in rest:
+        assert tick["profile"]["stages"]["record"] < SLOW_MS * 0.4, tick
+
+
+def test_the_planner_lands_in_the_plan_stage_and_not_in_the_remainder():
+    """`plan` is the other candidate #18 named: `MappoPlanner.plan` runs the full DWA
+    rollout, the policy step AND a second rollout in `is_feasible`, on every tick. A cost
+    that fell into `other_ms` would read as an un-instrumented hole rather than as the
+    planner."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory, planner=_SlowPlanner())
+    # The stand-up tick is excluded by `command is not None`: standing blocks the loop
+    # for ~3 s and the loop gives that tick up rather than issuing its now-stale plan, so
+    # its `other_ms` is three seconds of posture change and says so correctly.
+    planned = [t for t in ticks if t["command"] is not None]
+    assert planned, [t["profile"] for t in ticks]
+    for tick in planned:
+        assert tick["profile"]["stages"]["plan"] >= SLOW_MS * 0.8, tick
+        assert tick["profile"]["other_ms"] < SLOW_MS * 0.4, tick
+        # Not zero: with no recorder attached `_record` still returns through the timer,
+        # which is the point of timing the whole method rather than the encode alone.
+        assert tick["profile"]["stages"]["record"] < SLOW_MS * 0.1, tick
+
+
+def test_a_stale_perception_hold_is_profiled_and_planned_nothing():
+    """The stale branch commands zero and returns without planning or recording, and it
+    was 16-33% of ticks on 2026-08-17. A profiler that only covered the healthy path
+    would leave exactly those ticks unexplained."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory, planner=_SlowPlanner(),
+                              perception=_ImagePerception(age_s=5.0))
+    assert ticks and all(t["perception"]["stale"] for t in ticks), ticks
+    for tick in ticks:
+        assert tick["profile"] is not None
+        assert tick["profile"]["stages"]["plan"] == 0.0, tick
+        assert tick["profile"]["stages"]["record"] == 0.0, tick
+
+
+def test_the_telemetry_write_is_priced_on_the_tick_after_it():
+    """A record cannot carry the time it took to write itself. The first tick has nothing
+    to report and every later one does — which is also what proves the writer is being
+    timed at all rather than the field being a constant."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory, ticks=5)
+    assert len(ticks) >= 3, ticks
+    assert ticks[0]["profile"]["write_prev_ms"] == 0.0
+    assert any(t["profile"]["write_prev_ms"] > 0.0 for t in ticks[1:]), \
+        [t["profile"]["write_prev_ms"] for t in ticks]
+
+
+def test_the_camera_wait_is_kept_out_of_the_perception_cycle_time():
+    """`cycle_ms` has to be the thread's COMPUTE. A cycle time that included the block on
+    `wait_for_new` would read as a slow detector on a run whose real problem was a slow
+    camera, and the two want opposite fixes."""
+
+    class _SlowCamera:
+        def __init__(self):
+            self.seq = 0
+
+        def wait_for_new(self, after_seq, timeout):
+            self.seq += 1
+            time.sleep(SLOW_MS / 1000.0)
+            return Frame(image=np.zeros((40, 60, 3), dtype=np.uint8),
+                         capture_time=time.monotonic(), seq=self.seq,
+                         stamp=(0.0, 0.0, 0.0))
+
+    class _QuickDetector:
+        def detect_tiered(self, _image):
+            return [], []
+
+    class _NoGoal:
+        def update(self, _image, _pose):
+            return None
+
+    worker = PerceptionWorker(_SlowCamera(), _QuickDetector(), CAMERA, _NoGoal(),
+                              lambda: (0.0, 0.0, 0.0))
+    worker._cycle(0)
+    result = worker.latest()
+    assert result.wait_ms >= SLOW_MS * 0.8, result.wait_ms
+    assert result.cycle_ms < SLOW_MS * 0.4, result.cycle_ms
+    assert result.detect_ms <= result.cycle_ms
 
 
 if __name__ == "__main__":
