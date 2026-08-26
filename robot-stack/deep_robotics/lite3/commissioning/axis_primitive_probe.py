@@ -33,12 +33,16 @@ was planned around a robot 1.6x slower than the one in the room. Until this prob
 that field is whatever somebody typed, and a primitive with no declared speed only prints
 a warning that nobody checked.
 
-⚠️ AND THIS IS ONLY HALF OF THAT GATE. ``_validate_axis_profile_speeds`` compares the
-measured speed against ``--max-vx x --derate``, and on the Lite3 ``--max-vx`` still
-defaults to 0.35 m/s: the **Go2's** measured envelope, inherited from
-``unitree/go2/visual_nav/avoidance.py`` where ``robot_radius`` and ``gait_floor`` are
-correctly refused instead. Measuring this side of the comparison does not make the other
-side a Lite3 number. Say ``--max-vx``/``--max-vy``/``--max-wz`` out loud on a live run.
+⚠️ THE OTHER HALF OF THAT GATE IS NOW STATED RATHER THAN INHERITED.
+``_validate_axis_profile_speeds`` compares the measured speed against
+``--max-vx x --derate``. Until 2026-08-26 the Lite3's ``--max-vx`` defaulted to 0.35 m/s
+-- the **Go2's** arm-fitted envelope out of ``unitree/go2/visual_nav/avoidance.py``, where
+``robot_radius`` and ``gait_floor`` were already refused instead -- so measuring this side
+carefully did not make the comparison a Lite3 one. ``Lite3Bindings`` now blanks all three
+envelope flags the way it blanks ``--robot-radius``: a live run refuses until the operator
+states ``--max-vx``/``--max-vy``/``--max-wz``, and a dry run says out loud whose numbers
+it fell back on. State them anyway when you paste this record's numbers into a live run;
+the refusal tells you if you forgot.
 
 THE COMMANDED MAGNITUDE HERE IS ARBITRARY, AND THAT IS THE POINT. Every treatment is
 commanded at ``COMMAND_MARGIN`` x the profile's own linear deadband. Any other value above
@@ -480,11 +484,10 @@ def _paste(record, results: dict, notes: list) -> str:
         "- `measured_rad_s` is **not** measured here: the angular-velocity unit is still "
         "an open item on #13 and the yaw envelope stays unenforced.",
         "- ⚠️ This number is only half the gate. `_validate_axis_profile_speeds` compares "
-        "it against `--max-vx x --derate`, and the Lite3 parser's `--max-vx` still "
-        "defaults to 0.35 m/s -- the **Go2's** measured envelope, from "
-        "`unitree/go2/visual_nav/avoidance.py`. Measuring this side does not make the "
-        "comparison a Lite3 one. State `--max-vx`/`--max-vy`/`--max-wz` explicitly on "
-        "the live run.",
+        "it against `--max-vx x --derate`. That right-hand side used to default to the "
+        "**Go2's** 0.35 m/s; `Lite3Bindings` now refuses a live run that does not state "
+        "`--max-vx`/`--max-vy`/`--max-wz`, so state them, and state them from something "
+        "other than this repository's Go2 numbers.",
         "- Measured on this robot only. Do not copy to the other Venture.",
         "",
         "Paste into this robot's axis profile:",

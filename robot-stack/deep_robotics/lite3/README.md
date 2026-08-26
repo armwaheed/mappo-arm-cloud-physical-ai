@@ -243,6 +243,32 @@ A primitive with no declared speed prints an unverified-envelope warning: it is 
 the envelope holds, only a record that nobody checked. Both fields are optional and both land in
 the run's telemetry alongside the profile's SHA-256.
 
+⚠️ **`--max-vx` / `--max-vy` / `--max-wz` have no default on this platform, and a `--live` run
+refuses without them.** They are the right-hand side of the gate above, and until 2026-08-26 they
+defaulted to the shared navigator's `Limits` — 0.35 m/s forward, 0.20 m/s strafe, 0.70 rad/s yaw,
+which is the **Unitree Go2's** arm-fitted profile and two of that robot's measured gait floors.
+Nothing about it was measured on a Lite3. They are now blanked in `Lite3Bindings` beside
+`--robot-radius`, so:
+
+* a `--live` run without all three is refused, and the refusal quotes the Go2 numbers it declined
+  to inherit;
+* a dry run still plans, on those same Go2 numbers, after printing `ENVELOPE NOT STATED` naming
+  them and issue #13;
+* the telemetry header records `platform.envelope_provenance`, which is the only field that can
+  tell a reviewer whether a run stamped `deep-robotics-lite3-venture` used numbers somebody chose
+  for this robot or numbers it inherited.
+
+`0` is a legal value and disables that axis — `--max-vy 0` is what the deployment SOP uses.
+
+⚠️ **On the policy drive path (`mappo_drive.py`) there is a second route, and stating the flags
+above does not close it.** `--max-vx` is a *clamp*; what is commanded is `max_vx_mps ×
+command_scale` from [`policy/config.json`](../../../policy/config.json), whose `max_vx_mps` 0.35 /
+`max_vy_mps` 0.20 are the same Go2 pair, carried in with no provenance comment while every
+neighbouring field has one. There is no per-field override — `--policy-config` replaces the whole
+package config and `--policy-command-scale` scales both axes together — so `mappo_drive.py` warns
+rather than refusing: a refusal would force somebody to type a plausible Lite3 number, which is
+the defect rather than the fix. Issue #13 owns the measurement.
+
 **The linear deadband applies to the vector, not to each axis.** `input_deadband.linear_m_s`
 gates `hypot(vx, vy)`, and the bearing is then snapped to the nearest of the eight `(forward,
 lateral)` sign pairs the mapping can express. A per-axis deadband instead drops the smaller
@@ -464,8 +490,13 @@ the live visual navigator takes all platform values explicitly:
 python3 lite3_visual_nav.py --camera-source 0 --live --operator-ready \
     --calibration lite3_front_camera.json --gait-floor MEASURED_GAIT_M_S \
     --actuator-gain MEASURED_GAIN --robot-radius MEASURED_RADIUS_M \
+    --max-vx CHOSEN_VX_M_S --max-vy CHOSEN_VY_M_S --max-wz CHOSEN_WZ_RAD_S \
     --waypoint 2.0 0.0 --record lite3-live.mp4 --telemetry lite3-live.jsonl
 ```
+
+`CHOSEN_*` are placeholders and are not `MEASURED_*` by accident: a ceiling is a decision, not a
+measurement. What the refusal insists on is that somebody made it *for this robot*. Copying the
+Go2's 0.35/0.20/0.70 back in is exactly the thing this gate exists to make visible.
 
 The policy drive uses the same flags plus the radius-derived policy scale. Keep the
 planner veto on; raw mode remains unsuitable:
@@ -474,9 +505,13 @@ planner veto on; raw mode remains unsuitable:
 python3 mappo_drive.py --camera-source 0 --live --operator-ready \
     --calibration lite3_front_camera.json --gait-floor MEASURED_GAIT_M_S \
     --actuator-gain MEASURED_GAIN --robot-radius MEASURED_RADIUS_M \
+    --max-vx CHOSEN_VX_M_S --max-vy CHOSEN_VY_M_S --max-wz CHOSEN_WZ_RAD_S \
     --policy-scale RADIUS_DIVIDED_BY_0_10 --policy-mode supervised \
     --waypoint 2.0 0.0 --record lite3-drive.mp4 --telemetry lite3-drive.jsonl
 ```
+
+This path prints the `policy/config.json` warning described above. The clamp is stated; the
+commanded speed underneath it is still the Go2's `max_vx_mps`.
 
 The policy, telemetry schema, perception, tracking, static map, planner veto, and
 closed-loop simulator are shared. Peer detection is not: a second Lite3 is still
