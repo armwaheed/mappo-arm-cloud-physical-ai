@@ -44,7 +44,13 @@ from mappo_drive import (
     peer_navigator,
     split_argv,
 )
-from mappo_policy import DEFAULT_PACKAGE, HeadingServo, PolicyRunner
+from mappo_policy import (
+    DEFAULT_PACKAGE,
+    GOAL,
+    TRAVEL,
+    HeadingServo,
+    PolicyRunner,
+)
 from peer_source import PEER_TIMEOUT_S, Alignment, PeerSource, spool_document, write_spool
 from replay_mappo import derived_config
 
@@ -301,6 +307,43 @@ def test_a_commanded_stop_is_never_turned_into_a_walk():
     assert planner.counts["speed_raised"] == 0
 
 
+def test_a_switched_off_strafe_axis_does_not_divide_by_zero():
+    """``--max-vy 0`` is how ``robot-stack/deep_robotics/lite3/DEPLOYMENT-SOP.md``
+    disables the strafe axis on a Lite3, and ``--policy-gait-floor`` is what reaches the
+    ellipse at all — ``deploy/run-peer-supervised.sh`` ships it at 0.35. Together they
+    raised ``ZeroDivisionError`` on the drive path, from ``0.0 / 0.0``: the envelope
+    clamp has already zeroed ``vy``, so it is the degenerate ratio and not a stray
+    lateral command that divides.
+
+    The surviving axis still gets the floor, at the direction asked for — with no
+    lateral axis, straight ahead is the only direction there is.
+    """
+    planner = _planner(limits=Limits(max_vx=0.35, max_vy=0.0), gait_floor_m_s=0.35)
+    vx, vy, wz = planner._at_least_walking_pace((0.05, 0.0, 0.1))
+    assert math.isclose(vx, 0.35, abs_tol=1e-9), "forward should reach the forward floor"
+    assert (vy, wz) == (0.0, 0.1)
+    assert planner.counts["speed_raised"] == 1
+
+
+def test_a_switched_off_forward_axis_leaves_the_lateral_floor_intact():
+    """The guard is symmetric. ``--max-vx 0`` is not documented as a thing anyone does,
+    but a one-sided guard is a second rule to remember, and this pins that the surviving
+    axis is still scaled to ITS OWN measured floor rather than to the forward one."""
+    planner = _planner(limits=Limits(max_vx=0.0, max_vy=0.20), gait_floor_m_s=0.35)
+    assert planner._at_least_walking_pace((0.0, 0.108, 0.0)) == (0.0, 0.20, 0.0)
+
+
+def test_a_plan_with_no_lateral_axis_completes():
+    """The unit above pins the arithmetic; this pins that the whole drive path survives
+    the configuration, because the crash was reached through ``plan()`` and a guard that
+    only the helper's own test exercises is a guard nobody proved the caller reaches."""
+    planner = _planner(supervised=False, limits=Limits(max_vx=0.55, max_vy=0.0),
+                       gait_floor_m_s=0.35)
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 1.0), (0.0, 0.0, 0.0), [])
+    assert command.vy == 0.0, "an envelope with no lateral axis must command no strafe"
+    assert abs(command.vx) <= 0.55 + 1e-9
+
+
 def test_the_gait_floor_scaling_is_off_unless_asked_for():
     """Default off: it is a deliberate override of what the policy asked for, and the
     runs that arrived on 2026-08-18 did not need it."""
@@ -552,19 +595,75 @@ def test_the_policy_flags_are_stripped_before_the_vendored_parser_sees_them():
     argv = ["--live", "--goal-class", "chair", "--goal-height", "1.067",
             "--robot-radius", "0.25", "--no-latch-arm", "--max-seconds", "45",
             "--policy-mode", "raw", "--policy-command-scale", "0.8",
-            "--no-heading-servo"]
+            "--heading-servo", "goal"]
     args, vendored = split_argv(argv, visual_nav.build_parser())
 
     assert args.policy_mode == "raw" and args.policy_command_scale == 0.8
-    assert args.no_heading_servo is True
-    for flag in ("--policy-mode", "--policy-command-scale", "--no-heading-servo",
-                 "raw", "0.8"):
+    assert args.heading_servo == "goal"
+    for flag in ("--policy-mode", "--policy-command-scale", "--heading-servo",
+                 "raw", "0.8", "goal"):
         assert flag not in vendored, f"{flag} survived into the vendored argv"
 
     # The vendored parser must accept what is left, and it must still be the whole run.
     stack = visual_nav.build_parser().parse_args(vendored)
     assert stack.live and stack.goal_class == "chair" and stack.no_latch_arm
     assert stack.robot_radius == 0.25 and stack.max_seconds == 45.0
+
+
+# ── The heading servo is opt-in (issue #16) ────────────────────────────────
+def _servo_for(argv: list):
+    """The servo ``main()`` would build for this command line, without running a robot."""
+    import visual_nav
+    args, _ = split_argv([*argv, "--goal-class", "chair", "--goal-height", "1.067"],
+                         visual_nav.build_parser())
+    return (None if args.heading_servo == "off"
+            else HeadingServo(mode=args.heading_servo))
+
+
+def test_a_drive_command_that_names_no_servo_gets_no_servo():
+    """Issue #16. The servo was opt-OUT, so the configuration an operator got by not
+    thinking about it was the one that saturated the yaw rate and drove into a wall on
+    three runs out of four. The runbook's own copy-pasteable command passed no flag."""
+    assert _servo_for([]) is None
+
+
+def test_the_retired_spelling_is_consumed_and_still_means_off():
+    """``--no-heading-servo`` is in operator command lines and in ``deploy/``. It always
+    meant off, and off is now the default, so honouring it costs nothing — whereas
+    exiting 2 on it would break a runbook that is currently correct.
+
+    Asserting the servo alone would pass whether or not the option exists: ``split_argv``
+    uses ``parse_known_args``, so a flag nobody declared is silently left in the argv and
+    ``heading_servo`` keeps its default of ``off`` either way. The bite is that the
+    leftover then reaches ``visual_nav``'s parser, which exits 2 on an option it does not
+    know — so what has to be checked is that the flag was CONSUMED.
+    """
+    import visual_nav
+    argv = ["--goal-class", "chair", "--goal-height", "1.067", "--no-heading-servo"]
+    args, vendored = split_argv(argv, visual_nav.build_parser())
+    assert args.heading_servo == "off"
+    assert "--no-heading-servo" not in vendored, \
+        "the retired spelling reached the vendored parser, which exits 2 on it"
+    visual_nav.build_parser().parse_args(vendored)
+
+
+def test_the_servo_can_be_asked_for_by_name_and_the_default_law_is_the_goal_bearing():
+    assert _servo_for(["--heading-servo", "goal"]).mode == GOAL
+    assert _servo_for(["--heading-servo", "travel"]).mode == TRAVEL
+    assert HeadingServo().mode == GOAL, \
+        "a servo built with no mode must not be issue #16's law"
+
+
+def test_an_unknown_servo_law_is_refused_by_the_parser():
+    """Not silently ignored, and not passed through to the vendored parser, which would
+    exit 2 with a message about a flag the operator did not type."""
+    import visual_nav
+    try:
+        split_argv(["--heading-servo", "bearing", "--goal-class", "chair",
+                    "--goal-height", "1.067"], visual_nav.build_parser())
+    except SystemExit:
+        return
+    raise AssertionError("an unknown --heading-servo law must be refused")
 
 
 # ── The planner's search counts reach the telemetry (issue #20) ─────────────

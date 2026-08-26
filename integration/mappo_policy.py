@@ -25,10 +25,17 @@ crabs, sideways at 0.20 m/s against 0.35 forward, and — the part that actually
 robot that holds its start heading for the whole run only ever sees the wedge it began
 in. Every bearing outside that wedge reports clear, which is the optimistic direction.
 
-:class:`HeadingServo` closes that gap outside the policy: it turns the nose towards the
-direction the policy has chosen to travel. It is invisible to the policy — the
-observation carries no yaw, and the rays are fixed in the run-local frame — so this adds
-a degree of freedom rather than perturbing the one that was trained.
+:class:`HeadingServo` closes that gap outside the policy. It is invisible to the policy —
+the observation carries no yaw, and the rays are fixed in the run-local frame — so this
+adds a degree of freedom rather than perturbing the one that was trained.
+
+**It is off unless a caller asks for it, and that is issue #16.** The servo's first law
+steered on the direction of the COMMAND, and on 2026-08-17 it saturated ``wz`` and put
+the robot into a cubicle panel or a cabinet on three runs out of four. That law is still
+here as :data:`TRAVEL`, so the recorded runs stay reproducible; :data:`GOAL` is the one
+that is not known to do this, and no robot has yet been driven with it. ``mappo_drive.py``
+therefore defaults to no servo at all — see :class:`HeadingServo` for both laws and for
+the measurements that separate them.
 
 Needs the policy package's numpy. ``python3 test_mappo_policy.py``.
 """
@@ -72,15 +79,80 @@ def load_policy(package: Path = DEFAULT_PACKAGE):
     return MappoController, RobotInput, StationaryObject
 
 
+#: Steer on the bearing from the robot to the GOAL, taken in odom. Nothing the policy
+#: emits is in this loop, so yawing moves the robot and leaves the reference where it is.
+GOAL = "goal"
+
+#: Steer on the direction of the body-frame velocity COMMAND. Issue #16's law. Kept so
+#: the 2026-08-17 runs remain reproducible; see :class:`HeadingServo` before selecting it.
+TRAVEL = "travel"
+
+SERVO_MODES = (GOAL, TRAVEL)
+
+
+def goal_bearing_body(x_m: float, y_m: float, yaw_rad: float,
+                      goal_x_m: float, goal_y_m: float) -> float:
+    """Bearing to the goal in the BODY frame, ``+`` to the left.
+
+    Takes the odom scalars rather than a tick because :meth:`PolicyRunner.step` has
+    already validated them — ``mappo_bridge.robot_input`` drops a tick whose pose or goal
+    is missing or non-finite, so by the time this is reached every argument is a real
+    number. ``replay_mappo._goal_bearing`` and ``mappo_shadow._goal_bearing`` compute the
+    same quantity from a raw tick, for logging rather than for control.
+    """
+    return wrap_pi(math.atan2(goal_y_m - y_m, goal_x_m - x_m) - yaw_rad)
+
+
 @dataclass(frozen=True)
 class HeadingServo:
-    """Yaw rate that turns the nose towards a body-frame direction of travel.
+    """Yaw rate that turns the nose towards a heading the policy does not command.
 
     Proportional with a deadband, and that is deliberate rather than lazy: the input is
     already smooth (it comes from a saturated tanh, not from a range estimate), and the
     thing a robot with a rolling-shutter camera cannot afford is a yaw rate that changes
     every tick. The deadband is what stops a heading error of a couple of degrees from
     turning into a permanent small twitch.
+
+    ## Two laws, and why :data:`TRAVEL` is not one you should pick
+
+    :data:`TRAVEL` steers on ``atan2(body_vy, body_vx)`` — the direction of the command
+    the policy just produced. **``vx`` changes sign, and when it does that reference
+    jumps to near 180 degrees.** Over 30 closed-loop episodes the policy's command was
+    backwards on 367 of 6123 moving ticks (6.0%), and every one of those 367 is a heading
+    error past 90 degrees: roughly once a second, at 10 Hz, this law demands more than a
+    quarter turn. :attr:`min_speed_mps` cannot catch it, because it gates on the
+    magnitude ``hypot(vx, vy)`` and a backwards command is not a slow one.
+
+    Once ``wz`` saturates it does not recover on its own. ``closed_loop_sim.py`` seed 19
+    holds the yaw rate at its ceiling for **16.2 continuous seconds** and turns the robot
+    through **179.8 degrees**; on hardware on 2026-08-17 it was 2.8 seconds, 34-54
+    degrees, and three collisions (issue #16). What sustains the saturation past the
+    first tick is not established here — two plausible accounts, that spinning starves
+    the obstacle map and that the anisotropic ``max_vx``/``max_vy`` envelope is the
+    coupling, were both tested and neither holds. What IS established is that this law's
+    reference is a function of the robot's own yaw and the other law's is not, and that
+    the behaviour goes with it.
+
+    :data:`GOAL` steers on the bearing to the goal, taken in odom. Turning the robot
+    moves its heading and leaves that bearing alone, so the error falls instead of
+    running; it is the quantity ``avoidance.py`` scores as ``heading_cost``, and the
+    planner is the controller that has not hit anything. Same 30 episodes:
+
+    | law | longest saturated ``wz`` | peak yaw | collisions |
+    | --- | --- | --- | --- |
+    | ``TRAVEL`` | 16.2 s | 179.8 deg | 6 / 30 |
+    | ``GOAL`` | **1.7 s** | **74.9 deg** | 11 / 30 |
+
+    **The collision column is stated because it does not support the change, and it does
+    not settle the question either way.** That arena is an open 3 x 3 m square holding one
+    disc; it has no walls, and a wall is what the robot hit. A law that yaws through 180
+    degrees cannot be charged for it by a simulator with nothing to yaw into. The
+    saturation and excursion columns are what issue #16 defines the defect as, and those
+    are the ones this changes.
+
+    Both laws serve the reason a servo exists: the policy commands **no yaw**, so an
+    unassisted robot holds its start heading and its 85-degree camera never looks
+    anywhere new. :data:`GOAL` still sweeps it, towards where the robot is going.
     """
 
     #: rad/s per rad of heading error.
@@ -90,15 +162,34 @@ class HeadingServo:
     max_wz: float = 0.40
     #: Heading errors smaller than this command no yaw at all.
     deadband_rad: float = math.radians(8.0)
-    #: Below this commanded speed there is no direction of travel to face, so the servo
-    #: holds still rather than chasing the heading of a command that is basically noise.
+    #: Below this commanded speed the robot is not going anywhere, so the servo holds
+    #: still rather than turning on the strength of a command that is basically noise.
+    #: It gates on SPEED and therefore says nothing about direction — see the class
+    #: docstring, where that is the whole of :data:`TRAVEL`'s problem.
     min_speed_mps: float = 0.02
+    #: Which heading to close the loop on, :data:`GOAL` or :data:`TRAVEL`.
+    mode: str = GOAL
 
-    def yaw_rate(self, body_vx: float, body_vy: float) -> float:
-        """Yaw rate, rad/s, for a body-frame velocity command."""
+    def __post_init__(self) -> None:
+        if self.mode not in SERVO_MODES:
+            raise ValueError(f"mode must be one of {SERVO_MODES}, not {self.mode!r}")
+
+    def yaw_rate(self, body_vx: float, body_vy: float,
+                 goal_bearing_rad: float | None = None) -> float:
+        """Yaw rate, rad/s, for a body-frame velocity command.
+
+        ``goal_bearing_rad`` is :func:`goal_bearing_body`, and is required in
+        :data:`GOAL` mode. ``None`` means the caller has no goal this tick, which leaves
+        nothing to face: a robot that has lost its goal should not also start turning.
+        """
         if math.hypot(body_vx, body_vy) < self.min_speed_mps:
             return 0.0
-        error = wrap_pi(math.atan2(body_vy, body_vx))
+        if self.mode == GOAL:
+            if goal_bearing_rad is None:
+                return 0.0
+            error = wrap_pi(goal_bearing_rad)
+        else:
+            error = wrap_pi(math.atan2(body_vy, body_vx))
         if abs(error) < self.deadband_rad:
             return 0.0
         return max(-self.max_wz, min(self.max_wz, self.gain * error))
@@ -142,7 +233,11 @@ class PolicyRunner:
         self.controller = controller_cls(config or Path(package) / "config.json")
         #: ``None`` disables the servo, leaving ``wz`` at the policy's own zero. Off is
         #: the honest default for a SHADOW run, where nothing should imply the recorded
-        #: command is what the robot would have done; the drive path turns it on.
+        #: command is what the robot would have done — and since issue #16 it is the
+        #: default for the DRIVE path too, which now builds a servo only when an operator
+        #: names one. ``closed_loop_sim.PolicyController`` is the exception and reads
+        #: ``None`` as "build the default servo", so it cannot currently simulate the
+        #: configuration the robot ships with; that is its own to fix.
         self.servo = servo
         self._started = False
         #: Yaw at the last reset. The controller holds this too, privately, and this copy
@@ -179,7 +274,14 @@ class PolicyRunner:
 
         # `vx_mps`/`vy_mps` are already body-frame and already zeroed on a stop status,
         # so the servo sees zero speed and holds — no extra case needed here.
-        wz = 0.0 if self.servo is None else self.servo.yaw_rate(out.vx_mps, out.vy_mps)
+        #
+        # The goal bearing is taken from the ODOM pose and goal. Deriving it from
+        # anything the policy's action has touched would put the robot's own yaw back on
+        # both sides of the loop, which is the whole of issue #16.
+        wz = 0.0 if self.servo is None else self.servo.yaw_rate(
+            out.vx_mps, out.vy_mps,
+            goal_bearing_body(kwargs["x_m"], kwargs["y_m"], kwargs["yaw_rad"],
+                              kwargs["goal_x_m"], kwargs["goal_y_m"]))
 
         # The action rotated out of the run-local frame into the body frame. This mirrors
         # two lines inside the policy package, deliberately: the intent is wanted even on

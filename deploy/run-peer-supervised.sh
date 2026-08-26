@@ -88,7 +88,11 @@ COMMON=(
   --robot-radius 0.25 --obstacle-radius 0.20
   --no-latch-arm --arrive 0.30
   --policy-mode supervised          # THE VETO STAYS ON
-  --no-heading-servo                # issue #16's unstable yaw loop; the robot crabs
+  # Explicit rather than inherited. Off IS the default since issue #16, but this script
+  # is the one somebody copies, and a runbook that shows the safe value survives a
+  # future change of default that a silent omission would not.
+  --heading-servo off               # no yaw servo; the robot crabs, and that is
+                                    # the point -- issue #16
   --policy-gait-floor 0.35
   --policy-scale 5.0
   --max-seconds "${SECS}"
