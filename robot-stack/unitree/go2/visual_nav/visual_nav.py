@@ -401,7 +401,8 @@ class VisualNavigator:
                  recorder: cv2.VideoWriter | None = None,
                  static_map: StaticObstacleMap | None = None,
                  telemetry: TelemetryWriter | None = None,
-                 stand_up_fn=None, lie_down_fn=None) -> None:
+                 stand_up_fn=None, lie_down_fn=None,
+                 raw_recorder: cv2.VideoWriter | None = None) -> None:
         self._loco = loco
         self._perception = perception
         self._planner = planner
@@ -410,6 +411,11 @@ class VisualNavigator:
         self._health = health
         self._config = config
         self._recorder = recorder
+        #: Undecorated sibling of ``recorder``. Keyword-only in effect, and LAST in the
+        #: signature on purpose: ``integration/mappo_drive.py`` calls this constructor
+        #: through ``navigator_factory`` with the positional arguments it already knows,
+        #: and says in its own docstring that a new positional one must not be added.
+        self._raw_recorder = raw_recorder
         self._static_map = static_map
         self._telemetry = telemetry
         self._stand_up_fn = stand_up_fn or self._default_stand_up
@@ -824,7 +830,7 @@ class VisualNavigator:
 
     def _record(self, result: PerceptionResult, pose, command,
                 obstacles: Sequence[Obstacle] = ()) -> int | None:
-        """Write one annotated frame — once per PERCEPTION cycle, not per control tick.
+        """Write one frame to each open recorder — once per PERCEPTION cycle, not per tick.
 
         The control loop runs faster than perception, so recording per tick would
         duplicate frames and make the video play back faster than the run happened.
@@ -833,12 +839,30 @@ class VisualNavigator:
         none. That index is the join key between the telemetry file and the MP4, and it
         is why this returns anything at all — it is the only honest way to answer "what
         did the camera see at this tick?" without putting pixels in a log.
+
+        **Two recorders, one index.** ``--record`` writes the annotated frame — the HUD,
+        the plan-view inset and a box around every detection — and that is what makes it
+        readable and what makes it useless as training data: the label is burned into the
+        pixels the model would have to learn from. ``--record-raw`` writes the same frame
+        before any of that is drawn on it. Both are advanced by this one gate, so frame
+        *n* of one file is frame *n* of the other and both join to the same
+        ``perception.video_frame`` in the telemetry. Counting them separately would have
+        been the bug: the moment one recorder skipped a cycle the other's indices would
+        silently mean a different thing.
         """
-        if self._recorder is None or result.image is None:
+        if (self._recorder is None and self._raw_recorder is None) or result.image is None:
             return None
         if result.seq <= self._recorded_seq:
             return None
         self._recorded_seq = result.seq
+        # BEFORE anything is drawn. `result.image` is never mutated here — the annotated
+        # path works on a copy — so this is the frame the camera produced, not a frame
+        # something has been rubbed off.
+        if self._raw_recorder is not None:
+            self._raw_recorder.write(result.image)
+        self._frames_written += 1
+        if self._recorder is None:
+            return self._frames_written - 1
         canvas = result.image.copy()
         overlay.draw_detections(canvas, result.ranged)
         overlay.draw_goal(canvas, result.goal_fix)
@@ -857,7 +881,6 @@ class VisualNavigator:
              if health else "health -"),
         ])
         self._recorder.write(canvas)
-        self._frames_written += 1
         return self._frames_written - 1
 
 
@@ -1064,6 +1087,13 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
                                "reacts to a static obstacle too late to swerve")
     bindings.add_navigation_arguments(ap, envelope)
     ap.add_argument("--record", default=None, help="write an annotated MP4 here")
+    ap.add_argument("--record-raw", default=None, metavar="PATH.mp4",
+                    help="write the UNDECORATED camera frames here as well: no HUD, no "
+                         "plan-view inset, no detection box. Same cadence and the same "
+                         "frame indices as --record, so both join to the telemetry's "
+                         "perception.video_frame. Off by default. This is the only "
+                         "output of a run that is usable as training data — --record "
+                         "burns the label into the pixels (issue #77)")
     ap.add_argument("--telemetry", default=None, metavar="PATH.jsonl",
                     help="write a machine-readable record of every control tick here: "
                          "pose, goal, the full obstacle list with positions and radii, "
@@ -1110,7 +1140,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
 
     loco = bindings.create_locomotion(args)
     health = bindings.create_health_monitor(args, live=config.live)
-    camera = perception = recorder = telemetry = None
+    camera = perception = recorder = raw_recorder = telemetry = None
     navigator = None
     try:
         # Enter the cleanup scope before the first external connection. A health or arm
@@ -1178,18 +1208,24 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                                       pose_tuple, prior, colour_detector)
         perception.start()
 
-        if args.record:
-            recorder = cv2.VideoWriter(args.record, cv2.VideoWriter_fourcc(*"mp4v"),
-                                       RECORD_FPS, (width, height))
+        def open_recorder(path: str) -> cv2.VideoWriter:
+            writer = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"),
+                                     RECORD_FPS, (width, height))
             # A codec the build cannot encode yields a writer that silently swallows
             # every frame, a 0-byte file and a cheerful "wrote run.mp4" at the end.
             # The recording IS the evidence for a live run, so fail here — before the
             # legs move — rather than after the only chance to capture it has passed.
-            if not recorder.isOpened():
+            if not writer.isOpened():
                 raise SystemExit(
-                    f"[visual_nav] cannot open {args.record} for writing (mp4v). "
+                    f"[visual_nav] cannot open {path} for writing (mp4v). "
                     f"The run would produce an empty file, so it is not starting. "
                     f"Check the path is writable and that this OpenCV has FFMPEG.")
+            return writer
+
+        if args.record:
+            recorder = open_recorder(args.record)
+        if args.record_raw:
+            raw_recorder = open_recorder(args.record_raw)
 
         if config.live:
             bindings.prepare_motion(args, loco)
@@ -1216,6 +1252,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                             "soft_gap_m": planner_config.soft_gap_m,
                             "static_soft_gap_m": STATIC_SOFT_GAP_M},
                 "video": args.record,
+                "video_raw": args.record_raw,
             }
             header.update(bindings.telemetry_config(args))
             telemetry.write_header(**header)
@@ -1223,7 +1260,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         navigator = navigator_factory(
             loco, perception, planner, tracker, goal_source, health, config, recorder,
             static_map, telemetry, stand_up_fn=bindings.stand_up,
-            lie_down_fn=bindings.lie_down,
+            lie_down_fn=bindings.lie_down, raw_recorder=raw_recorder,
         )
         navigator.run()
     finally:
@@ -1232,6 +1269,11 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
             if recorder is not None:
                 recorder.release()
                 print(f"[visual_nav] wrote {args.record}")
+
+        def release_raw_recorder() -> None:
+            if raw_recorder is not None:
+                raw_recorder.release()
+                print(f"[visual_nav] wrote {args.record_raw} (undecorated)")
 
         def close_telemetry() -> None:
             if telemetry is not None:
@@ -1244,6 +1286,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
             ("perception stop", None if perception is None else perception.stop),
             ("camera stop", None if camera is None else camera.stop),
             ("recorder release", release_recorder),
+            ("raw recorder release", release_raw_recorder),
             ("telemetry close", close_telemetry),
             ("platform shutdown", bindings.shutdown),
             ("health stop", health.stop),
