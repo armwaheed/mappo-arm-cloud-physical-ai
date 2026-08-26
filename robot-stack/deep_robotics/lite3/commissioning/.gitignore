@@ -1,0 +1,10 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Commissioning artefacts are produced in this directory by the tools that live here, and
+# they are MEASUREMENTS OF ONE ROBOT. Committing one would put a number describing LITE3-A
+# in front of the next person measuring LITE3-B, which is the single thing issue #13 asks
+# us not to do. Attach them to the issue instead.
+lite3-*.json
+lite3-*.jsonl
+lite3_front_camera_*.json
