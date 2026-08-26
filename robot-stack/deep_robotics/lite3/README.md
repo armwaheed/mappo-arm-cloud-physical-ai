@@ -20,8 +20,9 @@ fails closed when any of them is absent.
 | --- | --- | --- |
 | high-level locomotion | bounded vendor moving-mode axis UDP, legacy complex UDP, or `Lite3_ROS` `/cmd_vel` + `/leg_odom2` | one bounded axis-forward proof moved 0.401 m and stopped cleanly; generic velocity mapping remains unverified |
 | RGB capture | explicit V4L2 index, RTSP URI, or GStreamer pipeline | endpoint not yet supplied |
-| gait floor | required as `--gait-floor` | not measured |
-| actuator gain | required as `--actuator-gain` | not measured |
+| gait floor | required as `--gait-floor` | not measured — **and not measurable on the axis transport**, where the mapping is sign-only. See below |
+| actuator gain | required as `--actuator-gain` | not measured — same; the commanded magnitude the ratio divides by never reaches the wire |
+| axis primitive speeds | `measured_m_s` in the axis profile; the envelope gate reads it | not measured. `commissioning/axis_primitive_probe.py` is the tool |
 | loaded planning radius | required as `--robot-radius` | not measured |
 | focal length / HFOV | Lite3-tagged calibration JSON required live | not measured |
 | battery | documented legacy `RobotState` UDP field | 21% after the 2026-08-21 vendor-service restart |
@@ -198,6 +199,20 @@ zeros on stop, failure, and shutdown. It neither changes control/moving mode nor
 legacy 320/325/321 velocity commands.
 
 #### ⚠️ The mapping is sign-only: commanded magnitude is discarded
+
+**This is why issue #13's "gait floor" and "actuator gain" have no answer on this
+transport, and why the commissioning harness grew a `--locomotion-transport` flag of its
+own.** A gait floor is the lowest *commanded* speed that still walks; here there is one
+command per direction. An actuator gain is delivered ÷ commanded; here the denominator
+never left the laptop. `gait_floor_probe.py` and `actuator_gain_probe.py` now refuse
+`--locomotion-transport axis` by name, because pointing a descending ladder at it does not
+fail — every rung above the deadband emits the same primitive, every rung walks at the
+same speed, every check passes, and the probe reports the bottom rung as the floor.
+
+What is defined here instead is the speed each primitive delivers, which is exactly the
+`measured_m_s` the envelope gate below reads.
+[`commissioning/axis_primitive_probe.py`](commissioning/axis_primitive_probe.py) measures
+it and refuses a primitive that moves the robot the wrong way.
 
 A profile holds one evidenced raw value per direction, so `map_velocity` reads the *sign* of the
 command and emits that primitive at full magnitude. It never scales. The consequence is that

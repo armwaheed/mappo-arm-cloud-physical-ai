@@ -292,13 +292,52 @@ def test_no_go2_gait_floor_constant_is_executable_anywhere_in_this_directory():
         + ", ".join(offenders))
 
 
+#: A dry run of this probe now has to say which transport it would command through,
+#: because on the default one no Venture has ever walked. ``--accept-unwalked-transport``
+#: is what the operator passes to say that establishing whether it actuates at all is the
+#: point of the run, and it is what keeps the tests below testing the probe rather than
+#: the gate in front of it.
+_ANYWAY = ("--accept-unwalked-transport",)
+
+
 def test_a_dry_run_opens_no_socket_and_returns_zero():
     with tempfile.TemporaryDirectory() as directory:
-        code = _quiet(lambda: main([*_CONTEXT,
+        code = _quiet(lambda: main([*_CONTEXT, *_ANYWAY,
             "--ladder-top", "0.5", "--lateral-top", "0.3",
             "--lane-metres", "20", "--lane-width-metres", "5",
             "--artefact", str(Path(directory) / "a.json")]))
     assert code == 0
+
+
+def test_the_ladder_is_refused_on_the_transport_that_discards_the_commanded_speed():
+    """The failure that would not have crashed.
+
+    Pointed at the axis transport, every rung above the profile's linear deadband emits
+    the same full-scale primitive: every rung walks, at the same speed, the anchors pass
+    and the drift controls pass. The probe would report the lowest rung it happened to
+    try as this robot's gait floor.
+    """
+    message = _refusal(["--locomotion-transport", "axis", "--axis-profile", "p.json",
+                        "--ladder-top", "0.5", "--lateral-top", "0.3",
+                        "--lane-metres", "20", "--lane-width-metres", "5"])
+    assert "discards the commanded magnitude" in message
+    assert "axis_primitive_probe.py" in message
+
+
+def test_a_dry_run_on_a_transport_no_venture_has_walked_on_is_refused():
+    """And it is refused at the DRY run, which is the whole value of the check."""
+    message = _refusal(["--ladder-top", "0.5", "--lateral-top", "0.3",
+                        "--lane-metres", "20", "--lane-width-metres", "5"])
+    assert "no Lite3 Venture has been seen to walk" in message
+    assert "0.000 m/s on every segment" in message
+
+
+def _refusal(extra):
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = run_main(lambda: main([*_CONTEXT, *extra]), "gait")
+    assert code == 2
+    return buffer.getvalue()
 
 
 if __name__ == "__main__":

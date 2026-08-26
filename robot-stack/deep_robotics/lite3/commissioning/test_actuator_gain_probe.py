@@ -200,13 +200,40 @@ def test_a_lane_too_short_for_the_sweep_refuses():
     assert code == 2
 
 
+#: See the note on the same name in ``test_gait_floor_probe.py``.
+_ANYWAY = ("--accept-unwalked-transport",)
+
+
 def test_a_dry_run_returns_zero_and_writes_nothing():
     with tempfile.TemporaryDirectory() as directory:
-        code = _quiet(lambda: main([*_CONTEXT,
+        code = _quiet(lambda: main([*_CONTEXT, *_ANYWAY,
             "--gait-floor", "0.2", "--envelope-vx", "0.4", "--lane-metres", "40",
             "--artefact", str(Path(directory) / "a.json")]))
         assert code == 0
         assert not (Path(directory) / "a.json").exists()
+
+
+def test_a_gain_is_refused_on_the_transport_that_never_receives_the_commanded_speed():
+    """A gain is delivered/COMMANDED, and on the axis transport the denominator is fiction."""
+    message = _refusal(["--locomotion-transport", "axis", "--axis-profile", "p.json",
+                        "--gait-floor", "0.2", "--envelope-vx", "0.4",
+                        "--lane-metres", "40"])
+    assert "discards the commanded magnitude" in message
+    assert "axis_primitive_probe.py" in message
+
+
+def test_a_dry_run_on_a_transport_no_venture_has_walked_on_is_refused():
+    message = _refusal(["--gait-floor", "0.2", "--envelope-vx", "0.4",
+                        "--lane-metres", "40"])
+    assert "no Lite3 Venture has been seen to walk" in message
+
+
+def _refusal(extra):
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = run_main(lambda: main([*_CONTEXT, *extra]), "gain")
+    assert code == 2
+    return buffer.getvalue()
 
 
 if __name__ == "__main__":
