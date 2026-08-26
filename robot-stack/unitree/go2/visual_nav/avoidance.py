@@ -141,6 +141,39 @@ GO2_MAX_WZ_RAD_S = 0.70
 #: beyond ``< 0``.
 COUNT_NOT_RECORDED = -1
 
+#: Every word this planner puts in :attr:`Command.reason`. A closed vocabulary, and the
+#: only thing :func:`base_reason` will strip a qualifier down to.
+PLANNER_REASONS = ("goal", "avoid", "hold", "arrived")
+
+
+def base_reason(reason: str) -> str:
+    """The planner's own word for why, with a wrapper's qualifier removed.
+
+    A wrapper may QUALIFY a reason rather than replace it, so that a log says both what
+    the planner decided and who overrode it: ``integration/mappo_drive.py`` returns the
+    planner's own command with ``reason="veto-hold"`` when the policy's command was
+    refused and the planner's answer was a hold. The full string is what belongs in
+    telemetry. It is not what belongs in an ``if``, and this repository shipped the
+    difference five times in three files — :meth:`DynamicWindowPlanner.plan` used
+    ``last_reason == "hold"`` and ``last_reason == "avoid"`` for its two Schmitt
+    triggers; ``visual_nav.blocked_stop``'s ``reason == "hold"`` was what started the
+    rest-after-blocked timer; and ``mappo_bridge`` read the same word twice, once to
+    decide whether a MOVER was holding the robot. ``"veto-hold" != "hold"``, so on every
+    policy-driven run all five were inert and the Go2 stood braced under a 3.15 kg arm
+    until the run timed out. Nothing faulted; both stall gates decline a zero command by
+    construction.
+
+    STRICTER THAN A SUBSTRING TEST, deliberately. ``"hold" in reason`` also fires on
+    ``"threshold"`` and on ``"holding_pattern"`` — a different decision, taken because
+    two strings share five letters, which is a worse bug than the one it fixes. This
+    strips at most ONE leading ``<qualifier>-``, and only when what follows is exactly a
+    word in :data:`PLANNER_REASONS`. So ``veto-hold`` becomes ``hold``; ``holding``,
+    ``threshold``, ``policy`` and ``veto-policy`` are all returned unchanged and are
+    compared as themselves. ``test_avoidance`` pins the whole table.
+    """
+    _, separator, tail = reason.partition("-")
+    return tail if separator and tail in PLANNER_REASONS else reason
+
 
 @dataclass(frozen=True)
 class Limits:
@@ -302,7 +335,11 @@ class Command:
     vx: float
     vy: float
     wz: float
-    reason: str            # "goal" | "avoid" | "hold" | "arrived"
+    #: Why this command was chosen: one of :data:`PLANNER_REASONS`, or one of those
+    #: QUALIFIED by a wrapper that overrode the planner (``mappo_drive`` writes
+    #: ``veto-hold``). Compare it with :func:`base_reason`, never with ``==`` against a
+    #: bare word and never with ``in``; log it whole.
+    reason: str
     gap_m: float           # predicted worst free gap over the horizon (inf if clear)
     #: How many sampled commands cleared the hard gap, and how many were sampled. They
     #: describe the PLANNER's search, so a wrapper that returns a command of its own has
@@ -525,10 +562,11 @@ class DynamicWindowPlanner:
             last_command: previously commanded ``(vx, vy, wz)``.
             obstacles: predicted obstacles, radius already inflated for uncertainty.
             control_dt: seconds until the next command — sets the dynamic window.
-            last_reason: the previous tick's :attr:`Command.reason`. Only the hold
-                hysteresis reads it, and passing it keeps :meth:`plan` a pure function
-                of its arguments — the alternative, a ``self._holding`` flag, would make
-                every test depend on call order.
+            last_reason: the previous tick's :attr:`Command.reason`. Only the two
+                hysteresis decisions below read it, and passing it keeps :meth:`plan` a
+                pure function of its arguments — the alternative, a ``self._holding``
+                flag, would make every test depend on call order. It may arrive
+                QUALIFIED by a wrapper, so it is read through :func:`base_reason`.
         """
         cfg = self.config
         candidates = self._window(last_command, control_dt)
@@ -537,7 +575,14 @@ class DynamicWindowPlanner:
         gaps = self._worst_gap(per_obstacle_gaps)
 
         # Starting is harder than continuing: see PlannerConfig.reason_hysteresis_m.
-        margin = cfg.reason_hysteresis_m if last_reason == "hold" else 0.0
+        # Read through `base_reason` because a wrapper may hand back the word it got
+        # with a qualifier on it. `last_reason == "hold"` was False for every tick of
+        # every policy-driven run, where the previous reason is `veto-hold`, so both
+        # Schmitt triggers were off exactly where the chatter was first measured:
+        # against a 0.35 m blocker at 0.85-0.92 m this planner holds on `hold` and
+        # leaves the hold on `veto-hold`.
+        previous = base_reason(last_reason)
+        margin = cfg.reason_hysteresis_m if previous == "hold" else 0.0
         if obstacles:
             # Per-obstacle: a candidate is feasible when it clears EVERY obstacle by
             # that obstacle's own hard gap, not when its worst gap clears a single
@@ -580,7 +625,7 @@ class DynamicWindowPlanner:
         # after the choice, so weight_smooth cannot damp it and a bare threshold
         # chatters.
         avoid_threshold = cfg.avoid_report_gap_m
-        if last_reason == "avoid":
+        if previous == "avoid":
             avoid_threshold += cfg.reason_hysteresis_m
         return Command(
             vx=float(candidates[best, 0]), vy=float(candidates[best, 1]),

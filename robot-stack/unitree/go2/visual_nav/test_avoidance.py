@@ -26,6 +26,7 @@ from avoidance import (
     GO2_MAX_VY_M_S,
     GO2_MAX_WZ_RAD_S,
     MIN_GAIT_COMMAND_M_S,
+    PLANNER_REASONS,
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
     Command,
@@ -33,6 +34,7 @@ from avoidance import (
     Limits,
     Obstacle,
     PlannerConfig,
+    base_reason,
 )
 
 ORIGIN = (0.0, 0.0, 0.0)     # at the origin, facing +x
@@ -797,6 +799,258 @@ def test_the_planners_own_branches_state_a_search_that_actually_ran():
         assert 0 <= command.feasible <= command.evaluated, (name, command)
     assert outcomes["hold"].feasible == 0, "a hold IS zero feasible; that is the answer"
     assert outcomes["clear"].feasible > 0, outcomes["clear"]
+
+
+# ── A qualified reason (issue #118) ─────────────────────────────────────────
+def test_base_reason_strips_one_qualifier_and_nothing_else():
+    """⚠️ THE GUARD FOR ISSUE #118. Two ways to read a reason wrong, both shipped.
+
+    Comparing the whole string misses ``veto-hold``, which is what
+    ``integration/mappo_drive.py`` writes when it refuses the policy's command and
+    issues the planner's own hold instead. Searching for a substring instead — ``"hold"
+    in reason`` — calls ``threshold`` a hold, which is a different decision taken
+    because two strings share five letters.
+
+    The rule is: exactly one leading ``<qualifier>-`` comes off, and only when what is
+    left is a word the planner actually issues.
+    """
+    for reason, expected in (
+            # The planner's own vocabulary is returned unchanged.
+            ("goal", "goal"), ("avoid", "avoid"), ("hold", "hold"),
+            ("arrived", "arrived"),
+            # A qualifier comes off. `peer-` is not written today; the rule is about
+            # the SHAPE, so a second wrapper does not have to re-earn it.
+            ("veto-goal", "goal"), ("veto-avoid", "avoid"), ("veto-hold", "hold"),
+            ("peer-hold", "hold"), ("-hold", "hold"),
+            # Not the planner's words, so nothing is stripped and they are compared as
+            # themselves. `policy` is a real one: `MappoPlanner` writes it every tick
+            # the policy drives.
+            ("policy", "policy"), ("veto-policy", "veto-policy"),
+            # A substring test would call these four a hold, a hold, an avoid and a
+            # goal. This one calls them what they are.
+            ("threshold", "threshold"), ("holding_pattern", "holding_pattern"),
+            ("avoidance", "avoidance"), ("goalkeeper", "goalkeeper"),
+            # One qualifier, not a chain of them, and nothing degenerate.
+            ("veto-peer-hold", "veto-peer-hold"), ("veto-", "veto-"), ("", ""),
+    ):
+        assert base_reason(reason) == expected, (reason, base_reason(reason))
+
+
+def test_the_planner_only_issues_words_from_its_own_vocabulary():
+    """:data:`PLANNER_REASONS` is what ``base_reason`` will strip down to, so a reason
+    this planner issues and that list does not name would survive its own qualifier and
+    silently stop matching anywhere. Drives all three branches rather than reading the
+    literals back."""
+    planner = _planner()
+    issued = {
+        planner.plan(ORIGIN, GOAL, CRUISING, []).reason,
+        planner.plan(ORIGIN, GOAL, CRUISING,
+                     [Obstacle(x=1.6, y=0.45, vx=0.0, vy=0.0, radius_m=0.35)]).reason,
+        planner.plan(ORIGIN, GOAL, CRUISING,
+                     [Obstacle(x=0.45, y=0.0, vx=0.0, vy=0.0, radius_m=0.6)]).reason,
+    }
+    assert issued == {"goal", "avoid", "hold"}, issued
+    assert issued <= set(PLANNER_REASONS), issued
+    # `arrived` is never issued HERE — `mappo_drive` maps the policy's STOP_GOAL_REACHED
+    # to it — but it travels in this field and must strip like the rest.
+    assert "arrived" in PLANNER_REASONS
+
+
+def test_the_hold_hysteresis_reads_a_qualified_reason():
+    """⚠️ SIBLING OF ISSUE #118, and this one moves the legs rather than a counter.
+
+    ``reason_hysteresis_m`` is a Schmitt trigger: leaving a hold has to clear 0.08 m
+    more gap than entering one did, because live "``hold`` and ``avoid`` alternated on
+    9 consecutive ticks". It was read as ``last_reason == "hold"`` — and on a
+    policy-driven run the previous reason is ``veto-hold``, so the trigger was off for
+    every tick of every such run and the chatter it was added for was back.
+
+    Staged in the MIDDLE of the band where the margin is what decides: a 0.35 m blocker
+    dead ahead, between 1.00 m and 1.07 m from a standstill. Outside that band both
+    answers agree and this test would pass without the fix, which is what the first
+    assertion is for.
+    """
+    planner = _planner()
+    blocker = [Obstacle(x=1.04, y=0.0, vx=0.0, vy=0.0, radius_m=0.35)]
+
+    entering = planner.plan(ORIGIN, GOAL, STOPPED, blocker, last_reason="goal")
+    assert entering.reason != "hold", (
+        f"the scene must be one where the margin DECIDES or this test proves nothing: "
+        f"{entering}")
+
+    holding = planner.plan(ORIGIN, GOAL, STOPPED, blocker, last_reason="hold")
+    assert holding.reason == "hold", holding
+
+    vetoed = planner.plan(ORIGIN, GOAL, STOPPED, blocker, last_reason="veto-hold")
+    assert vetoed.reason == "hold", (
+        f"a vetoed hold left the hold 0.08 m early, which is the chatter the "
+        f"hysteresis exists to remove: {vetoed}")
+
+
+def test_the_avoid_hysteresis_reads_a_qualified_reason():
+    """The other Schmitt trigger, and the other half of the same defect.
+
+    ``avoid`` is a label applied after the choice, so no cost weight can damp it; before
+    the hysteresis "the simulated approach to the staged bin flipped ``goal``/``avoid``
+    44 times". Same band argument as the test above: a 0.23 m bin offset 0.30 m to the
+    left decides between 2.70 m and 2.76 m, and 2.73 m is the middle of it.
+    """
+    planner = _planner()
+    bin_ = [Obstacle(x=2.73, y=0.30, vx=0.0, vy=0.0, radius_m=0.23,
+                     soft_gap_m=STATIC_SOFT_GAP_M)]
+
+    entering = planner.plan(ORIGIN, GOAL, CRUISING, bin_, last_reason="goal")
+    assert entering.reason == "goal", (
+        f"the scene must be one where the margin DECIDES or this test proves nothing: "
+        f"{entering}")
+
+    avoiding = planner.plan(ORIGIN, GOAL, CRUISING, bin_, last_reason="avoid")
+    assert avoiding.reason == "avoid", avoiding
+
+    vetoed = planner.plan(ORIGIN, GOAL, CRUISING, bin_, last_reason="veto-avoid")
+    assert vetoed.reason == "avoid", (
+        f"a vetoed avoid dropped its label, which is the 44-flip chatter coming back: "
+        f"{vetoed}")
+
+
+_REASON_KEY = "reason"
+
+
+def _subscript_key(node):
+    """The constant a ``x["..."]`` is keyed by, under both AST shapes this tree runs on.
+
+    ⚠️ Python 3.8 — THE ROBOT'S INTERPRETER, and a CI leg — wraps a subscript key in
+    ``ast.Index``; 3.9 and later store the expression directly. Unwrapped by attribute
+    rather than by ``isinstance(..., ast.Index)``, because that class is deprecated above
+    3.8 and is scheduled to go, so naming it would trade one version break for another.
+
+    Constant first, THEN the unwrap: an ``ast.Constant`` has a ``.value`` of its own —
+    the string — so unwrapping unconditionally would hand back ``"reason"`` and the
+    isinstance below would reject it. Returns ``None`` for a computed key, which is not
+    something this scan can judge.
+    """
+    key = node.slice
+    if not isinstance(key, ast.Constant):
+        key = getattr(key, "value", None)
+    return key if isinstance(key, ast.Constant) else None
+
+
+def _bare_reason_comparisons(tree):
+    """``(line, dumped source)`` for every ``<a reason> == "<planner word>"`` in a tree.
+
+    Four spellings, because all four exist in this repository and a scan that saw only
+    the one in front of it is a scan the next author walks past: an attribute
+    (``command.reason``), a bare name (``last_reason``), a mapping read out of a
+    telemetry record (``tick["command"].get("reason")`` and ``[...]["reason"]``).
+    ``base_reason(x) == "hold"`` is deliberately NOT matched — that is the fixed
+    spelling, and matching it would make the fix unfixable.
+    """
+    def reads_a_reason(node):
+        if isinstance(node, ast.Attribute):
+            return node.attr == _REASON_KEY
+        if isinstance(node, ast.Name):
+            return node.id == _REASON_KEY or node.id.endswith("_" + _REASON_KEY)
+        if isinstance(node, ast.Subscript):
+            key = _subscript_key(node)
+            return key is not None and key.value == _REASON_KEY
+        if isinstance(node, ast.Call):
+            return (isinstance(node.func, ast.Attribute) and node.func.attr == "get"
+                    and node.args and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value == _REASON_KEY)
+        return False
+
+    def is_planner_word(node):
+        return isinstance(node, ast.Constant) and node.value in PLANNER_REASONS
+
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Compare) or len(node.ops) != 1:
+            continue
+        if not isinstance(node.ops[0], (ast.Eq, ast.NotEq)):
+            continue
+        left, right = node.left, node.comparators[0]
+        if ((reads_a_reason(left) and is_planner_word(right))
+                or (reads_a_reason(right) and is_planner_word(left))):
+            found.append((node.lineno, ast.dump(node)))
+    return found
+
+
+def test_the_reason_scan_detects_every_spelling_it_claims_to():
+    """A scan whose detector is broken reports a clean tree forever. This is the fixture
+    that makes the next test's silence mean something: four spellings that MUST be
+    found, and four near-misses that must not be."""
+    caught = ast.parse(
+        'a = command.reason == "hold"\n'
+        'b = last_reason != "avoid"\n'
+        'c = tick["command"].get("reason") == "goal"\n'
+        'd = "arrived" == record["reason"]\n')
+    assert len(_bare_reason_comparisons(caught)) == 4, _bare_reason_comparisons(caught)
+
+    allowed = ast.parse(
+        'a = base_reason(command.reason) == "hold"\n'   # the fixed spelling
+        'b = previous == "avoid"\n'                     # already a base word
+        'c = command.reason == "policy"\n'              # not a planner word
+        'd = command.reason in PLANNER_REASONS\n')      # not an equality
+    assert _bare_reason_comparisons(allowed) == [], _bare_reason_comparisons(allowed)
+
+    # THE PYTHON 3.8 SUBSCRIPT SHAPE, built by hand because ``ast.parse`` on this
+    # interpreter cannot produce it. 3.8 wraps a subscript key in ``ast.Index`` and 3.9+
+    # does not, so on 3.11 the unwrap branch in :func:`_subscript_key` never runs — and a
+    # scan that had stopped seeing ``record["reason"]`` on THE ROBOT'S interpreter would
+    # still be green here. That is not hypothetical: CI's 3.8 leg failed on exactly this
+    # the first time this scan was pushed, and this assertion is so that the 3.11 leg does
+    # not need it to.
+    class _LegacyIndex:
+        def __init__(self, value):
+            self.value = value
+
+    legacy = ast.Module(body=[ast.Expr(value=ast.Compare(
+        left=ast.Subscript(value=ast.Name(id="record", ctx=ast.Load()),
+                           slice=_LegacyIndex(ast.Constant(value=_REASON_KEY)),
+                           ctx=ast.Load()),
+        ops=[ast.Eq()], comparators=[ast.Constant(value="hold")]))], type_ignores=[])
+    # A hand-built tree carries no line numbers, and the scan reports one.
+    ast.fix_missing_locations(legacy)
+    assert len(_bare_reason_comparisons(legacy)) == 1, (
+        "the Python 3.8 `ast.Index` subscript shape is not recognised, so this scan is "
+        "blind to `record[\"reason\"] == \"hold\"` on the interpreter the robot runs")
+
+
+def test_no_shipped_module_compares_a_reason_against_a_bare_planner_word():
+    """⚠️ THE REGRESSION GUARD FOR ISSUE #118. Write ``command.reason == "hold"``
+    anywhere outside a test and this names the file and the line.
+
+    Behavioural tests cover the three sites that were wrong. They cannot cover the
+    fourth site somebody adds next month, and this defect's whole character is that the
+    wrong spelling keeps looking right: the qualifier is invisible from the consumer's
+    side, and neither stall gate fires while the consequence plays out.
+
+    Test files are excluded. A fixture asserting ``command.reason == "veto-hold"`` is
+    stating what a producer wrote, which is exactly what a test should do.
+    """
+    root = _repository_root()
+    assert root is not None, (
+        "no AGENTS.md above this file, so this scan only covered one directory")
+
+    offenders = []
+    for directory, subdirs, files in os.walk(root):
+        subdirs[:] = [d for d in subdirs
+                      if d not in (".git", "__pycache__", "node_modules")]
+        for name in sorted(files):
+            if not name.endswith(".py") or name.startswith("test_"):
+                continue
+            path = os.path.join(directory, name)
+            try:
+                with open(path, encoding="utf-8") as handle:
+                    tree = ast.parse(handle.read(), filename=path)
+            except (OSError, SyntaxError):
+                continue
+            for line, _dump in _bare_reason_comparisons(tree):
+                offenders.append(f"{os.path.relpath(path, root)}:{line}")
+    assert not offenders, (
+        "a Command reason may arrive QUALIFIED (`veto-hold`), so an equality against a "
+        "bare planner word silently never matches — read it through "
+        "`avoidance.base_reason`:\n  " + "\n  ".join(offenders))
 
 
 if __name__ == "__main__":

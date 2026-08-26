@@ -129,6 +129,63 @@ def test_a_normal_avoiding_tick_is_not_a_hold():
                                         "reason": "avoid"}, obstacles=[BIN])) is False
 
 
+def test_a_vetoed_hold_is_still_an_external_hold():
+    """⚠️ ISSUE #118, and this is the site where it reaches the policy.
+
+    ``integration/mappo_drive.py`` returns a vetoed tick as the planner's own command
+    with its reason QUALIFIED — ``veto-hold`` — and on a supervised run that is the only
+    spelling in which the planner's hold ever gets here, because ``MappoPlanner`` writes
+    ``policy`` on every tick it does not override. ``command.get("reason") != "hold"``
+    was therefore True on every tick of every policy-driven run, and the mover hold this
+    function exists to propagate never once reached the policy.
+
+    Restore the equality and this goes red; the tick beside it is what keeps the fix
+    from being "return True for anything with a person in it".
+    """
+    person = _tick(command={"vx": 0.0, "vy": 0.0, "wz": 0.0, "reason": "veto-hold"},
+                   obstacles=[BIN, WALKER])
+    assert external_hold(person) is True
+
+    landmark_only = _tick(command={"vx": 0.0, "vy": 0.0, "wz": 0.0,
+                                   "reason": "veto-hold"}, obstacles=[BIN])
+    assert external_hold(landmark_only) is False, (
+        "a bin-caused hold is the scene the policy exists to solve, qualified or not")
+
+
+def test_a_vetoed_avoid_is_not_an_external_hold():
+    """The counter-example. Stripping the qualifier must recover the planner's word, not
+    turn every vetoed tick into a hold: a veto whose fallback was ``avoid`` is the
+    planner steering, not the planner waiting."""
+    assert external_hold(_tick(command={"vx": 0.1, "vy": 0.0, "wz": 0.0,
+                                        "reason": "veto-avoid"},
+                               obstacles=[BIN, WALKER])) is False
+
+
+def test_a_reason_that_merely_contains_hold_is_not_a_hold():
+    """``"hold" in reason`` is the wrong repair for the test above, and it is a worse
+    bug than the one it fixes: it takes a decision on a spelling coincidence."""
+    for reason in ("threshold", "holding_pattern", "withhold"):
+        assert external_hold(_tick(command={"vx": 0.0, "vy": 0.0, "wz": 0.0,
+                                            "reason": reason},
+                                   obstacles=[BIN, WALKER])) is False, reason
+
+
+def test_the_audit_counts_a_vetoed_hold_that_had_to_be_classified_by_speed():
+    """The same qualifier, one function over. ``BridgeReport`` is the only thing that
+    says a run's holds were classified by SPEED rather than by ``kind`` — "a stopped
+    person is indistinguishable from a bin" — and it counted zero of them on every
+    policy-driven run for the same reason."""
+    legacy_mover = {k: v for k, v in WALKER.items() if k != "kind"}
+    assert legacy_mover.get("kind") is None
+    tick = _tick(command={"vx": 0.0, "vy": 0.0, "wz": 0.0, "reason": "veto-hold"},
+                 obstacles=[legacy_mover])
+    assert audit(tick)["hold_classified_by_speed"] == 1
+    kinded = _tick(command={"vx": 0.0, "vy": 0.0, "wz": 0.0, "reason": "veto-hold"},
+                   obstacles=[WALKER])
+    assert audit(kinded)["hold_classified_by_speed"] == 0, (
+        "a tick whose obstacles carry `kind` needed no speed fallback")
+
+
 # ── Splitting movers from landmarks ─────────────────────────────────────────
 def test_a_stopped_person_is_still_a_mover():
     """The case every velocity heuristic gets wrong, and the reason ``kind`` exists.

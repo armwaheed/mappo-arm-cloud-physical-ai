@@ -73,6 +73,37 @@ from observation import to_body_frame, wrap_pi
 #: reading the policy package's example instead of the robot's source.
 VELOCITY_FRAME = "body"
 
+#: The planner's own vocabulary of :attr:`avoidance.Command.reason`, and the rule for
+#: reading one that a WRAPPER has qualified.
+#:
+#: A COPY of ``avoidance.PLANNER_REASONS`` and ``avoidance.base_reason``, and it is a copy
+#: on purpose: this module is stdlib-only for the reason its header gives, and
+#: ``avoidance`` is numpy from its first line.
+#: The copy cannot drift, because
+#: ``test_mappo_drive.test_the_bridges_copy_of_the_reason_rule_matches_the_planners``
+#: imports both and compares them across the whole table.
+#:
+#: Why it is needed here at all: ``integration/mappo_drive.py`` returns a vetoed tick as
+#: the planner's own command with ``reason=f"veto-{planned.reason}"``, and on a supervised
+#: run that is the ONLY way the planner's ``hold`` ever reaches this file. Both readers
+#: below tested ``== "hold"``, so both were False on every tick of every policy-driven
+#: run — :func:`external_hold` never propagated a mover hold to the policy, and
+#: :attr:`BridgeReport.hold_classified_by_speed` counted none of them. Issue #118.
+PLANNER_REASONS = ("goal", "avoid", "hold", "arrived")
+
+
+def base_reason(reason: str) -> str:
+    """The planner's own word for why, with a wrapper's qualifier removed.
+
+    Strips at most ONE leading ``<qualifier>-``, and only when what is left is exactly a
+    word in :data:`PLANNER_REASONS`. Stricter than ``"hold" in reason``, which would also
+    fire on ``threshold``: that is a different decision taken because two strings share
+    five letters, and it is a worse bug than the one it fixes.
+    """
+    _, separator, tail = reason.partition("-")
+    return tail if separator and tail in PLANNER_REASONS else reason
+
+
 #: Fallback classifier for logs written before obstacles carried a ``kind``. A mapped
 #: static landmark is emitted with ``vx = vy = 0.0`` EXACTLY (``visual_nav._obstacles``
 #: constructs it that way), while a track carries the filter's estimate. Over the
@@ -316,7 +347,12 @@ def external_hold(tick: dict) -> bool:
     if (tick.get("peer_link") or {}).get("lost"):
         return True
     command = tick.get("command")
-    if not command or command.get("reason") != "hold":
+    # `base_reason`, not `==`: on a supervised policy run the planner's hold arrives
+    # qualified, as `veto-hold`, and that is the ONLY spelling in which it ever gets
+    # here — `MappoPlanner` issues `policy` on every tick it does not override. So this
+    # read was False for the whole of every such run and no mover hold reached the
+    # policy at all. Issue #118.
+    if not command or base_reason(command.get("reason") or "") != "hold":
         return False
     return any(holds_the_robot(o) for o in tick.get("obstacles", []))
 
@@ -448,7 +484,7 @@ def audit(tick: dict) -> dict:
         "no_goal": 0 if tick.get("goal") else 1,
         "velocity_missing": 1 if None in velocity else 0,
         "hold_classified_by_speed": (
-            1 if held.get("reason") == "hold"
+            1 if base_reason(held.get("reason") or "") == "hold"
             and any(o.get("kind") is None for o in obstacles) else 0),
         "unidentified_objects": sum(1 for o in obstacles
                                     if is_stationary(o) and o.get("id") is None),
