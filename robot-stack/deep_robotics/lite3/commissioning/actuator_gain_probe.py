@@ -212,6 +212,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _validate(args) -> None:
+    robot_link.require_magnitude_transport(
+        args,
+        measures="an actuator gain -- the ratio of delivered speed to COMMANDED speed",
+        instead="the delivered speed of each evidenced primitive, which "
+                "axis_primitive_probe.py measures",
+    )
+    robot_link.require_walked_transport(args)
     refuse_unmeasured(**{"--gait-floor": args.gait_floor,
                          "--envelope-vx": args.envelope_vx,
                          "--lane-metres": args.lane_metres})

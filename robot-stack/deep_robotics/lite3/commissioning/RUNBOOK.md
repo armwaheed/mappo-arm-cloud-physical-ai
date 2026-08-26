@@ -126,14 +126,43 @@ rather than writing a record with a hole in it.
 步态下限必须在执行器增益之前测，因为增益只在下限以上才成立。`commission.py` 就是按这个顺序跑的，
 并且**一旦有任何一步被拒绝就立即停止**，而不是写出一份有缺口的记录。
 
+### ⚠️ First decide which transport, because it changes which tasks exist
+### ⚠️ 先确定用哪条通道，因为它决定了哪些任务成立
+
+**EN** — Tasks 4 and 5 measure a *commanded* speed. Task 5b measures a *primitive*. They
+are not alternatives you may pick between — the transport decides, and each tool refuses
+the other transport by name.
+
+- **`--locomotion-transport axis`** is what both Ventures have actually walked on. Its
+  mapping is **sign-only**: every command above the profile's deadband sends the same
+  full-scale value, so a commanded speed is a *direction*. There is no gait floor and no
+  actuator gain here. **Do task 5b, and skip 4 and 5.**
+- **`--locomotion-transport udp`** carries the commanded number to the wire, so 4 and 5
+  are defined — but **no Venture has ever moved on it.** On 2026-08-24 a `vx=0.10` m/s
+  pulse arrived correctly at the motion host and the robot did not move. If you run a
+  walking probe on it, expect `0.000 m/s` on every segment; that is the interface, not
+  the robot, and not a floor.
+
+**中文** —— 任务 4 和 5 测的是**下发速度**；任务 5b 测的是**动作原语**。
+这不是可以随便二选一的：由通道决定，而且每个工具都会**指名拒绝**另一条通道。
+
+- **`--locomotion-transport axis`**：两台 Venture 实际走起来用的就是它。它的映射是
+  **只看符号**的——只要超过配置文件的死区，发出去的就是同一个满量程值，所以"下发速度"
+  在这里其实是"方向"。这里不存在步态下限，也不存在执行器增益。**请做任务 5b，跳过 4 和 5。**
+- **`--locomotion-transport udp`**：下发的数值会真正到达链路，所以任务 4、5 在数学上成立——
+  **但没有任何一台 Venture 在它上面动过。** 2026-08-24 曾有一次 `vx=0.10` m/s 的指令被
+  确认正确到达运动主机，机器人没有动。如果在它上面跑行走探针，每一段都会是 `0.000 m/s`；
+  那是接口的问题，不是机器人的问题，更不是"步态下限"。
+
 | # | task / 任务 | moves? / 会动吗 | issue #13 |
 | --- | --- | --- | --- |
 | 0 | `lite3_state_probe.py` — link, battery, mode, remote-driven speeds | no / 否 | mode transition, angular-velocity unit |
 | 1 | `motor_temperature_probe.py` — 12 channels or proof of absence | no / 否 | health bridge (vendor blocker) |
 | 2 | `loaded_radius_probe.py` — tape measure | no / 否 | loaded radius, `--policy-scale` |
 | 3 | `camera_calibration.py` — focal length, HFOV, lens height | no (with `--marker`) / 否 | camera calibration |
-| 4 | `gait_floor_probe.py` — **WALKS** | **YES / 是** | `--gait-floor` |
-| 5 | `actuator_gain_probe.py` — **WALKS** | **YES / 是** | `--actuator-gain` |
+| 4 | `gait_floor_probe.py` — **WALKS**, `udp` transport only | **YES / 是** | `--gait-floor` |
+| 5 | `actuator_gain_probe.py` — **WALKS**, `udp` transport only | **YES / 是** | `--actuator-gain` |
+| 5b | `axis_primitive_probe.py` — **WALKS**, `axis` transport only | **YES / 是** | `measured_m_s` in the axis profile |
 | 6 | `commission.py --review` then `--emit-flags` | no / 否 | signs the record |
 
 ---
@@ -434,6 +463,76 @@ trusted for control. Ship the pose number and put the warning in issue #13.
 
 ---
 
+## Task 5b — the axis primitive speeds (THE ROBOT WALKS)
+## 任务 5b —— 轴动作原语的实际速度（机器人会行走）
+
+**EN — when to do this.** Instead of tasks 4 and 5, whenever the demo will run on
+`--locomotion-transport axis` — which today is the only transport either Venture has
+walked on.
+
+**中文 —— 什么时候做。** 当演示将使用 `--locomotion-transport axis` 时，用本任务**代替**
+任务 4 和 5。目前两台 Venture 唯一真正走起来过的就是这条通道。
+
+**EN — set up.** Clear a lane long enough **in front of and behind** the robot, and wide
+enough on **both sides**, for every primitive your profile carries. Measure it. The tool
+checks the lane against `--assume-up-to`, your honest upper bound on how fast this robot
+might turn out to walk — nobody knows the real number yet, which is the entire point of
+the task. One person on the vendor remote with the emergency stop, doing nothing else.
+
+**中文 —— 现场准备。** 按配置文件里实际存在的每个动作原语，清出**前后**足够长、**两侧**
+足够宽的通道，并**实测**尺寸。工具会用 `--assume-up-to`（你对这台机器人可能达到的最快速度
+给出的诚实上界）来校验通道是否够用——真实数值目前没有人知道，这正是本任务的目的。
+一人手持厂商遥控器和急停，全程只做这件事。
+
+```bash
+# First, without --live: it prints the plan and the lane each primitive needs, and exits.
+# 先不加 --live：它会打印执行计划以及每个原语所需的通道尺寸，然后退出。
+python3 axis_primitive_probe.py --robot-id LITE3-A --firmware V1.0.8 --payload none \
+    --locomotion-transport axis --axis-profile lite3-axis-LITE3-A.json \
+    --assume-up-to 0.80 --lane-metres 8.0 --lane-width-metres 3.0
+
+# Then, when the plan fits the room and the operator is ready:
+# 计划与场地匹配、操作员就位之后，再加：
+python3 axis_primitive_probe.py --robot-id LITE3-A --firmware V1.0.8 --payload none \
+    --locomotion-transport axis --axis-profile lite3-axis-LITE3-A.json \
+    --assume-up-to 0.80 --lane-metres 8.0 --lane-width-metres 3.0 \
+    --live --operator-ready
+```
+
+**EN — what it produces.** One speed per primitive, and a `measured_m_s` block to paste
+into that same profile. The number is the **maximum** across the repeats, not the mean:
+it exists to be compared against a safety ceiling, and a mean hides the fast sample the
+ceiling has to survive. Until it is there, the live run prints `AXIS SPEEDS ARE NOT
+VERIFIED AGAINST THE ENVELOPE` and walks anyway.
+
+**中文 —— 产出什么。** 每个原语一个速度，外加一段可直接粘回同一份配置文件的
+`measured_m_s`。取的是多次重复中的**最大值**，不是平均值——这个数字是用来和安全上限做比较的，
+而平均值会把"上限必须扛住的那一次最快"藏起来。在它填上之前，实机运行只会打印
+`AXIS SPEEDS ARE NOT VERIFIED AGAINST THE ENVELOPE`，然后照走不误。
+
+**EN — the refusal that matters most.** If a primitive moves the robot the **wrong way**,
+the run stops and records nothing. The lateral pair inverts between this stack's frame
+(+y is left) and the vendor's raw axis (positive is right), and a profile with those two
+swapped strafes into the side of the lane you cleared least. A swapped profile produces a
+perfectly plausible speed, so this is checked before the number is written down.
+
+**中文 —— 最要紧的一条拒绝。** 如果某个原语把机器人带向**相反方向**，运行会立即停止且不记录
+任何数值。横向的一对在本代码栈的坐标系（+y 为左）和厂商原始轴（正值为右）之间是反的，
+配置文件里这两个写反了，机器人就会横向撞进你清理得最不干净的那一侧。
+写反的配置照样会给出一个非常像样的速度，所以必须在记录数值之前先查这一项。
+
+**EN — ⚠️ this is only half the gate.** The measured speed is compared against
+`--max-vx × --derate`, and the Lite3's `--max-vx` still defaults to **0.35 m/s — the
+Go2's** measured envelope. Measuring this side does not make the comparison a Lite3 one.
+State `--max-vx` / `--max-vy` / `--max-wz` explicitly on the live run.
+
+**中文 —— ⚠️ 这只是这道闸门的一半。** 实测速度会与 `--max-vx × --derate` 比较，
+而 Lite3 的 `--max-vx` 目前仍默认为 **0.35 m/s —— 那是 Go2 的**实测包线。
+把这一侧测准了，并不能让这个比较变成 Lite3 的比较。实机运行时请显式写出
+`--max-vx` / `--max-vy` / `--max-wz`。
+
+---
+
 ## Task 6 — sign the record, then get the flags
 ## 任务 6 —— 签署记录，然后取得运行参数
 
@@ -508,6 +607,12 @@ not resolve it, **stop and write it into issue #13**; do not improvise.
 | `every rung walked, including the smallest tested` | The floor is **below** the lowest speed you tested, so this run bounded it but did not find it. / 下限**低于**你测试的最低速度，本次运行只给出了上界，没有找到它。 | Rerun with a lower `--ladder-top`. / 用更低的 `--ladder-top` 重跑。 |
 | `--envelope-vx … is below the measured gait floor` | The demo would command a speed this robot does not walk at. / 演示会下发一个这台机器人走不动的速度。 | Raise the demo envelope, or accept the floor as the envelope. / 提高演示速度上限，或直接以下限作为上限。 |
 | `the … phase needs up to N m of lane` / `swings up to N m to each side` | The run does not fit the room you described. / 该运行放不进你描述的场地。 | Lower `--rungs` or `--segment`, or find a bigger room. Do **not** overstate the lane. / 降低 `--rungs` 或 `--segment`，或换更大的场地。**不要**虚报通道尺寸。 |
+| `no Lite3 Venture has been seen to walk on --locomotion-transport udp` | You are about to spend robot time on the interface that has never actuated one. / 你正准备把机器人时间花在一条从未真正驱动过它的接口上。 | Use `--locomotion-transport axis`. Pass `--accept-unwalked-transport` **only** if finding out whether `udp` actuates is itself the point of the run. / 改用 `--locomotion-transport axis`。只有当"验证 udp 到底能不能驱动"本身就是本次运行的目的时，才加 `--accept-unwalked-transport`。 |
+| `--locomotion-transport axis discards the commanded magnitude` | A gait floor or an actuator gain is a measurement *of* the commanded speed, and this transport throws it away. Nothing would have crashed: every rung would walk at the same speed and the probe would report the lowest rung as the floor. / 步态下限和执行器增益测的都是"下发速度"本身，而这条通道会把它丢掉。它并不会报错：每一档都会以同样的速度走，探针会把最低的一档当成下限报出来。 | Run `axis_primitive_probe.py` (task 5b) instead. Do **not** pass a transport flag to force it through. / 改跑 `axis_primitive_probe.py`（任务 5b）。**不要**靠改通道参数硬把它跑过去。 |
+| `carries the commanded magnitude to the wire, so it has no fixed primitives` | `axis_primitive_probe.py` was pointed at the velocity transport, where there are no primitives to measure. / `axis_primitive_probe.py` 被指向了速度通道，那里没有可测的动作原语。 | Add `--locomotion-transport axis --axis-profile …`. / 加上 `--locomotion-transport axis --axis-profile …`。 |
+| `N treatment(s) moved the robot the WRONG WAY` | **The profile's directions do not match this robot.** A swapped lateral pair strafes into unsensed space. / **配置文件里的方向和这台机器人对不上。** 横向写反会让机器人横着撞进没有传感器覆盖的一侧。 | Fix the profile's raw axis values. Do **not** record a speed for it. Report it in issue #13 — it may be a firmware convention difference. / 修正配置文件里的原始轴数值。**不要**为它记录速度。请写进 issue #13——这可能是固件约定的差异。 |
+| `there is no low rung in this probe that could legitimately produce nothing` | A primitive commanded at full scale did not move the robot: the raw value is under the firmware dead zone, or the legs were not running. / 一个满量程下发的原语没有让机器人动：要么原始值低于固件死区，要么腿根本没在跑。 | Check the robot stood and is in moving/AI state; then check the raw value against the vendor dead zone for that axis. / 先确认机器人已站立并处于 moving/AI 状态；再对照厂商文档核对该轴的死区与原始值。 |
+| `--axis-profile was given but --locomotion-transport is 'udp'` | The profile would be ignored, which looks exactly like a profile that took effect. / 这份配置文件会被忽略，而那看起来和"配置已生效"一模一样。 | Add `--locomotion-transport axis`, or drop the profile. / 加上 `--locomotion-transport axis`，或者去掉该配置文件。 |
 | `pass --stance-confirmed` | The outline may have been measured prone or unloaded. / 外形可能是在趴姿或空载状态下量的。 | Re-measure standing and loaded, then confirm. / 在站立且带负载状态下重测，然后确认。 |
 | `the front/back extents differ by N×` | The tape was probably referenced to a body edge, not the turning point. / 卷尺原点大概取在了机身边缘，而不是旋转中心。 | Re-drop the plumb line. Use `--asymmetric-confirmed` only if the payload really does hang off one side. / 重新垂铅垂线。只有当负载确实偏向一侧时才使用 `--asymmetric-confirmed`。 |
 | `no state frames arrived at all` (temperatures) | Nothing was learned. A silent link and an absent channel look identical from here. / 本次没有得出任何结论。从这里看，"链路沉默"和"通道不存在"完全一样。 | Section 2, then repeat. This must not be reported as an absent channel. / 见第 2 节后重做。**不得**把它当作"通道不存在"上报。 |

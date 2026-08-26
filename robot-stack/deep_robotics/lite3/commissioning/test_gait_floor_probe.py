@@ -55,7 +55,7 @@ _CONTEXT = ["--robot-id", "LITE3-A", "--firmware", "V1.0.8", "--payload", "none"
 #: The modules in this directory that could hold a velocity default, and so the ones a
 #: Go2 gait floor could be pasted into and be used.
 VELOCITY_MODULES = ("gait_floor_probe.py", "actuator_gain_probe.py", "measurement.py",
-                    "robot_link.py", "commission.py")
+                    "robot_link.py", "commission.py", "axis_primitive_probe.py")
 
 
 def _args(*extra):
@@ -265,19 +265,24 @@ def test_no_ladder_top_means_refuse_rather_than_borrow_the_go2s_number():
 
 
 def test_no_go2_gait_floor_constant_is_executable_anywhere_in_this_directory():
-    """Structural, and it covers the whole directory rather than one file.
+    """Structural, and it covers every module in this directory that commands a velocity.
 
     The Go2's measured floors are 0.35 m/s forward and 0.20 m/s lateral. Naming them in
     prose is how this code explains why they are not defaults here; evaluating them is
     how the next robot silently inherits them. So the check is over the AST, not the
-    text: a *literal* 0.35 or 0.20 in any non-test module in this directory fails the
+    text: a *literal* 0.35 or 0.20 in any module in :data:`VELOCITY_MODULES` fails the
     suite, and the docstrings that argue against them do not.
 
-    Scoped to the modules where a velocity default could live. 0.2 elsewhere in this
-    directory is a socket timeout in seconds, and widening the check to catch those would
-    make it noise that somebody eventually deletes.
+    Scoped to the modules where a velocity default could live -- which is a hand-kept
+    list, and so the one thing here that can rot. ``axis_primitive_probe.py`` was added
+    to it in the same change that added the module: a probe that commands velocities is
+    exactly what this list is for, and a new one that nobody remembers to add is a hole
+    the size of a whole file. 0.2 elsewhere in this directory is a socket timeout in
+    seconds, and widening the check to catch those would make it noise that somebody
+    eventually deletes.
 
-    Verified by mutation: adding ``FLOOR = 0.35`` to gait_floor_probe.py turns this red.
+    Verified by mutation: adding ``FLOOR = 0.35`` to gait_floor_probe.py turns this red,
+    and so does adding it to axis_primitive_probe.py.
     """
     banned = (0.35, 0.20)
     offenders = []
@@ -292,13 +297,52 @@ def test_no_go2_gait_floor_constant_is_executable_anywhere_in_this_directory():
         + ", ".join(offenders))
 
 
+#: A dry run of this probe now has to say which transport it would command through,
+#: because on the default one no Venture has ever walked. ``--accept-unwalked-transport``
+#: is what the operator passes to say that establishing whether it actuates at all is the
+#: point of the run, and it is what keeps the tests below testing the probe rather than
+#: the gate in front of it.
+_ANYWAY = ("--accept-unwalked-transport",)
+
+
 def test_a_dry_run_opens_no_socket_and_returns_zero():
     with tempfile.TemporaryDirectory() as directory:
-        code = _quiet(lambda: main([*_CONTEXT,
+        code = _quiet(lambda: main([*_CONTEXT, *_ANYWAY,
             "--ladder-top", "0.5", "--lateral-top", "0.3",
             "--lane-metres", "20", "--lane-width-metres", "5",
             "--artefact", str(Path(directory) / "a.json")]))
     assert code == 0
+
+
+def test_the_ladder_is_refused_on_the_transport_that_discards_the_commanded_speed():
+    """The failure that would not have crashed.
+
+    Pointed at the axis transport, every rung above the profile's linear deadband emits
+    the same full-scale primitive: every rung walks, at the same speed, the anchors pass
+    and the drift controls pass. The probe would report the lowest rung it happened to
+    try as this robot's gait floor.
+    """
+    message = _refusal(["--locomotion-transport", "axis", "--axis-profile", "p.json",
+                        "--ladder-top", "0.5", "--lateral-top", "0.3",
+                        "--lane-metres", "20", "--lane-width-metres", "5"])
+    assert "discards the commanded magnitude" in message
+    assert "axis_primitive_probe.py" in message
+
+
+def test_a_dry_run_on_a_transport_no_venture_has_walked_on_is_refused():
+    """And it is refused at the DRY run, which is the whole value of the check."""
+    message = _refusal(["--ladder-top", "0.5", "--lateral-top", "0.3",
+                        "--lane-metres", "20", "--lane-width-metres", "5"])
+    assert "no Lite3 Venture has been seen to walk" in message
+    assert "0.000 m/s on every segment" in message
+
+
+def _refusal(extra):
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer):
+        code = run_main(lambda: main([*_CONTEXT, *extra]), "gait")
+    assert code == 2
+    return buffer.getvalue()
 
 
 if __name__ == "__main__":

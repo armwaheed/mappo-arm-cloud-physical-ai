@@ -22,7 +22,9 @@ from __future__ import annotations
 import argparse
 import contextlib
 import io
+import json
 import sys
+import tempfile
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -30,6 +32,8 @@ sys.path.insert(0, str(_HERE.parents[2]))
 
 from deep_robotics.lite3.commissioning import robot_link
 from deep_robotics.lite3.commissioning.measurement import Refusal
+from deep_robotics.lite3.locomotion.lite3_axis_locomotion import Lite3AxisLocomotion
+from deep_robotics.lite3.locomotion.lite3_udp_locomotion import Lite3UdpLocomotion
 
 
 class _Implementation:
@@ -181,6 +185,108 @@ def test_a_moving_probe_is_offered_the_authority_flags():
     robot_link.add_link_arguments(parser, moving=True)
     flags = {option for action in parser._actions for option in action.option_strings}
     assert {"--live", "--operator-ready", "--battery-abort"} <= flags
+
+
+# ── which interface the probe actually ends up commanding through ───────────────────────
+def _transport_args(**overrides):
+    values = {"locomotion_transport": "udp", "axis_profile": None,
+              "axis_local_port": 20001, "motion_host": "192.168.1.120",
+              "command_port": 43893, "state_port": 43897}
+    values.update(overrides)
+    return argparse.Namespace(**values)
+
+
+def _profile_file(directory) -> str:
+    path = Path(directory) / "profile.json"
+    path.write_text(json.dumps({
+        "schema": "lite3-axis-profile/v1",
+        "input_deadband": {"linear_m_s": 0.05, "yaw_rad_s": 0.1},
+        "allowed_gait_states": [0],
+        "evidence": {"forward_positive": "vendor V1.0.8 reference control script"},
+        "measured_m_s": {}, "measured_rad_s": {},
+        "primitives": {"forward_positive": 32767, "forward_negative": None,
+                       "lateral_positive": None, "lateral_negative": None,
+                       "yaw_positive": None, "yaw_negative": None},
+    }), encoding="utf-8")
+    return str(path)
+
+
+def test_the_selected_transport_is_the_one_that_gets_built():
+    """The bug this whole argument exists to prevent.
+
+    A ``connect`` that ignored the choice would put every walking measurement back on the
+    legacy velocity interface -- silently, and with a working-looking axis flag on the
+    command line to say otherwise.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        axis = robot_link._transport_factory(
+            _transport_args(locomotion_transport="axis",
+                            axis_profile=_profile_file(directory)))(
+            cmd_vel_topic=None, odom_topic=None, stamped=None, node_name=None)
+    assert isinstance(axis, Lite3AxisLocomotion)
+
+    udp = robot_link._transport_factory(_transport_args())(
+        cmd_vel_topic=None, odom_topic=None, stamped=None, node_name=None)
+    assert isinstance(udp, Lite3UdpLocomotion)
+    assert not isinstance(udp, Lite3AxisLocomotion)
+
+
+def test_the_axis_transport_carries_the_profile_it_was_given():
+    with tempfile.TemporaryDirectory() as directory:
+        loaded = robot_link.load_axis_profile(
+            _transport_args(locomotion_transport="axis",
+                            axis_profile=_profile_file(directory)))
+    assert loaded.forward_positive == 32767
+
+
+def test_a_profile_handed_to_a_transport_that_ignores_it_is_refused():
+    """It looks exactly like a profile that took effect, and it never reaches the wire."""
+    with tempfile.TemporaryDirectory() as directory:
+        try:
+            robot_link.load_axis_profile(
+                _transport_args(axis_profile=_profile_file(directory)))
+        except Refusal as refusal:
+            assert "does not read one" in str(refusal)
+        else:
+            raise AssertionError("expected a Refusal")
+
+
+def test_the_axis_transport_without_a_profile_is_refused():
+    try:
+        robot_link.load_axis_profile(_transport_args(locomotion_transport="axis"))
+    except Refusal as refusal:
+        assert "requires --axis-profile" in str(refusal)
+    else:
+        raise AssertionError("expected a Refusal")
+
+
+def test_an_unknown_transport_is_named_rather_than_keyerrored():
+    try:
+        robot_link.selected_transport(_transport_args(locomotion_transport="ros2"))
+    except Refusal as refusal:
+        assert "unknown --locomotion-transport" in str(refusal)
+    else:
+        raise AssertionError("expected a Refusal")
+
+
+def test_only_one_transport_claims_to_have_walked_a_venture():
+    """If a second one ever does, the ladder probes stop being unrunnable and this is why."""
+    walked = {name for name, row in robot_link.TRANSPORTS.items() if row.walked}
+    assert walked == {"axis"}
+    assert not robot_link.TRANSPORTS["axis"].preserves_magnitude
+    assert robot_link.TRANSPORTS["udp"].preserves_magnitude
+
+
+def test_the_preflight_reports_which_transport_it_is_about_to_command_through():
+    buffer = io.StringIO()
+    robot_link.preflight(_link(), _args(locomotion_transport="axis"),
+                         printer=lambda line: buffer.write(line + "\n"))
+    assert "transport axis" in buffer.getvalue()
+    assert "has walked a Venture" in buffer.getvalue()
+
+    buffer = io.StringIO()
+    robot_link.preflight(_link(), _args(), printer=lambda line: buffer.write(line + "\n"))
+    assert "NO Venture has been seen to walk on this transport" in buffer.getvalue()
 
 
 if __name__ == "__main__":
