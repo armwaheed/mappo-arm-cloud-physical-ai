@@ -1,17 +1,20 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Crop / upscale / optionally CLAHE a frame, overlay candidate boxes and a labelled grid.
 
 This is the seeding tool: box corners were read off these renders by eye.
 usage: view.py NAME OUT x0 y0 x1 y1 [step] [scale] [enh] [bx0 by0 bx1 by1 ...]
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
 """
 import sys
 
 import cv2
+import peercap
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
+SRC = peercap.frames_dir()
 
 
 def main() -> None:

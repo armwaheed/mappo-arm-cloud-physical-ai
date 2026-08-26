@@ -1,14 +1,19 @@
-"""Assemble annotations.json from the per-segment propagation results."""
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Assemble annotations.json from the per-segment propagation results.
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
+"""
 import json
 import os
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
-WORK = SCRATCH + "peercap_work/"
-OUT = SCRATCH + "peercap_labelled/"
+import peercap
+
+SRC = peercap.frames_dir()
+WORK = peercap.work_dir()
+OUT = peercap.labelled_dir()
 
 LABEL = "go2wheel"
 SNAP = 3

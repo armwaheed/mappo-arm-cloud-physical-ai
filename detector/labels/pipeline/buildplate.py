@@ -1,18 +1,21 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Build a registered background plate for the 'corridor standing' camera-pose group.
 
 Each corridor segment parks the peer somewhere different, so a per-pixel median over one
 frame from each -- all warped to a common reference -- removes the peer and leaves the empty
 corridor, including the marker chair, which never moves and is a useful hard negative.
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
 """
 import cv2
 import numpy as np
+import peercap
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
-WORK = SCRATCH + "peercap_work/"
+SRC = peercap.frames_dir()
+WORK = peercap.work_dir()
 
 REFNAME = "p6_1_trunc_left_stand_0070.jpg"
 MEMBERS = [

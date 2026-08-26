@@ -1,9 +1,15 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 """Per-frame peer blobs for one corridor-pose segment, by registered plate difference.
 
 The plate is registered to the segment once (within-segment camera drift is under 2 px) and
 every frame is then differenced against it.  Output is a raw blob list per frame; deciding
 which blobs are the peer is left to the caller, because the polished floor also returns the
 robot's reflection and a couple of fixed glare streaks.
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
 """
 import glob
 import json
@@ -11,13 +17,10 @@ import sys
 
 import cv2
 import numpy as np
+import peercap
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
-WORK = SCRATCH + "peercap_work/"
+SRC = peercap.frames_dir()
+WORK = peercap.work_dir()
 
 
 def register(plate: np.ndarray, frame: np.ndarray) -> tuple[np.ndarray, float]:

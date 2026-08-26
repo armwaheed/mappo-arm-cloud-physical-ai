@@ -1,16 +1,20 @@
-"""Verification sheet: sample frames of one segment, draw the final box, tile them."""
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+"""Verification sheet: sample frames of one segment, draw the final box, tile them.
+
+Frames come from ``PEERCAP_FRAMES``; ``peercap.py`` records where the corpus lives and
+refuses with that list when it is not set.
+"""
 import json
 import sys
 
 import cv2
 import numpy as np
+import peercap
 
-SCRATCH = (
-    "/private/tmp/claude-501/-Users-wahbro01-workspaces-git/"
-    "ae5beebd-3312-48c6-92c7-3538b392af3f/scratchpad/"
-)
-SRC = SCRATCH + "peercap/"
-OUT = SCRATCH + "peercap_labelled/"
+SRC = peercap.frames_dir()
+OUT = peercap.labelled_dir()
 
 
 def main() -> None:
