@@ -187,8 +187,8 @@ Three things it gets right that a naive generator does not:
   frame edge, and a set of whole robots omits the case that matters.
 
 **Recorded frames.** The only route for the Go2 Wheel: it is a wheeled variant, Unitree
-publishes no matching description, and `arm-mhs-unitree-go2` ships no URDF at all. About
-60-90 usable frames exist today, all from one corridor.
+publishes no matching description, and the upstream Go2 driver repository ships no URDF
+at all. About 60-90 usable frames exist today, all from one corridor.
 
 ### ⚠️ A background is a picture PLUS the camera that took it
 
