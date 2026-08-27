@@ -693,11 +693,16 @@ ruff check .                                  # must be clean
 Needs `device-connect-edge`, `device-connect-agent-tools`, `aiohttp` and `numpy`; `boto3`
 only for the S3 path, and `Pillow` only for the sim camera. `test_start_dashboard.py` needs
 none of them: it drives `start-dashboard.sh` against a **stub interpreter** — a real Python
-with `sys.version_info` overwritten and a meta-path finder that refuses named modules — so
-"a 3.9 interpreter is refused" is a condition the test supplies rather than one the machine
-happens to have. A test that asserted it with the local `python3` would pass on a Mac and
-assert nothing on a CI runner whose `python3` is 3.11. Its one end-to-end test is the
-teardown: three real children, a real SIGTERM, and the process table read afterwards.
+with `sys.version_info` overwritten, a meta-path finder that refuses named modules, and a
+directory of stand-in modules on `sys.path` that satisfy the rest — so both "a 3.9
+interpreter is refused" and "a complete one is accepted" are conditions the test supplies
+rather than ones the machine happens to have. A test that asserted the first with the local
+`python3` would pass on a Mac and assert nothing on a runner whose `python3` is 3.11; and
+**the second half was learned the hard way** — without the stand-ins the happy-path tests
+passed on a laptop with Device Connect installed and failed on CI, which does not have it.
+A stub that can only take modules away still lets the environment decide the answer. Its
+one end-to-end test is the teardown: three real children, a real SIGTERM, and the process
+table read afterwards.
 `test_drive_bridge.py`,
 `test_model_store.py`, `test_peer_link.py` and `test_model_server.py` run without the
 Device Connect packages — and two of them are end-to-end against the real counterpart

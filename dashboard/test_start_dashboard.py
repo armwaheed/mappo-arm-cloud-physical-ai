@@ -44,13 +44,26 @@ REQUIRED = (("device_connect_edge", "device-connect-edge"),
             ("numpy", "numpy"))
 
 
-def _stub_interpreter(directory: Path, *, version=(3, 11, 0), blocked=()) -> Path:
-    """A real interpreter that reports ``version`` and refuses to import ``blocked``.
+def _stub_interpreter(directory: Path, *, version=(3, 11, 0), blocked=(),
+                      provided=tuple(name for name, _ in REQUIRED)) -> Path:
+    """A real interpreter that reports ``version``, imports ``provided``, refuses ``blocked``.
 
     Everything else about it is this interpreter, so the launcher's probes — a ``-c`` that
     prints ``sys.version_info``, a ``-c`` that exits on a comparison, and a ``-c import X``
     per package — run for real against an answer this file controls.
+
+    ⚠️ ``provided`` matters as much as ``blocked``, and leaving it out cost a red CI run.
+    Without it the stub inherits whatever the machine has installed, so every test of the
+    HAPPY path passed on a laptop with Device Connect and failed on a runner without it —
+    which is the same defect the docstring above warns about, in the other direction. A
+    stub that can only take modules away still lets the environment decide the answer.
+
+    ``blocked`` wins over ``provided``: meta-path finders are consulted before sys.path.
     """
+    stubs = directory / "stub-modules"
+    stubs.mkdir(exist_ok=True)
+    for name in provided:
+        (stubs / f"{name}.py").write_text("# stand-in, so the launcher's import probe passes\n")
     stub = directory / "stub-python"
     stub.write_text(textwrap.dedent(f'''\
         #!{sys.executable}
@@ -71,6 +84,7 @@ def _stub_interpreter(directory: Path, *, version=(3, 11, 0), blocked=()) -> Pat
 
 
         sys.meta_path.insert(0, _Refuse())
+        sys.path.insert(0, {str(stubs)!r})
 
         argv = sys.argv[1:]
         if argv and argv[0] == "-c":
