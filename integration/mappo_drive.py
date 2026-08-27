@@ -484,8 +484,8 @@ class MappoPlanner(DynamicWindowPlanner):
         # The incumbent is computed on EVERY tick, used or not, so that its acceleration
         # window and reason hysteresis stay continuous. A planner consulted for the first
         # time mid-run plans from a standstill the robot is not in.
-        planned = super().plan(pose, goal, last_command, obstacles,
-                               control_dt=control_dt, last_reason=last_reason)
+        planned = self._incumbent(pose, goal, last_command, obstacles,
+                                  control_dt=control_dt, last_reason=last_reason)
         self.counts["ticks"] += 1
 
         if self._loco is None:
@@ -714,6 +714,25 @@ class MappoPlanner(DynamicWindowPlanner):
         print("    loaded body measures smaller, or an approach that does not need a "
               "crawl. See issue #145.")
         print("!" * 78)
+
+    def _incumbent(self, pose, goal, last_command, obstacles, control_dt: float,
+                   last_reason: str) -> Command:
+        """The SHARED planner's own answer for this tick — what the robot would do
+        with no policy and no supervisor at all.
+
+        A named seam rather than a bare ``super().plan`` call at the top of
+        :meth:`_choose`, because it is the fallback every refusal path returns and
+        the carrier of ``floor_reach_m_s`` and ``transport_refusal``, and a test that
+        wants to pin what those branches forward has to be able to state what came in.
+        Provoking a transport refusal from a real scene cannot do that: on any scene
+        where the supervisor is refused there is a mover present, and
+        ``_transport_refusal`` correctly declines to blame the transport when a
+        proportional planner would have held too — so both fields are ``None`` and
+        the assertion is vacuous. See
+        ``test_the_supervisors_veto_fallback_still_carries_the_planners_state``.
+        """
+        return super().plan(pose, goal, last_command, obstacles,
+                            control_dt=control_dt, last_reason=last_reason)
 
     def _finalise(self, decision: dict, command: Command) -> Command:
         """Close out the tick's decision record and return the command it describes.

@@ -34,6 +34,12 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
                                 "visual_nav"))
+# `robot-stack` itself, so the Lite3's REAL transport model can be imported as the
+# package it is (`deep_robotics.lite3.locomotion...`). The composition tests at the
+# bottom of this file are about what the shared planner does on the robot #150 was
+# written for, and a hand-rolled stand-in for that transport would be a test of the
+# stand-in. It is pure stdlib and imports no vendor SDK.
+sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack"))
 from avoidance import (
     MIN_GAIT_COMMAND_M_S,
     PLANNER_REASONS,
@@ -43,6 +49,11 @@ from avoidance import (
     Obstacle,
     PlannerConfig,
     base_reason,
+)
+from deep_robotics.lite3.locomotion.lite3_axis_locomotion import (
+    AXIS_PROFILE_SCHEMA,
+    AxisProfile,
+    SignOnlyAxisTransport,
 )
 
 import mappo_bridge
@@ -1668,6 +1679,262 @@ def test_the_integrated_drive_path_avoids_the_bin_and_arrives():
         f"path shaved the bin to {min_free:.3f} m of free space"
     assert max_offline > 0.30, \
         f"the path never left the corridor (max |y| {max_offline:.2f}) — no avoidance"
+
+
+# ── #150 against #145: how the planner's refusal and the supervisor compose ──
+#
+# THE QUESTION THE REBASE RAISED, AS TESTS. #150 was written on a tree that predates
+# #149, so nothing in it ever ran under the transport model the Lite3 actually has —
+# every test above builds `Limits()`, whose transport is `PROPORTIONAL`, which is the
+# GO2's. Read as evidence about a Lite3 those are vacuous on exactly the property that
+# changed. These four are the same chain under `SignOnlyAxisTransport`.
+def _lite3_a_profile(forward_m_s: float = 0.30) -> AxisProfile:
+    """LITE3-A's SHAPE, as `DEPLOYMENT-SOP.md` §"axis profile" records it: forward and
+    both yaw primitives evidenced, lateral and reverse `null`, and NO `measured_rad_s`
+    anywhere — `axis_primitive_probe.py` deliberately does not time yaw.
+
+    ⚠️ `forward_m_s` IS NOT A LITE3 MEASUREMENT AND MUST NOT BE READ AS ONE. No Lite3
+    has ever run `axis_primitive_probe.py` (`README.md`'s status table: "not measured"),
+    which is why a live run refuses without it. It is a parameter here, and
+    `test_the_turn_drive_vocabulary_is_what_a_sign_only_transport_can_name` sweeps it,
+    because every claim below has to hold for whatever the probe eventually returns
+    rather than for one plausible number.
+    """
+    data = {
+        "schema": AXIS_PROFILE_SCHEMA,
+        "input_deadband": {"linear_m_s": 0.05, "yaw_rad_s": 0.10},
+        "allowed_gait_states": [0],
+        "measured_m_s": {"forward_positive": forward_m_s},
+        "measured_rad_s": {},
+        "evidence": {"forward_positive": "lite3-a-forward",
+                     "yaw_positive": "lite3-a-yaw-positive",
+                     "yaw_negative": "lite3-a-yaw-negative"},
+        "primitives": {"forward_positive": 32767, "forward_negative": None,
+                       "lateral_positive": None, "lateral_negative": None,
+                       "yaw_positive": 16000, "yaw_negative": -16000},
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "lite3-a.json"
+        path.write_text(json.dumps(data))
+        return AxisProfile.load(path)
+
+
+def _lite3_limits(forward_m_s: float = 0.30) -> Limits:
+    """The SOP's live envelope, on the transport the SOP's live command selects."""
+    return Limits(max_vx=0.55, max_vy=0.0, max_wz=0.90, gait_floor=0.30,
+                  transport=SignOnlyAxisTransport(_lite3_a_profile(forward_m_s)))
+
+
+def test_the_turn_drive_vocabulary_is_what_a_sign_only_transport_can_name():
+    """⚠️ THE COMPOSITION, AS A FACT ABOUT THE TWO MODULES RATHER THAN A HOPE.
+
+    #149 and #150 were written independently, days apart, and reached the same answer
+    from opposite ends: #149 asked what a sign-only transport can be told and found
+    that a turn may not be combined with a step, and #150 asked what this Lite3 was
+    MEASURED to perform and found pure turns and pure drives. This test is that
+    coincidence written down, in the only terms that matter — the supervisor's entire
+    output vocabulary is inside the set the transport can name, so the transport-aware
+    veto of #149 cannot refuse a #150 command for being unnameable.
+
+    Swept over the forward speed because nothing has measured this robot's, and a claim
+    that held only at 0.30 m/s would be a claim about the number rather than the shape.
+    """
+    for forward in (0.12, 0.30, 0.55, 1.20):
+        transport = SignOnlyAxisTransport(_lite3_a_profile(forward))
+
+        # The supervisor's two shapes, and the two it forbids itself, in one call.
+        commands = [(0.0, 0.0, 0.90),      # pure turn   — supervisor "turn"
+                    (0.55, 0.0, 0.0),      # pure drive  — supervisor "drive"
+                    (0.0, 0.0, 0.0),       # stop
+                    (0.55, 0.0, 0.90),     # turn AND step — the supervisor never emits
+                    (0.0, 0.30, 0.0)]      # strafe        — the supervisor never emits
+        rows, known = transport.executed(commands)
+        turn, drive, stop, arc, strafe = known
+        assert turn, "a pure turn must stay nameable — its rollout is a point, and " \
+                     "refusing it would leave a robot that can only walk straight"
+        assert drive, f"a pure drive must be nameable at {forward:.3f} m/s"
+        assert stop
+        assert not arc, "a turn combined with a step has no nameable execution"
+        assert not strafe, "LITE3-A has no lateral primitive; a strafe is unnameable"
+
+        # And the drive leaves at the PRIMITIVE's speed, not at the number asked for —
+        # #145's whole finding, which this composition must not undo.
+        assert math.isclose(rows[1][0], forward), rows[1]
+        assert rows[0][0] == 0.0 and rows[0][1] == 0.0, \
+            "a turn must translate nowhere, or its rollout stops being a point"
+
+
+def test_the_supervisors_detour_survives_the_transport_aware_veto():
+    """⚠️ THE REBASE'S OWN QUESTION: does #149's veto pre-empt #150's supervisor?
+
+    Measured here rather than reasoned about. The same scene as
+    `test_the_integrated_drive_path_avoids_the_bin_and_arrives` above, with the Go2's
+    proportional transport replaced by the Lite3's sign-only one — which is the only
+    difference, and is the whole of what #149 changed. The run must still leave the
+    corridor and still arrive, and the supervisor must still be the thing that takes
+    it round.
+
+    It can fail: make the transport refuse a pure turn (delete the carve-out in
+    `SignOnlyAxisTransport.executed`) and every `exec-turn` below becomes `veto-hold`,
+    the robot never turns, and it never arrives.
+    """
+    class _GoalSeeker(_StubRunner):
+        def step(self, tick, monotonic_s=None):
+            from mappo_policy import PolicyStep
+            pose, goal = tick["pose"], tick["goal"]
+            bearing = math.atan2(goal["y"] - pose["y"], goal["x"] - pose["x"])
+            error = (bearing - pose["yaw"] + math.pi) % (2.0 * math.pi) - math.pi
+            return PolicyStep(status="COMMAND", vx_mps=0.35, vy_mps=0.0,
+                              wz_radps=max(-1.0, min(1.0, 2.0 * error)),
+                              action_x=1.0, action_y=0.0, intent_bearing_rad=bearing,
+                              age_s=0.0, observation=())
+
+    limits = _lite3_limits()
+    supervisor = TurnDriveSupervisor(robot_radius_m=0.25, drive_speed_m_s=limits.max_vx,
+                                     turn_rate_rad_s=limits.max_wz)
+    planner = _supervised_planner(_GoalSeeker((0.35, 0.0, 0.0)), supervisor,
+                                  limits=limits)
+    obstacle = _lite3_bin(x=1.5)
+    pose, goal, last = (0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0)
+    min_free, max_offline, arrived = math.inf, 0.0, False
+    with contextlib.redirect_stdout(io.StringIO()):
+        for _tick in range(400):
+            command = planner.plan(pose, goal, last, [obstacle])
+            x, y, yaw = pose
+            yaw += command.wz * 0.1
+            x += command.vx * math.cos(yaw) * 0.1
+            y += command.vx * math.sin(yaw) * 0.1
+            pose, last = (x, y, yaw), (command.vx, command.vy, command.wz)
+            min_free = min(min_free, math.hypot(obstacle.x - x, obstacle.y - y)
+                           - obstacle.radius_m - 0.25)
+            max_offline = max(max_offline, abs(y))
+            if math.hypot(goal[0] - x, goal[1] - y) < 0.30:
+                arrived = True
+                break
+    assert arrived, f"never arrived under the sign-only transport: {planner.counts}"
+    assert min_free > 0.0, f"clipped the bin: {min_free:.3f} m"
+    assert max_offline > 0.30, \
+        f"arrived without leaving the corridor ({max_offline:.3f} m) — a run that " \
+        f"goes straight through where the bin is proves nothing"
+    assert planner.counts["turn_drive"] > 0, \
+        f"the supervisor never took a tick: {planner.counts}"
+
+
+def test_a_planner_transport_refusal_does_not_end_a_supervised_detour():
+    """⚠️ THE PRE-EMPTION, AND THE ONE MERGE RESOLUTION THAT AVOIDS IT.
+
+    On this pose the two subsystems disagree, and both are right. The SHARED PLANNER
+    refuses: it wants a straight line, the legs have one forward gear, and that gear's
+    2.5 s rollout outruns the space it can see to be clear — so `plan` returns a hold
+    carrying `transport_refusal`, and `visual_nav` ENDS THE RUN on a stop that carries
+    one (`stopped by the transport`). The SUPERVISOR meanwhile has an executable
+    answer: turn, then drive the tangent leg, which is not the straight line the
+    planner refused.
+
+    Forwarding `planned.transport_refusal` onto the supervisor's command is the
+    resolution a mechanical merge produces — every other branch of `_choose` forwards
+    it, so the diff reads as an omission. Measured on the scene above, it ends the run
+    on tick 24 of a 104-tick run that otherwise arrives: the FIRST drive leg of the
+    detour. The field describes a command that was superseded, and a superseded
+    refusal must not be the last word.
+
+    18 of that run's 51 supervisor ticks are inside this window. This is the first.
+
+    THE POSE AND THE PREVIOUS COMMAND ARE BOTH LOAD BEARING and are lifted from that
+    run's tick 24 rather than invented. `last_command` sets the acceleration-limited
+    window, so from a standstill the planner cannot reach the speeds whose execution
+    it refuses, and the disagreement this test is about does not exist. The two
+    assertions below fail loudly rather than passing vacuously if either drifts.
+    """
+    limits = _lite3_limits()
+    radius = 0.40                     # `DEPLOYMENT-SOP.md`'s own `--robot-radius`
+    supervisor = TurnDriveSupervisor(robot_radius_m=radius,
+                                     drive_speed_m_s=limits.max_vx,
+                                     turn_rate_rad_s=limits.max_wz)
+    with contextlib.redirect_stdout(io.StringIO()):
+        planner = MappoPlanner(limits, PlannerConfig(robot_radius_m=radius),
+                               _StubRunner((0.35, 0.0, 0.0)), supervised=True,
+                               scale_override=True, execution_supervisor=supervisor)
+    planner.attach(_Loco())
+    pose, goal, obstacles = (0.8491, -0.5090, -0.5400), (3.0, 0.0), [_lite3_bin(x=1.5)]
+    last = (0.55, 0.0, 0.0)
+
+    # The shared planner, asked the same question on the same tick, DOES refuse — so
+    # this test is about a real disagreement rather than a hypothetical one. Without
+    # this half it would pass on a tick where there was nothing to forward.
+    from avoidance import DynamicWindowPlanner
+    alone = DynamicWindowPlanner.plan(planner, pose, goal, last, obstacles,
+                                      control_dt=0.1)
+    assert alone.transport_refusal is not None, \
+        "the planner no longer refuses here, so this test has stopped being about " \
+        "the disagreement it was written for — re-derive the pose"
+    assert alone.is_stop, alone
+    assert supervisor.command(pose, goal, obstacles) is not None, \
+        "the supervisor has no answer here, so there is nothing to pre-empt"
+
+    command = planner.plan(pose, goal, last, obstacles)
+    assert command.reason.startswith("exec-"), \
+        f"the supervisor did not get the tick: {command.reason}"
+    assert command.transport_refusal is None, \
+        "a superseded refusal was forwarded onto the supervisor's command; " \
+        "`visual_nav` ends the run on it and the detour never happens"
+    assert not (command.is_stop and command.transport_refusal), command
+    assert planner.counts["transport_refused"] == 0, planner.counts
+
+
+def test_the_supervisors_veto_fallback_still_carries_the_planners_state():
+    """The complement, and it is what stops the test above reading as "drop the field".
+
+    When the supervisor's own command is REFUSED, what goes out is THE PLANNER'S
+    command — so both fields describe the velocity actually leaving, and both must
+    travel with it. Dropping them there would delete the only diagnostic an operator
+    gets for a robot that has stopped because its legs have one gear.
+
+    ⚠️ **THE INCUMBENT IS SUBSTITUTED RATHER THAN PROVOKED, AND THAT IS DELIBERATE.**
+    The obvious test — put a person on the detour and read the fallback — passes
+    whatever this branch does, because on a scene with a mover BOTH fields are `None`:
+    `_transport_refusal` declines to blame the transport on a tick where a
+    proportional planner would have held too (issue #145's own "boxed in" case), and
+    the gait-floor guard has not fired. That version was written first, and dropping
+    both fields from the branch under test left it passing. It asserted `None ==
+    None`. This one names the values it expects to come back.
+    """
+    limits = _lite3_limits()
+    supervisor = TurnDriveSupervisor(robot_radius_m=0.25, drive_speed_m_s=limits.max_vx,
+                                     turn_rate_rad_s=limits.max_wz)
+
+    class _RefusingIncumbent(MappoPlanner):
+        """A planner whose shared-planner half returns a hold that names both fields."""
+
+        def _incumbent(self, *args, **kwargs):
+            return Command(0.0, 0.0, 0.0, reason="hold", gap_m=0.31,
+                           feasible=0, evaluated=330, floor_reach_m_s=0.12,
+                           transport_refusal="asked for 0.050 m/s and the legs "
+                                             "would receive 0.300 m/s")
+
+    static_bin = _lite3_bin()
+    blocker = supervisor.blocker((0.0, 0.0, 0.0), (3.0, 0.0), [static_bin])
+    waypoint, _side = supervisor._waypoint((0.0, 0.0, 0.0), (3.0, 0.0), blocker,
+                                           [static_bin])
+    yaw = math.atan2(waypoint[1], waypoint[0])
+    person = Obstacle(x=waypoint[0] * 0.4, y=waypoint[1] * 0.4, vx=0.0, vy=0.0,
+                      radius_m=0.35, kind="tracked", object_id="track-1")
+    with contextlib.redirect_stdout(io.StringIO()):
+        planner = _RefusingIncumbent(limits, PlannerConfig(robot_radius_m=0.25),
+                                     _StubRunner((0.35, 0.0, 0.0)), supervised=True,
+                                     execution_supervisor=supervisor)
+    planner.attach(_Loco())
+    command = planner.plan((0.0, 0.0, yaw), (3.0, 0.0), (0.0, 0.0, 0.0),
+                           [static_bin, person])
+
+    assert command.reason.startswith("veto-"), command.reason
+    assert planner.decision_record()["supervisor"]["vetoed"] is True
+    assert command.floor_reach_m_s == 0.12, \
+        "the gait-floor state was stripped off the planner's own command"
+    assert command.transport_refusal is not None, \
+        "the transport refusal was stripped off the planner's own command — the " \
+        "operator is left with a bare `hold` for a robot that has one gear"
+    assert planner.counts["transport_refused"] == 1, planner.counts
 
 
 if __name__ == "__main__":
