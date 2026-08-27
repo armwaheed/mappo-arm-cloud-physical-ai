@@ -59,7 +59,7 @@ from a script that is *not* in this repository we say that too. The brief for th
 was "none of this whitepaper-with-no-code nonsense", so a reader who opens the tree should be
 able to falsify any sentence here, and will not have to look far.
 
-Sections 1–13 are what was built. [Appendix A](#appendix-a--corrections-what-we-got-wrong-and-how-we-found-out)
+Sections 1–14 are what was built. [Appendix A](#appendix-a--corrections-what-we-got-wrong-and-how-we-found-out)
 is the log of what we got wrong and how we found out; it is cross-referenced from each
 section and it is the most distinctive material in the repository. Each section carries its
 own measured caveat inline, so the appendix deepens the argument rather than reversing it.
@@ -80,38 +80,75 @@ own measured caveat inline, so the appendix deepens the argument rather than rev
 | [10](#10-peers-over-the-mesh-not-through-a-detector) | Peer robots avoided by published pose over the mesh, not by perception | a 0.40 m disc, dropped **and** held after 0.6 s |
 | [11](#11-test-runs-are-the-training-corpus) | Every test run also harvests CV training data, joined tick-to-frame; SAM labelling **pending** | 89 runs, 9,117 ticks, 4,624 detections harvested |
 | [12](#12-one-robot-four-detectors) | **Finding:** the inference configuration is a larger lever than the weights | same weights, same frames: 13% to 68% recall |
-| [13](#13-guards-proven-by-forcing-them-to-fail) | Guards are proven by breaking them, and surviving mutations are recorded too | 47 "Made to fail by …" records in test docstrings |
+| [14](#14-guards-proven-by-forcing-them-to-fail) | Guards are proven by breaking them, and surviving mutations are recorded too | 47 "Made to fail by …" records in test docstrings |
 
 ---
 
 ## The system in one page
 
+```mermaid
+flowchart TB
+    CAM(["ONE RGB CAMERA<br/>no depth · no LiDAR · no stereo · no fiducial"])
+
+    subgraph CORE["Vendor-agnostic core — numpy + OpenCV, imports no robot, moved to the second vendor unchanged"]
+      direction TB
+      DET["colour_detector · person_detector<br/>MobileNet-SSD, launched four different ways §12"]
+      RNG["camera_model — the equidistant model r = f·θ<br/>focal_px 1290.16, fitted by the robot turning on the spot §1"]
+      GATE{"can this frame be ranged?"}
+      REFUSE["HOLD, with a stated reason<br/>UNRANGEABLE_SOURCES · box geometry only §3"]
+      MAP["tracker → static_map<br/>an object persists in odom once the swerve takes it out of frame"]
+      OBS[["ONE obstacle list<br/>id · kind · position · radius · velocity"]]
+      DET --> RNG --> GATE
+      GATE -- "no" --> REFUSE
+      GATE -- "yes" --> MAP --> OBS
+    end
+
+    PEER["peer_pose over the Arm Device Connect mesh<br/>10 Hz · a 0.40 m disc · dropped AND held after 0.6 s §10<br/>designed and offline-tested; has never driven a robot"]
+
+    CAM --> DET
+    PEER -.-> OBS
+
+    subgraph DECIDE["Two opinions, one command"]
+      direction TB
+      POL["MAPPO policy — 71,684 parameters<br/>18 → 256 → 256 → 4 → 2<br/>policy/ · integration/"]
+      VETO["dynamic-window veto — avoidance.DynamicWindowPlanner<br/>rolls each candidate forward and refuses the ones that end inside something"]
+      POL -- "candidate vx, vy" --> VETO
+    end
+
+    OBS --> POL
+    OBS --> VETO
+    VETO --> FLOOR{"above this robot's gait floor?<br/>Go2 0.35 m/s · Lite3 0.30 m/s"}
+    FLOOR -- "no" --> STOP["STOP — a crawl is not a slow walk,<br/>it is a robot standing still reporting no fault"]
+    FLOOR -- "yes" --> CMD(["one command — vx, vy, wz"])
+
+    subgraph SEAMS["Three vendor seams — camera, locomotion, safety — and that is the entire platform surface §5"]
+      direction LR
+      GO2["Unitree Go2<br/>SportClient over CycloneDDS<br/>PROPORTIONAL transport"]
+      LITE["Deep Robotics Lite3 Venture<br/>high-level UDP axis interface<br/>SIGN-ONLY transport §6"]
+    end
+
+    CMD --> GO2
+    CMD --> LITE
+    GO2 --> LEGS(["legs"])
+    LITE --> LEGS
+
+    TEL[["one versioned JSONL tick per control cycle<br/>--telemetry, the interface §4"]]
+    CMD --> TEL
+    LEGS -- "measured, written beside command" --> TEL
+    TEL --> CORPUS["the run is also a training corpus §11"]
+
+    classDef refuse fill:#fde2e2,stroke:#b42318,color:#5c1410;
+    classDef seam fill:#fdf0d5,stroke:#b54708,color:#5c3200;
+    classDef sensor fill:#e0f0ff,stroke:#175cd3,color:#0b2f66;
+    class REFUSE,STOP refuse;
+    class GO2,LITE seam;
+    class CAM,PEER sensor;
 ```
-   ONE RGB CAMERA
-        |
-        +-- colour blob detector ----+
-        +-- MobileNet-SSD -----------+      robot-stack/.../visual_nav/
-        +-- angular-size and ground -+      robot-agnostic numpy + OpenCV
-            contact ranging          |
-                                     v
-                            tracker -> static map -> goal
-                                     |
-                                     v
-                    +--------  ONE obstacle list  --------+
-                    |                                     |
-              MAPPO policy                       dynamic-window veto
-           (policy/, integration/)          (avoidance.DynamicWindowPlanner)
-                    |                                     |
-                    +-----------> one command <-----------+
-                                     |
-                       +-------------+-------------+
-              Unitree Go2 seam              Deep Robotics Lite3 seam
-        SportClient over CycloneDDS      high-level UDP axis interface
-                                     |
-                                     v
-                        one JSONL tick per control cycle
-                         (--telemetry: the interface, section 4)
-```
+
+*The two shaded seams are the only vendor-specific code on the path, and the dashed peer
+edge is the only input that is not a pixel. Every refusal in red is a place the stack says
+"I cannot" rather than emitting a number — [§3](#3-depth-from-a-focal-length--and-the-guard-that-refuses-a-constant-range)
+is the finding that put the first one there.*
 
 ![Annotated render of a Unitree Go2 with its front RGB camera, joint actuators, onboard compute and dorsal mount called out](figures/go2-walk-profile.png)
 
@@ -142,6 +179,112 @@ the bin and stopped: the planner was satisfied — **0.70 m** of separation wher
 cycles, **0** errors, motors 31 → 32 °C. Of **107** control ticks: 63 `goal`, 24 `avoid`,
 20 `hold` — and every one of the **12** ticks where the gap went negative commanded a full
 stop. `evidence/go2_nav_run.{mp4,log}`.
+
+### The policy, in numbers
+
+**71,684 parameters drive a real quadruped from a Jetson.** That is the whole learned
+controller: three weight matrices and three bias vectors in a 262 KiB `.npz` that is
+vendored into this repository, so every number in this subsection can be printed from a
+clean clone with `numpy` and nothing else.
+
+`policy/models/mappo_actor_3agent_1910000.npz`:
+
+| array | shape | parameters |
+| --- | --- | ---: |
+| `W1`, `b1` | (256, 18), (256,) | 4,864 |
+| `W2`, `b2` | (256, 256), (256,) | 65,792 |
+| `W3`, `b3` | (4, 256), (4,) | 1,028 |
+| | **total** | **71,684** |
+
+The checkpoint also ships a `metadata_json` array stating what it was trained with — the
+only in-band record of the training constants, and `MappoController._check_against_checkpoint`
+now validates the config against it rather than trusting either:
+
+| field | value | field | value |
+| --- | --- | --- | --- |
+| `format` | `mappo_shared_actor_numpy_v1` | `activation` | `tanh` |
+| `actor_input_dim` | 18 | `policy_distribution` | `TanhNormal` |
+| `actor_hidden_dims` | [256, 256] | `deterministic_action` | `tanh(loc)` |
+| `actor_raw_output_dim` | 4 | `training_n_agents` | 3 |
+| `deterministic_action_dim` | **2** | `share_policy_params` | `true` |
+| `training_frames` | 1,910,000 | `training_max_steps` | 100 |
+| `training_lidar_range_vmas` | 0.35 | `training_agent_radius_vmas` | 0.1 |
+
+```mermaid
+flowchart LR
+    subgraph OBSV["ONE observation — 18 float32, run-local frame, every term ÷ 2.5 m per VMAS unit"]
+      direction TB
+      ST["<b>6 state</b><br/>x · y · vx · vy · x−gx · y−gy"]
+      LID["<b>12 lidar</b> — rays at FIXED 30° spacing over a full circle,<br/>which do NOT turn with the robot's nose, because the<br/>trained VMAS agent never rotates<br/>PROXIMITY, not range: 0.35 − range, so bigger means closer<br/>reads 0 beyond the 0.875 m horizon"]
+    end
+
+    OBSV --> L1["<b>W1 (256, 18) + b1</b><br/>tanh<br/>4,864 params"]
+    L1 --> L2["<b>W2 (256, 256) + b2</b><br/>tanh<br/>65,792 params"]
+    L2 --> L3["<b>W3 (4, 256) + b3</b><br/>1,028 params"]
+    L3 --> RAW[["<b>4 raw outputs</b><br/>a TanhNormal's loc[2] and scale[2]"]]
+
+    RAW -- "raw[:2]" --> LOC["loc — kept"]
+    RAW -- "raw[2:]" --> SC["scale — DISCARDED<br/>the deployment is deterministic;<br/>it never samples the distribution"]
+    LOC --> ACT(["<b>tanh(loc) → 2 actions</b><br/>vx, vy"])
+    SC -.-> X(("×"))
+
+    ACT --> NOYAW["<b>THERE IS NO YAW OUTPUT.</b><br/>The policy cannot ask the robot to turn.<br/>So the robot crabs, its 85° camera never looks anywhere new,<br/>and a heading servo bolted on to fix that closes a loop<br/>through the body frame and drives into a wall — A1."]
+
+    classDef drop fill:#fde2e2,stroke:#b42318,color:#5c1410;
+    classDef punch fill:#fdf0d5,stroke:#b54708,color:#5c3200;
+    class SC,X drop;
+    class NOYAW punch;
+```
+
+**Read the collapse on the right of that diagram, because it explains more of this paper
+than any other single fact about the policy.** The network emits four numbers; two of them
+are a distribution's spread that the deployment throws away
+(`np.tanh(raw[:2])`, `policy/physical_ai_mappo.py`), and the two that survive are a
+*translational* velocity. Nothing in the action space turns the robot. That is why
+[§6](#6-a-planner-that-models-its-own-transport) has to re-express avoidance as pure turns
+and pure drives before a Lite3 can execute it, why `--heading-servo` defaults to `off`, and
+why [A1](#a1-our-control-law-a-heading-servo-that-drove-into-a-wall) happened at all.
+
+Two more consequences worth having in front of you before Part I:
+
+- **The 12 rays are the policy's entire model of the world**, and they are filled in from the
+  stack's short list of *recognised objects*, not from a sensor. Free space in that vector
+  means "nothing was recognised", not "nothing is there".
+- **The horizon is 0.875 m** — `lidar_range_vmas` 0.35 × `meters_per_vmas_unit` 2.5, both in
+  `policy/config.json`, the first pinned by the checkpoint's own metadata. Past that the lidar
+  block is twelve zeros regardless of what is in the room, which is what
+  `evidence/2026-08-19-what-the-policy-sees/` caught with two bins plainly in the camera at
+  1.7 m and 2.7 m.
+
+And this is the path one camera frame actually travels, end to end:
+
+```mermaid
+flowchart LR
+    F["one RGB frame<br/>1920×1080 Go2 · 1280×720 Lite3"] --> D["detector + colour_detector<br/>224 or 300 px, 0.25/0.40/0.45 floor,<br/>1 or 20 classes — four launchers, §12"]
+    D --> S["sightings: bearing from focal_px,<br/>range from angular size or ground contact"]
+    S --> G{"rangeable?"}
+    G -- "no" --> H["hold — §3"]
+    G -- "yes" --> M["tracker → static_map, in odom"]
+    M --> O["18-value observation<br/>6 state + 12 proximity rays"]
+    O --> A["actor · 71,684 params<br/>18 → 256 → 256 → 4"]
+    A --> V["tanh(loc) → vx, vy"]
+    V --> E["envelope clamp<br/>max_vx 0.35 · max_vy 0.20 · forward only"]
+    E --> GF{"≥ gait floor?"}
+    GF -- "no" --> ST["stop, and say so"]
+    GF -- "yes" --> VE{"veto: roll forward 2.5 s,<br/>does it end inside anything?"}
+    VE -- "yes" --> PL["the planner's own command"]
+    VE -- "no" --> T["transport model<br/>proportional Go2 · sign-only Lite3"]
+    PL --> T
+    T --> LG(["legs"])
+
+    classDef refuse fill:#fde2e2,stroke:#b42318,color:#5c1410;
+    class H,ST refuse;
+```
+
+*Median perception latency on this path is **309 ms** (p90 436 ms), so tracks are
+extrapolated and their radii inflated to cover it; the policy sees that result, never the
+raw sensor.*
+
 
 ---
 
@@ -427,6 +570,49 @@ Replaying the committed 188-tick no-motion shadow through the current chain turn
 supervisor commands vetoed — all of them while a person was present, t = 6.99–19.93 s
 (`evidence/2026-08-27-lite3-executable-avoidance/replay_with_supervisor.py`).
 
+**One tick, in the order it actually happens** — and each box below is a key the run writes
+into its own telemetry, so a reader can point at any of them in a recorded `.jsonl` rather
+than take this diagram's word for it. The record exists because the 2026-08-26 runs could
+not say whether a `hold` was the policy's, the envelope's or the transport's:
+
+```mermaid
+flowchart TB
+    OBS["obstacle list + pose + goal"] --> POL["<b>MAPPO actor</b><br/>18 → 256 → 256 → 4 → 2"]
+    POL --> K1[["<code>policy_raw</code><br/>vx, vy, wz"]]
+    K1 --> ENV["<b>envelope clamp</b> — the STACK's ceiling, which --derate<br/>may put BELOW the policy config's own.<br/>Forward only: the policy is holonomic and does not know<br/>which way the sensors point"]
+    ENV --> K2[["<code>after_limits</code>"]]
+    K2 --> GF["<b>gait floor</b> — --policy-gait-floor raises a sub-floor<br/>command onto the floor ellipse, KEEPING its direction.<br/>Opt-in, and on a sign-only transport it changes<br/>nothing the legs see"]
+    GF --> K3[["<code>after_gait_floor</code>"]]
+    K3 --> SUP{"static obstacle blocking<br/>the line to the goal?"}
+    SUP -- "yes, and turn-drive is on" --> TD["<b>turn-drive supervisor</b><br/>pure turns and pure drives — the only motions<br/>this Lite3's measured axis profile performs.<br/>vy is always exactly 0.0"]
+    TD --> K4[["<code>supervisor</code>"]]
+    SUP -- "no" --> VETO
+    K4 --> VETO{"<b>dynamic-window veto</b><br/>roll the command actually going out<br/>forward 2.5 s against the TRANSPORT MODEL.<br/>Does it keep every obstacle's hard gap?"}
+    VETO -- "no" --> PLAN["the planner's own command,<br/>or veto-hold"]
+    VETO -- "yes" --> PASS["the command passes"]
+    PLAN --> STOPQ
+    PASS --> STOPQ{"<b>_gait_floor_stop</b><br/>below the floor the robot produces no gait,<br/>stands still, and reports NO FAULT"}
+    STOPQ -- "below" --> ZERO["stop, with the reason named"]
+    STOPQ -- "at or above" --> K5
+    ZERO --> K5[["<code>final</code> + <code>axis_preview</code><br/>computed on the command actually leaving,<br/>never on a candidate that did not"]]
+    K5 --> LEGS(["legs"])
+
+    classDef key fill:#eef2f6,stroke:#475467,color:#1d2939;
+    classDef refuse fill:#fde2e2,stroke:#b42318,color:#5c1410;
+    class K1,K2,K3,K4,K5 key;
+    class ZERO,PLAN refuse;
+```
+
+Three placements in that order are decisions rather than accidents. The **veto runs on the
+supervisor's output, not beside it** — the first version returned the detour command
+directly and routed around the dynamic-obstacle check, so the safety layer's own replacement
+would have walked into a person stepping onto the detour. The **gait-floor stop lives in the
+shared planner** rather than on this file's policy-driven path, because the bug it is about
+reaches every platform and both drive modes: a Lite3 run with no policy at all got nothing
+from the old placement. And the **axis preview is computed at the exit**, on the command
+actually leaving, so the record can never show the axes a different candidate would have
+produced.
+
 The same argument applies to the **gait floor**: the speed below which a robot stands still
 without faulting. It is a platform characteristic a portable planner has to learn per robot
 rather than assume — Go2 **0.35 m/s** forward (0.21 m/s stalled five runs of five), Lite3
@@ -532,6 +718,35 @@ that discovers it — live event stream, bounded motion, checkpoint swap, and lo
 checkpoint from S3 or a LAN server. **No broker, no etcd, no Docker, no registry:** D2D mode
 finds robots by multicast on the LAN the demo already runs on.
 
+![The dashboard: a fleet table listing two Go2 and two Lite3 with per-robot Stop buttons and a red STOP ALL (4), a nine-button motion pad, a live camera pane, the on-robot checkpoint list with one armed, and an event stream along the bottom](figures/dashboard-fleet.png)
+
+*One page, four robots. The fleet table groups by platform — two Go2, two Lite3 — and the
+stop controls are layered: a `Stop` on every row, a `Stop go2 (2)` and `Stop lite3 (2)` on
+every group header, and the red **`STOP ALL (4)`**, which fans out with `invoke_many` and
+names which robots confirmed. `ARMED CHECKPOINT` is the column that decides what the next run
+drives: arming rewrites `model_path` and takes effect on the **next** run, because a run
+already walking holds its weights in memory. Left, the motion pad; centre, the camera pane;
+right, the two checkpoints on this robot with their ray count and trained range read off the
+files themselves; along the bottom, the event stream, 612 events deep at this instant. The
+four robots here are bench doubles — the `SIM` badges and `MESH DOWN` are in the pixels — for
+the reason the caveats below give.*
+
+**The warnings in that screenshot are real, and they are the point of this section.**
+`⚠ no measured lateral gait floor · no measured yaw gait floor` sits on the Go2 group and
+`⚠ no measured yaw gait floor · lie down does not change posture` on the Lite3 group. Neither
+is typed into the page. `dashboard/static/dashboard.js` builds them from each platform's own
+`get_capabilities()` reply — every entry in `unmeasured_axes` becomes "no measured ⟨axis⟩
+gait floor", and `lie_down_changes_posture === false` becomes that last phrase, which is true
+because posture on a Lite3 is operator-controlled through the vendor app and `lie_down` there
+only *stops* the robot. The same absences put a ⚠ on six of the nine motion buttons; the
+three without one are `FORWARD`, `STOP` and `STAND`.
+
+A dashboard that prints what it does **not** know about the robot in front of it is worth
+more than one that renders a confident number, and this one prints it because the confident
+number was the bug: the floors used to be hard-coded, so a Lite3 inherited a Go2's, and the
+Go2's own lateral floor was recorded as *not existing* rather than as *never measured*
+([A5](#a5-our-dashboard-gave-one-robot-another-robots-floors)).
+
 The interesting engineering is a version wall. Device Connect needs Python ≥ 3.11; the Go2's
 Jetson is Ubuntu 20.04 / JetPack 5 and offers 3.8.10 and 3.9.5, and a venv is built *from* an
 interpreter and cannot supply a version the machine lacks. So `robot_driver.py` runs
@@ -565,8 +780,23 @@ Two measured results:
 
 ## 10. Peers over the mesh, not through a detector
 
+**Read this before the title misleads you: every navigation result in this paper came from
+RGB. MAPPO navigated on pixels. Peer poses over the mesh did not steer a single run.** No
+walk reported anywhere in this document — not one Go2 run, not one of the four Lite3 runs —
+took another robot's position from the mesh. Where the mesh has actually done work on
+hardware it has done *fleet management*: discovery, state, checkpoint arming and STOP
+([§9](#9-a-browser-dashboard-that-drives-a-real-fleet)). Where a real Go2 passed a real peer,
+the peer was found by the **RGB detector** — and it was not avoided
+([A15](#a15-our-evidence-the-run-that-cleared-the-peer-did-not-avoid-it)).
+
+What follows is therefore a **design and its offline evidence**, not a result: the peer-pose
+path is built, is 66 offline tests deep, and has **zero two-robot hardware runs on either
+platform**. Keep that separation in mind for the rest of the section, because everything in
+it is written in the present tense of code that exists rather than of a robot that has run.
+
 Two robots sharing a room is the demo. The obvious route is to teach the detector what a
-quadruped looks like. We measured that route to its ceiling and then took a different one.
+quadruped looks like. We measured that route to its ceiling ([§12](#12-one-robot-four-detectors))
+and then designed a different one.
 
 ![Annotated render of a Unitree Go2-W, the wheeled variant, with its wheel actuators and footprint called out](figures/go2-wheel-profile.png)
 
@@ -636,21 +866,23 @@ with its own weaknesses (744 of 1,903 boxes touch a frame border; one 640-frame 
 real camera frames to synthesise labelled examples of a robot we could not photograph enough
 of.
 
-### SAM-based auto-labelling: method stated, results pending
+### SAM-based auto-labelling: this has now landed, and it is section 13
 
-The intended next step is to replace detector-box weak labels with **promptable segmentation**
-— run a segmentation foundation model over the harvested frames, seed it from the existing
-detector boxes and the tracker's identities, and take the resulting masks' bounding boxes as
-labels that do not inherit the deployed detector's 64% recall. The design is the SAM "data
+The step after detector-box weak labels is **promptable segmentation** — run a segmentation
+foundation model over the harvested frames, take the resulting masks' bounding boxes as
+labels, and stop inheriting the deployed detector's 64% recall. The design is the SAM "data
 engine" pattern: model proposes, human verifies the fraction that needs it, model retrains
 ([reference 2](#references)).
 
-**As of this document, zero SAM-derived labels exist.** There is no SAM code in the tree, no
-SAM manifest entries, and nothing wired into CI. Both committed manifests are hand-labelled.
-A run was in progress while this was written; if it has landed by the time you read this, it
-will be under `detector/labels/` with its own manifest and its own scored comparison against
-the hand-labelled set, and this paragraph is out of date. **Nothing in this paper depends on
-it.**
+⚠️ **An earlier draft of this paper said "zero SAM-derived labels exist" and "there is no SAM
+code in the tree". Both were true when written and neither is true now**, which is the sort of
+sentence a document like this has to correct out loud rather than quietly delete. The run that
+was in progress landed on 2026-08-27 as
+`evidence/2026-08-27-lite3-training-set/` — `sam_label.py`, `sam_labels.json`, 131 labelled
+keyframes and three fine-tunes scored against the incumbent. It produced **nothing shippable**,
+and it is written up in full for that reason in
+[§13](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it).
+The two hand-labelled manifests referenced above are unchanged and remain the corpus of record.
 
 > **Attribution, corrected.** This technique is often described in conversation as a
 > "Stability AI technique". We could not establish that provenance. Segment Anything, the
@@ -712,7 +944,153 @@ drifted from the data.
 > far. The sweep scripts themselves are **not in this repository**; they ran on a training host
 > and their outputs are committed byte-for-byte as JSON.
 
-## 13. Guards proven by forcing them to fail
+## 13. A detector training pipeline that shipped nothing, and the three things worth keeping from it
+
+**This section reports a negative result and leads with it.** Three fine-tunes were run on a
+DGX Spark, scored against the incumbent, and refused; the shipped detector is unchanged and
+nothing here is recommended for deployment. It is in the paper because a repository that
+publishes its wins and quietly drops the week the numbers came out badly has a publication
+record that disagrees with its own evidence directory — and because three of the things this
+run measured are worth more to somebody else than a checkpoint would have been.
+
+Everything below regenerates from committed JSON with no video, no model and no network:
+
+```bash
+cd evidence/2026-08-27-lite3-training-set
+python3 audit.py               # the corpus: views, boxes, ride-along drift, hand-checks
+python3 summarise_scores.py    # both score tables, under both selection rules
+```
+
+### The pipeline
+
+Six `--record-raw` Lite3 recordings arrived from Shanghai with their telemetry — 5,854 frames,
+1280×720 at 15 fps, one room, inside thirteen minutes of one morning. Camera motion measured by
+ORB+RANSAC against each clip's own first frame is **0.0–1.0 px median**: the camera never moves
+in any of the six, so the set holds at most six viewpoints, and sampling for novelty finds
+**456 distinct views — 7.8% of the frames.** That number, not 5,854, is the ceiling on
+everything that follows.
+
+```mermaid
+flowchart TB
+    REC["6 --record-raw clips · 5,854 frames · 1280×720 · 15 fps<br/>one room, one morning, 13 minutes"]
+    KEY["456 DISTINCT VIEWS — 7.8%<br/>the other 5,398 are near-duplicates"]
+    REC --> KEY
+    PH[/"the phrase — 'a small white four-legged machine'<br/>NOT 'a robot dog', which scores 0.000"/]
+    KEY --> OWL["<b>OWLv2</b> base-patch16-ensemble<br/>phrase → box"]
+    PH --> OWL
+    OWL --> THR{"score ≥ 0.22 per query<br/>set where the HAND-CHECK turned,<br/>not from the score distribution"}
+    THR -- "below" --> DROP["discarded — half the person boxes,<br/>on purpose: a wrong box poisons a<br/>training set, a missing one only<br/>makes it smaller"]
+    THR -- "at or above" --> SAM["<b>SAM 2.1</b> hiera-large, IMAGE mode<br/>box → mask. Not video propagation:<br/>image mode has no state and cannot drift"]
+    SAM --> BOX["the mask's extent is the label<br/><b>131 lite3 keyframe boxes</b>"]
+    BOX --> RIDE["±1-frame ride-along · median IoU 0.954<br/>+4 has a p10 of 0.496, so nothing wider rides along"]
+    RIDE --> REAL[["<b>283 real positives</b>"]]
+    REAL --> SYN["offline synthetic — three families the trainer<br/>has NO operator for:<br/>shear 849 · colour-slice 849 · occlude 844"]
+    SYN --> MIX[["<b>2,825 positives</b><br/>real : synthetic = <b>1 : 9.0</b>"]]
+    REAL --> MIX
+    REAL --> RA["<b>a_ws_real</b> · 283"]
+    MIX --> RB["<b>b_ws_synth</b> · 2,825"]
+    MIX --> RC["<b>c_ws_synth_aug</b> · 2,825<br/>+ --motion-blur 0.5 --sensor-noise 0.5 --composite 0.3"]
+    RA --> SPARK
+    RB --> SPARK
+    RC --> SPARK["<b>DGX Spark</b> · finetune_ssd.py · 40 epochs, one script, run in parallel<br/>constant across all three: --freeze-through= --backbone-lr-scale 0.5<br/>--pseudo-labels 0.3 --distil 0.1"]
+    SPARK --> SCORE["score_checkpoints.py at a <b>NAMED</b> preprocessing — §12 is why<br/>lite3: 36 held-out frames, SAME SESSION<br/>person: 284 frames, CROSS-DAY — this is the gate"]
+    SCORE --> GATE{"lose ZERO of the people<br/>the shipped network sees"}
+    GATE --> NOPE["at 224 px — the size deploy/run-peer-supervised.sh actually launches —<br/><b>no checkpoint from any of the three runs both detects the Lite3<br/>and holds its people.</b> Nothing is recommended."]
+
+    classDef refuse fill:#fde2e2,stroke:#b42318,color:#5c1410;
+    classDef good fill:#e0f0ff,stroke:#175cd3,color:#0b2f66;
+    class DROP,NOPE refuse;
+    class PH good;
+```
+
+`a_ws_real` is a real contemporaneous control and not a citation to an earlier run: these
+augmentation operators call `rng.random()` even at probability 0, so no previous run is
+byte-reproducible under this code.
+
+### The transferable negative: the ablation is monotone in both directions, at every resolution
+
+Best `lite3` epoch per run, with person retention *reported* at that epoch rather than
+selected on — the argmax of one metric with the other merely quoted, which is how a
+checkpoint sweep picks a winner and is not a basis for shipping anything:
+
+| run | 224 px / 0.25 (production) | 300 px / 0.40 | 300 px / 0.45 |
+| --- | --- | --- | --- |
+| `a` real only | 4/36 lite3, **21** people (−4) | 7/36, **29** (+5) | 7/36, **25** (+5) |
+| `b` + synthetic | 15/36, **7** (−18) | 18/36, **18** (−6) | 17/36, **16** (−4) |
+| `c` + synthetic + wave-6 flags | 15/36, **1** (−24) | 19/36, **0** (−24) | 17/36, **3** (−17) |
+
+**Every step that adds augmentation adds `lite3` hits and removes people — in both directions
+at once, at all three preprocessing configurations.** Person retention falls **21 → 7 → 1** at
+224 px and **29 → 18 → 0** at 300 px; quadruped hits climb 4 → 15 → 15 and 7 → 18 → 19 over the
+same two steps. Run `c` at 300 px finds the robot in 19 of 36 frames and has **almost stopped
+seeing people at all**. Because the sign is the same at every resolution, **this is not a
+resolution artefact** — which is the one thing a reader most needs to know before repeating it.
+
+**The most likely cause, stated rather than left to be inferred: real : synthetic = 1 : 9.0** —
+283 real boxes against 2,542 synthetic ones. A network trained nine-to-one on warps of one
+morning's 456 views learns that morning, and `person` is the class that pays. We did not run
+the ratio sweep that would confirm it, so this is the suspicion the data supports and not a
+finding; saying which is which is the point. What *is* certain is that augmentation adds
+**0 viewpoints, 0 rooms and 0 days** — it multiplies examples, and 456 views from thirteen
+minutes is the ceiling regardless of the multiplier.
+
+### The finding worth the section on its own: a name scores zero, a description scores 0.6
+
+Twelve phrasings swept through OWLv2 over ten keyframes — five from each quadruped clip:
+
+| phrase | light-lite3 | dim-lite3 |
+| --- | --- | --- |
+| `a robot dog` | **0.000 on all five** | **0.000 on all five** |
+| `a robotic dog` | 0.000 on all five | 0.000 on all five |
+| `a dog` | 0.000 on all five | 0.000 on all five |
+| `a quadruped robot` | 0.000 on all five | 0.000 on four of five |
+| `a robot` | 0.112–0.157, box on a ceiling fitting | 0.068–0.169 |
+| **`a small white four-legged machine`** | **0.305–0.629** | **0.376–0.574** |
+
+**A phrase that reads like the object's *name* scores zero; a phrase that reads like its
+*description* scores 0.3–0.6.** For `light-lite3` that is the difference between 0 and 60
+labelled frames — between having a dataset and not having one. It was found by sweeping, not
+by guessing, and `probe_queries.py` is the sweep: about forty lines that would have saved the
+labelling effort had it been run first. Any researcher doing open-vocabulary labelling can
+apply this tomorrow, and it costs one afternoon to check on their own object.
+
+### Weak supervision was built, measured, and killed on its own number
+
+Before reaching for a segmenter the cheap route was tried in full: re-run the *same* shipped
+MobileNet-SSD over the *same* pixels with the class filter removed, and gate the result on box
+aspect and on background subtraction — the camera is static, so a temporal median should be the
+empty room. It recovers the Lite3 as `chair`, exactly as predicted.
+
+| clip | hand-checked | verdict |
+| --- | --- | --- |
+| `light-lite3` | **12 / 12** on the robot | looks like a working method |
+| `dim-lite3` | **0 / 12** — every box on the same office-chair cluster, the robot visible and unboxed beside it | it is not |
+
+The dim clip sweeps **28 → 83 mean luminance** with frame-to-frame steps up to **37.9 grey
+levels**, so the "empty room" median is not a background and the motion gate **fails open**.
+One rule scoring 12/12 and 0/12 on two clips of the same robot in the same room is not a rule.
+That measurement, not a preference, is what moved the labelling to a segmenter — and it was
+only caught by hand-checking frames the method itself called *good*, which is the only way it
+would have been caught at all.
+
+### Nothing is recommended
+
+At 224 px, the size `deploy/run-peer-supervised.sh` actually launches, **no checkpoint from any
+of the three runs both detects the Lite3 and holds its people.** The best that detects anything
+at all keeps **7 of 284** people against the incumbent's 25. One bright corner exists and is
+worth naming precisely because it is small: `a_ws_real` epoch 026 at `go2-navigator-default`
+finds the Lite3 in 7 of 36 held-out frames while keeping 29 of 284 people against the
+incumbent's 24 — a checkpoint that learned a new class without paying for it in the old one.
+Three caveats make it unshippable anyway: the 7/36 is **same-session** and 19% recall besides;
+300 px / 0.40 is not what the peer-avoidance launcher passes; and +5 people on a base of 284
+sits only just outside this project's own ±1–3 run-to-run noise.
+
+**The 300-versus-224 split is the blocker, and this is the third wave to hit it**
+([§12](#12-one-robot-four-detectors) is why): `finetune_ssd.py` resizes every training image to
+300, the launcher opens at 224, and the class the training produces is weakest exactly where it
+has to run.
+
+## 14. Guards proven by forcing them to fail
 
 A guard nobody can make fire is not a guard. This repository has already shipped a latch check
 that proved the robot's arm was held by asserting its joints had stopped moving — and an
@@ -981,9 +1359,21 @@ four objects for two real ones, and its 120 s time-to-live never fires on a 20 s
 A check that proved the robot's arm was latched by asserting its joints had stopped moving. An
 **unpowered** arm is perfectly still, so the assertion passed on the exact failure it existed to
 catch. This is now a standing rule in `AGENTS.md`: ask what would make each new test fail, and
-confirm that it can. It is the origin of [§13](#13-guards-proven-by-forcing-them-to-fail).
+confirm that it can. It is the origin of [§14](#14-guards-proven-by-forcing-them-to-fail).
 
 ### A15. Our evidence: the run that cleared the peer did not avoid it
+
+**First, what the Go2 runs were for.** The Go2 tests in this paper were never the goal. The
+Go2s are **proxies for the Lite3s** — the platform that was available for initial development
+in **Austin, Texas**, standing in for the Deep Robotics Lite3 Venture units the work is
+actually aimed at. Final development is happening in **Shanghai** and is **ongoing as of
+2026-08-27**, with expected completion **Friday 4 September 2026**, for demonstrations at
+**Arm Everywhere China**, **Arm Create Shanghai** and **Arm Create Shenzhen**
+([armeverywhere.cn](https://armeverywhere.cn/en/) ·
+[developer.arm.com/arm-create](https://developer.arm.com/arm-create)). Read every Go2 number
+in this document as a proxy measurement taken to de-risk that: it is why the Go2 half ran on
+a robot and the Lite3 half essentially did not, and it is why the corrections below are worth
+more than the runs that produced them.
 
 A live Go2 run passed a peer robot cleanly and was written up as peer avoidance. The telemetry
 disagrees: the correlation between the lateral command and the **goal** distance is **+0.951**;
