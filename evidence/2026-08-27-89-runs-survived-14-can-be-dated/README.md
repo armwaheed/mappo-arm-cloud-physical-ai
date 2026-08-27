@@ -149,49 +149,58 @@ Both are `FILLS_FRAME_RANGE_M` and the object-fit cap — constants the code sub
 when the geometry cannot be recovered. **Do not train or evaluate range against these
 417 rows.** They are flagged per box in the published labels, not silently dropped.
 
-## Against human eyes: 71% of visible people were missed
+## Against human eyes: 69% of visible people were missed
 
 Track continuity above measures only ticks where the tracker *already had* a person, which
 biases it towards frames where detection was working. To get the number the retraining
 question actually needs — **how often was a person who was plainly there not reported** —
-199 frames were sampled (every 10th, four of the five walks) and marked by eye for the
-presence of a person, a brown cardboard panel, a doorframe and the blue bin.
+250 frames were sampled (every 10th, all five walks) and marked by eye for the presence of
+a person, a brown cardboard carton, a doorframe and the blue bin.
 
-Of those, **143 frames contain a visible person.** Scored against the shipped weights at
-the 0.45 operating threshold:
+Of those, **175 frames contain a visible person.** Scored against the shipped weights at
+the 0.45 operating threshold the wrappers passed:
 
-| | detected | **missed** |
+| | found | **missed** |
 |---|---:|---:|
-| **300 px — what these runs used** | 41 / 143 | **102 / 143 = 71.3%** |
-| 224 px — the peer launcher's size | 20 / 143 | 123 / 143 = 86.0% |
+| **300 px — what these runs used** | 55 / 175 | **120 / 175 = 68.6%** |
+| 224 px — the peer launcher's size | 22 / 175 | 153 / 175 = 87.4% |
 
-Dropping the threshold to 0.25 recovers a lot — 102/143 detected at 300 px — but 0.45 is
-what the wrappers passed, so 71.3% is the number that describes what the robot did.
+Dropping the threshold to 0.25 recovers a lot — 130/175 at 300 px — but 0.45 is what the
+wrappers passed, so 68.6% is the number that describes what the robot did.
 
 **The two denominators disagree by design and both are reported**: 69.9% *kept* on track
-continuity against 28.7% *found* on human presence. The first asks "having found someone,
+continuity against 31.4% *found* on human presence. The first asks "having found someone,
 did it keep them?"; the second asks "was someone there, and did it ever notice?". Quoting
-either without its denominator would be a different claim.
+either without its denominator would be a different claim, and `person_shaped` — a
+box-aspect test, not a label — is a third gate again.
 
 Walk 3 is the extreme: **21 of the sampled frames contain a clearly visible person and
 the detector reported none of them, at either input size.**
 
 ### Every sampled frame contained something the class list cannot name
 
-**199 of 199** sampled frames contain a brown cardboard panel, a doorframe, or both — a
-cardboard-wrapped pillar stood in this corridor for the whole session. Neither object has
-a VOC class, and neither has a colour profile. The detector's own output says the same
-thing from the other side: given all 20 classes to choose from, **11.5% of its detections
-(76 of 661) name something that cannot be in an office** — `aeroplane` 58, `horse` 10,
-`train` 4, `car` 2, `cow` 1, `motorbike` 1.
+**250 of 250** sampled frames contain a brown cardboard carton; it stood in that corridor
+all session. It has no VOC class and no colour profile. The detector's own output says the
+same thing from the other side: given all 20 classes to choose from, **11.5% of its
+detections (76 of 661) name something that cannot be in an office** — `aeroplane` 58,
+`horse` 10, `train` 4, `car` 2, `cow` 1, `motorbike` 1.
 
 ⚠️ **How confident this is, stated plainly.** These are presence flags read off contact
 sheets by eye, not boxes: they support "a person was visible in this frame" and nothing
-finer. The sample is **199 of 2,473 frames (8%)** and covers four walks — **walk 5 was not
-reached**, so it contributes nothing to the 143. In walks 1, 2 and 4 the scene is nearly
-static and the cardboard/doorframe/bin flags are `yes` on every sampled frame, so within
-those walks they carry no discriminative signal; they establish that the classes are
-present, not where. **No box was invented for any of them.**
+finer. The sample is **250 of 2,473 frames (10%)**. Two columns need care before anyone
+trains on them:
+
+- **`cardboard` is `yes` on all 250 and means two visually unrelated things** — a distant,
+  partly occluded carton seen through a glass door in walks 1/2/4/5, and the same carton
+  filling half the frame from centimetres away in walk 3 from frame 209. One label, two
+  objects.
+- **`doorframe` is the weak column: 218 `yes`, 32 `unsure`, no `no`.** This office is a
+  corridor of pod partitions, so some vertical edge bounding an opening is in nearly every
+  unobstructed frame, and "genuine door" could not be separated from "partition edge"
+  without inventing a rule. Re-cut it or drop it.
+
+`bin` is the clean human column — 212 `yes`, 38 `no` — and it is corroborated by 948
+independent colour-detector boxes. **No box was invented for any of these classes.**
 
 ## Three walks that show three different failures
 
@@ -209,10 +218,14 @@ same corridor, four minutes apart.
 those 37** carried at least one sighting whose range was one of the two constants above
 (12 `width-capped`, 9 `frame-fill`). The robot swerved for a distance no sensor measured.
 
-**Walk 3 ended inside a doorway.** From frame 222 of 535 the camera is wedged between a
-cardboard-wrapped pillar and a white door leaf, and stays there for the rest of the run.
-Neither object has a VOC class. The detector was not wrong about them — it has no way to
-be right.
+**Walk 3 ended wedged against a cardboard box.** The obstacle is a large upright brown
+corrugated carton, roughly human height with a white shipping label near the top, leaning
+against a white office phone-booth pod; the robot drove into the narrow corner between the
+carton and the pod's frosted-glass door. Bisected to single frames: the person is last
+visible at **208**, the view is first fully blocked at **225**, a sliver of room reopens
+**non-monotonically over 268-285**, and it closes for good at **286**. Neither a cardboard
+carton nor a door has a VOC class. The detector was not wrong about them — it had no way
+to be right.
 
 ### Re-scored against the shipped weights, at both input sizes
 
