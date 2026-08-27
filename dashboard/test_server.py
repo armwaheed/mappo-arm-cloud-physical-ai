@@ -19,6 +19,7 @@ Needs aiohttp. ``python3 test_server.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import sys
@@ -221,6 +222,43 @@ class _RoutingMesh(Mesh):
         return {"ok": True}
 
 
+@contextlib.contextmanager
+def _without_the_sdk():
+    """Let ``Mesh.invoke`` reach its routing without ``device_connect_agent_tools`` installed.
+
+    ⚠️ THIS IS THE POINT, NOT A CONVENIENCE. ``invoke`` imports the SDK on its first line, so
+    a test that just calls it passes on a laptop that has the package and dies at
+    ``ModuleNotFoundError`` on a runner that does not — which is exactly what happened: green
+    here, red on CI's 3.11 leg, and the suite stopped at 12 of 28 so the inventory
+    disagreed too. The routing rule this file is about does not need the mesh, and the
+    module docstring above already says the mesh is faked here on purpose. This makes the
+    faking cover the import as well as the call.
+
+    A stub is installed unconditionally rather than only when the real package is missing,
+    so this test runs the same way on both machines instead of taking whichever path the
+    environment happens to offer.
+    """
+    import types
+    saved = {name: sys.modules.get(name)
+             for name in ("device_connect_agent_tools", "device_connect_agent_tools.tools")}
+    package = types.ModuleType("device_connect_agent_tools")
+    tools = types.ModuleType("device_connect_agent_tools.tools")
+    for name in ("invoke_device", "invoke_many", "discover", "subscribe"):
+        setattr(tools, name, lambda *a, **k: {"ok": True})
+    package.tools = tools
+    package.connect = package.disconnect = lambda *a, **k: None
+    sys.modules["device_connect_agent_tools"] = package
+    sys.modules["device_connect_agent_tools.tools"] = tools
+    try:
+        yield
+    finally:
+        for name, module in saved.items():
+            if module is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = module
+
+
 def test_a_stop_is_routed_to_the_dedicated_lane_wherever_it_is_issued_from():
     """The routing is by FUNCTION NAME, not by endpoint.
 
@@ -236,9 +274,10 @@ def test_a_stop_is_routed_to_the_dedicated_lane_wherever_it_is_issued_from():
     """
     mesh = _RoutingMesh()
     try:
-        for function in sorted(STOP_FUNCTIONS):
-            asyncio.run(mesh.invoke("mappo-go2", function, {}))
-        asyncio.run(mesh.invoke("mappo-go2", "walk_forward", {}))
+        with _without_the_sdk():
+            for function in sorted(STOP_FUNCTIONS):
+                asyncio.run(mesh.invoke("mappo-go2", function, {}))
+            asyncio.run(mesh.invoke("mappo-go2", "walk_forward", {}))
     finally:
         for pool in (mesh._pool, mesh._stop_pool, mesh._event_pool, mesh._camera_pool):
             pool.shutdown(wait=False)
