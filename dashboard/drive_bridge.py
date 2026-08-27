@@ -58,6 +58,67 @@ there would have made the gait floor take another five runs to find. A button th
   exists because it was asked for; it is capped at :data:`MAX_REVERSE_SECONDS` and it says
   in its own result that nothing is watching behind the robot.
 
+## Which interface a Lite3 is commanded through
+
+``--locomotion-transport`` selects it, with the same three names and the same ``udp``
+default the Lite3 navigator offers
+(``robot-stack/deep_robotics/lite3/visual_nav/robot_bindings.py``) and the commissioning
+harness offers (``.../lite3/commissioning/robot_link.py``). There was no such flag here
+until issue #141: the loader built ``Lite3Locomotion`` with its ROS 2 default, so on a
+Venture with no ROS 2 runtime **every** command — ``stop`` included — died at
+``ModuleNotFoundError`` before it reached the robot, and the ``axis`` transport both
+Ventures have actually walked on was unreachable from the dashboard entirely.
+
+⚠️ **``axis`` throws the commanded magnitude away.** Past the profile's linear deadband
+every command emits the same full-scale primitive, so a speed there is a DIRECTION and the
+``delivered_fraction`` this worker computes is not a delivery ratio. That is argued in
+``lite3_axis_locomotion.py`` and priced in ``robot_link.TRANSPORTS``; this file states it
+in the result rather than restating the argument. ``udp`` carries the number to the wire
+and has never been seen to move either Venture; ``axis`` has moved both.
+
+No default port, host or topic name is spelled here. ``None`` means "whatever the transport
+module itself defines", because the one thing this file must not do is carry a second copy
+of a vendor constant — the same reason :data:`GAIT_FLOORS` does not carry a borrowed floor.
+
+## What ``stop`` can promise, and what it cannot
+
+``stop`` is the reason issue #141 was filed, and the promise is per-transport rather than
+universal:
+
+* **Go2, Lite3 ``udp``, and the bench double** — a zero velocity is commanded from THIS
+  process and it is authoritative: the last velocity persists on the far side until the
+  next one, so a zero from any process ends the walk. ``commanded_zero`` is ``true``.
+* **Lite3 ``axis``** — it is not, and saying otherwise would be the worst kind of green
+  tick. The axis stream is a thread inside the process that started it
+  (:class:`AxisStreamSender`); a process that never started one has no setpoint to zero
+  and ``stop()`` on it sends nothing at all. What ends an axis walk is ENDING THAT
+  PROCESS, which ``robot_driver.stop`` does — SIGTERM — before it calls here. So this
+  worker reports ``commanded_zero: false`` and says which lever actually moved. ⚠️ What
+  happens on the robot once the datagrams stop is the vendor watchdog's business: the
+  command TTL is capped below 250 ms *because* that is the documented watchdog, and
+  **nobody has measured that watchdog on either Venture**.
+* **A transport that will not load** — nothing reached the robot, and the result says so
+  as :data:`CAUSE_TRANSPORT_UNAVAILABLE` rather than as a generic failure.
+
+⚠️ **One limitation is not fixed here and is not hidden either.** On ``udp``,
+``Lite3UdpLocomotion.stop()`` documents itself as "Never refuses: a stop must survive a
+lost link" — but ``connect()`` waits 5 s for a state frame and raises ``Lite3LinkLost``
+first, so a stop cannot be commanded to a robot whose telemetry is not arriving even
+though the command socket would work. Measured 2026-08-27 with no robot present: 5.0 s,
+then a refusal. Fixing it means a ``connect()`` that can open the command socket without
+the state stream, which is a change in ``robot-stack/deep_robotics/lite3/locomotion/`` and
+not in the dashboard. What this file does is make sure that stop still reports
+``commanded_zero: false`` and says the zero was not sent, rather than a bare traceback.
+
+## Three ways to fail, not two
+
+``refused: true`` (a rule in this stack turned the command down) and ``refused: false``
+(anything else) put "the operator asked for something we will not do" and "the Python on
+this machine cannot reach the robot" in the same bucket, and issue #141 is what that costs:
+a missing module renders as the robot misbehaving, and the day goes on the robot.
+:data:`CAUSE_REFUSED` / :data:`CAUSE_TRANSPORT_UNAVAILABLE` / :data:`CAUSE_FAULT` are the
+three, carried in ``cause``; ``refused`` stays beside them and keeps its old meaning.
+
 Python 3.8, stdlib only — it has to import in the robot's SDK env.
 ``python3 test_drive_bridge.py``.
 """
@@ -71,6 +132,7 @@ import math
 import os
 import sys
 import time
+from pathlib import Path
 
 #: Commands that move the robot. Everything not in here is read-only and always permitted.
 MOTION_COMMANDS = frozenset({"stand", "stand-down", "walk", "strafe", "turn"})
@@ -135,9 +197,63 @@ DEFAULT_VX = 0.35
 DEFAULT_VY = 0.20
 DEFAULT_WZ = 0.70
 
+#: The Lite3 vendor interfaces this worker can command through, in the vocabulary the rest
+#: of the Lite3 tree already uses. Not a second naming: ``robot_bindings._add_ros_arguments``
+#: offers exactly ``{udp, axis, ros2}`` with ``udp`` as the default, and
+#: ``commissioning/robot_link.TRANSPORTS`` offers ``{udp, axis}`` with the same default.
+#:
+#: The two facts beside each name are the ones a dashboard has to act on, and they are the
+#: two that ``robot_link.Transport`` records for the same reason: ``preserves_magnitude``
+#: decides whether a commanded speed means anything on the wire, and ``walked`` is whether
+#: any Venture has been seen to move on this interface at all. They are NOT imported from
+#: that table — this file is stdlib-only and has to import with no ``robot-stack`` beside
+#: it, which is what ``--platform sim`` on a laptop is — so the WORDING here is short and
+#: points at the table rather than paraphrasing its evidence.
+LITE3_TRANSPORTS = {
+    "udp":  {"preserves_magnitude": True,  "walked": False,
+             "summary": "legacy complex-velocity UDP. The commanded number reaches the "
+                        "wire; no Venture has been seen to MOVE on it (robot_link.TRANSPORTS)"},
+    "axis": {"preserves_magnitude": False, "walked": True,
+             "summary": "profile-gated moving-mode simple axes. Both Ventures have walked "
+                        "on it, and its mapping is SIGN-ONLY: a commanded speed past the "
+                        "profile's deadband is a direction, not a speed"},
+    "ros2": {"preserves_magnitude": True,  "walked": False,
+             "summary": "the Lite3_ROS bridge topics. Needs a ROS 2 runtime on the "
+                        "perception host, which these two Ventures may not have"},
+}
+
+#: The default, and it is the siblings' default rather than this file's opinion. It was
+#: effectively ``ros2`` before issue #141 — not chosen, just what ``Lite3Locomotion``
+#: constructs with no factory — and that is the configuration in which ``stop`` died at an
+#: import error on a robot with no ROS 2.
+DEFAULT_LITE3_TRANSPORT = "udp"
+
+#: ``cause``: three states, because "we will not" and "we cannot" and "it went wrong" are
+#: three different messages to an operator and only one of them is about the robot.
+CAUSE_REFUSED = "refused"
+CAUSE_TRANSPORT_UNAVAILABLE = "transport_unavailable"
+CAUSE_FAULT = "fault"
+
 
 class BridgeError(RuntimeError):
     """A refusal, reported as JSON rather than as a traceback."""
+
+
+class TransportUnavailable(RuntimeError):
+    """The locomotion transport could not be LOADED, so nothing was asked of the robot.
+
+    Separate from :class:`BridgeError` because the two are opposite diagnoses that used to
+    arrive looking identical. A ``BridgeError`` means this stack turned the command down
+    and the robot is fine. This means the Python environment the worker runs in cannot
+    reach the robot at all — a missing ``ros2_twist_locomotion``, an absent
+    ``unitree_sdk2py``, a ``robot-stack`` that was not deployed beside this file. Nothing
+    was commanded, nothing was refused, and the robot has not been consulted.
+
+    ⚠️ It is raised for an IMPORT failure only. A transport that imports and then cannot
+    reach the machine — ``Lite3LinkLost``, a socket error, a dead DDS — is a real fault
+    about the real link and is reported as one; calling that "unavailable" would put a
+    silent robot and a missing package in the same bucket again.
+    """
 
 
 # ── platform backends ─────────────────────────────────────────────────────────────────────
@@ -156,16 +272,160 @@ def _stack_dir():
 
 def _load_go2(iface):
     sys.path.insert(0, os.path.join(_stack_dir(), "unitree", "go2", "locomotion"))
-    from go2_locomotion import Go2Locomotion
-    loco = Go2Locomotion(iface=iface)
-    loco.connect()
+    # connect() is inside the try, not only the import. ⚠️ THIS IS WHERE THE FIRST FIX FOR
+    # issue #141 WAS WRONG, and running the documented command is what caught it: the
+    # binding a locomotion class composes is imported LAZILY, inside connect(), so
+    # wrapping the module import alone classified a missing vendor SDK as a robot fault
+    # exactly as before. Only ImportError is caught -- a transport that imports and then
+    # cannot reach the machine is a real fault about the real link.
+    try:
+        from go2_locomotion import Go2Locomotion
+        loco = Go2Locomotion(iface=iface)
+        loco.connect()
+    except ImportError as exc:
+        raise TransportUnavailable(
+            f"the Go2 locomotion binding could not be imported from {_stack_dir()} "
+            f"({exc}). Nothing was commanded and the robot was not consulted. This is the "
+            f"interpreter, not the robot: --bridge-python must be the SDK env's python, "
+            f"the one that can import unitree_sdk2py, and robot-stack/ must be beside this "
+            f"file or named by MAPPO_STACK_DIR.") from exc
     return loco
 
 
-def _load_lite3(operator_ready):
-    sys.path.insert(0, os.path.join(_stack_dir(), "deep_robotics", "lite3", "locomotion"))
-    from lite3_locomotion import Lite3Locomotion
-    loco = Lite3Locomotion(operator_ready=operator_ready)
+class Lite3Link:
+    """Which Lite3 vendor interface to command through, and what that interface needs.
+
+    Every field except ``transport`` defaults to ``None``, meaning "whatever the transport
+    module itself defines". That is deliberate and it is the same rule :data:`GAIT_FLOORS`
+    follows: a port number or a motion-host address copied into this file is a second copy
+    of a vendor constant that nothing keeps in step, and the Lite3 row of ``GAIT_FLOORS``
+    is what a copied constant looks like once it has drifted.
+    """
+
+    def __init__(self, transport=DEFAULT_LITE3_TRANSPORT, motion_host=None,
+                 command_port=None, state_port=None, state_bind=None, axis_profile=None,
+                 axis_local_port=None, cmd_vel_topic=None, odom_topic=None,
+                 chosen=False):
+        self.transport = transport
+        self.motion_host = motion_host
+        self.command_port = command_port
+        self.state_port = state_port
+        self.state_bind = state_bind
+        self.axis_profile = axis_profile
+        self.axis_local_port = axis_local_port
+        self.cmd_vel_topic = cmd_vel_topic
+        self.odom_topic = odom_topic
+        #: Whether ``--locomotion-transport`` was actually typed. A flag that was not given
+        #: cannot conflict with anything, and a flag that was must not be silently ignored
+        #: on a platform that has no such interface — see :func:`check_lite3_link`.
+        self.chosen = chosen
+
+    def describe(self):
+        """The transport row, for a result that has to say what it was driving through."""
+        row = LITE3_TRANSPORTS[self.transport]
+        return {"locomotion_transport": self.transport,
+                "transport_preserves_magnitude": row["preserves_magnitude"],
+                "transport_has_walked_a_venture": row["walked"],
+                "transport_note": row["summary"]}
+
+    def link_kwargs(self):
+        """The UDP link keywords, omitting every one that was not given.
+
+        Omitted rather than defaulted, so the transport module's own default is what
+        applies and this file never has to know what it is.
+        """
+        pairs = (("motion_host", self.motion_host), ("command_port", self.command_port),
+                 ("state_port", self.state_port), ("bind", self.state_bind))
+        return {name: value for name, value in pairs if value is not None}
+
+
+def _lite3_factory(link):
+    """The ``implementation_factory`` for the selected transport, or ``None`` for ros2.
+
+    ``None`` is the ros2 case and not an error: ``Lite3Locomotion``'s own default factory
+    is the ROS 2 Twist binding, so leaving it alone is how that transport is selected.
+    Same shape as ``robot_bindings.create_locomotion`` and ``robot_link._transport_factory``
+    — the choice is contained here and ``Lite3Locomotion`` never learns what it composed.
+    """
+    if link.transport == "ros2":
+        return None
+    if link.transport == "udp":
+        from deep_robotics.lite3.locomotion.lite3_udp_locomotion import udp_locomotion_factory
+        return udp_locomotion_factory(**link.link_kwargs())
+    from deep_robotics.lite3.locomotion.lite3_axis_locomotion import (
+        AxisProfile,
+        AxisProfileError,
+        axis_locomotion_factory,
+    )
+    profile = None
+    if link.axis_profile is not None:
+        try:
+            profile = AxisProfile.load(Path(link.axis_profile))
+        except AxisProfileError as exc:
+            # A profile this worker cannot read is a refusal, not a transport gap: the file
+            # was named and it is wrong, which is something the operator can fix.
+            raise BridgeError(f"cannot use axis profile {link.axis_profile}: {exc}") from None
+    kwargs = link.link_kwargs()
+    if link.axis_local_port is not None:
+        kwargs["axis_local_port"] = link.axis_local_port
+    # profile=None reaches here only on `stop` and `status`, which check_lite3_link permits
+    # precisely because neither needs one -- Lite3AxisLocomotion raises AxisProfileError on
+    # the first set_velocity and never on stop().
+    return axis_locomotion_factory(axis_profile=profile, **kwargs)
+
+
+def _load_lite3(operator_ready, link=None):
+    link = Lite3Link() if link is None else link
+    # The tree root, not the locomotion directory: lite3_udp_locomotion imports
+    # `deep_robotics.lite3.commissioning.lite3_state_probe`, and lite3_axis_locomotion
+    # imports its sibling by the same absolute path. That is the layout every other Lite3
+    # entry point uses (robot_bindings.py, robot_link.py), so this uses it too rather than
+    # putting the same file on sys.path twice under two names.
+    stack = _stack_dir()
+    if stack not in sys.path:
+        sys.path.insert(0, stack)
+    try:
+        from deep_robotics.lite3.locomotion.lite3_locomotion import Lite3Locomotion
+        factory = _lite3_factory(link)
+        loco = _connect_lite3(Lite3Locomotion, factory, link, operator_ready)
+    except ImportError as exc:
+        raise TransportUnavailable(
+            f"--locomotion-transport {link.transport} could not be loaded from {stack} "
+            f"({exc}). Nothing was commanded and the robot was not consulted. "
+            + ("The ROS 2 Twist binding needs a ROS 2 runtime and the shared robotkit on "
+               "the interpreter that runs this worker; a Venture with no provisioned "
+               "perception host has neither. --locomotion-transport udp and axis are "
+               "stdlib sockets and need neither."
+               if link.transport == "ros2" else
+               "This transport is stdlib sockets, so a failure here is robot-stack/ not "
+               "being beside this file: deploy it, or name it with MAPPO_STACK_DIR.")
+        ) from exc
+    return loco
+
+
+def _connect_lite3(locomotion_class, factory, link, operator_ready):
+    """Compose and connect. Split out only so the ``ImportError`` above can cover it.
+
+    ⚠️ ``connect()`` HAS TO BE INSIDE THAT ``try``, and the first fix for issue #141 did not
+    put it there. ``lite3_locomotion._ros2_locomotion`` imports the ROS 2 Twist binding
+    LAZILY, and that module's own docstring says why: it is "composed rather than
+    subclassed so this module remains importable on a workstation without ROS 2 … both are
+    loaded only by :meth:`connect`". So ``import lite3_locomotion`` succeeds on a robot
+    with no ROS 2 and the ``ModuleNotFoundError`` arrives one call later — a wrapper around
+    the import alone classified it as a robot fault, exactly as before the fix. Running
+    ``drive_bridge.py status --platform lite3 --locomotion-transport ros2`` is what caught
+    that; reading the wrapper did not.
+    """
+    arguments = {"operator_ready": operator_ready}
+    if factory is not None:
+        arguments["implementation_factory"] = factory
+    # Passed only when given, for the same reason the link ports are: /cmd_vel and
+    # /leg_odom2 are Lite3Locomotion's own defaults and this file does not restate them.
+    if link.cmd_vel_topic is not None:
+        arguments["cmd_vel_topic"] = link.cmd_vel_topic
+    if link.odom_topic is not None:
+        arguments["odom_topic"] = link.odom_topic
+    loco = locomotion_class(**arguments)
     loco.connect()
     return loco
 
@@ -285,18 +545,84 @@ def _require_virtualenv(component):
     return decision
 
 
-def load_platform(platform, iface="eth0", operator_ready=False):
+def load_platform(platform, iface="eth0", operator_ready=False, link=None):
     if platform == "go2":
         _require_virtualenv("drive_bridge --platform go2")
         return _load_go2(iface)
     if platform == "lite3":
         _require_virtualenv("drive_bridge --platform lite3")
-        return _load_lite3(operator_ready)
+        return _load_lite3(operator_ready, link)
     if platform == "sim":
         loco = SimLocomotion()
         loco.connect()
         return loco
     raise BridgeError(f"unknown platform {platform!r}; use go2, lite3 or sim")
+
+
+def link_from_args(args):
+    """The :class:`Lite3Link` ``--locomotion-transport`` and its companions describe."""
+    chosen = getattr(args, "locomotion_transport", None)
+    return Lite3Link(
+        transport=chosen or DEFAULT_LITE3_TRANSPORT,
+        motion_host=getattr(args, "motion_host", None),
+        command_port=getattr(args, "command_port", None),
+        state_port=getattr(args, "state_port", None),
+        state_bind=getattr(args, "state_bind", None),
+        axis_profile=getattr(args, "axis_profile", None),
+        axis_local_port=getattr(args, "axis_local_port", None),
+        cmd_vel_topic=getattr(args, "cmd_vel_topic", None),
+        odom_topic=getattr(args, "odom_topic", None),
+        chosen=chosen is not None,
+    )
+
+
+def check_lite3_link(backend, link, command):
+    """Refuse a transport/option combination that cannot do what was asked. Pure.
+
+    Called before anything connects, for the reason ``check_gait_floor`` is: these are
+    decidable from the arguments, and opening a socket to deliver a command that was never
+    going to run costs seconds on the robot's own host.
+
+    Every rule here is the same shape — **an option that would be silently ignored is
+    refused instead**. ``robot_link.load_axis_profile`` puts it best about the one that
+    caught it first: passing a profile to a transport that ignores it "looks exactly like a
+    profile that took effect".
+
+    ⚠️ ``axis`` WITHOUT a profile is refused for motion and permitted for ``stop`` and
+    ``status``, and that asymmetry is load-bearing rather than lenient.
+    ``Lite3AxisLocomotion.set_velocity`` raises ``AxisProfileError`` without one, so a
+    nudge is refused here instead of deep inside the transport — but ``stop()`` on that
+    class only zeroes a setpoint and reads no primitive at all, and a stop that demanded a
+    profile would be a stop with a prerequisite.
+    """
+    if link.chosen and backend != "lite3":
+        raise BridgeError(
+            f"--locomotion-transport {link.transport} selects a Lite3 vendor interface and "
+            f"this worker is driving the {backend}. It would have been ignored, which "
+            f"looks exactly like a transport that took effect. Drop the flag, or point "
+            f"--backend/--platform at the lite3.")
+    if backend != "lite3":
+        return
+    if link.transport not in LITE3_TRANSPORTS:
+        raise BridgeError(f"unknown --locomotion-transport {link.transport!r}; expected one "
+                          f"of " + ", ".join(sorted(LITE3_TRANSPORTS)))
+    if link.axis_profile is not None and link.transport != "axis":
+        raise BridgeError(
+            f"--axis-profile was given but --locomotion-transport is {link.transport!r}, "
+            f"which does not read one. Passing a profile to a transport that ignores it "
+            f"looks exactly like a profile that took effect.")
+    if link.transport != "ros2" and (link.cmd_vel_topic is not None
+                                     or link.odom_topic is not None):
+        raise BridgeError(
+            f"--cmd-vel-topic/--odom-topic name ROS 2 topics and "
+            f"--locomotion-transport {link.transport} has no ROS 2 node to publish them "
+            f"on. They would be accepted and discarded.")
+    if link.transport == "axis" and link.axis_profile is None and command in MOTION_COMMANDS:
+        raise BridgeError(
+            "--locomotion-transport axis requires --axis-profile for a command that moves "
+            "the robot. The transport ships no raw axis value for any direction and will "
+            "not invent one: a profile supplies each primitive together with the evidence "
+            "reference behind it. (stop and status do not need one and do not ask.)")
 
 
 # ── safety ────────────────────────────────────────────────────────────────────────────────
@@ -542,6 +868,131 @@ def command_lie_down(loco, platform):
     return {"ok": True, "postured": True, "note": "StandDown issued"}
 
 
+def command_stop(args, link):
+    """Zero the velocity — and never claim to have done it when it was not done.
+
+    ⛔ **This is the safety command in this file and issue #141 is about it.** It used to
+    run inside ``dispatch`` after ``load_platform``, so on a Lite3 with no ROS 2 it died at
+    ``ModuleNotFoundError`` before ``loco.stop()`` — a stop that depended on the thing it
+    was stopping. It owns its own loading now, and the three outcomes are told apart in the
+    reply rather than collapsed into one failure:
+
+    * ``commanded_zero: true`` — a zero went out and it is authoritative.
+    * ``commanded_zero: false`` with ``ok: true`` — the axis transport, where a process
+      that did not start the stream has no setpoint to zero and ``stop()`` sends nothing.
+      The note says which lever actually ends that walk, because a tick over nothing here
+      is exactly the failure this repository keeps writing tests about.
+    * ``ok: false`` with :data:`CAUSE_TRANSPORT_UNAVAILABLE` — the transport would not
+      load, so **nothing reached the robot**, and the reply says that in those words
+      rather than returning a generic error the page renders as a robot fault.
+
+    Never gated by ``--allow-motion``: a stop you cannot issue because motion is disabled
+    is the wrong affordance on a robot console.
+    """
+    backend = args.backend or args.platform
+    described = link.describe() if backend == "lite3" else {}
+    if backend == "lite3" and link.transport == "axis":
+        # NOT a connection this worker declines to make out of caution -- it is a
+        # connection that could not accomplish anything. AxisStreamSender lives in the
+        # process that started it; a fresh process has `self._streamer is None`, so
+        # Lite3AxisLocomotion.stop() returns having sent no datagram. Opening a socket and
+        # waiting for the state stream first would add a way for the STOP path to fail,
+        # in exchange for calling a method that is a no-op here.
+        # ``stopped`` is False on purpose even though ``ok`` is True. ``ok`` means "the
+        # stop did what this transport permits"; ``stopped`` and ``commanded_zero`` are
+        # about what THIS WORKER put on the wire, which is nothing. No field on this reply
+        # may claim an action that did not happen -- the note is where the explanation
+        # goes, not a boolean.
+        result = {"ok": True, "stopped": False, "commanded_zero": False,
+                  "reached_robot": False, "platform": args.platform,
+                  "note": "NO ZERO WAS SENT, and that is what this transport allows rather "
+                          "than a failure. On --locomotion-transport axis the command "
+                          "stream is a thread inside the process that started it, so a "
+                          "separate process has no setpoint to zero. What ends an axis "
+                          "walk is ENDING THAT PROCESS: robot_driver.stop() SIGTERMs the "
+                          "motion worker before calling here, and the worker streams zeros "
+                          "for 2 s on the way out. Once the datagrams stop it is the "
+                          "vendor watchdog that zeroes the axes -- the command TTL is "
+                          "capped below 250 ms because that is the documented watchdog, "
+                          "and NOBODY HAS MEASURED IT ON EITHER VENTURE. If the robot is "
+                          "still moving, use the physical abort."}
+        result.update(described)
+        return result
+    try:
+        loco = load_platform(backend, iface=args.iface,
+                             operator_ready=args.operator_ready, link=link)
+    except BridgeError:
+        raise
+    except TransportUnavailable as exc:
+        result = {"ok": False, "cause": CAUSE_TRANSPORT_UNAVAILABLE, "refused": False,
+                  "stopped": False, "commanded_zero": False, "reached_robot": False,
+                  "platform": args.platform,
+                  "error": "STOP DID NOT REACH THE ROBOT. " + str(exc) + " Nothing this "
+                           "worker sends can reach the robot on this transport, which also "
+                           "means no command from this dashboard has ever reached it on "
+                           "this transport -- so this dashboard has not left a velocity "
+                           "latched. It has also not stopped anything. If the robot is "
+                           "moving, something else is driving it: USE THE PHYSICAL ABORT. "
+                           "To command a real zero, restart the driver on a transport this "
+                           "interpreter can load."}
+        result.update(described)
+        return result
+    except Exception as exc:
+        # A transport that LOADED and could not open. Still a fault about the real link --
+        # the classification does not move -- but the reply keeps `commanded_zero`, so the
+        # page renders "velocity NOT zeroed" rather than an error the operator has to read
+        # to the end to learn that nothing was sent. The commonest one is `udp`'s connect
+        # waiting 5 s for a state frame; see this module's docstring.
+        result = {"ok": False, "cause": CAUSE_FAULT, "refused": False, "stopped": False,
+                  "commanded_zero": False, "platform": args.platform,
+                  "error": f"THE ZERO WAS NOT SENT: {type(exc).__name__}: {exc}"}
+        result.update(described)
+        return result
+    try:
+        loco.stop()
+    finally:
+        with contextlib.suppress(Exception):
+            loco.shutdown()
+    result = {"ok": True, "stopped": True, "commanded_zero": True, "reached_robot": True,
+              "platform": args.platform}
+    result.update(described)
+    return result
+
+
+def stop_guarantee(result, interrupted_motion=False, ended_run=False):
+    """What a stop DID, and whether that adds up to a stop. Pure. ``(ok, note)``.
+
+    Here rather than in ``robot_driver`` for the reason :func:`check_gait_floor` is here:
+    this is the rule and the driver is the wiring. It also means the rule is exercised by a
+    suite CI runs on both interpreters — ``test_robot_driver.py`` dies at
+    ``ModuleNotFoundError`` on ``device_connect_edge``, which is not on PyPI before launch,
+    so a safety rule that lived only there would be a rule no CI has ever run.
+
+    Three levers end a walk and a stop pulls all three: the policy run, the in-flight nudge
+    worker, and a zero velocity on the wire. The note names each and says which of them
+    moved, because "stopped" on its own is a word an operator cannot check. ``ok`` is False
+    when the transport would not load — that press did nothing at all and must not come
+    back green — and True otherwise, including the ``axis`` case where no zero was sent
+    because on that transport there was no zero to send and the worker was ended instead.
+    """
+    zeroed = bool(result.get("commanded_zero"))
+    # Each clause says exactly what its boolean says and no more. "the worker was not
+    # running" would be an inference: `_terminate_worker` also returns False for a worker
+    # that had already exited, and for one whose terminate() raised.
+    note = (("the policy run was ENDED" if ended_run else "no policy run was ended")
+            + ("; the in-flight nudge worker was TERMINATED" if interrupted_motion
+               else "; no nudge worker was terminated")
+            + "; a zero velocity was " + ("COMMANDED" if zeroed else "NOT commanded")
+            + ".")
+    if result.get("cause") == CAUSE_TRANSPORT_UNAVAILABLE:
+        return False, (note + " The transport would not load, so nothing this dashboard "
+                       "sent could have reached the robot -- which also means this "
+                       "dashboard cannot have left a velocity latched on it. It has not "
+                       "stopped anything either. If the robot is moving, USE THE PHYSICAL "
+                       "ABORT.")
+    return bool(result.get("ok")), note
+
+
 def dispatch(args):
     """Run one command and return its result dict."""
     if args.command in MOTION_COMMANDS and not args.allow_motion:
@@ -549,6 +1000,15 @@ def dispatch(args):
             f"{args.command} moves the robot and --allow-motion was not given. This is the "
             "same gate as --live: a dashboard that can walk a robot the moment it is "
             "discovered is a worse posture than the command line it replaces.")
+
+    link = link_from_args(args)
+    check_lite3_link(args.backend or args.platform, link, args.command)
+
+    # BEFORE load_platform, and that placement is the whole of issue #141's first defect:
+    # a stop that has to open the motion transport before it can command zero is a stop
+    # that dies with the transport. See :func:`command_stop`.
+    if args.command == "stop":
+        return command_stop(args, link)
 
     # Plan the nudge BEFORE connecting. A speed below the gait floor is a refusal that can
     # be decided from a table, and connecting to DDS to deliver it would cost seconds on a
@@ -561,16 +1021,16 @@ def dispatch(args):
     # the first version of --simulate did — silently gave a demo the bench double's floors of
     # zero, so the refusal that is this stack's most characteristic behaviour never fired.
     loco = load_platform(args.backend or args.platform, iface=args.iface,
-                         operator_ready=args.operator_ready)
+                         operator_ready=args.operator_ready, link=link)
     try:
         if args.command == "status":
-            return command_status(loco, args.platform)
+            result = command_status(loco, args.platform)
+            if (args.backend or args.platform) == "lite3":
+                result.update(link.describe())
+            return result
         if args.command == "pose-stream":
             return command_pose_stream(loco, args.platform,
                                        min(args.hz, MAX_POSE_STREAM_HZ))
-        if args.command == "stop":
-            loco.stop()
-            return {"ok": True, "stopped": True}
 
         # Everything past here moves the robot, so it runs inside the guaranteed-damp
         # guard. Entering it only for motion keeps a status poll from installing signal
@@ -584,6 +1044,14 @@ def dispatch(args):
             vx, vy, wz, seconds, warning = plan
             result = run_nudge(loco, vx, vy, wz, seconds)
             result["platform"] = args.platform
+            if (args.backend or args.platform) == "lite3":
+                # ``transport_preserves_magnitude: false`` is what tells a reader that
+                # ``delivered_fraction`` is not a delivery ratio here: the axis transport
+                # threw the commanded number away before it reached the wire, so the ratio
+                # describes the primitive rather than what the robot delivered. The ratio
+                # is still reported -- deleting a measurement is worse than labelling it --
+                # and one field says so rather than two that could drift apart.
+                result.update(link.describe())
             if warning:
                 result["warning"] = warning
             return result
@@ -633,6 +1101,50 @@ def build_parser():
     parser.add_argument("--operator-ready", action="store_true",
                         help="Lite3: the operator has confirmed STANDING + high-level "
                              "navigation mode on the vendor interface.")
+
+    # THE SAME FLAG NAMES, THE SAME CHOICES AND THE SAME DEFAULT the Lite3 navigator and
+    # the commissioning harness already use -- robot_bindings._add_ros_arguments and
+    # robot_link.add_link_arguments. A dashboard that spelled this differently would be a
+    # second vocabulary for one vendor interface, and the operator holding the runbook
+    # would be reading about the other one.
+    #
+    # Every value defaults to None, meaning "the transport module's own default". Nothing
+    # here restates a vendor port, host or topic; see :class:`Lite3Link`.
+    #
+    # NOT PLUMBED, deliberately: --axis-rate-hz, --axis-heartbeat-hz, --axis-command-ttl
+    # and --axis-source-address. They are stream tuning with vendor minima that
+    # AxisStreamSender validates on construction, and a dashboard nudge has no reason to
+    # differ from the navigator on any of them. If one ever does, add it here rather than
+    # inventing a dashboard-only name for it.
+    link = parser.add_argument_group("Lite3 locomotion transport")
+    link.add_argument("--locomotion-transport", default=None,
+                      choices=sorted(LITE3_TRANSPORTS),
+                      help="which vendor interface to command a Lite3 through. udp: the "
+                           "high-level UDP interface directly, no ROS 2 (default); axis: "
+                           "profile-gated moving-mode simple axes, the only one either "
+                           "Venture has been seen to walk on; ros2: the Lite3_ROS bridge "
+                           f"topics. Default {DEFAULT_LITE3_TRANSPORT}, which is the "
+                           "navigator's default too.")
+    link.add_argument("--motion-host", default=None,
+                      help="Lite3 motion host address (udp and axis).")
+    link.add_argument("--command-port", type=int, default=None,
+                      help="motion host command port.")
+    link.add_argument("--state-port", type=int, default=None,
+                      help="local port the motion host streams state to; it must match "
+                           "'ip'/'target_port' in ~/jy_exe/conf/network.toml.")
+    link.add_argument("--state-bind", default=None,
+                      help="local address for state telemetry.")
+    link.add_argument("--axis-profile", default=None, metavar="PATH",
+                      help="evidenced lite3-axis-profile JSON. Required by "
+                           "--locomotion-transport axis for a command that MOVES the "
+                           "robot, refused by the other transports, and not needed by "
+                           "stop or status.")
+    link.add_argument("--axis-local-port", type=int, default=None,
+                      help="local port the axis stream sends from.")
+    link.add_argument("--cmd-vel-topic", default=None,
+                      help="Lite3_ROS Twist command topic (ros2 only).")
+    link.add_argument("--odom-topic", default=None,
+                      help="Lite3_ROS Odometry topic (ros2 only).")
     parser.add_argument("--allow-motion", action="store_true",
                         help="Permit commands that move the robot.")
     parser.add_argument("--force", action="store_true",
@@ -655,9 +1167,17 @@ def main(argv=None):
     try:
         result = dispatch(args)
     except BridgeError as exc:
-        result = {"ok": False, "refused": True, "error": str(exc)}
+        result = {"ok": False, "refused": True, "cause": CAUSE_REFUSED, "error": str(exc)}
+    except TransportUnavailable as exc:
+        # ⚠️ `refused` stays FALSE here, because this was not a refusal -- but `cause` is
+        # what a reader must branch on. Issue #141: with only the boolean, a dashboard
+        # renders a missing Python module as the robot misbehaving, and an operator in
+        # Shanghai spends the day on the robot instead of on the deployment.
+        result = {"ok": False, "refused": False, "cause": CAUSE_TRANSPORT_UNAVAILABLE,
+                  "reached_robot": False, "error": str(exc)}
     except Exception as exc:
-        result = {"ok": False, "refused": False, "error": f"{type(exc).__name__}: {exc}"}
+        result = {"ok": False, "refused": False, "cause": CAUSE_FAULT,
+                  "error": f"{type(exc).__name__}: {exc}"}
     # The result JSON is the LAST line of stdout. Everything the SDK prints on import goes
     # before it, which is why the driver reads backwards rather than parsing all of stdout.
     print(json.dumps(result))

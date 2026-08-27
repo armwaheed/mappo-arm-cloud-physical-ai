@@ -358,7 +358,33 @@ function renderCapabilities(caps) {
     addNote(notes, "warn",
       `<strong>⚠ marked keys carry a caveat.</strong> No measured ` +
       `${unmeasured.join(" or ")} gait floor on the ${caps.platform} — hover a marked key. ` +
-      `The result panel always reports what actually moved.`);
+      `The result panel always reports what actually moved. Where a key is REFUSED rather ` +
+      `than marked, <code>force sub-floor</code> is the documented way past it.`);
+  }
+
+  // Which vendor interface the legs are commanded through. It is a property of how the
+  // driver was started, it decides whether a commanded speed means anything, and until
+  // #141 the dashboard could not select it at all.
+  const loco = caps.locomotion;
+  if (loco && !loco.simulated) {
+    if (loco.has_walked_a_venture === false) {
+      addNote(notes, "warn",
+        `<strong>Transport <code>${escapeHtml(loco.transport)}</code>: no Lite3 Venture ` +
+        `has been seen to walk on it.</strong> A transport that does not actuate reports ` +
+        `zero travel on every command, which reads exactly like a gait floor above ` +
+        `everything you tried. ${escapeHtml(loco.note || "")}`);
+    } else if (loco.preserves_magnitude === false) {
+      addNote(notes, "warn",
+        `<strong>Transport <code>${escapeHtml(loco.transport)}</code> is SIGN-ONLY.</strong> ` +
+        `Past the profile's deadband every command emits the same full-scale primitive, so ` +
+        `the speed box sets a DIRECTION and the delivered fraction in the result is not a ` +
+        `delivery ratio.`);
+    }
+    if (loco.transport === "axis" && !loco.axis_profile) {
+      addNote(notes, "warn",
+        "<strong>No <code>--axis-profile</code>.</strong> Stop and status work; every key " +
+        "that moves the robot will be refused by the worker.");
+    }
   }
 }
 
@@ -501,7 +527,12 @@ function motionParams(fn) {
   const speed = parseFloat($("speed").value);
   const rate = parseFloat($("rate").value);
   const force = $("force").checked;
-  if (fn === "turn_left" || fn === "turn_right") return { seconds, rate_rad_s: rate };
+  // turn takes force too, since #141. It is the axis nothing has ever been measured on,
+  // so on a Lite3 -- where nothing has been measured on ANY axis -- it is the control the
+  // override exists for, and it was the one control that could not send it.
+  if (fn === "turn_left" || fn === "turn_right") return { seconds, rate_rad_s: rate, force };
+  // walk_back deliberately does NOT: reverse is not gait-floor checked at all
+  // (drive_bridge.plan_nudge), so a force flag there would be a control with no effect.
   if (fn === "walk_back") return { seconds, speed_mps: speed };
   if (fn === "walk_forward" || fn === "strafe_left" || fn === "strafe_right") {
     return { seconds, speed_mps: speed, force };
@@ -524,8 +555,28 @@ async function sendMotion(button) {
   }
 }
 
+// A missing Python module is not a robot fault, and rendering it as one is how an operator
+// in Shanghai loses a day (#141). The driver now says which of three things happened; this
+// is where that distinction has to become words on the page, because "refused" over an
+// ImportError sends someone to look at the robot.
+const CAUSE_HEADLINE = {
+  refused: (fn) => `${fn} refused`,
+  transport_unavailable: (fn) =>
+    `${fn} NEVER REACHED THE ROBOT — the locomotion transport could not be loaded.\n` +
+    `This is the deployment on the robot's own host, not the robot: nothing was ` +
+    `commanded and nothing was refused.`,
+  fault: (fn) => `${fn} failed`,
+};
+
 function summariseMotion(fn, result) {
-  if (result.ok === false) return `${fn} refused\n\n${result.error}`;
+  if (result.ok === false) {
+    const headline = (CAUSE_HEADLINE[result.cause] || CAUSE_HEADLINE.fault)(fn);
+    // A FAILED stop still has to say which levers moved. The run and the worker need no
+    // transport and fire either way, and an operator deciding whether to walk to the
+    // physical abort is deciding on exactly that.
+    const levers = result.stop_note ? `\n\n${result.stop_note}` : "";
+    return `${headline}\n\n${result.error}${levers}`;
+  }
   const lines = [`${fn} ok`];
   if (result.travelled_m !== null && result.travelled_m !== undefined) {
     lines.push(`travelled      ${result.travelled_m} m`);
@@ -534,6 +585,20 @@ function summariseMotion(fn, result) {
   if (result.seconds !== undefined) lines.push(`held           ${result.seconds} s`);
   if (result.delivered_fraction !== undefined) {
     lines.push(`delivered      ${result.delivered_fraction} of commanded`);
+  }
+  // A stop reports which of its three levers moved, and NEVER just a tick: on the Lite3
+  // axis transport no zero is sent at all, because there is no setpoint in this process to
+  // zero -- what ends that walk is the worker being terminated. See drive_bridge.
+  if (result.action === "stop") {
+    lines.push(`velocity       ${result.velocity_zeroed ? "zeroed" : "NOT zeroed"}`);
+    if (result.stop_note) lines.push(`\n${result.stop_note}`);
+  }
+  if (result.locomotion_transport) {
+    lines.push(`transport      ${result.locomotion_transport}`);
+    if (result.transport_preserves_magnitude === false) {
+      lines.push("               ⚠ sign-only: the commanded speed was a DIRECTION, so " +
+                 "the delivered fraction above is not a delivery ratio");
+    }
   }
   if (result.note) lines.push(`\n${result.note}`);
   if (result.warning) lines.push(`\n⚠ ${result.warning}`);
@@ -806,8 +871,13 @@ const ALERT_EVENTS = {
 };
 
 function noteAlert(record) {
-  const kind = ALERT_EVENTS[record.event];
+  let kind = ALERT_EVENTS[record.event];
   if (!kind) return;
+  // #141 again, on the stream this time. "refused" over a ModuleNotFoundError points the
+  // operator at the robot; this points them at the host the worker runs on.
+  if (record.event === "motion_refused" && record.payload.cause === "transport_unavailable") {
+    kind = "transport unavailable";
+  }
   state.alerts.unshift({
     id: `${record.seq}`,
     device_id: record.device_id,

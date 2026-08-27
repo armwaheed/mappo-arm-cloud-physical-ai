@@ -153,8 +153,8 @@ yet on a real Lite3.
 | 2 | **View the fleet** | **查看机器人列表** | ✅ verified (Go2 camera, 1920×1080 @ 6 fps) |
 | 3 | **Connect to a model server** | **连接模型服务** | ✅ verified |
 | 4 | **Load a model** | **下载模型到机器人** | ✅ verified on Go2 — ⚠️ see §7 for what it really touches |
-| 5 | **Start MAPPO on the robot** | **在机器人上启动 MAPPO** | ✅ RPCs verified against the bench double — ❌ **no robot has been driven by them**; ⛔ **on a Lite3, blocked — §10.5** |
-| 6 | **Stop / start / manual control** | **停止／启动／人工接管** | ✅ verified on the bench double — ❌ **never on a real robot**; ⛔ **on a Lite3, blocked — §10.5** |
+| 5 | **Start MAPPO on the robot** | **在机器人上启动 MAPPO** | ✅ RPCs verified against the bench double — ❌ **no robot has been driven by them**; ⚠️ **on a Lite3, pick a transport first — §10.5** |
+| 6 | **Stop / start / manual control** | **停止／启动／人工接管** | ✅ verified on the bench double — ❌ **never on a real robot**; ⚠️ **on a Lite3, what STOP promises depends on the transport — §10.5** |
 | 7 | **Swap models** | **切换模型** | ✅ verified — takes effect on the **next** run |
 
 ---
@@ -408,6 +408,14 @@ worker refreshes velocity at 10 Hz, so `stop` also **terminates the in-flight wo
 仅仅把 stop 送达是不够的——执行体以 10 Hz 刷新速度指令，所以 `stop`
 还会**终止正在执行的工作进程**（用 SIGTERM，让它的 `SafeStop` 完成阻尼停止）。
 
+⚠️ **EN** — **The reply says which of those three levers actually moved** (`stop_note`), and
+reports `velocity_zeroed` separately from `ok`, so a press never comes back as a bare tick.
+On a Lite3 what it can promise depends on the transport — **read §10.5 before you need it.**
+
+⚠️ **中文** —— **返回结果会写明这三个开关里实际起作用的是哪一个**（`stop_note`），
+并且把 `velocity_zeroed` 与 `ok` 分开报告，所以一次按下绝不会只回一个空洞的对勾。
+在 Lite3 上，它能保证什么取决于通道——**请在真正需要之前先读 §10.5。**
+
 ⛔ **EN** — **On a Lite3, stop only stops. It does not lay the robot down.** `lie_down` on a
 Go2 issues `StandDown`; on a Lite3 posture is **operator-controlled through the vendor app**.
 The driver reports this itself as `lie_down_changes_posture: false`. **Standing the robot up
@@ -576,44 +584,88 @@ RPC to the robot's own video service, so a run and the viewport can both read it
 **中文** —— Go2 没有这个问题：它的图像来自 SDK 的 `VideoClient`，
 那是对机器人自身视频服务的一次 RPC 调用，因此运行和画面窗口可以同时读取。
 
-### 10.5 On a Lite3 the dashboard can only speak ROS 2 — and that is probably not this robot
-### 10.5 dashboard 对 Lite3 只会说 ROS 2 —— 而这台机器人多半不是
+### 10.5 Choose the Lite3 transport, and know what STOP can promise on it
+### 10.5 选择 Lite3 的通道，并清楚 STOP 在这条通道上能保证什么
 
-⛔ **EN** — `drive_bridge.py`'s `_load_lite3` takes **no transport argument**. It constructs
-`Lite3Locomotion`, whose default implementation imports
-`arm_dc_robotkit.ros2_twist_locomotion`. **There is no `--locomotion-transport` anywhere in
-`dashboard/`** — the `udp` and `axis` transports exist only behind `visual_nav`/`mappo_drive`.
-The Lite3 README notes that the ROS 2 bridge "runs on a *perception* host … so it needs a
-ROS 2 Foxy runtime on a computer **these two Ventures may not have**." **The one transport a
-Venture has actually walked on — profile-gated axis UDP — the dashboard cannot reach at all.**
+**EN** — Until issue #141 this section read *"the dashboard can only speak ROS 2 — and that
+is probably not this robot"*, and it was right: `_load_lite3` took **no transport argument**,
+so `status`, `stand`, `stand-down`, `pose-stream` **and `stop`** all came back as
+`{"ok": false, "refused": false, "error": "ModuleNotFoundError: No module named
+'ros2_twist_locomotion'"}` on a Venture with no ROS 2 — coloured as a **robot fault**. That
+is fixed. Read this section for what to pass and what each choice costs.
 
-⛔ **中文** —— `drive_bridge.py` 的 `_load_lite3` **不接受任何通道参数**。
-它构造 `Lite3Locomotion`，其默认实现 import 的是 `arm_dc_robotkit.ros2_twist_locomotion`。
-**`dashboard/` 目录下根本没有 `--locomotion-transport`**——
-`udp` 和 `axis` 两条通道只存在于 `visual_nav` / `mappo_drive` 背后。
-Lite3 的 README 指出，ROS 2 桥"运行在**感知主机**上……因此需要一个 ROS 2 Foxy 运行时，
-而**这两台 Venture 可能并没有**"。
-**Venture 真正走起来过的那条通道——受配置约束的 axis UDP——dashboard 完全够不到。**
+**中文** —— 在 issue #141 之前，本节写的是"dashboard 对 Lite3 只会说 ROS 2 —— 而这台机器人
+多半不是"，而且这话是对的：`_load_lite3` **不接受任何通道参数**，所以在没有 ROS 2 的 Venture 上，
+`status`、`stand`、`stand-down`、`pose-stream` **以及 `stop`** 全都会返回
+`{"ok": false, "refused": false, "error": "ModuleNotFoundError: No module named
+'ros2_twist_locomotion'"}`——并且被显示成**机器人故障**。这个问题已经修复。
+本节说明该传什么参数，以及每种选择的代价。
 
-**EN** — Reproduced on a clean workstation. Note `"refused": false`: **the dashboard colours
-this as a FAULT, not a refusal**, and it will send you to diagnose a robot that is fine.
-
-**中文** —— 在干净的工作站上复现如下。注意 `"refused": false`：
-**dashboard 会把它显示为"故障"而不是"拒绝执行"**，于是把你引去排查一台其实没问题的机器人。
-
-```
-$ python3.11 drive_bridge.py status --platform lite3
-{"ok": false, "refused": false, "error": "ModuleNotFoundError: No module named 'ros2_twist_locomotion'"}
+```bash
+./start-dashboard.sh --platform lite3 --allow-motion -- \
+        --operator-ready --locomotion-transport axis \
+        --axis-profile /opt/lite3-axis-LITE3-A.json
 ```
 
-⚠️ **EN** — The same output comes back for `stop`, `stand`, `stand-down` and `pose-stream`, so
-**the STOP button's velocity-zero backstop fails on a Lite3 too.** `stop` still SIGTERMs a
-running policy, so a run does end — but the result reads red for an unrelated reason.
+| transport / 通道 | **EN** | **中文** |
+| --- | --- | --- |
+| `udp` (default / 默认) | the commanded number reaches the wire, but **no Venture has been seen to move on it** | 下发的数值会真正到达链路，但**没有任何一台 Venture 在这条通道上动过** |
+| `axis` | **the one both Ventures have walked on.** Sign-only: past the profile's deadband the speed box sets a **direction**, not a speed | **两台 Venture 真正走起来用的就是它。** 只认方向：越过配置的死区之后，速度输入框设定的是**方向**，不是速度 |
+| `ros2` | the `Lite3_ROS` bridge topics; needs a ROS 2 runtime on the host running the worker | `Lite3_ROS` 桥的话题；需要运行 worker 的那台主机上有 ROS 2 运行时 |
 
-⚠️ **中文** —— `stop`、`stand`、`stand-down`、`pose-stream` 返回的是同样的输出，
-所以 **STOP 按钮的"速度归零"兜底在 Lite3 上同样失效**。
-`stop` 仍会向正在运行的策略发 SIGTERM，所以运行确实会结束——
-但返回结果会因为一个无关的原因显示为红色。
+⚠️ **EN** — These are the **same three names, the same default and the same companion flags**
+as `visual_nav`'s `--locomotion-transport`, on purpose. `--axis-profile` is **required** by
+`axis` for anything that moves the robot, and **refused** by the other two — a profile handed
+to a transport that ignores it looks exactly like a profile that took effect. `stop` and
+`status` need no profile.
+
+⚠️ **中文** —— 这三个名字、默认值和配套参数，与 `visual_nav` 的 `--locomotion-transport`
+**完全一致**，这是刻意为之。在 `axis` 上，任何会让机器人移动的指令都**必须**带
+`--axis-profile`；另外两条通道则会**拒绝**这个参数——把配置文件交给一条会忽略它的通道，
+看起来和"配置已生效"一模一样。`stop` 和 `status` 不需要配置文件。
+
+⛔ **EN** — **What STOP promises depends on the transport, and the reply says which.** STOP
+pulls three levers: it ends the policy run, it SIGTERMs the in-flight nudge worker, and it
+commands zero. Only the third needs the transport. On `udp` and on a Go2 the zero is
+commanded and is authoritative (`velocity_zeroed: true`). **On `axis` no zero is sent at
+all** — the axis stream is a thread inside the process that started it, so a separate process
+has no setpoint to zero; what ends an axis walk is that process ending, which the SIGTERM
+does. The reply says `velocity_zeroed: false` and names the lever that moved. ⚠️ Once the
+datagrams stop it is the **vendor watchdog** that zeroes the axes, and **nobody has measured
+that watchdog on either Venture.** If the robot is still moving, use the physical abort.
+
+⛔ **中文** —— **STOP 能保证什么，取决于通道；返回结果里会写明是哪一种。** STOP 会拉三个开关：
+结束策略运行、给正在执行的点动 worker 发 SIGTERM、下发零速度。只有第三个需要通道。
+在 `udp` 和 Go2 上，零速度会被真正下发且是权威的（`velocity_zeroed: true`）。
+**在 `axis` 上根本不会发出任何零指令**——axis 指令流是启动它的那个进程里的线程，
+另一个进程没有可以清零的设定值；结束一次 axis 行走靠的是那个进程结束，而 SIGTERM 正是做这件事。
+返回结果会写 `velocity_zeroed: false`，并说明实际起作用的是哪一个开关。
+⚠️ 数据报停止之后，是**厂商看门狗**把各轴清零，而**没有人在这两台 Venture 上实测过这个看门狗**。
+如果机器人还在动，请使用物理急停。
+
+⚠️ **EN** — **A stop on `udp` still needs the state stream.** `Lite3UdpLocomotion.stop()`
+says *"Never refuses: a stop must survive a lost link"*, but `connect()` waits 5 s for a
+state frame and raises first. Measured 2026-08-27 with no robot present: 5.0 s, then
+`velocity_zeroed: false` and *THE ZERO WAS NOT SENT*. Fixing that is a change in
+`robot-stack/deep_robotics/lite3/locomotion/`, not in the dashboard.
+
+⚠️ **中文** —— **在 `udp` 上，stop 仍然依赖状态数据流。** `Lite3UdpLocomotion.stop()` 写着
+"绝不拒绝：stop 必须能在链路丢失时依然生效"，但 `connect()` 会先等 5 秒状态帧，等不到就抛异常。
+2026-08-27 在没有机器人的情况下实测：5.0 秒后返回 `velocity_zeroed: false` 与
+"THE ZERO WAS NOT SENT"。要修这个问题，改的是
+`robot-stack/deep_robotics/lite3/locomotion/`，不是 dashboard。
+
+**EN** — **And a missing module no longer reads as a robot fault.** Every failure now carries
+`cause`, with three values: `refused` (this stack turned the command down — the robot is
+fine), `transport_unavailable` (**the robot was never asked**), and `fault` (this one *is*
+about the robot). The alert drawer says *transport unavailable* rather than *refused*, and
+the result panel says the command **never reached the robot**.
+
+**中文** —— **另外，缺少 Python 模块不再被显示成机器人故障。** 现在每一次失败都会带上 `cause`
+字段，取值有三种：`refused`（本栈主动拒绝执行——机器人没问题）、
+`transport_unavailable`（**根本没有问过机器人**）、`fault`（这一种**确实**是机器人的问题）。
+事件抽屉里显示的是"transport unavailable"而不是"refused"，结果面板会写明该指令
+**从未到达机器人**。
 
 ### 10.6 The Lite3 camera panel can never produce a frame
 ### 10.6 Lite3 的相机面板永远出不了图
@@ -635,23 +687,41 @@ anything else holds the camera** — §10.4 is true, but it is not the reason.
 本仓库中**没有 `go2_frame_server.py` 的 Lite3 对应物**。
 **无论有没有别的程序占着相机，画面都是空的**——§10.4 成立，但它不是原因。
 
-### 10.7 Turning can never succeed; reverse is the only ungated motion
-### 10.7 转向永远不会成功；倒退是唯一没有闸门的运动
+### 10.7 Turning needs `force` — and reverse is still the only ungated motion
+### 10.7 转向需要勾选 `force` —— 而倒退仍然是唯一没有闸门的运动
 
-⚠️ **EN** — `walk_forward` and both strafes pass `force` through to the gait-floor check.
-**`turn_left` and `turn_right` take only `(seconds, rate_rad_s)` — there is no `force`
-parameter** (`robot_driver.py:783`, `:796`), and yaw is floor-checked like everything else, so
-**on a Lite3 they can never succeed.** Meanwhile **`walk_back` is never floor-checked at
-all**, which makes reverse — open-loop, with **no rear sensing** — the only Lite3 motion the
-dashboard lets through by default. **Do not use it as a "does motion work?" probe.**
+⚠️ **EN** — Until issue #141 **`turn_left` and `turn_right` took only
+`(seconds, rate_rad_s)` — there was no `force` parameter at all**, while `walk_forward` and
+both strafes had one. Yaw is floor-checked like everything else, so on a Lite3 the turn keys
+could **never** succeed and the documented way past the gate was not reachable from the page.
+Both now take `force`, and the **gate itself did not change**: without `force` a Lite3 turn
+is still refused, and the refusal still says *measure it first*. Tick **force sub-floor** and
+watch the robot.
 
-⚠️ **中文** —— `walk_forward` 和两个横移都会把 `force` 传给步态下限检查。
-**而 `turn_left` 和 `turn_right` 只接受 `(seconds, rate_rad_s)`——没有 `force` 参数**
-（`robot_driver.py:783`、`:796`），且偏航同样要过下限检查，
-所以**在 Lite3 上它们永远不可能成功**。
-与此同时，**`walk_back` 根本不做下限检查**，
-这使得倒退——开环、**没有任何后向感知**——成为默认情况下 dashboard 唯一放行的 Lite3 运动。
-**不要拿它当作"运动能不能用"的试探手段。**
+⚠️ **中文** —— 在 issue #141 之前，**`turn_left` 和 `turn_right` 只接受
+`(seconds, rate_rad_s)`——根本没有 `force` 参数**，而 `walk_forward` 和两个横移都有。
+偏航和其它轴一样要过步态下限检查，所以在 Lite3 上转向键**永远**不可能成功，
+文档里写明的绕过方式在页面上根本够不到。现在这两个键都接受 `force`，
+而**闸门本身没有放松**：不勾 `force`，Lite3 的转向依旧被拒绝，拒绝信息依旧写着"先去测"。
+勾上 **force sub-floor**，并盯住机器人。
+
+⚠️ **EN** — **Reverse is still the only Lite3 motion that passes by default, and that has not
+been "fixed" — deliberately.** `walk_back` is not floor-checked at all, because the floor is a
+measurement of the **forward** gait and applying it to reverse is the axis conflation issue
+#42 is about. Nothing has been measured on a Lite3, so every floor-checked verb refuses. The
+two decisions are individually right and the consequence is not: **open-loop reverse into
+space the forward-facing camera cannot see is the one thing that goes through.** It is capped
+at 2 s, it says on every press that nothing is watching behind the robot — and **it is still
+not a "does motion work?" probe.** Use a forced forward nudge for that, with an operator on
+the abort: it at least moves in the direction something is looking.
+
+⚠️ **中文** —— **倒退仍然是默认情况下唯一放行的 Lite3 运动，而且这一点是刻意没有去"修"的。**
+`walk_back` 完全不做下限检查，因为下限测的是**前向**步态，把它套到倒退上就是 issue #42
+所说的轴混淆。而 Lite3 上没有任何一个轴被测过，所以每一个受检查的动作都会被拒绝。
+这两个决定各自都是对的，合起来的后果却不是：**开环倒退进入前置相机看不到的空间，
+成了唯一能通过的动作。** 它被限制在 2 秒，每次按下都会提示后方无人监视——
+**而且它依旧不能当作"运动能不能用"的试探手段。** 要试探请用勾了 force 的前向点动，
+并且有人守在急停上：至少它朝着有东西在看的方向走。
 
 ---
 
@@ -666,7 +736,10 @@ dashboard lets through by default. **Do not use it as a "does motion work?" prob
 | motion refused | missing `--allow-motion`, or missing `arm_motion`, or no measured gait floor — **the refusal says which** | 缺 `--allow-motion`、缺 `arm_motion`，或者没有实测步态下限——**拒绝信息里会说明是哪一个** |
 | `the camera is in use` | expected on a Lite3 during a run — §10.4 | Lite3 运行期间属于**正常现象**——见 §10.4 |
 | a permanently blank Lite3 viewport | **not a camera fault** — §10.6 | **不是相机故障**——见 §10.6 |
-| `No module named 'ros2_twist_locomotion'` | **the transport, not the robot** — §10.5. Do **not** install anything on the robot | **是通道问题，不是机器人问题**——见 §10.5。**不要**在机器人上安装任何东西 |
+| `No module named 'ros2_twist_locomotion'` | **the transport, not the robot** — §10.5. Restart on `--locomotion-transport udp` or `axis`. Do **not** install anything on the robot | **是通道问题，不是机器人问题**——见 §10.5。改用 `--locomotion-transport udp` 或 `axis` 重启。**不要**在机器人上安装任何东西 |
+| `cause: transport_unavailable` | the command **never reached the robot** — check the deployment, not the robot | 该指令**从未到达机器人**——去查部署，不要查机器人 |
+| a turn refused on a Lite3 | expected without `force` — §10.7. The gate is correct; tick **force sub-floor** | 不勾 `force` 时属于**正常现象**——见 §10.7。闸门是对的；请勾上 **force sub-floor** |
+| STOP green but `velocity_zeroed: false` | expected on `--locomotion-transport axis` — §10.5. The worker was terminated, which is what ends an axis walk | 在 `--locomotion-transport axis` 上属于**正常现象**——见 §10.5。是 worker 被终止结束了这次行走 |
 | checkpoint panel shows the wrong disk | expected through an SSH wrapper — §7 | 通过 SSH wrapper 时属于**已知限制**——见 §7 |
 
 **EN** — **Report failures plainly.** If a step fails, say so with the output. If you skipped

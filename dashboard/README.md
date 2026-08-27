@@ -19,6 +19,12 @@ in. For a **first Lite3 bring-up**, start instead from
 [`../robot-stack/deep_robotics/lite3/LITE3-DASHBOARD-BRINGUP-PROMPT.md`](../robot-stack/deep_robotics/lite3/LITE3-DASHBOARD-BRINGUP-PROMPT.md),
 which is a staged, verify-before-proceeding bring-up written to be handed to a coding agent.
 
+⚠️ **That bring-up prompt predates #141 and parts of it are now stale**: it says "there is no
+`--locomotion-transport` anywhere in `dashboard/`" and walks an operator around a bare
+`ImportError` that no longer happens. Its §"the one change that would unblock this" is the
+change in this directory now. It lives under `robot-stack/deep_robotics/lite3/`, which is
+another change's tree; updating it is tracked separately rather than done here.
+
 ```
    browser
       │  HTTP + Server-Sent Events
@@ -821,11 +827,118 @@ therefore refused rather than warned about. Neither Venture has moved under this
 are all still open, and its first instruction is *"do not copy values between units"*. Until
 this PR the table gave the Lite3 the Go2's pair verbatim and told the Go2 its own lateral
 floor did not exist. `--force` is the way past the refusal, and it says on the result that it
-was forced.
+was forced — **on every floor-checked control, which was not true until #141**: `turn_left`
+and `turn_right` had no `force` parameter at all, so on a Lite3 yaw was refused with no way
+past from the page. The gate did not change; the door it documents is now reachable.
 
 **Reverse is open-loop into unobserved space.** Neither platform has rear sensing and the
 planner never samples that direction; issue #40 caught the policy commanding it. The button
 exists because it was asked for, it is capped at 2 s rather than 5, and it says so.
+
+⚠️ **On a Lite3 that leaves reverse as the only motion that passes by default**, and the two
+decisions that produce it are individually right. The floor is a measurement of the FORWARD
+gait, so applying it to reverse would be the axis conflation issue #42 is about — that is
+why `walk_back` is deliberately not floor-checked (`robot_driver.py`, `_precheck`). And
+nothing has been measured on a Lite3, so every floor-checked verb refuses. Nobody has
+changed either half here: the reverse cap is 2 s, the warning is on the key and in the
+result, and `get_capabilities().unmeasured_axes` is what the page marks from. What is new is
+that `force` now reaches **all five** floor-checked verbs, so the operator's way past the
+gate no longer runs through the one verb that has no gate. Making the consequence *safe*
+rather than merely stated needs a rear-facing measurement or a reverse-specific floor, and
+both are issue #13's to produce.
+
+### Which interface a Lite3 is commanded through
+
+`--locomotion-transport {udp,axis,ros2}`, with the same names, the same companions and the
+same `udp` default the Lite3 navigator
+([`robot_bindings.py`](../robot-stack/deep_robotics/lite3/visual_nav/robot_bindings.py)) and
+the commissioning harness
+([`robot_link.py`](../robot-stack/deep_robotics/lite3/commissioning/robot_link.py)) already
+use. There was no such flag anywhere under `dashboard/` until #141, and the loader built
+`Lite3Locomotion` with **no factory** — which is the ROS 2 Twist binding. On a Venture with
+no ROS 2 runtime that meant every command died at `ModuleNotFoundError`, and the `axis`
+transport both Ventures have actually walked on was unreachable from the dashboard entirely.
+
+| | reaches the wire | has walked a Venture |
+| --- | --- | --- |
+| `udp` (default) | the commanded number does | **no** — a vx 0.10 pulse arrived correctly on 2026-08-24 and the robot did not move |
+| `axis` | **no** — sign only; past the profile's deadband every command is the same full-scale primitive | **yes** — 0.401 m on 2026-08-24, four `--live` runs on 2026-08-26 |
+| `ros2` | the commanded number does | no; and it needs a ROS 2 runtime on the host running the worker |
+
+The evidence in that table is `robot_link.TRANSPORTS`'; it is not restated in the dashboard,
+and neither is any vendor port, host or topic name — every link option defaults to "whatever
+the transport module itself defines", because a copied vendor constant is exactly what the
+Lite3 row of `GAIT_FLOORS` used to be. `start-dashboard.sh` forwards anything after `--`:
+
+```bash
+./start-dashboard.sh --platform lite3 --allow-motion -- \
+        --operator-ready --locomotion-transport axis \
+        --axis-profile /opt/lite3-axis-LITE3-A.json
+```
+
+**On `axis`, `--axis-profile` is required for anything that moves the robot and refused by
+the other two transports** — a profile handed to a transport that ignores it looks exactly
+like a profile that took effect. `stop` and `status` need no profile and do not ask. A
+transport flag aimed at a Go2, or ROS topic names aimed at a UDP transport, are **refused
+rather than discarded**, for the same reason.
+
+⚠️ On `axis` the speed box sets a **direction**, not a speed, so the delivered fraction in
+the result panel is not a delivery ratio. The result says so on every press
+(`transport_preserves_magnitude: false`) and the page carries the caveat above the pad.
+
+### What STOP can promise, and what it cannot
+
+STOP pulls three levers, and only the third needs the transport: it ends the policy run, it
+SIGTERMs the in-flight nudge worker, and it commands zero. The reply names all three
+(`stop_note`) and reports `velocity_zeroed` separately from `ok`, so a press never comes back
+as a bare tick.
+
+* **Go2, Lite3 `udp`, the bench double** — a zero is commanded and it is authoritative: the
+  last velocity persists on the far side until the next one, so a zero from any process ends
+  the walk. `velocity_zeroed: true`.
+* **Lite3 `axis`** — **no zero is sent, and the reply says so.** The axis stream is a thread
+  inside the process that started it, so a fresh worker has no setpoint to zero and
+  `stop()` on it puts nothing on the wire. What ends an axis walk is that process ending,
+  which the SIGTERM above does; the worker streams zeros for 2 s on the way out, and once
+  the datagrams stop it is the vendor watchdog that zeroes the axes. ⚠️ The command TTL is
+  capped below 250 ms *because* that is the documented watchdog, and **nobody has measured
+  that watchdog on either Venture.**
+* **A transport that will not load** — `ok: false`, `cause: transport_unavailable`, and the
+  error says *STOP DID NOT REACH THE ROBOT* and sends the operator to the physical abort. It
+  also says the one thing that follows: a dashboard that cannot open the transport cannot
+  have latched a velocity through it either.
+
+⚠️ **One limitation is not fixed and is not hidden.** On `udp`,
+`Lite3UdpLocomotion.stop()` documents itself as *"Never refuses: a stop must survive a lost
+link"* — but `connect()` waits 5 s for a state frame and raises first, so a stop cannot be
+commanded to a robot whose telemetry is not arriving even though the command socket would
+work. Measured 2026-08-27 with no robot present: 5.0 s, then a refusal, with
+`velocity_zeroed: false` and *THE ZERO WAS NOT SENT* in the message. Fixing it means a
+`connect()` that can open the command socket without the state stream, which is a change in
+`robot-stack/deep_robotics/lite3/locomotion/` and not in the dashboard.
+
+### A missing module is not a robot fault
+
+Every failure now carries `cause`, with three values rather than a boolean: `refused` (this
+stack turned the command down — the gate, a gait floor, a busy robot; the robot is fine),
+`transport_unavailable` (the worker could not load or start the interface it commands
+through, so **the robot was never asked**), and `fault` (a silent state stream, a socket
+error, a robot reporting an error state — this one *is* about the robot). `refused` keeps its
+old meaning beside it.
+
+The distinction is #141's fourth defect and it is not cosmetic: a `ModuleNotFoundError` came
+back as `refused: false` and the page drew a robot fault, so an operator in Shanghai would
+spend the day on the robot instead of on the deployment. `motion_refused` carries the same
+`cause` onto the event stream, and the alert reads *transport unavailable* rather than
+*refused*.
+
+⚠️ The trap inside that fix is worth knowing: `lite3_locomotion` imports its ROS 2 binding
+**lazily, inside `connect()`** — deliberately, so the module stays importable on a
+workstation with no ROS 2. So `import lite3_locomotion` succeeds on a robot that has none,
+and the `ModuleNotFoundError` arrives one call later. The first version of this fix wrapped
+the module import only and classified a missing ROS 2 runtime as a robot fault exactly as
+before. Reading the wrapper did not show that; running
+`drive_bridge.py status --platform lite3 --locomotion-transport ros2` did.
 
 ## Files
 

@@ -142,15 +142,21 @@ import run_control
 from camera_source import CameraUnavailable
 from cloud_models import CloudFetchError
 from drive_bridge import (
+    CAUSE_FAULT,
+    CAUSE_REFUSED,
+    CAUSE_TRANSPORT_UNAVAILABLE,
+    DEFAULT_LITE3_TRANSPORT,
     DEFAULT_VX,
     DEFAULT_VY,
     DEFAULT_WZ,
+    LITE3_TRANSPORTS,
     MAX_POSE_STREAM_HZ,
     MAX_REVERSE_SECONDS,
     MAX_SECONDS,
     POSE_STREAM_HZ,
     BridgeError,
     check_gait_floor,
+    stop_guarantee,
 )
 from model_store import ModelStore, ModelStoreError
 
@@ -205,6 +211,18 @@ RUN_LOG_LINES = 40
 #: argument as the camera being events on their own subject rather than RPC replies.
 RUN_OUTPUT_EVENTS = 120
 
+#: The ``drive_bridge`` flags that select and configure the Lite3 vendor interface, by
+#: flag name so that this list and the worker's parser cannot disagree about a spelling.
+#:
+#: They are a PROPERTY OF THE DEPLOYMENT, set once when the driver starts, and never a
+#: parameter of an RPC — same argument as ``run_profile``: a browser must not get to choose
+#: which vendor interface a robot's legs are commanded through, and an operator reading the
+#: Lite3 runbook is choosing it on the command line with the same flag names the runbook
+#: already uses (``robot_bindings.py``, ``commissioning/robot_link.py``).
+LITE3_LINK_FLAGS = ("locomotion-transport", "motion-host", "command-port", "state-port",
+                    "state-bind", "axis-profile", "axis-local-port", "cmd-vel-topic",
+                    "odom-topic")
+
 #: How long to wait before restarting a dead pose worker. Short, because every second it
 #: is down is a second the robot avoiding this one is stopped — but not zero, or a worker
 #: that fails on startup becomes a spawn loop nobody can read the log of.
@@ -222,7 +240,7 @@ class MappoRobotDriver(DeviceDriver):
                  operator_ready: bool = False, allow_http: bool = True,
                  simulate: bool = False, camera_replay_dir: str = "", camera_url: str = "",
                  model_sources: list | None = None, publish_pose_hz: float = 0.0,
-                 run_profile=None) -> None:
+                 run_profile=None, lite3_link: dict | None = None) -> None:
         super().__init__()
         self.platform = platform
         self.bridge_script = bridge_script
@@ -231,6 +249,16 @@ class MappoRobotDriver(DeviceDriver):
         # `capabilities()` reports it so a misconfiguration is visible before a run.
         self.bridge_python = bridge_python or sys.executable
         self.iface = iface
+        #: ``{flag-name: value}`` for the Lite3 vendor interface, passed through to every
+        #: worker invocation including ``stop``. Empty means the worker's own default,
+        #: which is ``udp`` — the navigator's default, and NOT the ROS 2 binding that was
+        #: hard-wired here until issue #141.
+        self.lite3_link = {name: value for name, value in (lite3_link or {}).items()
+                           if value is not None}
+        unknown = sorted(set(self.lite3_link) - set(LITE3_LINK_FLAGS))
+        if unknown:
+            raise ValueError(f"unknown Lite3 link flag(s) {unknown}; the worker's parser "
+                             f"knows {list(LITE3_LINK_FLAGS)}")
         self.allow_motion = allow_motion
         self.operator_ready = operator_ready
         self.allow_http = allow_http
@@ -385,8 +413,24 @@ class MappoRobotDriver(DeviceDriver):
         """A motion command finished. ``travelled_m`` is measured, not commanded."""
 
     @emit()
-    async def motion_refused(self, action: str, reason: str):
-        """A motion command was turned down — by the gate, a gait floor, or a busy robot."""
+    async def motion_refused(self, action: str, reason: str, cause: str):
+        """A motion command did not run, and ``cause`` says which of three things happened.
+
+        ``refused`` — the gate, a gait floor, a busy robot, a policy that holds the legs.
+        The stack turned it down and the robot is fine.
+
+        ``transport_unavailable`` — the worker could not LOAD the interface it commands
+        through, so the robot was never asked. Issue #141 is what it costs to leave that in
+        the same bucket as the first: a Lite3 with no ROS 2 runtime answered every press
+        with an import error and the page rendered it as the robot misbehaving.
+
+        ``fault`` — anything else: a silent state stream, a socket error, a robot reporting
+        an error state. This one IS about the robot.
+
+        No default, deliberately: every emitter passes it. A default would let a new
+        refusal path be added that reports the reassuring value by omission, which is how
+        the boolean it replaces came to mean nothing.
+        """
 
     @emit()
     async def motion_interrupted(self, action: str, reason: str):
@@ -506,6 +550,14 @@ class MappoRobotDriver(DeviceDriver):
                "--platform", self.platform, "--iface", self.iface]
         if self.simulate:
             cmd += ["--backend", "sim"]
+        # On EVERY command, stop included. A stop that reached the robot through a
+        # different interface from the walk it is stopping would not be a stop.
+        # Suppressed when the bench double is what is driven, because the worker refuses a
+        # transport flag it would have to ignore -- and a simulated Lite3 is exactly that.
+        if self.platform == "lite3" and not self.simulate:
+            for name in LITE3_LINK_FLAGS:
+                if name in self.lite3_link:
+                    cmd += [f"--{name}", str(self.lite3_link[name])]
         cmd += [str(a) for a in (extra or [])]
         if self.allow_motion:
             cmd.append("--allow-motion")
@@ -526,9 +578,15 @@ class MappoRobotDriver(DeviceDriver):
                 with self._worker_guard:
                     self._worker = proc
         except OSError as exc:
-            return {"ok": False, "error": f"could not start the worker: {exc}. "
-                                          f"--bridge-python must be an interpreter that can "
-                                          f"import this robot's SDK."}
+            # transport_unavailable, not fault: the worker never ran, so the robot was
+            # never asked anything. An interpreter that will not start is the same class
+            # of problem as one that starts and cannot import the transport, and the whole
+            # point of the three-state cause is that neither is the robot misbehaving.
+            return {"ok": False, "cause": CAUSE_TRANSPORT_UNAVAILABLE,
+                    "reached_robot": False,
+                    "error": f"could not start the worker: {exc}. "
+                             f"--bridge-python must be an interpreter that can "
+                             f"import this robot's SDK."}
         try:
             stdout, stderr = proc.communicate(timeout=BRIDGE_TIMEOUT_S)
         except subprocess.TimeoutExpired:
@@ -538,11 +596,13 @@ class MappoRobotDriver(DeviceDriver):
             except subprocess.TimeoutExpired:
                 proc.kill()
                 stdout, stderr = proc.communicate()
-                return {"ok": False, "error": f"{command} did not respond to SIGTERM and was "
-                                              f"killed; assume the robot was NOT stopped "
-                                              f"cleanly and check it before commanding again"}
-            return {"ok": False, "error": f"{command} timed out after {BRIDGE_TIMEOUT_S}s; "
-                                          f"the worker was signalled and stopped the robot"}
+                return {"ok": False, "cause": CAUSE_FAULT,
+                        "error": f"{command} did not respond to SIGTERM and was "
+                                 f"killed; assume the robot was NOT stopped "
+                                 f"cleanly and check it before commanding again"}
+            return {"ok": False, "cause": CAUSE_FAULT,
+                    "error": f"{command} timed out after {BRIDGE_TIMEOUT_S}s; "
+                             f"the worker was signalled and stopped the robot"}
 
         # The result is the LAST JSON line: the SDK prints a banner on import, and CycloneDDS
         # writes to stdout during discovery. Reading backwards is what makes that survivable.
@@ -560,8 +620,9 @@ class MappoRobotDriver(DeviceDriver):
             # That is a normal outcome, not a fault, and it must not be reported as one.
             return {"ok": False, "interrupted": True,
                     "error": f"the {command} worker was stopped before it finished"}
-        return {"ok": False, "error": f"worker exited {proc.returncode} with no JSON result; "
-                                      f"stderr tail: {(stderr or '')[-400:]!r}"}
+        return {"ok": False, "cause": CAUSE_FAULT,
+                "error": f"worker exited {proc.returncode} with no JSON result; "
+                         f"stderr tail: {(stderr or '')[-400:]!r}"}
 
     async def _bridge(self, command: str, extra=None) -> dict:
         loop = asyncio.get_running_loop()
@@ -608,26 +669,33 @@ class MappoRobotDriver(DeviceDriver):
         if not self.allow_motion:
             reason = ("this device was started without --allow-motion, so it is "
                       "status-and-checkpoints only")
-            await self._announce(self.motion_refused, action=action, reason=reason)
-            return {"ok": False, "refused": True, "error": reason}
+            await self._announce(self.motion_refused, action=action, reason=reason,
+                                 cause=CAUSE_REFUSED)
+            return {"ok": False, "refused": True, "cause": CAUSE_REFUSED, "error": reason}
 
         if self._control_owner != "operator":
             reason = self._policy_has_the_legs(action)
-            await self._announce(self.motion_refused, action=action, reason=reason)
-            return {"ok": False, "refused": True, "policy_driving": True,
+            await self._announce(self.motion_refused, action=action, reason=reason,
+                                 cause=CAUSE_REFUSED)
+            return {"ok": False, "refused": True, "cause": CAUSE_REFUSED,
+                    "policy_driving": True,
                     "control_owner": self._control_owner, "error": reason}
 
         if self._motion_lock.locked():
             reason = "the robot is already executing a motion command"
-            await self._announce(self.motion_refused, action=action, reason=reason)
-            return {"ok": False, "refused": True, "busy": True, "error": reason}
+            await self._announce(self.motion_refused, action=action, reason=reason,
+                                 cause=CAUSE_REFUSED)
+            return {"ok": False, "refused": True, "cause": CAUSE_REFUSED, "busy": True,
+                    "error": reason}
 
         # Before the lock and before motion_started: a command refused here never started,
         # and announcing that it did would put a lie in the operator's event log.
         floor_refusal = self._precheck(action, commanded, force)
         if floor_refusal:
-            await self._announce(self.motion_refused, action=action, reason=floor_refusal)
-            return {"ok": False, "refused": True, "error": floor_refusal}
+            await self._announce(self.motion_refused, action=action, reason=floor_refusal,
+                                 cause=CAUSE_REFUSED)
+            return {"ok": False, "refused": True, "cause": CAUSE_REFUSED,
+                    "error": floor_refusal}
 
         # Taken here, not inside the task: between this line and the check above there is no
         # suspension point, so two rapid calls cannot both get past the guard. Acquiring it
@@ -657,11 +725,17 @@ class MappoRobotDriver(DeviceDriver):
                 await self._announce(self.motion_interrupted, action=action,
                                      reason=result.get("error", "stopped"))
             else:
+                # The worker's own three-state `cause` is carried through rather than
+                # re-derived. A missing Python module reaching an operator as "the robot
+                # refused" is issue #141's fourth defect, and the fix has to survive the
+                # trip from the worker's JSON onto the event stream.
                 await self._announce(self.motion_refused, action=action,
-                                     reason=result.get("error", "unknown failure"))
+                                     reason=result.get("error", "unknown failure"),
+                                     cause=result.get("cause", CAUSE_FAULT))
         except Exception as exc:
             log.warning("%s failed: %r", action, exc)
-            await self._announce(self.motion_refused, action=action, reason=repr(exc))
+            await self._announce(self.motion_refused, action=action, reason=repr(exc),
+                                 cause=CAUSE_FAULT)
         finally:
             self._motion_lock.release()
 
@@ -780,30 +854,44 @@ class MappoRobotDriver(DeviceDriver):
                                 {"vy": -abs(speed_mps)}, force=force)
 
     @rpc()
-    async def turn_left(self, seconds: float = 1.0, rate_rad_s: float = DEFAULT_WZ) -> dict:
+    async def turn_left(self, seconds: float = 1.0, rate_rad_s: float = DEFAULT_WZ,
+                        force: bool = False) -> dict:
         """Turn counter-clockwise in place for a bounded time, then stop.
 
         Args:
             seconds: how long to hold the command, capped at 5 s.
             rate_rad_s: commanded yaw rate. 0.70 rad/s is the planner's envelope cap.
+                ⚠️ **Yaw has never been measured on either platform.** On a Go2 that is a
+                warning and the turn runs; on a Lite3, where no axis has been measured at
+                all, ``check_gait_floor`` refuses — and ``force`` is the documented way
+                past it.
+            force: command a speed below the measured gait floor anyway.
+
+        ``force`` was missing from this signature and from ``turn_right`` until issue #141,
+        while ``strafe_left`` and ``walk_forward`` both had it. The gate is deliberate and
+        unchanged; what was broken is that its documented override could not be reached
+        through the RPC, so yaw on a Lite3 was refused with no way past.
         """
         seconds = self._clamp_seconds(seconds)
-        return await self._move("turn_left", "turn",
-                                ["--wz", abs(rate_rad_s), "--seconds", seconds],
-                                seconds, {"wz": abs(rate_rad_s)})
+        extra = ["--wz", abs(rate_rad_s), "--seconds", seconds] + (["--force"] if force else [])
+        return await self._move("turn_left", "turn", extra, seconds,
+                                {"wz": abs(rate_rad_s)}, force=force)
 
     @rpc()
-    async def turn_right(self, seconds: float = 1.0, rate_rad_s: float = DEFAULT_WZ) -> dict:
+    async def turn_right(self, seconds: float = 1.0, rate_rad_s: float = DEFAULT_WZ,
+                         force: bool = False) -> dict:
         """Turn clockwise in place for a bounded time, then stop.
 
         Args:
             seconds: how long to hold the command, capped at 5 s.
             rate_rad_s: commanded yaw rate; the sign is supplied by this method.
+            force: command a speed below the measured gait floor anyway. See
+                :meth:`turn_left` for why yaw needs it.
         """
         seconds = self._clamp_seconds(seconds)
-        return await self._move("turn_right", "turn",
-                                ["--wz", -abs(rate_rad_s), "--seconds", seconds],
-                                seconds, {"wz": -abs(rate_rad_s)})
+        extra = ["--wz", -abs(rate_rad_s), "--seconds", seconds] + (["--force"] if force else [])
+        return await self._move("turn_right", "turn", extra, seconds,
+                                {"wz": -abs(rate_rad_s)}, force=force)
 
     @rpc()
     async def lie_down(self) -> dict:
@@ -851,6 +939,14 @@ class MappoRobotDriver(DeviceDriver):
         still be driving. The dashboard classifies a stop by ``ok``, so an unconfirmed one has
         to be ``ok: false`` — the operator needs to be sent to the physical abort, not shown a
         tick.
+
+        ⚠️ **And so does a transport that will not load** — issue #141's safety defect. The
+        zero used to be commanded through ``_load_lite3``, whose only import was the ROS 2
+        binding, so on a Lite3 with no ROS 2 runtime this reply came back
+        ``refused: false`` with an import error in it and the page drew a robot fault. The
+        first two levers below — the run and the worker — need no transport at all and
+        still fire; ``velocity_zeroed`` and ``stop_note`` say which of the three actually
+        moved, so this never returns a bare tick over a press that did nothing.
         """
         ended = await self._end_run("stop")
         # Then the in-flight nudge. Its worker refreshes the velocity at 10 Hz too, so a stop
@@ -861,12 +957,29 @@ class MappoRobotDriver(DeviceDriver):
         result["interrupted_motion"] = interrupted
         result["ended_run"] = bool(ended.get("was_running"))
         result["run_stop_confirmed"] = ended.get("confirmed")
+        # The verdict is composed by drive_bridge.stop_guarantee, which is pure and which a
+        # suite CI actually runs can exercise -- this file's cannot, because
+        # device_connect_edge is not on PyPI before launch.
+        stop_ok, note = stop_guarantee(result, interrupted_motion=interrupted,
+                                       ended_run=bool(ended.get("was_running")))
+        result["velocity_zeroed"] = bool(result.get("commanded_zero"))
+        result["stop_note"] = note
+        problems = []
+        if not stop_ok:
+            result["ok"] = False
+            problems.append(str(result.get("error")
+                                or "the zero velocity was not commanded"))
         if ended.get("was_running") and not ended.get("confirmed"):
             result["ok"] = False
-            result["error"] = (
+            problems.append(
                 f"the velocity was zeroed, but run {ended.get('run_id')} did NOT confirm it "
                 f"stopped within {run_control.RUN_STOP_TIMEOUT_S:.0f}s. Assume the policy is "
                 f"STILL DRIVING and use the physical abort. " + str(ended.get("error") or ""))
+        if problems:
+            # Both can be true at once, and the older code let the run message overwrite
+            # whatever the bridge had said. Two problems reported as one is one problem the
+            # operator does not know about.
+            result["error"] = "\n\n".join(problems)
         return result
 
     # ── run control ──────────────────────────────────────────────────────────
@@ -1554,6 +1667,12 @@ class MappoRobotDriver(DeviceDriver):
                 "resolved_by": "the robot, not the browser",
             },
             "max_seconds": MAX_SECONDS,
+            # Which vendor interface this robot's legs are commanded through, advertised
+            # rather than assumed, for the reason `cloud.sources` is: it is a property of
+            # THIS deployment, and two Lite3s on one mesh can be reached different ways.
+            # `None` on a platform that has no such choice, so a page can tell "ros2" from
+            # "this question does not apply".
+            "locomotion": self._locomotion_snapshot(),
             "bridge_python": self.bridge_python,
             "package_dir": str(self.store.package_dir),
             # How, and whether, this robot can be handed to the policy. Advertised by the
@@ -1563,6 +1682,28 @@ class MappoRobotDriver(DeviceDriver):
             # gate included, so the page can show the command BEFORE the press.
             "run": (run_control.describe(self.run_profile, allow_motion=self.allow_motion)
                     if self.run_profile is not None else run_control.unsupported()),
+        }
+
+    def _locomotion_snapshot(self) -> dict | None:
+        """The selected Lite3 transport and the two facts an operator has to act on.
+
+        ``has_walked_a_venture`` is here because a transport that does not actuate reports
+        zero on every segment, which reads exactly like a robot that will not move — and
+        ``preserves_magnitude`` is here because on the axis transport a commanded speed is
+        a DIRECTION, so the delivered fraction the page prints is not a delivery ratio.
+        Both are ``robot_link.TRANSPORTS``' argument, surfaced where the button is.
+        """
+        if self.platform != "lite3":
+            return None
+        transport = self.lite3_link.get("locomotion-transport", DEFAULT_LITE3_TRANSPORT)
+        row = LITE3_TRANSPORTS.get(transport, {})
+        return {
+            "transport": transport,
+            "simulated": self.simulate,
+            "preserves_magnitude": row.get("preserves_magnitude"),
+            "has_walked_a_venture": row.get("walked"),
+            "note": row.get("summary", ""),
+            "axis_profile": self.lite3_link.get("axis-profile"),
         }
 
     # ── checkpoint RPCs ──────────────────────────────────────────────────────
@@ -1783,6 +1924,31 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--operator-ready", action="store_true",
                         help="Lite3: the operator has confirmed STANDING + high-level "
                              "navigation mode on the vendor interface.")
+    # Passed straight through to drive_bridge.py, with the same names it and the Lite3
+    # navigator use. `start-dashboard.sh` already forwards anything after `--`, so these
+    # reach a dashboard launch without that script growing nine more cases:
+    #     start-dashboard.sh --platform lite3 -- --locomotion-transport axis \
+    #         --axis-profile lite3-axis-LITE3-A.json
+    link = parser.add_argument_group("Lite3 locomotion transport (see drive_bridge.py)")
+    link.add_argument("--locomotion-transport", default=None,
+                      choices=sorted(LITE3_TRANSPORTS),
+                      help="which vendor interface to command a Lite3 through "
+                           f"(default: {DEFAULT_LITE3_TRANSPORT}, as in the navigator). "
+                           "'axis' is the only one either Venture has been seen to walk "
+                           "on; 'ros2' needs a ROS 2 runtime on this host.")
+    link.add_argument("--motion-host", default=None)
+    # type=int here as well as in the worker's parser: without it a typo reaches the worker
+    # as an argparse error, which exits before it prints JSON, and every command comes back
+    # as "worker exited 2 with no JSON result". Failing at startup is the cheap moment.
+    link.add_argument("--command-port", type=int, default=None)
+    link.add_argument("--state-port", type=int, default=None)
+    link.add_argument("--state-bind", default=None)
+    link.add_argument("--axis-profile", default=None, metavar="PATH",
+                      help="evidenced axis profile; required by --locomotion-transport "
+                           "axis for anything that MOVES the robot.")
+    link.add_argument("--axis-local-port", type=int, default=None)
+    link.add_argument("--cmd-vel-topic", default=None)
+    link.add_argument("--odom-topic", default=None)
     parser.add_argument("--simulate", action="store_true",
                         help="Present as --platform but drive the bench double. For a demo "
                              "host with no robots. Advertised, and badged in the dashboard.")
@@ -1849,8 +2015,26 @@ def main(argv=None) -> int:
         camera_url=args.camera_url,
         model_sources=_load_sources(args.model_sources),
         publish_pose_hz=args.publish_pose,
+        lite3_link={name: getattr(args, name.replace("-", "_")) for name in LITE3_LINK_FLAGS},
         run_profile=run_control.load_profile(args.run_profile) if args.run_profile else None)
 
+    if args.platform == "lite3":
+        # Printed at startup, not only in an RPC reply, for the same reason the run preview
+        # is: the person reading this line is the one who can still restart the driver on
+        # the right interface before an operator presses anything.
+        chosen = args.locomotion_transport or DEFAULT_LITE3_TRANSPORT
+        row = LITE3_TRANSPORTS[chosen]
+        log.info("Lite3 locomotion transport: %s -- %s", chosen, row["summary"])
+        if not row["walked"]:
+            log.warning("NO Lite3 Venture has been seen to walk on --locomotion-transport "
+                        "%s. A transport that does not actuate reports zero travel on "
+                        "every command, which reads exactly like a gait floor above "
+                        "everything you tried. 'axis' is the one both Ventures have "
+                        "walked on.", chosen)
+        if chosen == "axis" and not args.axis_profile:
+            log.warning("--locomotion-transport axis without --axis-profile: stop and "
+                        "status work, and every command that MOVES the robot will be "
+                        "refused by the worker.")
     if args.allow_motion:
         log.warning("MOTION IS ENABLED. robot-stack/SAFETY.md applies: clear area, operator "
                     "on the abort, tether slack checked.")
