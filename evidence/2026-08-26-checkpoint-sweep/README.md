@@ -15,6 +15,16 @@ in this repository had ever named**.
 
 That is the finding. It is about order of work, not about weights.
 
+> ⛔ **Corrected 2026-08-26: every margin on this page is measured against a baseline the
+> robot does not run.** This page scores at **300 px**; `deploy/run-peer-supervised.sh`
+> launches every peer run at **`--input-size 224`**. At 224 the shipped weights are **50%
+> recall / 26% false alarms / 25 people held**, not the 68% / 49% / 54 quoted throughout —
+> and **no candidate has ever been scored at 224**, so none of the comparisons below
+> establishes that anything beats production. The finding above — that 627 checkpoints went
+> unscored — is unaffected and stands. The rankings are not. Full working, and the 224 vs
+> 300 measurement on the same frames in one process, in
+> [`evidence/2026-08-26-detector-input-size/`](../2026-08-26-detector-input-size/README.md).
+
 Check it against the tree: of the sixteen run names below, `git grep` finds four —
 `f_full_distil01`, `i_full_pseudo`, `j_full_distil03`, `l_full_bb02`. The other twelve,
 including the winner, appear nowhere on `main` before this directory.
