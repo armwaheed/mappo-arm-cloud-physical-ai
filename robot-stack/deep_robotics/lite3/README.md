@@ -9,6 +9,12 @@ This is the Lite3 Venture binding for the same visual navigator and MAPPO integr
 used on the Go2. It assumes the two event robots have one forward RGB camera and **no
 LiDAR**. Nothing in this path starts a LiDAR node or consumes a point cloud.
 
+📄 **Bringing this robot up against the Device Connect dashboard for the first time?** Use
+[`LITE3-DASHBOARD-BRINGUP-PROMPT.md`](LITE3-DASHBOARD-BRINGUP-PROMPT.md) — a bilingual
+(EN/中文), staged bring-up written to be pasted into a coding agent, which stops at each stage
+if its check fails. Its operator-facing companion is
+[`../../../dashboard/OPERATOR-GUIDE.zh-CN.md`](../../../dashboard/OPERATOR-GUIDE.zh-CN.md).
+
 The visual-navigation and MAPPO path is offline-tested. A separate, bounded vendor
 high-level locomotion proof moved one event robot on 2026-08-24; it does **not** authorize
 the visual-navigation or MAPPO path to move a robot. Hardware commissioning is tracked in
