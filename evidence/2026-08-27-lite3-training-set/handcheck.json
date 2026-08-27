@@ -1,0 +1,32 @@
+{
+ "what": "Every hand-inspected frame and its verdict. A script cannot recompute a human looking at a picture, so the verdicts live here and audit.py reports them and checks the sample sizes. The contact sheet for each row is committed beside this file.",
+ "method": "Gated boxes were rendered on their frames, four per row, and inspected at full size. `on_subject` means the box lands on the object the scene folder name says is there. Rows are stratified across each clip's whole frame range, so a method cannot pass by being right only where it is easy.",
+ "why_it_matters": "A labeller nobody audited is a detector nobody evaluated. Both routes below produced confident boxes; only the hand-check separates them.",
+ "checks": [
+  {"sheet": "(superseded, not committed)", "route": "weak supervision: shipped MobileNet-SSD re-run with the class filter removed, gated on box aspect and background-subtraction motion",
+   "scene": "dim-lite3-in-difference-distance-and-angle", "sampled": 12, "on_subject": 0, "on_furniture": 12,
+   "verdict": "0/12. Every box landed on the same office-chair cluster with the Lite3 visible and unboxed beside it. The dim clip sweeps 28-83 mean luminance, so the empty-room median is not a background and the motion gate failed OPEN. THIS RESULT IS WHY THE WEAK-SUPERVISION ROUTE WAS ABANDONED."},
+  {"sheet": "(superseded, not committed)", "route": "weak supervision, same gate",
+   "scene": "light-lite3-in-difference-distance-and-angle", "sampled": 12, "on_subject": 12, "on_furniture": 0,
+   "verdict": "12/12 in the stable-lighting clip. The same rule scoring 12/12 and 0/12 on two clips of the same robot in the same room is the argument against trusting it."},
+  {"sheet": "handcheck-lite3.jpg", "route": "owlv2 phrase -> box, sam2 box -> mask, at threshold 0.22",
+   "scene": "both quadruped scenes, 8 frames each", "label": "lite3",
+   "sampled": 16, "on_subject": 16, "on_furniture": 0,
+   "verdict": "16/16, both lighting conditions, near-broadside to far. Boxes are visibly tighter than the detector's because they are a silhouette rather than a regressed rectangle."},
+  {"sheet": "handcheck-person.jpg", "route": "owlv2 phrase -> box, sam2 box -> mask, at threshold 0.22",
+   "scene": "all four person scenes, 4 frames each", "label": "person",
+   "sampled": 16, "on_subject": 16, "on_furniture": 0,
+   "verdict": "16/16, including heavily truncated close-range people and the *-box-* scenes where a cardboard box is beside the person and is correctly NOT boxed."},
+  {"sheet": "handcheck-person.jpg (first pass, superseded)", "route": "same pipeline at the FIRST threshold, 0.12",
+   "label": "person", "sampled": 16, "on_subject": 9, "on_furniture": 7,
+   "verdict": "9/16. Every failure scored 0.12-0.20 and every success 0.21+, which is what set the 0.22 floor. The floor comes from this hand-check, NOT from the score distribution."},
+  {"sheet": "handcheck-synthetic.jpg", "route": "synthetic:shear / colour-slice / occlude",
+   "sampled": 12, "on_subject": 12, "on_furniture": 0,
+   "verdict": "12/12 boxes still enclose the robot after the warp, 4 per family."},
+  {"sheet": "handcheck-telemetry-join.jpg", "route": "telemetry join, frame = round((t - frame_age_s) * 15)",
+   "scene": "all six", "sampled": 17, "on_subject": 17, "on_furniture": 0,
+   "verdict": "17/17 land on the subject, which is what establishes the join and the full-frame pixel coordinate space. `perception.video_frame` is null in all 3,896 ticks, so the documented join does not exist."}
+ ],
+ "totals": {"shipped_pipeline_sampled": 44, "shipped_pipeline_on_subject": 44,
+            "note": "44 = 16 lite3 + 16 person + 12 synthetic, all at the shipped 0.22 threshold. The superseded rows are kept deliberately: they are the measurement that chose the method."}
+}

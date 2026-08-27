@@ -1,0 +1,48 @@
+{
+ "what": "How much a box moves between a keyframe and the near-duplicate frames after it. If a near-duplicate could carry its keyframe's box for free, this IoU would be ~1.",
+ "method": "Re-label frames k+1,k+2,k+4,k+8 for a random 10 keyframes per scene with the SAME owlv2+sam2 pipeline, and IoU them against the keyframe's own box.",
+ "by_offset": {
+  "1": {
+   "n": 59,
+   "median_iou": 0.954,
+   "p10": 0.757,
+   "below_0_75": 5
+  },
+  "2": {
+   "n": 56,
+   "median_iou": 0.926,
+   "p10": 0.669,
+   "below_0_75": 12
+  },
+  "3": {
+   "n": 36,
+   "median_iou": 0.838,
+   "p10": 0.548,
+   "below_0_75": 11
+  },
+  "4": {
+   "n": 59,
+   "median_iou": 0.873,
+   "p10": 0.496,
+   "below_0_75": 22
+  },
+  "8": {
+   "n": 18,
+   "median_iou": 0.903,
+   "p10": 0.501,
+   "below_0_75": 5
+  }
+ },
+ "by_class": {
+  "person": {
+   "n": 149,
+   "median_iou": 0.873,
+   "p10": 0.538
+  },
+  "lite3": {
+   "n": 79,
+   "median_iou": 0.961,
+   "p10": 0.65
+  }
+ }
+}
