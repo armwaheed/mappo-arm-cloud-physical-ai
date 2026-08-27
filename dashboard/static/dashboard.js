@@ -571,7 +571,11 @@ const CAUSE_HEADLINE = {
 function summariseMotion(fn, result) {
   if (result.ok === false) {
     const headline = (CAUSE_HEADLINE[result.cause] || CAUSE_HEADLINE.fault)(fn);
-    return `${headline}\n\n${result.error}`;
+    // A FAILED stop still has to say which levers moved. The run and the worker need no
+    // transport and fire either way, and an operator deciding whether to walk to the
+    // physical abort is deciding on exactly that.
+    const levers = result.stop_note ? `\n\n${result.stop_note}` : "";
+    return `${headline}\n\n${result.error}${levers}`;
   }
   const lines = [`${fn} ok`];
   if (result.travelled_m !== null && result.travelled_m !== undefined) {
