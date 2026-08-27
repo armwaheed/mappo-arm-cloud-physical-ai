@@ -21,12 +21,24 @@ happened. This page exists so that no refusal costs you a day.
 | `--calibration` | This Lite3's camera. ⚠️ See §4 — the one in circulation is not self-consistent. |
 | `--gait-floor` | **Measured**, `axis_primitive_probe.py`. Not the Go2's 0.35. |
 | `--actuator-gain` | **Measured at this envelope** — fit against pose, not against the velocity estimate. |
-| `--robot-radius` | **0.33** — measured by Timo 2026-08-27. The 0.20 nominal is 65% low. |
+| `--robot-radius` | **0.40** — the robot. ⚠️ Not 0.33: that is the *obstacle box* (`DEPLOYMENT-SOP.md:383`). Must satisfy `--policy-scale = radius / 0.10`, so 0.40 pairs with 4.0. |
 | `--max-vx` | Stated. Unset, it silently inherits **the Go2's**. |
 | `--max-vy` | Stated. This Lite3's lateral primitive is unmeasured, so `0` is honest. |
 | `--max-wz` | Stated. Unset, inherits the Go2's. |
 | `--operator-ready` | Typed **after** the robot is STANDING and in navigation mode on the vendor app. |
 | `--axis-profile` | Only when `--locomotion-transport axis`. Needs physically evidenced primitives. |
+
+> ⚠️ **0.40 is the ROBOT. 0.33 is the OBSTACLE BOX.** An earlier version of this page
+> conflated them, and the resulting command refused to start: `--robot-radius` is also the
+> numerator of the policy scale gate (`scale = radius / 0.10`), so 0.33 implies **3.30** and
+> pairing it with `--policy-scale 4.0` is a mismatch the run rejects before standing. The
+> measured **0.28–0.33 m** is the event box, against a 0.20 m nominal — see
+> `DEPLOYMENT-SOP.md:383` and issue #146, which is about this parameter carrying two
+> unrelated meanings.
+>
+> ⚠️ **0.40 是机器人半径，0.33 是障碍物纸箱半径。**本页早期版本混淆了两者，
+> 导致命令直接被拒绝：`--robot-radius` 同时是策略缩放门限的分子（`scale = radius / 0.10`），
+> 0.33 对应 **3.30**，与 `--policy-scale 4.0` 不匹配，机器人尚未站起就会退出。
 
 **Why the envelope cannot be defaulted / 为什么包络值不能用默认值**: it is the right-hand
 side of a safety gate. `_validate_axis_profile_speeds` refuses a primitive whose
@@ -132,7 +144,7 @@ python3 mappo_drive.py --live \
   --calibration  lite3_front_camera.json \
   --gait-floor   <measured> \
   --actuator-gain <measured at this envelope> \
-  --robot-radius 0.33 \
+  --robot-radius 0.40 \
   --max-vx <stated> --max-vy 0 --max-wz <stated> \
   --max-seconds 120 --accept-no-motor-temperatures \
   --operator-ready \
