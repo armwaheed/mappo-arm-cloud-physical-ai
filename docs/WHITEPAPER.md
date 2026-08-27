@@ -17,6 +17,69 @@ Arm Limited · August 2026 · repository
 
 ---
 
+## Abstract
+
+**What can a quadruped do with one RGB camera, no depth sensor and no LiDAR?** Every range and
+bearing here is computed from pixels and one focal length — no stereo, no time-of-flight, no
+fiducial.
+
+Two platforms: a Unitree Go2, and a Deep Robotics Lite3 Venture, specified because it carries
+neither. **The Go2 is a proxy** — available in Austin for work aimed at Lite3s in Shanghai —
+so the Go2 half ran on hardware and the Lite3 half essentially did not: four `--live` walks
+that executed the plain goal follower rather than the policy, and one bounded axis trial.
+
+On a Go2, RGB-only sensing walks to a detected goal, gives way to a person, maps and swerves
+around an obstacle it has no detector for, and threads a 1.3 m gap. Past about a metre the
+single camera runs out of geometry, and free space in the policy's observation means "nothing
+recognised", not "nothing there".
+
+The negative results carry as much weight. Monocular range fell back to constants on 417 of
+4,624 sightings and on one walk drove 21 of 37 avoidance ticks, before a guard was built to
+refuse them. The same weights read 13% to 68% peer recall from the launcher alone. A detector
+fine-tuning run shipped nothing. The MAPPO policy collided in every unsupervised simulated
+configuration and is safe only under the planner's veto. No two-robot hardware run has happened
+on either platform. Appendix A logs what we got wrong and how we found out.
+
+## Contents
+
+- [The question](#the-question)
+- [The system in one page](#the-system-in-one-page)
+
+**[Part I — What was built](#part-i--what-was-built)**
+
+1. [A robot that turns to calibrate its own camera](#1-a-robot-that-turns-to-calibrate-its-own-camera)
+2. [Stop for a blocker: the baseline everything else is measured against](#2-stop-for-a-blocker-the-baseline-everything-else-is-measured-against)
+3. [Depth from a focal length — and the guard that refuses a constant range](#3-depth-from-a-focal-length--and-the-guard-that-refuses-a-constant-range)
+4. [A telemetry contract, not a console log](#4-a-telemetry-contract-not-a-console-log)
+5. [Three seams: the stack moved to a second vendor](#5-three-seams-the-stack-moved-to-a-second-vendor)
+6. [A planner that models its own transport](#6-a-planner-that-models-its-own-transport)
+7. [An ablated control for every run, and a closed loop before the legs move](#7-an-ablated-control-for-every-run-and-a-closed-loop-before-the-legs-move)
+8. [A deployed tree that names its own commit](#8-a-deployed-tree-that-names-its-own-commit)
+9. [A browser dashboard that drives a real fleet](#9-a-browser-dashboard-that-drives-a-real-fleet)
+10. [Peers over the mesh, not through a detector](#10-peers-over-the-mesh-not-through-a-detector)
+11. [Test runs are the training corpus](#11-test-runs-are-the-training-corpus)
+12. [One robot, four detectors](#12-one-robot-four-detectors)
+13. [A detector training pipeline that shipped nothing, and the three things worth keeping from it](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it)
+14. [Guards proven by forcing them to fail](#14-guards-proven-by-forcing-them-to-fail)
+
+**[Part II — What has and has not run on hardware](#part-ii--what-has-and-has-not-run-on-hardware)**
+
+**[Part III — Reproducing this](#part-iii--reproducing-this)**
+
+- [Appendix A — Corrections: what we got wrong, and how we found out](#appendix-a--corrections-what-we-got-wrong-and-how-we-found-out)
+- [Appendix B — What a payload costs a proxy platform](#appendix-b--what-a-payload-costs-a-proxy-platform)
+- [Appendix C — Platform characteristics a portable stack has to accommodate](#appendix-c--platform-characteristics-a-portable-stack-has-to-accommodate)
+- [Appendix D — Figure provenance and licences](#appendix-d--figure-provenance-and-licences)
+- [References](#references)
+
+*Subheadings take their parent's number where the parent has one —
+[§13.3](#133-the-finding-worth-the-section-on-its-own-a-name-scores-zero-a-description-scores-06),
+[A9](#a9-our-comparison-a-verdict-decided-on-the-models-own-training-day),
+[C1](#c1-the-axis-transport-is-sign-only) — and none of them is listed here: at two levels this
+page would run to a screen and a half before section 1.*
+
+---
+
 ## The question
 
 Vendors ship quadrupeds with LiDAR and depth cameras. Many industrial deployments cannot
@@ -750,13 +813,32 @@ path is built, is 66 offline tests deep, and has **zero two-robot hardware runs 
 platform**. Keep that separation in mind for the rest of the section, because everything in
 it is written in the present tense of code that exists rather than of a robot that has run.
 
-Two robots sharing a room is the demo. The obvious route is to teach the detector what a
-quadruped looks like. We measured that route to its ceiling ([§12](#12-one-robot-four-detectors))
-and then designed a different one.
+**Two robots sharing a room is the demo — and in Shanghai both of them are Lite3s.** The use
+case requires a **Deep Robotics Lite3 Venture to recognise another Lite3 Venture**. Every
+peer-detection number anywhere in this paper is about a different object: both peer manifests
+carry the label `go2wheel`, and that is a **Unitree Go2-W, the wheeled Go2** — 1,903
+hand-labelled frames in `detector/labels/peer_go2wheel_20260824.json`, and a 284-frame
+held-out set in `peer_crossday_20260820.json` whose 60 peer frames are the same machine.
+Neither manifest holds a single Lite3. So
+[§12](#12-one-robot-four-detectors)'s 13%-to-68% recall spread is a spread on a Go2 wheel,
+read through a Go2's camera, and **none of it transfers to the platform the demo runs on.**
+
+**That is why a Lite3 detector had to be trained at all**, and the shipped detector's own
+number on a real Lite3 says how far there is to go. On a 60-second clip recorded through one
+Lite3's camera of a second Lite3 in a Shanghai office, the deployed MobileNet-SSD lands a box
+on the robot in **0 of 168** frames at the 224 px `deploy/run-peer-supervised.sh` opens at,
+against 80 of 168 at 300 px — where it calls it a `chair`
+(`evidence/2026-08-27-lite3-pov-clip-audit/`, every number re-derived by `python3 audit.py`).
+[§13](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it)
+is what happened when a `lite3` class was trained on the six `--record-raw` clips that audit
+asked for: at 224 px, nothing passed. The obvious route to two robots in a room is to teach
+the detector what a quadruped looks like; we measured that route to its ceiling on the one
+platform where a corpus exists, found the ceiling was the launcher rather than the weights,
+and designed a different one.
 
 ![Annotated render of a Unitree Go2-W, the wheeled variant, with its wheel actuators and footprint called out](figures/go2-wheel-profile.png)
 
-*The peer robot. Rendered from
+*The peer the Go2 corpus is labelled against — a Go2-W, not a Lite3. Rendered from
 [`unitree_ros/robots/go2w_description`](https://github.com/unitreerobotics/unitree_ros),
 BSD-3-Clause, © 2016-2022 HangZhou YuShu TECHNOLOGY CO.,LTD. "Unitree Robotics", by
 [`docs/figures/make_robot_profile.py`](figures/make_robot_profile.py). Same trunk as the Go2
@@ -822,7 +904,7 @@ with its own weaknesses (744 of 1,903 boxes touch a frame border; one 640-frame 
 real camera frames to synthesise labelled examples of a robot we could not photograph enough
 of.
 
-### SAM-based auto-labelling: this has now landed, and it is section 13
+### 11.1 SAM-based auto-labelling: this has now landed, and it is section 13
 
 The step after detector-box weak labels is **promptable segmentation** — take a mask's bounding
 box as the label and stop inheriting the deployed detector's 64% recall. The design is the SAM
@@ -914,7 +996,7 @@ python3 audit.py               # the corpus: views, boxes, ride-along drift, han
 python3 summarise_scores.py    # both score tables, under both selection rules
 ```
 
-### The pipeline
+### 13.1 The pipeline
 
 Six `--record-raw` Lite3 recordings arrived from Shanghai with their telemetry — 5,854 frames,
 1280×720 at 15 fps, one room, inside thirteen minutes of one morning. Camera motion measured by
@@ -964,7 +1046,7 @@ flowchart TB
 augmentation operators call `rng.random()` even at probability 0, so no previous run is
 byte-reproducible under this code.
 
-### The transferable negative: the ablation is monotone in both directions, at every resolution
+### 13.2 The transferable negative: the ablation is monotone in both directions, at every resolution
 
 Best `lite3` epoch per run, with person retention *reported* at that epoch rather than
 selected on — the argmax of one metric with the other merely quoted, which is how a
@@ -991,7 +1073,7 @@ finding; saying which is which is the point. What *is* certain is that augmentat
 **0 viewpoints, 0 rooms and 0 days** — it multiplies examples, and 456 views from thirteen
 minutes is the ceiling regardless of the multiplier.
 
-### The finding worth the section on its own: a name scores zero, a description scores 0.6
+### 13.3 The finding worth the section on its own: a name scores zero, a description scores 0.6
 
 Twelve phrasings swept through OWLv2 over ten keyframes — five from each quadruped clip:
 
@@ -1011,7 +1093,7 @@ by guessing, and `probe_queries.py` is the sweep: about forty lines that would h
 labelling effort had it been run first. Any researcher doing open-vocabulary labelling can
 apply this tomorrow, and it costs one afternoon to check on their own object.
 
-### Weak supervision was built, measured, and killed on its own number
+### 13.4 Weak supervision was built, measured, and killed on its own number
 
 Before reaching for a segmenter the cheap route was tried in full: re-run the *same* shipped
 MobileNet-SSD over the *same* pixels with the class filter removed, and gate the result on box
@@ -1030,7 +1112,7 @@ That measurement, not a preference, is what moved the labelling to a segmenter �
 only caught by hand-checking frames the method itself called *good*, which is the only way it
 would have been caught at all.
 
-### Nothing is recommended
+### 13.5 Nothing is recommended
 
 At 224 px — the size `deploy/run-peer-supervised.sh` actually launches — **no checkpoint from
 any of the three runs both detects the Lite3 and holds its people**; the best that detects
@@ -1512,7 +1594,7 @@ Licences we could **not** establish, recorded so nobody assumes otherwise:
 `unitreerobotics/xr_teleoperate` carries no detected licence — GitHub reports `NOASSERTION` —
 so its redistribution terms are unestablished, and nothing derived from it appears here.
 
-### Regenerating the robot figures
+### D1. Regenerating the robot figures
 
 Fetch the descriptions into any scratch directory outside this repository:
 
@@ -1562,7 +1644,7 @@ so zero is outside the vendor's own `<limit>` on eight of the twelve joints betw
 the result is a straight-legged animal on stilts. Each preset therefore carries a stance whose
 every angle is inside those limits; `--print-pose` prints it.
 
-### Other figures
+### D2. Other figures
 
 `detector-configuration-spread.png` is generated by
 [`docs/figures/make_detector_spread.py`](figures/make_detector_spread.py) from the committed
