@@ -207,6 +207,51 @@ The measurement, the reproduction script, and the two published denominators it 
 a clone are in
 [`evidence/2026-08-26-detector-input-size/`](../evidence/2026-08-26-detector-input-size/).
 
+#### ✅ Fixed, and then measured — and the section above has its premise wrong
+
+**The robot does not run 224. It runs 224 under ONE launcher and 300 under the other
+three**, and the sweep ran neither:
+
+| launcher | `--input-size` | `--confidence` | `--classes` |
+| --- | ---: | ---: | ---: |
+| `deploy/run-peer-supervised.sh` | **224** | 0.25 | all **20** VOC labels |
+| `run-smoke.sh` / `run-berth.sh` / `run-chair.sh` (on the robot) | none → **300** | 0.45 | none → **`person` only** |
+| a bare `visual_nav.py` | default → **300** | 0.4 | default → **`person` only** |
+| **the 2026-08-26 checkpoint sweep** | 300 | 0.25 | all 20 |
+
+So this directory's 300 was right for three launchers and wrong for the fourth, and the
+sweep's *pair* — the square from a scorer constant, the floor from the peer launcher — is
+run by nothing. `evidence/2026-08-27-89-runs-survived-14-can-be-dated/` settles which is
+which: the 89 recorded runs ran at 300 px, established by reading the launchers because the
+telemetry did not record it.
+
+**No file in this directory declares a network input size any more.** `eval_detector.py`,
+`eval_class_agnostic.py`, `peer_recall.py`, `train_new_class.py`, `ssd_torch.py` and
+`score_crossday.py` all take it from
+[`robot-stack/unitree/go2/visual_nav/inference_profile.py`](../robot-stack/unitree/go2/visual_nav/inference_profile.py),
+which declares each configuration beside the launcher that produces it. **A scorer's
+`--preprocessing` is required and has no default** — with four real configurations there is
+no safe one to fall back on — and a configuration no launcher runs is refused unless a
+reason is given, which is then recorded in the output.
+
+The same weights on the same 284 cross-day frames, once per configuration:
+
+| the shipped weights, as | peer recall | false alarms | hold |
+| --- | ---: | ---: | ---: |
+| `go2-peer-supervised` 224 px, 0.25, 20 labels | 30/60 = 50% | 57/221 = 26% | 27 |
+| `go2-run-smoke` 300 px, 0.45, `person` only | **8/60 = 13%** | 5/221 = 2% | 20 |
+| `go2-navigator-default` 300 px, 0.4, `person` only | **8/60 = 13%** | 10/221 = 5% | 24 |
+| **the sweep's 300 px, 0.25, 20 labels — run by nothing** | **41/60 = 68%** | 108/221 = 49% | 40 |
+
+**Every "the shipped network gets 68% recall" on this page is the last row**, and the
+configuration behind all 89 logged runs sees the peer on **13%** of the same frames — a 5x
+gap, most of it the class list rather than the square. `PersonDetector` drops a detection
+whose label is not in `--classes` before anything downstream sees it, and this page already
+records the peer coming back as `horse 0.28` head-on at 1.3 m: on a smoke run that box is
+not an obstacle at all. All 800 checkpoints have since been scored at all four
+configurations; how many beat the incumbent has a different answer at each. See
+[`evidence/2026-08-27-one-robot-four-detectors/`](../evidence/2026-08-27-one-robot-four-detectors/README.md).
+
 ### ⚠️ `horse` is not a viable label for a quadruped, and counting emitted labels could not tell you
 
 A Go2 Wheel head-on at 1.3 m is labelled `horse 0.28` in the hero run of 2026-08-25, and the
@@ -411,6 +456,19 @@ python3 add_class.py --in-proto MobileNetSSD_deploy.prototxt \
         --in-model MobileNetSSD_deploy.caffemodel \
         --out-proto mnssd23.prototxt --out-model mnssd23.caffemodel \
         --classes lite3 go2wheel
+
+# 4. score checkpoints the way a LAUNCHER would see them: peer recall, false alarms and
+#    both people denominators, once per configuration. --preprocessing is required and has
+#    no default; profiles sharing a square come from one forward pass. `mobilenet-ssd-
+#    trained` is run by no launcher and REFUSES without the reason flag, which is then
+#    written into the output beside the numbers.
+python3 inference_profile.py            # every configuration, and what runs it
+python3 score_crossday.py --frames-dir XDAY --proto mnssd22.prototxt \
+        --models 'runs/*/epoch*.caffemodel' --inventory-glob 'runs/*/*.caffemodel' \
+        --preprocessing go2-peer-supervised --preprocessing go2-run-smoke \
+        --preprocessing go2-navigator-default --preprocessing mobilenet-ssd-trained \
+        --allow-preprocessing-mismatch 'the pair the 2026-08-26 sweep scored' \
+        --out sweep.json
 ```
 
 Pin `opencv-python` to **4.x** for any of this: OpenCV 5 has removed `readNetFromCaffe`.

@@ -24,6 +24,20 @@ That is the finding. It is about order of work, not about weights.
 > unscored — is unaffected and stands. The rankings are not. Full working, and the 224 vs
 > 300 measurement on the same frames in one process, in
 > [`evidence/2026-08-26-detector-input-size/`](../2026-08-26-detector-input-size/README.md).
+>
+> ⛔ **Corrected again, and it is worse than the line above says.** This page scores at
+> 300 px, floor 0.25, all twenty VOC labels — and that COMBINATION is run by no launcher:
+> the scripts that run 300 px floor at 0.45 or 0.4 and forward `person` ONLY, and the
+> script that floors at 0.25 and forwards all twenty runs 224 px. The square came from a
+> scorer constant and the floor from `run-peer-supervised.sh`. On the same frames the
+> shipped weights measure 68% peer recall through this page's configuration, 50% through
+> the peer launcher's, and **13% through the one all 89 logged runs used** — so every
+> margin below is a margin over the most flattering of four baselines, and the only one
+> nothing runs.
+>
+> ✅ All 800 checkpoints have since been scored at all four configurations, one rule, in
+> [`evidence/2026-08-27-one-robot-four-detectors/`](../2026-08-27-one-robot-four-detectors/README.md).
+> How many beat the incumbent has a different answer at each. Read the rows there.
 
 Check it against the tree: of the sixteen run names below, `git grep` finds four —
 `f_full_distil01`, `i_full_pseudo`, `j_full_distil03`, `l_full_bb02`. The other twelve,

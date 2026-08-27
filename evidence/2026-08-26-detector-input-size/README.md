@@ -241,6 +241,29 @@ whether to ship.
 
 ## What would change the answer
 
+> ⛔ **Item 2 below is answered, and the answer corrects this page's premise.**
+> "Which size production runs" has no single answer: `deploy/run-peer-supervised.sh` runs
+> 224 px at 0.25, `run-smoke.sh`/`run-berth.sh`/`run-chair.sh` pass no `--input-size` and
+> so run **300** at 0.45, and a bare `visual_nav.py` runs 300 at 0.4. The 89 logged runs
+> ran at 300 — see
+> [`evidence/2026-08-27-89-runs-survived-14-can-be-dated/`](../2026-08-27-89-runs-survived-14-can-be-dated/README.md).
+> So the scorers' 300 was right for three launchers and wrong for the fourth, and this
+> page's "the robot does not run 300" is wrong. What no launcher runs is **the combination
+> the checkpoint sweep used** — 300 px, floor 0.25, all twenty VOC labels. `--classes`
+> belongs in that list: the three 300 px launchers forward `person` only, so a peer that
+> comes back as `horse` is discarded before the planner sees it, and the shipped weights
+> score **13%** peer recall there against this page's 68%.
+>
+> ✅ Items 1, 3 and 4 are done.
+> [`evidence/2026-08-27-one-robot-four-detectors/`](../2026-08-27-one-robot-four-detectors/README.md)
+> scores **all 800 checkpoints at all four configurations** — every row on this page
+> re-derives there to the frame, from a different script on a different host — and
+> `robot-stack/unitree/go2/visual_nav/inference_profile.py` now declares each
+> configuration beside the launcher that produces it, with **no default** for a scorer to
+> inherit. The telemetry header records the resolved preprocessing and which configuration
+> it matches. Issue
+> [#129](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/129).
+
 In this order, because the first is cheap and may reorder the rest:
 
 1. **Re-score at 224.** The checkpoints are already on disk; this is one evaluation pass,

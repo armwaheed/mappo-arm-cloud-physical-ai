@@ -1,0 +1,213 @@
+{
+ "preprocessing": [
+ {
+  "profile": "go2-peer-supervised",
+  "role": "deployment",
+  "source": "deploy/run-peer-supervised.sh",
+  "input_size": 224,
+  "confidence": 0.25,
+  "scale": 0.00784313725490196,
+  "mean": 127.5,
+  "swap_rb": false,
+  "classes": [
+   "aeroplane",
+   "bicycle",
+   "bird",
+   "boat",
+   "bottle",
+   "bus",
+   "car",
+   "cat",
+   "chair",
+   "cow",
+   "diningtable",
+   "dog",
+   "horse",
+   "motorbike",
+   "person",
+   "pottedplant",
+   "sheep",
+   "sofa",
+   "train",
+   "tvmonitor"
+  ],
+  "deployed": true,
+  "deployments": [
+   "deploy/run-peer-supervised.sh"
+  ],
+  "mismatch_reason": "300 px at 0.25 is the pair the 2026-08-26 checkpoint sweep scored through and no launcher runs; it is here so the published tables can be lined up against configurations that are real",
+  "prototxt_layer_floor": 0.25
+ },
+ {
+  "profile": "go2-run-smoke",
+  "role": "deployment",
+  "source": "/home/unitree/run-smoke.sh (via dashboard/run-profile.example.json)",
+  "input_size": 300,
+  "confidence": 0.45,
+  "scale": 0.00784313725490196,
+  "mean": 127.5,
+  "swap_rb": false,
+  "classes": [
+   "person"
+  ],
+  "deployed": true,
+  "deployments": [
+   "/home/unitree/run-smoke.sh (via dashboard/run-profile.example.json)"
+  ],
+  "mismatch_reason": "300 px at 0.25 is the pair the 2026-08-26 checkpoint sweep scored through and no launcher runs; it is here so the published tables can be lined up against configurations that are real",
+  "prototxt_layer_floor": 0.25
+ },
+ {
+  "profile": "go2-navigator-default",
+  "role": "deployment",
+  "source": "robot-stack/unitree/go2/visual_nav/visual_nav.py (parser defaults)",
+  "input_size": 300,
+  "confidence": 0.4,
+  "scale": 0.00784313725490196,
+  "mean": 127.5,
+  "swap_rb": false,
+  "classes": [
+   "person"
+  ],
+  "deployed": true,
+  "deployments": [
+   "robot-stack/unitree/go2/visual_nav/visual_nav.py (parser defaults)"
+  ],
+  "mismatch_reason": "300 px at 0.25 is the pair the 2026-08-26 checkpoint sweep scored through and no launcher runs; it is here so the published tables can be lined up against configurations that are real",
+  "prototxt_layer_floor": 0.25
+ },
+ {
+  "profile": "mobilenet-ssd-trained",
+  "role": "reference",
+  "source": "the published MobileNet-SSD weights and prototxt",
+  "input_size": 300,
+  "confidence": 0.25,
+  "scale": 0.00784313725490196,
+  "mean": 127.5,
+  "swap_rb": false,
+  "classes": [
+   "aeroplane",
+   "bicycle",
+   "bird",
+   "boat",
+   "bottle",
+   "bus",
+   "car",
+   "cat",
+   "chair",
+   "cow",
+   "diningtable",
+   "dog",
+   "horse",
+   "motorbike",
+   "person",
+   "pottedplant",
+   "sheep",
+   "sofa",
+   "train",
+   "tvmonitor"
+  ],
+  "deployed": false,
+  "deployments": [],
+  "mismatch_reason": "300 px at 0.25 is the pair the 2026-08-26 checkpoint sweep scored through and no launcher runs; it is here so the published tables can be lined up against configurations that are real",
+  "differences_from_deployments": {
+   "go2-peer-supervised": {
+    "input_size": {
+     "this_run": 300,
+     "deployed": 224
+    }
+   },
+   "go2-run-smoke": {
+    "confidence": {
+     "this_run": 0.25,
+     "deployed": 0.45
+    },
+    "classes": {
+     "this_run": [
+      "aeroplane",
+      "bicycle",
+      "bird",
+      "boat",
+      "bottle",
+      "bus",
+      "car",
+      "cat",
+      "chair",
+      "cow",
+      "diningtable",
+      "dog",
+      "horse",
+      "motorbike",
+      "person",
+      "pottedplant",
+      "sheep",
+      "sofa",
+      "train",
+      "tvmonitor"
+     ],
+     "deployed": [
+      "person"
+     ]
+    }
+   },
+   "go2-navigator-default": {
+    "confidence": {
+     "this_run": 0.25,
+     "deployed": 0.4
+    },
+    "classes": {
+     "this_run": [
+      "aeroplane",
+      "bicycle",
+      "bird",
+      "boat",
+      "bottle",
+      "bus",
+      "car",
+      "cat",
+      "chair",
+      "cow",
+      "diningtable",
+      "dog",
+      "horse",
+      "motorbike",
+      "person",
+      "pottedplant",
+      "sheep",
+      "sofa",
+      "train",
+      "tvmonitor"
+     ],
+     "deployed": [
+      "person"
+     ]
+    }
+   }
+  },
+  "prototxt_layer_floor": 0.25
+ }
+],
+ "prototxt": {
+ "path": "/home/arm-seattle-spark-02/go2-peer-dataset-20260824/artifacts/models_robot/MobileNetSSD_deploy.prototxt",
+ "sha256": "e781559c4f5beaec2a486ccd952af5b6fa408e9498761bf5f4fb80b4e9f0d25e"
+},
+ "manifest": {
+ "path": "/home/arm-seattle-spark-02/i129/detector/labels/peer_crossday_20260820.json",
+ "sha256": "1e13ffcd28ecc8f28ea080e0fb601d6307ad3d94a5c8fc2c639b6a6ac7975200",
+ "frames": 284
+},
+ "frames": {
+ "dir": "/home/arm-seattle-spark-02/ssdft/eval/frames",
+ "digest": "95f18062c9f0aa2f51072d03b8ab202bc4ad09c658340fc688d66acab625e9bc"
+},
+ "coverage": {
+ "scored": 1
+},
+ "rule": {
+ "aspect_min": 2.0,
+ "source": "person_detector.PERSON_ASPECT_MIN"
+},
+ "models": [
+  {"model": "/home/arm-seattle-spark-02/go2-peer-dataset-20260824/artifacts/models_robot/MobileNetSSD_deploy.caffemodel", "name": "models_robot/MobileNetSSD_deploy", "results": {"go2-navigator-default": {"select": {"fp_d": 85, "fp_n": 9, "hold": 18, "person": 25, "person_shaped": 18, "recall_d": 13, "recall_n": 0}, "test": {"fp_d": 136, "fp_n": 1, "hold": 6, "person": 15, "person_shaped": 6, "recall_d": 47, "recall_n": 8}, "whole": {"fp_d": 221, "fp_n": 10, "hold": 24, "person": 40, "person_shaped": 24, "recall_d": 60, "recall_n": 8}}, "go2-peer-supervised": {"select": {"fp_d": 85, "fp_n": 12, "hold": 19, "person": 22, "person_shaped": 18, "recall_d": 13, "recall_n": 5}, "test": {"fp_d": 136, "fp_n": 45, "hold": 8, "person": 22, "person_shaped": 7, "recall_d": 47, "recall_n": 25}, "whole": {"fp_d": 221, "fp_n": 57, "hold": 27, "person": 44, "person_shaped": 25, "recall_d": 60, "recall_n": 30}}, "go2-run-smoke": {"select": {"fp_d": 85, "fp_n": 4, "hold": 14, "person": 17, "person_shaped": 14, "recall_d": 13, "recall_n": 0}, "test": {"fp_d": 136, "fp_n": 1, "hold": 6, "person": 15, "person_shaped": 6, "recall_d": 47, "recall_n": 8}, "whole": {"fp_d": 221, "fp_n": 5, "hold": 20, "person": 32, "person_shaped": 20, "recall_d": 60, "recall_n": 8}}, "mobilenet-ssd-trained": {"select": {"fp_d": 85, "fp_n": 32, "hold": 24, "person": 34, "person_shaped": 24, "recall_d": 13, "recall_n": 9}, "test": {"fp_d": 136, "fp_n": 76, "hold": 16, "person": 22, "person_shaped": 8, "recall_d": 47, "recall_n": 32}, "whole": {"fp_d": 221, "fp_n": 108, "hold": 40, "person": 56, "person_shaped": 32, "recall_d": 60, "recall_n": 41}}}, "sha256": "761c86fbae3d8361dd454f7c740a964f62975ed32f4324b8b85994edec30f6af"}
+ ]
+}
