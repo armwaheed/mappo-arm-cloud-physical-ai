@@ -123,7 +123,7 @@ The robot has no detector for a recycling bin, so it finds it by colour, checks 
 and maps it in odom so it persists once the swerve takes it out of frame. The goal is the
 chair, found by running the detector on a centre crop. It walked **1.89 m**, drew level with
 the bin and stopped: the planner was satisfied — **0.70 m** of separation where it needed
-0.60 — and the office lane ran out. `evidence/live_run.{mp4,log,jsonl}`.
+0.60 — and the office lane ran out. `evidence/live_run.mp4`, `evidence/live_run.log` and `evidence/live_run_telemetry.jsonl`.
 
 **Giving way to a person.**
 
@@ -446,8 +446,11 @@ cd integration && python3 closed_loop_sim.py --seeds 30 --scale 1.5 2.5 \
 ```
 
 Its verdict is the one the deployment runbook follows: the policy is safe to drive **only
-under the planner's veto**. Raw, it collided in every configuration tested — **21 times in
-30** at the scale the package shipped with.
+under the planner's veto**. The raw policy collided in **every** configuration tested — 21 of
+30 seeds at scale 1.5, 9 of 30 at the recalibrated 2.5 — while the same policy under the veto
+collided **0** times at both. The incumbent planner, on the identical scenarios, arrives 14/30
+with 2 collisions. Every one of these rows is in `deploy/README.md`, including the one that
+argues against the most flattering configuration.
 
 **A third instrument is worth naming.** `integration/render_observation.py` draws the camera
 frame, the ray fan and the observation vector side by side, per tick. It is what produced
@@ -577,8 +580,8 @@ all or simply stopped for.
 > clear a peer did not avoid it — see [A15](#a15-our-evidence-the-run-that-cleared-the-peer-did-not-avoid-it).
 > (c) An offline falsifier that hands the policy the peer's **exact** position still produces a
 > peak lateral command of 0.108 m/s, below the gait floor
-> (`evidence/2026-08-24-peer-capture-and-gait-sweeps/tools/peer_avoidance_sim.py`). Perfect
-> sensing is not the missing piece.
+> (`evidence/2026-08-24-peer-capture-and-gait-sweeps/tools/peer_disc_encoding_sim.py`).
+> Perfect sensing is not the missing piece.
 
 ## 11. Test runs are the training corpus
 
@@ -727,7 +730,7 @@ and the Lite3 half essentially did not.**
 | MAPPO policy driving the Go2's legs, empty lane | **live** — arrived 0.77 m from the chair after 2.78 m; policy drove 53/53 ticks, 0 vetoed |
 | MAPPO policy driving the legs, supervised, with obstacles | **simulation only**: 21/30 arrivals and 1 collision at the walkable command scale |
 | MAPPO policy driving the legs, **unsupervised** | **not a candidate** — collided in every simulated configuration |
-| Policy driving *between* two obstacles | **blocked by geometry**: both obstacles inside the sensing horizon on **0 of 137** ticks across three failing runs, 33 of 79 on the one that worked |
+| Policy driving *between* two obstacles | **blocked by geometry**: both obstacles inside the sensing horizon on **0 of 138** ticks across three failing runs (46 + 50 + 42), 33 of 79 on the one that worked |
 | Peer avoidance over the mesh | **66 offline tests, zero two-robot hardware runs** |
 | Device Connect dashboard | mesh and refusals proven end to end; **no robot has moved under it** |
 | Lite3 offline port | complete and tested; **has not moved either robot** |
@@ -744,8 +747,9 @@ and the Lite3 half essentially did not.**
   clear — the optimistic direction.
 - **Below about 0.52 m a peer fills the camera and no open bearing exists.** With a 0.35 m
   peer in an 85.3° cone, `r_blind = 0.35 / sin(42.6°) = 0.52 m`. That is geometry, not tuning,
-  and it is a limit a LiDAR would not have (issue #72). On the run where it bit, 12-, 16- and
-  24-ray fans all found an open window on 0% of 91 driven ticks.
+  and it is a limit a LiDAR would not have (issue #72). On the run where it bit, the delivered
+  12-ray fan found an open window on **0 of 91** driven ticks; issue #72 separately measured
+  that a 16- and a 24-ray fan find no opening either, which is why a finer fan is not the fix.
 - **Perception is a few hundred ms behind reality** — median 309 ms, p90 436 ms. Tracks are
   extrapolated and their radii inflated to cover it; the policy sees the result, not the raw
   sensor.
@@ -771,6 +775,11 @@ cd integration
 python3 replay_mappo.py ../evidence/sample_telemetry.jsonl        # a real run, through the real checkpoint
 python3 closed_loop_sim.py --seeds 30 --scale 1.5 2.5 --command-scale 0.3 0.6 1.0
 ```
+
+`--check` needs Python >= 3.11 with `numpy`, `opencv-python`, `Pillow`, `pytest` and `aiohttp`
+importable, and **refuses to run** rather than reporting a total short by whatever the
+interpreter could not reach. Plain `measure-suites.sh` runs under 3.8, which is what the Go2's
+Jetson has.
 
 Most published figures regenerate from a committed script in their own evidence directory,
 with no robot and often no dependencies — for example:
@@ -863,7 +872,8 @@ nothing.
 
 The dashboard hard-coded gait floors, so a Lite3 inherited a Go2's — and, in the same
 constants, the Go2's own lateral floor was recorded as *not existing* rather than as
-*never measured* (issue #82). The fix is structural: capabilities are asked for with
+*never measured* (issue #82; the constants and the fix are in `dashboard/README.md`). The fix
+is structural: capabilities are asked for with
 `get_capabilities()` and a platform whose gait was never measured refuses motion rather than
 defaulting to a neighbour's number.
 
@@ -905,7 +915,9 @@ test that shares its conditions with the thing it tests is not a test.
 
 The deployed detector's confidence floor was baked into its `prototxt` at 0.25, so every
 "sub-0.25 measurement" this project had ever recorded was really 0.25, and any sweep below it
-was inert (issue #68). Patched to 0.01, the same frames yield 5.4× as many detections and recall
+was inert (issue #68; the prototxt line and the patch are in
+`evidence/2026-08-25-peer-detector-threshold-and-tracks/`). Patched to 0.01, the same frames
+yield 5.4× as many detections and recall
 climbs 64% → 91%. In the same audit, the **18% false-alarm rate the expansion filter was
 commissioned to fix turned out to be 192 mislabelled frames**: on the 705 genuinely peer-free
 frames the rate is **0.0%**. The filter was built against a number that did not exist.
@@ -1008,8 +1020,9 @@ None of these is inferable from a datasheet.
 
 The Unitree Go2 ships without its real-time clock set and reports **1970**. Anything that orders
 events by the emitting device's own timestamp — an event drawer, a merge of two robots' streams
-— silently interleaves wrongly, and the failure looks like a UI bug (issue #117). A test now pins
-it: two robots with unsynchronised clocks *cannot* be interleaved by their own stamps.
+— silently interleaves wrongly, and the failure looks like a UI bug (issue #117;
+`dashboard/README.md` records the reading). A test now pins it: two robots with unsynchronised
+clocks *cannot* be interleaved by their own stamps.
 
 ### B4. Some telemetry a safety gate needs is simply not published
 
