@@ -112,6 +112,10 @@ main {
 .pill.gone { background: color-mix(in srgb, var(--bad) 18%, transparent); color: var(--bad); }
 .pill.live { background: color-mix(in srgb, var(--ok) 18%, transparent); color: var(--ok); }
 .pill.nomotion { background: var(--panel-2); color: var(--ink-dim); }
+/* A robot driving itself, which is the row an operator scans for mid-incident. It borrows
+   the warning colour rather than the "live" green: green everywhere means nothing needs
+   attention, and this is the one that does. */
+.pill.running { background: color-mix(in srgb, var(--warn) 22%, transparent); color: var(--warn); }
 .grid td.pose { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); white-space: nowrap; }
 tr.focused td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
@@ -183,6 +187,33 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
 }
 .note.warn { border-left-color: var(--warn); color: #e8cf9a; }
 .note.bad  { border-left-color: var(--bad);  color: #f0a9a4; }
+
+/* ── run control ──────────────────────────────────────────────────────────────
+   The arm is styled like the stop, not like the other checkboxes. It is the second of two
+   gates on handing a robot's legs to a policy, and a control that looks like "force
+   sub-floor" would be pressed with the same amount of thought. */
+.field.check.arm > span { color: var(--bad); font-weight: 600; }
+.field.check.arm input:disabled + span { color: var(--ink-dim); font-weight: 400; }
+
+/* Why the pad is inert is not the same question as "motion is disabled", and an operator
+   staring at grey keys should not have to guess which one they are in. */
+#motion-panel.held { border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); }
+#motion-panel.held .pad::after {
+  content: "the policy is driving — press Stop run to take control";
+  position: absolute; inset: auto 0 -18px 0;
+  font: 600 10px/1.4 var(--mono); letter-spacing: 0.04em; text-transform: uppercase;
+  color: var(--warn); text-align: center;
+}
+#motion-panel.held .pad { position: relative; }
+
+.preview { margin: 0 0 12px; }
+.preview > summary {
+  cursor: pointer; font: 600 10px/1 var(--mono); letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--ink-dim); padding: 6px 0;
+}
+.preview > summary:hover { color: var(--ink); }
+.preview #run-where { text-transform: none; letter-spacing: 0; font-weight: 400; }
+.preview .result { white-space: pre-wrap; word-break: break-all; margin-top: 6px; }
 .note strong { color: var(--ink); }
 
 .result {

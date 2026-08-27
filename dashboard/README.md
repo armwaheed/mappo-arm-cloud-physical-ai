@@ -39,7 +39,7 @@ the robot crosses a seam that was built for it:
 | --- | --- |
 | the SDK calls that move or read the robot | `drive_bridge.py`, launched by `--bridge-python` over the robot's own 3.8 |
 | the front camera | `go2_frame_server.py`, started by hand on the robot, read by `--camera-url` |
-| a MAPPO run | ⏳ nothing yet — see [The seven things](#the-seven-things-and-which-of-them-work) |
+| a MAPPO run | `mappo_drive.py`, launched by `start_run` as **a subprocess over SSH** — the seam is [`run_control.py`](run_control.py), and the shape is written down rather than hidden |
 
 ## Start it
 
@@ -97,54 +97,188 @@ with 3.11, 3.12 and 3.13 usually has Device Connect in exactly one of them.
 | 2 | **View the fleet, or one real robot** | the fleet table, grouped by platform; `--robot HOST` puts a live Go2 camera on the row | ✅ verified — 1920×1080 frames off `192.168.123.18` at 6 fps, `frame age 0.03 s` |
 | 3 | **Connect to a model server** | the launcher starts `model_server.py` and advertises it, so **Load from Cloud AI** opens with the source and address filled in | ✅ verified — `Browse` → `served by mappo-model-server` |
 | 4 | **Load a model** | **Download** on a browsed row. The fetch runs **on the robot**, not in the browser | ✅ verified — 268 063 bytes, sha256 `7327f724…ca11` |
-| 5 | **Start MAPPO on the robot** | **Start** runs in **simulation by default**; a real-motion run needs `--allow-motion` at driver launch *and* an explicit arm in the UI. ⏳ the RPCs do not exist yet — today a run is `integration/mappo_drive.py --live` over SSH | ⏳ being built in parallel |
-| 6 | **Stop / start / take manual control** | per-row stop, `STOP ALL (n)`, and the motion pad — the pad needs `--allow-motion` | ✅ verified on the bench double; ❌ never on a real robot |
+| 5 | **Start MAPPO on the robot** | `start_run` / `stop_run`. **Start** with no arguments is the scene check and carries no `--live`, so it *cannot* command a leg; real motion needs `--allow-motion` at driver launch **and** `arm_motion` in the request | ✅ RPCs verified over a real D2D mesh against the bench double; ❌ **no robot has been driven by them** |
+| 6 | **Stop / start / take manual control** | per-row stop, `STOP ALL (n)`, and the motion pad — the pad needs `--allow-motion`. `stop` and `STOP ALL` now end a **running policy** as well as a nudge, and `stop_run` is how a person takes the robot back mid-run | ✅ verified on the bench double, including `STOP ALL` ending a live run; ❌ never on a real robot |
 | 7 | **Swap models** | **Arm** on a checkpoint row. Takes effect on the **next** run | ✅ verified — `previous` reported, and deleting the armed one refused |
 
-### 5: what Start will do, and why it is not one button
+### 5: what Start does, and why it is not one button
 
-**Sim is the default and real motion is two deliberate acts, not one.** Pressing **Start**
-runs the policy against the bench double: no legs, no lane, no operator on the abort, which
-is the state a demo floor is usually in and the state a first press should land in. A run
-that moves a robot needs **both** of:
+**The default press cannot move the robot.** `start_run()` with no arguments builds the
+command line `run-smoke.sh scene` builds: the camera, the detector, the policy, the
+planner's veto and the telemetry, with **no `--live`**. `--live` is the only flag in
+`mappo_drive.py` that commands a leg, so this is an **absent capability, not a checked
+permission** — which is what makes it a reasonable thing for a button to do with no
+ceremony. It is the right thing to press first, every time.
 
-1. `--allow-motion` on the driver, typed at launch by whoever has looked at the room. It is
-   this directory's `--live` and `start-dashboard.sh` will never add it for you.
-2. an explicit **arm** in the UI, on the page, for that run.
+**Real motion is two deliberate acts, on different surfaces, at different times.**
 
-Two gates rather than one, on different surfaces and at different times, because the failure
-mode being designed out is a single click that is one keystroke away from a simulated one.
-Neither is a preference the page remembers; `--allow-motion` dies with the driver process
-and the arm dies with the run.
+| gate | who sets it | when | RPC / flag |
+| --- | --- | --- | --- |
+| 1 | whoever has looked at the room | at driver launch | `--allow-motion`, which `start-dashboard.sh` will never add for you |
+| 2 | whoever presses the button | in that request | `start_run(arm_motion: true)` |
 
-⏳ **The RPC names are deliberately not written here.** The run-control PR is choosing them,
-and a README that guesses is a README that is wrong on the day it merges. This section is
-the *shape* the RPCs have to fit; the names land in the same rebase that flips row 5 to ✅.
+Neither is remembered: `--allow-motion` dies with the driver process and the arm dies with
+the run. **Missing either is a refusal that says which** — never a quiet dry run. The silent
+downgrade is the worse failure of the two: the operator asked for a live run, watched a run
+start, and is now watching a robot that is not moving, which is exactly what they would see
+from `mode='mcf'`, from a flat battery, and from a sub-gait-floor command. They would spend
+the demo telling those apart, and this directory refuses the other two for the same reason.
 
-### and it is a missing seam, not a missing button
+The gate is checked in the driver **and** in `run_control.build_run_argv`, which is the same
+duplication `drive_bridge.py` already has with the driver: two processes with one shared
+assumption is one process with an unwritten contract.
+
+`start_run` needs a run profile, and `start-dashboard.sh` reaches it through the `--`
+pass-through it already has rather than through a flag of its own:
+
+```bash
+./start-dashboard.sh --robot 192.168.123.18 -- --run-profile run-profile.example.json
+```
+
+That keeps the launcher's one invariant where it is: **it never adds `--allow-motion`**, and
+`--` cannot smuggle one past `start_run` either, because the driver's gate reads the driver's
+own flag and not the request's.
+
+### and the seam it needed, which is a subprocess over SSH
 
 `invoke → walk_forward` and `invoke → start a MAPPO run` look like the same shape and are
-not, for three reasons that are already load-bearing elsewhere in this directory:
+not. Three things were already load-bearing here, and each one decided part of the answer:
 
 * **A run is 45 seconds and an RPC handler may not block.** `DeviceRuntime._cmd_subscription`
-  dispatches one RPC at a time per device, so a handler that waits for a run makes the robot
-  deaf to `stop` for the length of it. Motion RPCs solved this by returning on *accept* and
-  reporting the outcome as an event; run control has to do the same, and additionally has to
-  stay stoppable for far longer.
-* **`mappo_drive.py` cannot be imported by the driver.** It imports the vendored stack and
-  `unitree_sdk2py`, which is the 3.8 side of the wall. `drive_bridge.py` is the seam for
-  that — but its rule is *one command, one process, exit*, and the only command exempt from
-  it today is `pose-stream`, which is exempt because a pose reader has no velocity to latch.
-  A run does.
-* **And the driver is not on the robot.** Everything above assumes a process that can start
-  another process on the Jetson. `robot_driver.py` runs on a workstation, so run control
-  needs something robot-side that outlives a single command — which `go2_frame_server.py` is
-  the first, deliberately tiny, example of.
+  dispatches one RPC at a time per device. So `start_run` returns as soon as the run is
+  *launched* and the outcome arrives as `run_started` / `run_output` / `run_finished`
+  events — the same shape the motion RPCs already use, for the same measured reason. The one
+  place it does block is a ~1.9 s pre-run status read, and that is argued in `start_run`'s
+  own comment: nothing is moving during that window, because a run in flight and a nudge
+  holding the lock are both refused before it.
+* **`mappo_drive.py` cannot be imported by the driver**, and it does **not** go through
+  `drive_bridge.py` either. That file's rule is *one command, one process, exit*, and the
+  rule is a safety property: every command runs in a process that exits, so a driver that
+  hangs cannot leave a velocity latched. `pose-stream` is exempt because a pose *reader* has
+  no velocity to latch. **A run does.** So run control got its own module rather than a
+  second exemption from the rule that is protecting exactly this case.
+* **And the driver is not on the robot.** So `start_run` starts a process on the Jetson the
+  only way it can: over SSH, with the whole command line rendered as one shell line. That is
+  written down as what it is — [`run_control.py`](run_control.py)'s module docstring opens
+  with it — rather than hidden behind a `launch()` that reads like a local call.
 
-**A run-control PR is in flight** adding RPCs to `robot_driver.py`, `drive_bridge.py` and
-`server.py`. This section is the shape it has to fit, written before it lands so the two can
-be compared; the row above stays ⏳ until the RPCs are in `ALLOWED_FUNCTIONS` in
-`server.py` and answering.
+⚠️ **SIGTERM to the local `ssh` client does not stop a remote run.** Measured on the lab Go2
+on 2026-08-26, with `/bin/sleep 120` standing in for the policy:
+
+| | |
+| --- | --- |
+| launch, then read the pidfile and `ps` on the robot | pid `48126`, `/bin/sleep 120` running |
+| SIGTERM the local `ssh` client, wait 3 s, `ps` again | **`48126 /bin/sleep 120` — still running** |
+| run the stop command `run_control` builds | exit 0 |
+| `ps` again | gone |
+
+So the launch records the remote shell's pid before `exec`-ing the run (`exec` keeps the
+pid), and the stop is a **second connection** that signals that pid. ⛔ SIGTERM, never
+SIGKILL: [`../robot-stack/SAFETY.md`](../robot-stack/SAFETY.md) §0 is written from a robot
+that broke a window because a process commanding motors was hard-killed, and
+`test_run_control` asserts that no command this module builds contains `-9`.
+
+A stop that does not confirm comes back `ok: false` saying to assume the policy is still
+driving and use the physical abort — because the dashboard classifies a stop by `ok`, and an
+operator must not be shown a tick for a robot that may still be moving.
+
+### One authority at a time, and it is named
+
+`get_status().control.owner` is `operator` or `policy` — never both, never neither. A live
+run moves it to `policy`; `stop_run` and `stop` move it back. **While it is `policy`, the
+motion pad is refused**, the refusal names the run and names `stop_run`, and it arrives as a
+`motion_refused` like every other turn-down. The page greys the pad and says why on it.
+
+Refusing is the choice, and the two alternatives are what make it one. If both ran, a manual
+nudge and a policy tick would each write a velocity on the same bus at 10 Hz and the last
+writer would win — an arbitration with no owner, no record, and nothing an operator could
+watch. Silently killing the run on a key press is worse still: the operator's press would
+end a run they may not have known was happening. So the pad goes inert, visibly, and taking
+it back is one deliberate call.
+
+**A run that is not live takes nothing.** A scene check commands no leg, so locking the pad
+against it would be a claim about who is driving that is not true.
+
+`stop` ends the policy **first**, then the in-flight nudge, then commands zero. That order is
+the point: a run refreshes its velocity every tick, so a zero commanded while it is still
+running is overwritten inside one control period and the robot visibly pauses and carries
+on — the same defect `stop` already terminated the nudge worker for. `STOP ALL` and every
+per-row stop invoke the same `stop` function, so they inherit it rather than growing a second
+implementation that could disagree.
+
+### The robot the run happens on, and what cannot be said about it
+
+A run profile — `--run-profile`, worked example in
+[`run-profile.example.json`](run-profile.example.json) — fixes the machine, the interpreter,
+the working directory, the environment and the deployment's own flags. It is a file on the
+machine running the driver, and **none of it can be changed by a request**: the RPC chooses
+only `seconds`, `policy_mode`, `heading_servo` and `arm_motion`, each checked against a fixed
+set before anything is quoted into a shell. A profile that could spell `--live` would be a
+second motion gate nobody would think to look for, so the flags this driver writes are
+refused in a profile. A profile that could carry an SSH password would publish it — the
+prefix goes into `get_capabilities` and the rendered command onto the event stream — so
+`sshpass` and friends are refused at load rather than redacted at render.
+
+The example profile is copied from `/home/unitree/run-smoke.sh`, which is the invocation
+known to work on that robot, and a test pins it against that wrapper's flag set.
+
+⚠️ **Nothing here can name the code it launches.** The deployed tree is not a checkout: no
+`.git`, so no branch and no commit, and nothing on a robot reports its own staleness.
+Measured on 2026-08-26, on the tree `run-smoke.sh` actually runs and whose name says `main`:
+
+| `/home/unitree/mappo-main` | last matched a commit |
+| --- | --- |
+| `integration/mappo_drive.py` | **67** commits behind `main` |
+| `README.md` | **93** behind |
+| `policy/config.json` | **95** behind |
+
+Three files, three different commits, one directory. So `start_run` reports the **command**
+— in the reply, in the `run_started` event, and in `get_capabilities.run.command_preview`
+*before* the press — and says in the same breath that it cannot report the code.
+`named_commit` is `null` and is meant to stay that way.
+
+### Every flag is spelled, and one of them has two spellings
+
+`--policy-mode`, the heading servo and `--max-seconds` go out on every run even at their
+defaults, because a tree 67 commits behind has whatever defaults it had that day. The servo
+is the one that matters: it became opt-in in #106, and on that tree **omitting it selects
+issue #16's `travel` law** — the one that saturated the yaw rate and put this robot into a
+cubicle panel or a cabinet on three runs out of four on 2026-08-17.
+
+⚠️ And #106 **renamed** the flag. Run against the lab Go2's own parser, 2026-08-26:
+
+```
+['--heading-servo', 'off']  -> REJECTED, argparse exit 2
+['--no-heading-servo']      -> ACCEPTED end to end
+```
+
+So `heading_servo_flag` in the profile says which spelling *that tree* understands.
+`"legacy"` writes `--no-heading-servo` and refuses `goal` and `travel` **here** rather than
+sending a flag the far end will reject — that rejection arrives as a usage message across an
+SSH connection, seconds later, and reads as "the run did not start" with no reason.
+`get_capabilities` then advertises `heading_servos: ["off"]`, so the page offers what the
+tree can be told instead of offering two refusals.
+
+### A run is bounded, because a nudge is
+
+A motion nudge is capped at 5 s by the worker, so a web button cannot start a walk that
+outlives the attention of the person who pressed it. A run needs a much larger number and
+still needs one: `seconds` is clamped to 120, sent as `--max-seconds`, and backstopped by a
+watchdog in the driver that ends a run which outlived its budget plus 30 s of startup. The
+watchdog is a backstop, not the bound — it fires when the run does not honour its own flag.
+
+### What a run costs the rest of the page
+
+`robot_state` is **not** emitted for the whole of a run. Each one is a subprocess that
+connects to DDS, reads and exits — 1.94 s of cold SDK import and discovery on the Go2's
+Jetson, measured — and a run holds that bus at 10 Hz. So pose and mode go stale on the fleet
+row until the run ends. It is not a blackout: `run_output`, `run_finished` and
+`control_changed` carry the run, the fleet row shows `POLICY DRIVING`, and `--publish-pose`
+is the channel built for a pose needed *while* the robot moves.
+
+⛔ **No robot has been driven by `start_run`.** What is proven against hardware is the launch
+and stop mechanism, the environment, and the command line's acceptance by the deployed
+parser — all in the pull request. The run itself is not.
 
 ### What is real when you ask for a real robot
 
@@ -265,6 +399,7 @@ repository did not.
 | **View robot events** | A docked drawer, always on screen. Collapsed it is one bar carrying the newest line and an unread count; open it fills the bottom of the window. Filterable, pausable, and replayed from a ring buffer to a page that opens late. |
 | **Basic motion** | Walk forward / back, strafe left / right, turn left / right, lie down. Bounded in time, and every press reports what the robot *measured*. |
 | **Front camera** | A live MJPEG viewport beside the pad, default 6 fps, started only while someone is watching. |
+| **Start and stop a run** | `start_run` / `stop_run`. The default press is the scene check and *cannot* move the robot; motion is opted into twice. `stop_run` is also how a person takes the robot back mid-run. |
 | **Swap checkpoints** | Arm any `.npz` already on the robot for the next run. |
 | **Load / unload from Cloud AI** | Pull a checkpoint from an S3 bucket or a direct server address; delete one off the robot. |
 
@@ -590,6 +725,24 @@ package directory, so the checkpoint panel is answering about the wrong machine.
 Then, with a clear area and an operator on the controller abort, add `--allow-motion`.
 On a Lite3, stand the robot and enable high-level navigation mode on the vendor interface
 first, then add `--operator-ready`.
+
+To be able to start a run at all, add `--run-profile`:
+
+```bash
+python3.11 robot_driver.py --platform go2 --package ../policy \
+        --bridge-python /home/unitree/robotics-connect-envs/$USER/bin/python3 \
+        --camera-url http://192.168.123.18:8801/ \
+        --run-profile run-profile.example.json
+```
+
+**Edit that file first.** Every path in it is a path on the robot; `launch_prefix` must
+authenticate without a password (put a key on the robot — a password is refused at load,
+because that field is published); and `heading_servo_flag` is a property of the tree it
+points at rather than a preference, so run *that* tree's `mappo_drive.py --help` and look.
+The driver prints both commands it would run at startup, which is the moment a wrong path is
+still cheap. Without `--run-profile`, `start_run` refuses and `get_capabilities` reports
+`run.supported: false` — a robot that cannot start a run has to be distinguishable from a
+driver too old to have the field, and an absent key looks like both.
 
 The default bind is loopback. Pass `--host 0.0.0.0` to reach it from the demo LAN, and note
 what that means: **this dashboard has no login.** Anyone who can reach the port can drive

@@ -132,9 +132,20 @@ ALLOWED_FUNCTIONS = frozenset({
     "get_status", "get_capabilities",
     "walk_forward", "walk_back", "strafe_left", "strafe_right",
     "turn_left", "turn_right", "lie_down", "stand", "stop",
+    "start_run", "stop_run",
     "list_models", "select_model", "download_model", "delete_model",
     "list_cloud_models", "watch_camera", "stop_camera",
 })
+
+#: Functions that take authority away from something and must never queue behind it.
+#:
+#: ``stop`` was the only member and the reason was measured: a stop fired one second into a
+#: five-second walk on ANOTHER robot came back after 4.23 s, because it was queued behind
+#: that walk in a single-worker pool. ``stop_run`` joins it because it is the same act —
+#: it ends a policy that is driving legs — and because an operator reaching for it is an
+#: operator who has decided the run must stop now. Routing by function name rather than by
+#: endpoint means there is one rule and no way to reach either by a path that queues.
+STOP_FUNCTIONS = frozenset({"stop", "stop_run"})
 
 
 class Mesh:
@@ -220,7 +231,7 @@ class Mesh:
         # A stop rides the dedicated lane wherever it is issued from, including the generic
         # invoke endpoint the motion pad uses. Routing by function name rather than by
         # endpoint means there is one rule and no way to reach stop by a path that queues.
-        if function == "stop":
+        if function in STOP_FUNCTIONS:
             return await self._call(invoke_device, device_id, function, params,
                                     _pool=self._stop_pool, _timeout=STOP_TIMEOUT_S)
         return await self._call(invoke_device, device_id, function, params)
@@ -378,22 +389,37 @@ class Mesh:
                 self._fleet[device_id]["capabilities"] = caps
 
     def note_state_event(self, record: dict) -> None:
-        """Fold a ``robot_state`` event into the fleet table.
+        """Fold a ``robot_state``, ``run_*`` or ``control_changed`` event into the fleet table.
 
         This is what makes the fleet view free. Every driver already emits pose, mode and
         armed checkpoint on a timer; reading them out of the stream the page is already
         subscribed to means adding a robot costs no additional polling.
+
+        The run events are here for a stronger reason than saving a poll. **A driver stops
+        emitting ``robot_state`` for the whole of a run** — it will not put a second DDS
+        client on the bus a control loop is using — so during exactly the interval an
+        operator most wants to know which robot is driving itself, the timer this table was
+        built on is silent. If the fleet row learned "running" only from ``robot_state``, it
+        would never learn it at all.
         """
-        if record.get("event") != "robot_state":
-            return
+        event = record.get("event")
         device_id = record.get("device_id")
-        if not device_id:
+        if not device_id or event not in (
+                "robot_state", "run_started", "run_finished", "control_changed"):
             return
         payload = record.get("payload") or {}
         row = self._fleet.setdefault(device_id, {"device_id": device_id})
-        row["pose"] = payload.get("pose")
-        row["mode"] = payload.get("mode")
-        row["active_model"] = payload.get("active_model")
+        if event == "robot_state":
+            row["pose"] = payload.get("pose")
+            row["mode"] = payload.get("mode")
+            row["active_model"] = payload.get("active_model")
+        elif event == "run_started":
+            row["run"] = {"run_id": payload.get("run_id"), "live": payload.get("live"),
+                          "policy_mode": payload.get("policy_mode")}
+        elif event == "run_finished":
+            row["run"] = None
+        elif event == "control_changed":
+            row["control_owner"] = payload.get("owner")
         row["present"] = True
         row["last_seen"] = time.time()
 

@@ -25,6 +25,12 @@ const state = {
   cameraOn: false,
   cameraChosen: null,     // null = never touched; true/false = the operator decided
   safetyDismissedFor: null,
+  // Who may command a leg on the focused robot: "operator" or "policy". Read from
+  // get_status when the focus changes, then kept live by control_changed events — the
+  // driver stops emitting robot_state for the whole of a run, so a poll would go quiet at
+  // exactly the moment this matters.
+  controlOwner: "operator",
+  runId: null,
 };
 
 // ── plumbing ────────────────────────────────────────────────────────────────
@@ -66,6 +72,35 @@ async function onDeviceChanged() {
   const capabilities = await invoke("get_capabilities");
   renderCapabilities(capabilities.ok === false ? null : capabilities);
   await refreshModels();
+  await refreshControl();
+}
+
+// One status read on a focus change, and never on a timer. `get_status` costs the robot a
+// subprocess — 1.94 s of cold SDK import and DDS discovery on the Go2's Jetson — so polling
+// it would put a client on the bus against whatever the robot is doing. After this, the
+// event stream keeps it current for free.
+async function refreshControl() {
+  const status = await invoke("get_status");
+  if (status.ok === false) return;
+  applyControl((status.control || {}).owner, (status.run || {}).run_id || null);
+  if (status.mode_accepts_motion === false) {
+    addNote($("run-notes"), "bad",
+      "<strong>This robot would ignore a motion command.</strong> " + escapeHtml(status.mode_note));
+  }
+}
+
+// The one state an operator must never have to work out mid-run. It is a badge that cannot
+// be dismissed and a pad that is visibly inert, because "who is driving" is a state and not
+// a message.
+function applyControl(owner, runId) {
+  state.controlOwner = owner === "policy" ? "policy" : "operator";
+  state.runId = runId || null;
+  const policy = state.controlOwner === "policy";
+  setBadge($("control-badge"), policy ? "policy is driving" : "control: operator",
+    policy ? "hot" : "on");
+  $("run-stop").disabled = false;             // never gated, in any state
+  $("run-start").disabled = policy;
+  setPadEnabled(!policy && !!(state.capabilities || {}).motion_enabled);
 }
 
 function setBadge(el, text, cls) {
@@ -172,9 +207,15 @@ function fleetRow(row) {
   const motion = caps.motion_enabled
     ? '<span class="pill live">enabled</span>'
     : '<span class="pill nomotion">disabled</span>';
-  const stateCell = row.present
-    ? '<span class="pill live">live</span>'
-    : `<span class="pill gone">GONE ${Math.round(row.age_s)}s</span>`;
+  // A robot driving itself is the row an operator is looking for mid-incident, so it says
+  // so rather than showing the same green "live" as one standing still. It comes from the
+  // run events folded into the fleet by the server, because a robot mid-run stops emitting
+  // the periodic state this table is otherwise built on.
+  const stateCell = !row.present
+    ? `<span class="pill gone">GONE ${Math.round(row.age_s)}s</span>`
+    : row.run
+      ? `<span class="pill running">${row.run.live ? "POLICY DRIVING" : "scene run"}</span>`
+      : '<span class="pill live">live</span>';
 
   // A simulated robot says so on its own row. A demo fleet that looks identical to a real
   // one is a hazard, not a convincing demo.
@@ -274,8 +315,10 @@ function renderCapabilities(caps) {
   if (!caps) {
     setBadge($("platform-badge"), "—", "muted");
     setBadge($("motion-badge"), "motion —", "muted");
+    setBadge($("control-badge"), "control —", "muted");
     $("safety").classList.add("hidden");
     setPadEnabled(false);
+    $("run-panel").hidden = true;
     return;
   }
 
@@ -293,6 +336,7 @@ function renderCapabilities(caps) {
   $("safety").classList.toggle("hidden", !showSafety);
   setPadEnabled(!!caps.motion_enabled);
   applyCaveats(caps);
+  renderRunControls(caps);
   renderSources(caps);
   // Re-point the stream at whichever robot is now focused, and start it if this robot's
   // feed is one of the free ones.
@@ -331,6 +375,124 @@ function setPadEnabled(enabled) {
     // but a stop button that cannot be pressed is the wrong affordance on a robot console.
     key.disabled = key.dataset.fn === "stop" ? false : !enabled;
   }
+  // Why the pad is inert is not the same question in the two cases, and an operator staring
+  // at grey keys should not have to guess which one they are in.
+  $("motion-panel").classList.toggle("held", state.controlOwner === "policy");
+}
+
+// ── the run ─────────────────────────────────────────────────────────────────
+function renderRunControls(caps) {
+  const run = (caps || {}).run || { supported: false };
+  const notes = $("run-notes");
+  notes.innerHTML = "";
+  $("run-panel").hidden = false;
+
+  const servo = $("run-servo");
+  const chosen = servo.value;
+  servo.innerHTML = "";
+  for (const mode of run.heading_servos || ["off"]) {
+    const option = document.createElement("option");
+    option.value = mode;
+    option.textContent = mode === "off" ? "off — the robot crabs (the only one never to "
+      + "have driven into anything)" : mode;
+    servo.appendChild(option);
+  }
+  servo.value = (run.heading_servos || ["off"]).includes(chosen) ? chosen : "off";
+  if (run.max_seconds) $("run-seconds").max = run.max_seconds;
+  if (run.default_seconds && !$("run-seconds").dataset.touched) {
+    $("run-seconds").value = run.default_seconds;
+  }
+
+  const armable = !!run.supported && !!run.motion_enabled;
+  $("run-arm").disabled = !armable;
+  if (!armable) $("run-arm").checked = false;
+  $("run-start").disabled = !run.supported || state.controlOwner === "policy";
+  $("run-where").textContent = run.supported
+    ? (run.remote ? `on the robot, over ${(run.launch_prefix || []).join(" ")}`
+                  : "as a child of the driver, on the driver's own machine")
+    : "";
+  $("run-preview-box").hidden = !run.supported;
+
+  if (!run.supported) {
+    addNote(notes, "warn", `<strong>This robot cannot start a run.</strong> `
+      + escapeHtml(run.reason || "no run profile"));
+    return;
+  }
+  if (!run.motion_enabled) {
+    addNote(notes, "warn",
+      "<strong>Arming is unavailable.</strong> This driver was started without "
+      + "<code>--allow-motion</code>, so an armed run would be <em>refused</em> rather than "
+      + "quietly downgraded. The scene check still runs.");
+  }
+  // Not an alert and not dismissible: it is true of every run this robot will ever start,
+  // which is exactly the kind of caveat that must ride the control instead.
+  addNote(notes, "warn", "<strong>Nothing can name the code this runs.</strong> "
+    + escapeHtml(run.tree_note || ""));
+  renderRunPreview();
+}
+
+function renderRunPreview() {
+  const run = ((state.capabilities || {}).run) || {};
+  if (!run.supported) { $("run-preview").textContent = ""; return; }
+  const armed = $("run-arm").checked && run.armed_command_preview;
+  const argv = armed ? run.armed_command_preview : run.command_preview;
+  // The previews come from the ROBOT and carry its defaults, so the two fields an operator
+  // can actually change are substituted here rather than re-derived.
+  const shown = argv.map((token, index) => {
+    if (argv[index - 1] === "--max-seconds") return String(parseFloat($("run-seconds").value));
+    if (argv[index - 1] === "--policy-mode") return $("run-mode").value;
+    return token;
+  });
+  $("run-preview").textContent = shown.join(" ")
+    + (armed ? "" : "\n\n(no --live: this command has no path to a leg)");
+}
+
+async function startRun() {
+  const params = {
+    seconds: parseFloat($("run-seconds").value),
+    policy_mode: $("run-mode").value,
+    heading_servo: $("run-servo").value,
+    arm_motion: $("run-arm").checked,
+  };
+  $("run-start").disabled = true;
+  try {
+    const result = await invoke("start_run", params);
+    show($("run-result"), summariseRun(result), result.ok === false);
+    if (result.ok !== false) applyControl(result.live ? "policy" : "operator", result.run_id);
+  } finally {
+    $("run-start").disabled = state.controlOwner === "policy";
+  }
+}
+
+async function stopRun() {
+  const result = await invoke("stop_run", { reason: "the operator took control" });
+  show($("run-result"), summariseRun(result), result.ok === false);
+  // The pad comes back whether or not the stop confirmed: the run has been signalled, and
+  // an operator whose stop did not confirm needs the keys more, not less.
+  applyControl("operator", null);
+  refreshFleet();
+}
+
+function summariseRun(result) {
+  if (result.ok === false) return `refused\n\n${result.error}`;
+  const lines = [];
+  if (result.started) {
+    lines.push(result.live ? "STARTED — the policy is driving" : "started — scene check, no --live");
+    lines.push(`run            ${result.run_id}`);
+    lines.push(`watchdog       ${result.watchdog_s} s`);
+    for (const [flag, path] of Object.entries(result.outputs || {})) {
+      lines.push(`${flag.padEnd(14)} ${path}`);
+    }
+    lines.push("", result.argv.join(" "), "", result.note || "");
+  } else if (result.was_running === false) {
+    lines.push(result.note || "no run was in flight");
+  } else {
+    lines.push(`stopped ${result.run_id}`);
+    lines.push(result.confirmed ? "confirmed      the run exited"
+                                : "NOT CONFIRMED  assume the policy is still driving");
+    if (result.error) lines.push("", result.error);
+  }
+  return lines.join("\n");
 }
 
 // ── motion ──────────────────────────────────────────────────────────────────
@@ -637,6 +799,10 @@ const ALERT_EVENTS = {
   model_downloaded: "checkpoint loaded",
   model_armed: "checkpoint armed",
   model_deleted: "checkpoint removed",
+  run_refused: "run refused",
+  run_started: "run started",
+  run_finished: "run ended",
+  control_changed: "control",
 };
 
 function noteAlert(record) {
@@ -648,7 +814,8 @@ function noteAlert(record) {
     kind,
     detail: record.payload.reason || summarisePayload(record.payload),
     at: record.received,
-    severe: record.event === "motion_refused",
+    severe: record.event === "motion_refused" || record.event === "run_refused"
+            || (record.event === "control_changed" && record.payload.owner === "policy"),
   });
   state.alerts = state.alerts.slice(0, 50);
   renderAlerts();
@@ -837,6 +1004,7 @@ function startEventStream() {
     try { record = JSON.parse(message.data); } catch { return; }
     noteUnread(record);
     noteAlert(record);
+    noteControlEvent(record);
     if (!passesFilter(record)) return;
     if (list.querySelector(".empty")) list.innerHTML = "";
     // Newest first. An operator watching a robot reads the top of the list, and a stream
@@ -846,6 +1014,22 @@ function startEventStream() {
   };
   source.onerror = () => setBadge($("mesh-badge"), "stream lost", "hot");
   source.onopen = () => setBadge($("mesh-badge"), "mesh up", "on");
+}
+
+// The driver stops emitting `robot_state` for the whole of a run rather than put a second
+// DDS client on a bus a control loop is using, so a poll would go quiet at exactly the
+// moment "who is driving" matters. These events are what keep the badge honest instead.
+function noteControlEvent(record) {
+  if (record.device_id !== state.deviceId) return;
+  if (record.event === "control_changed") {
+    applyControl(record.payload.owner, state.runId);
+  } else if (record.event === "run_started") {
+    applyControl(record.payload.live ? "policy" : "operator", record.payload.run_id);
+  } else if (record.event === "run_finished") {
+    applyControl("operator", null);
+    show($("run-result"), `run ${record.payload.run_id} ended: ${record.payload.reason}`,
+      record.payload.exit_code !== 0);
+  }
 }
 
 function passesFilter(record) {
@@ -955,6 +1139,15 @@ function init() {
   });
   $("clear").addEventListener("click", () => { $("events").innerHTML = ""; });
 
+  $("run-start").addEventListener("click", startRun);
+  $("run-stop").addEventListener("click", stopRun);
+  $("run-arm").addEventListener("change", renderRunPreview);
+  $("run-mode").addEventListener("change", renderRunPreview);
+  $("run-servo").addEventListener("change", renderRunPreview);
+  $("run-seconds").addEventListener("input", () => {
+    $("run-seconds").dataset.touched = "1";
+    renderRunPreview();
+  });
   $("stop-all").addEventListener("click", stopAll);
   $("safety-dismiss").addEventListener("click", () => {
     state.safetyDismissedFor = state.deviceId;
