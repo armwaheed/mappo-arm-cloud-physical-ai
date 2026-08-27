@@ -411,12 +411,26 @@ def test_all_three_children_stop_when_the_launcher_does():
         # that it got a SIGTERM, so "the children are gone" cannot be satisfied by a bare
         # SIGKILL — which would leave a walking robot's last velocity latched on the bus,
         # because SportClient.Move has no dead-man timeout.
+        # ARMED IS NOT THE SAME AS STARTED, AND THAT DISTINCTION IS ISSUE #135.
+        # This file used to be signalled as soon as the process existed. Between exec and
+        # `signal.signal` running, Python boots an interpreter and imports three modules,
+        # and a SIGTERM arriving in that window is handled by the DEFAULT disposition --
+        # the process dies, no handler runs, no marker is written, and the assertion at
+        # the foot of this test blamed a missing SIGTERM for a SIGTERM that was sent too
+        # early. It failed about one run in eight on the runner and never locally, which
+        # is what a startup race looks like from the outside.
+        #
+        # So the stub writes `arm_marker` on the line after the handler is installed, and
+        # the test below will not signal until it appears. Ordering, not sleeping: a
+        # `time.sleep` here would be the same race with a longer fuse.
+        arm_marker = tmp / "armed.marker"
         (fake / "robot_driver.py").write_text(textwrap.dedent(f'''\
             import signal, sys, time
             def _damp(*a):
                 open({str(tmp / "term.marker")!r}, "w").write("SIGTERM")
                 sys.exit(0)
             signal.signal(signal.SIGTERM, _damp)
+            open({str(tmp / "armed.marker")!r}, "w").write("armed")
             while True: time.sleep(0.2)
             '''))
         (fake / "server.py").write_text(textwrap.dedent('''\
@@ -448,6 +462,17 @@ def test_all_three_children_stop_when_the_launcher_does():
                 time.sleep(0.1)
             assert len(kids) >= 3, f"only {len(kids)} children started: {kids}"
 
+            # The driver's handler is what writes term.marker, so signalling before it is
+            # installed tests nothing and fails intermittently. See the stub above (#135).
+            for _ in range(200):
+                if arm_marker.exists():
+                    break
+                time.sleep(0.1)
+            assert arm_marker.exists(), (
+                "the driver stub never armed its SIGTERM handler within 20 s, so this run "
+                "could not have tested the ordering. Failing on the precondition rather "
+                "than signalling anyway and blaming the result on the launcher.")
+
             proc.send_signal(signal.SIGTERM)
             out = proc.communicate(timeout=30)[0]
 
@@ -469,8 +494,11 @@ def test_all_three_children_stop_when_the_launcher_does():
     # which found the children it had just killed and printed twenty lines of a log.
     assert "Stopping the other two" not in out, out
     assert "exited during startup" not in out, out
-    assert got_sigterm, \
-        "the driver was killed without a SIGTERM first, so its motion damp never ran"
+    assert got_sigterm, (
+        "the driver's SIGTERM handler was armed before the signal was sent, and still did "
+        "not run, so the launcher did not deliver a SIGTERM to it and its motion damp "
+        "never ran. (Before #135 this message blamed a missing SIGTERM for one that had "
+        "simply arrived before the handler existed.)")
 
 
 def _is_alive(pid: int) -> bool:
