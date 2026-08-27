@@ -158,6 +158,11 @@ def main():
             if run["duplicate_of"] is None:
                 seen[run["sha256"]] = os.path.relpath(path, args.corpus)
             runs.append(run)
+    if not runs:
+        # Pointed at the wrong directory, this would otherwise print a full report of
+        # zeros and exit 0, which reads exactly like a corpus with nothing in it.
+        raise SystemExit(
+            f"no *.jsonl under {args.corpus}/{{{','.join(SUBDIRS)}}} - wrong --corpus?")
     unique = [r for r in runs if r["duplicate_of"] is None]
 
     labels, sources = collections.Counter(), collections.Counter()
@@ -183,8 +188,10 @@ def main():
         rows.append({
             "run": os.path.splitext(os.path.basename(run["file"]))[0],
             "dir": run["dir"], "gen": run["gen"], "clock": run["clock"],
-            "utc": (datetime.datetime.utcfromtimestamp(when).strftime("%Y-%m-%dT%H:%M:%SZ")
-                    if run["clock"] == "epoch" else ""),
+            # fromtimestamp(tz=utc), not utcfromtimestamp: the latter is deprecated from
+            # 3.12 and this has to keep running on the 3.8 leg as well.
+            "utc": (datetime.datetime.fromtimestamp(when, datetime.timezone.utc)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ") if run["clock"] == "epoch" else ""),
             "uptime_s": f"{when:.0f}" if run["clock"] == "uptime" else "",
             "ticks": run["ticks"], "sightings": run["sighting_rows"],
             "person": run["labels"].get("person", 0), "bin": run["labels"].get("bin", 0),
