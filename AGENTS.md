@@ -176,12 +176,17 @@ two agents were SSH'd into a live robot on 2026-08-26.
   call [`robot-stack/preflight/venv_guard.py`](robot-stack/preflight/venv_guard.py) before
   they open a transport, and it raises rather than printing. Do not route around it, and do
   not set `MAPPO_ROBOT_HOST=0` on a machine that is a robot.
-- **Nothing on a robot reports its own staleness.** None of the deployed trees is a git
-  checkout — no `.git`, so no branch and no commit — and on 2026-08-26 the Go2's `~/mappo-run`
-  matched *no single commit* on `main`: most of it was 34–36 commits behind, its `README.md`
-  older still, and its `dashboard/` a different lineage again. **A live run does not tell you
-  which code produced it.** Copy a fresh tree, record what you copied, and do not report a
-  robot observation as evidence about `main` without saying what was actually on the robot.
+- **Deploy with `deploy/push-to-robot.sh`, and a run will name its own commit.** None of
+  the deployed trees is a git checkout — no `.git`, so no branch and no commit — so
+  `robot-stack/preflight/tree_stamp.py` records git's own root tree id, recomputed from the
+  bytes on disk, and `mappo_drive.py` refuses when the tree stops matching it. Every run
+  prints `commit … tree …` as its first line; quote that id, not "deployed from main".
+  ⚠️ **An older claim here was wrong and is worth knowing about**: `~/mappo-run` was said to
+  match *no single commit*. It matches `cb42b9a` exactly, 226/226 files — the tip of an
+  **unmerged branch**, which is why reconstructing it against `main` found nothing. The tree
+  that really is a mixture is `~/mappo-main`, spanning 21 commits and 8–83 behind HEAD, and
+  it is the one the launch wrappers source. Re-derive rather than trusting either: `python3
+  robot-stack/preflight/tree_stamp.py id <dir>` prints a real git tree id for any directory.
 
 The paths, the interpreters, the venv-creation command and the measurements behind all of
 this are in **[`deploy/README.md`](deploy/README.md)** (Go2, and the Device Connect split)

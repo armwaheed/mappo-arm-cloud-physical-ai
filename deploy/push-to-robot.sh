@@ -62,7 +62,10 @@ echo "push-to-robot: $SHA -> $HOST:$DEST"
 
 # 1. staging directory, tracked files only, at the named commit.
 "${SSH[@]}" "$HOST" "rm -rf '$STAGE' && mkdir -p '$STAGE'"
-git -C "$ROOT" archive --format=tar "$SHA" | "${SSH[@]}" "$HOST" "tar -x -C '$STAGE'"
+# `-m` because the lab Go2's clock reads 1970 (issue #117), so every extracted file is
+# "in the future" and tar says so 355 times. Modification time is not part of the tree id
+# -- git hashes content and one executable bit -- so discarding it changes no verdict.
+git -C "$ROOT" archive --format=tar "$SHA" | "${SSH[@]}" "$HOST" "tar -xm -C '$STAGE'"
 
 # 2. the stamp is computed HERE, where git is, and copied over. The robot never needs it.
 TMP="$(mktemp -t mappo-stamp.XXXXXX)"
