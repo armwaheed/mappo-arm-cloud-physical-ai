@@ -812,6 +812,28 @@ def test_the_two_dry_runs_are_interleaved_with_the_recorded_ones_not_a_recalled_
         f"control: {session}")
 
 
+def test_a_hold_the_planner_did_not_command_carries_its_own_reason():
+    """A stop taken above the planner has no `command.reason` to explain it.
+
+    Today that is one case — the frame was saturated and no bearing read clear
+    (issue #72) — and a run that recorded it as an ordinary null command would be
+    indistinguishable from a run that simply had nothing to say. ⚠️ The field is ABSENT
+    rather than null on every other tick, so a consumer scanning for holds finds only
+    real ones; asserting the absence is the half that would otherwise rot."""
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            writer.write_header(live=False)
+            _tick(writer)
+            _tick(writer, command=None,
+                  hold_reason="no open bearing: 1.0 deg of 85.3 deg is clear")
+        ticks = [r for r in _read(directory) if r["type"] == "tick"]
+    assert "hold_reason" not in ticks[0], ticks[0]
+    assert ticks[1]["hold_reason"].startswith("no open bearing"), ticks[1]
+    # And it stays separable from staleness: a saturated frame is current, and a run
+    # that hit the geometric limit must not read as one that hit a timing limit.
+    assert ticks[1]["perception"]["stale"] is False
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

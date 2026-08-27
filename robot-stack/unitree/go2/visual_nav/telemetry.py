@@ -271,7 +271,8 @@ class TelemetryWriter:
                    measured=None, health=None, sightings=(),
                    goal_crop: float | None = None, profile: dict | None = None,
                    cycle_ms: float | None = None, wait_ms: float | None = None,
-                   pass_ms: dict | None = None) -> None:
+                   pass_ms: dict | None = None,
+                   hold_reason: str | None = None) -> None:
         """One control tick, whether or not it commanded motion.
 
         EVERY tick is written, including holds, stale-perception skips and the
@@ -282,6 +283,16 @@ class TelemetryWriter:
         self._emit({
             "type": "tick",
             "t": round(float(elapsed_s), 4),
+            # WHY THE ROBOT STOPPED, when the stop did not come from the planner and so
+            # has no `command.reason` to carry it. Today that is one case: the frame was
+            # saturated and no bearing read clear (issue #72). Absent on every ordinary
+            # tick rather than null, because a consumer scanning for holds should find
+            # the field only where there is one — and because a run whose every tick
+            # carried `"hold_reason": null` would grow by the size of the field for
+            # nothing. `stale` stays a separate boolean: a stale frame is a timing
+            # failure and a saturated one is a geometric limit, and conflating them
+            # would hide which of the two a run hit.
+            **({} if hold_reason is None else {"hold_reason": str(hold_reason)}),
             "wall_time": self._clock(),
             "pose": {"x": _finite(pose[0]), "y": _finite(pose[1]),
                      "yaw": _finite(pose[2])},
