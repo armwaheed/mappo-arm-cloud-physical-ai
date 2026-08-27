@@ -87,68 +87,52 @@ own measured caveat inline, so the appendix deepens the argument rather than rev
 ## The system in one page
 
 ```mermaid
-flowchart TB
-    CAM(["ONE RGB CAMERA<br/>no depth · no LiDAR · no stereo · no fiducial"])
-
-    subgraph CORE["Vendor-agnostic core — numpy + OpenCV, imports no robot, moved to the second vendor unchanged"]
-      direction TB
-      DET["colour_detector · person_detector<br/>MobileNet-SSD, launched four different ways §12"]
-      RNG["camera_model — the equidistant model r = f·θ<br/>focal_px 1290.16, fitted by the robot turning on the spot §1"]
-      GATE{"can this frame be ranged?"}
-      REFUSE["HOLD, with a stated reason<br/>UNRANGEABLE_SOURCES · box geometry only §3"]
-      MAP["tracker → static_map<br/>an object persists in odom once the swerve takes it out of frame"]
-      OBS[["ONE obstacle list<br/>id · kind · position · radius · velocity"]]
-      DET --> RNG --> GATE
-      GATE -- "no" --> REFUSE
-      GATE -- "yes" --> MAP --> OBS
+flowchart LR
+    subgraph SENSING["THE ENTIRE SENSOR SUITE — no depth, no stereo, no LiDAR, no fiducial"]
+      CAM[RGB camera]
     end
-
-    PEER["peer_pose over the Arm Device Connect mesh<br/>10 Hz · a 0.40 m disc · dropped AND held after 0.6 s §10<br/>designed and offline-tested; has never driven a robot"]
-
-    CAM --> DET
-    PEER -.-> OBS
-
-    subgraph DECIDE["Two opinions, one command"]
-      direction TB
-      POL["MAPPO policy — 71,684 parameters<br/>18 → 256 → 256 → 4 → 2<br/>policy/ · integration/"]
-      VETO["dynamic-window veto — avoidance.DynamicWindowPlanner<br/>rolls each candidate forward and refuses the ones that end inside something"]
-      POL -- "candidate vx, vy" --> VETO
+    subgraph CORE["Vendor-agnostic core — numpy + OpenCV, imports no robot"]
+      DET[MobileNet-SSD + colour detector]
+      RNG[camera_model]
+      MAP[tracker + static_map]
     end
-
-    OBS --> POL
-    OBS --> VETO
-    VETO --> FLOOR{"above this robot's gait floor?<br/>Go2 0.35 m/s · Lite3 0.30 m/s"}
-    FLOOR -- "no" --> STOP["STOP — a crawl is not a slow walk,<br/>it is a robot standing still reporting no fault"]
-    FLOOR -- "yes" --> CMD(["one command — vx, vy, wz"])
-
-    subgraph SEAMS["Three vendor seams — camera, locomotion, safety — and that is the entire platform surface §5"]
-      direction LR
-      GO2["Unitree Go2<br/>SportClient over CycloneDDS<br/>PROPORTIONAL transport"]
-      LITE["Deep Robotics Lite3 Venture<br/>high-level UDP axis interface<br/>SIGN-ONLY transport §6"]
+    subgraph LEARNED["policy/ — vendored with its checkpoint"]
+      ACT[MAPPO actor]
     end
+    subgraph GUARDS["integration/ — every command passes all three, in this order"]
+      ENV[envelope clamp]
+      FLOOR[gait floor]
+      VETO[dynamic-window veto]
+    end
+    subgraph SEAMS["The vendor surface — 3 seams, and this is ALL of it"]
+      GO2["Unitree Go2 — SportClient over CycloneDDS"]
+      LITE["Deep Robotics Lite3 Venture — UDP axis interface"]
+    end
+    LEGS[legs]
+    TICK["--telemetry: one versioned JSONL tick per control cycle"]
+    CORPUS[the run is also a CV training corpus]
 
-    CMD --> GO2
-    CMD --> LITE
-    GO2 --> LEGS(["legs"])
-    LITE --> LEGS
-
-    TEL[["one versioned JSONL tick per control cycle<br/>--telemetry, the interface §4"]]
-    CMD --> TEL
-    LEGS -- "measured, written beside command" --> TEL
-    TEL --> CORPUS["the run is also a training corpus §11"]
-
-    classDef refuse fill:#fde2e2,stroke:#b42318,color:#5c1410;
-    classDef seam fill:#fdf0d5,stroke:#b54708,color:#5c3200;
-    classDef sensor fill:#e0f0ff,stroke:#175cd3,color:#0b2f66;
-    class REFUSE,STOP refuse;
-    class GO2,LITE seam;
-    class CAM,PEER sensor;
+    CAM -- "1920x1080 Go2 · 1280x720 Lite3" --> DET
+    DET -- "boxes at a 0.25 floor, baked into the prototxt" --> RNG
+    RNG -- "bearing + range from focal_px 1290.16, fitted by the robot itself" --> MAP
+    MAP -- "18 values = 6 state + 12 lidar, 0.875 m horizon" --> ACT
+    ACT -- "4 raw -> TanhNormal -> 2 velocities, NO YAW OUTPUT" --> ENV
+    ENV -- "clamped to 0.35 vx / 0.20 vy, forward only" --> FLOOR
+    FLOOR -- "below 0.35 m/s the Go2 stands still and reports NO FAULT" --> VETO
+    VETO -- "2.5 s rollout, judged against the TRANSPORT MODEL" --> GO2
+    VETO -- "2.5 s rollout, judged against the TRANSPORT MODEL" --> LITE
+    GO2 -- "PROPORTIONAL: the legs get the velocity that was sampled" --> LEGS
+    LITE -- "SIGN-ONLY: magnitude discarded, 0.05 m/s executes as 0.30" --> LEGS
+    LEGS -- "measured, written beside command" --> TICK
+    VETO --> TICK
+    TICK -- "246.4 ms/tick with --record against 100.6 ms without" --> CORPUS
 ```
 
-*The two shaded seams are the only vendor-specific code on the path, and the dashed peer
-edge is the only input that is not a pixel. Every refusal in red is a place the stack says
-"I cannot" rather than emitting a number — [§3](#3-depth-from-a-focal-length--and-the-guard-that-refuses-a-constant-range)
-is the finding that put the first one there.*
+*Read the edges, not the boxes. Two of them carry the whole argument of this paper: the
+policy emits **no yaw**, which is why [§6](#6-a-planner-that-models-its-own-transport) has to
+re-express avoidance as pure turns and pure drives; and the Lite3 seam **discards the
+magnitude it was sent**, which is why a dynamic-window planner's safety argument does not
+survive the port. The `SENSING` box has one item in it on purpose.*
 
 ![Annotated render of a Unitree Go2 with its front RGB camera, joint actuators, onboard compute and dorsal mount called out](figures/go2-walk-profile.png)
 
@@ -212,29 +196,34 @@ now validates the config against it rather than trusting either:
 
 ```mermaid
 flowchart LR
-    subgraph OBSV["ONE observation — 18 float32, run-local frame, every term ÷ 2.5 m per VMAS unit"]
-      direction TB
-      ST["<b>6 state</b><br/>x · y · vx · vy · x−gx · y−gy"]
-      LID["<b>12 lidar</b> — rays at FIXED 30° spacing over a full circle,<br/>which do NOT turn with the robot's nose, because the<br/>trained VMAS agent never rotates<br/>PROXIMITY, not range: 0.35 − range, so bigger means closer<br/>reads 0 beyond the 0.875 m horizon"]
+    subgraph OBS["ONE observation — 18 float32, run-local frame, every term divided by 2.5 m per VMAS unit"]
+      STATE["6 state — x, y, vx, vy, x-gx, y-gy"]
+      LIDAR[12 lidar]
     end
+    W1[W1 + b1]
+    W2[W2 + b2]
+    W3[W3 + b3]
+    RAW[4 raw outputs]
+    LOC[loc]
+    SCALE[scale]
+    OUT["2 actions — vx, vy"]
+    YAW["NO YAW OUTPUT — the robot crabs"]
 
-    OBSV --> L1["<b>W1 (256, 18) + b1</b><br/>tanh<br/>4,864 params"]
-    L1 --> L2["<b>W2 (256, 256) + b2</b><br/>tanh<br/>65,792 params"]
-    L2 --> L3["<b>W3 (4, 256) + b3</b><br/>1,028 params"]
-    L3 --> RAW[["<b>4 raw outputs</b><br/>a TanhNormal's loc[2] and scale[2]"]]
-
-    RAW -- "raw[:2]" --> LOC["loc — kept"]
-    RAW -- "raw[2:]" --> SC["scale — DISCARDED<br/>the deployment is deterministic;<br/>it never samples the distribution"]
-    LOC --> ACT(["<b>tanh(loc) → 2 actions</b><br/>vx, vy"])
-    SC -.-> X(("×"))
-
-    ACT --> NOYAW["<b>THERE IS NO YAW OUTPUT.</b><br/>The policy cannot ask the robot to turn.<br/>So the robot crabs, its 85° camera never looks anywhere new,<br/>and a heading servo bolted on to fix that closes a loop<br/>through the body frame and drives into a wall — A1."]
-
-    classDef drop fill:#fde2e2,stroke:#b42318,color:#5c1410;
-    classDef punch fill:#fdf0d5,stroke:#b54708,color:#5c3200;
-    class SC,X drop;
-    class NOYAW punch;
+    STATE -- "6 values" --> W1
+    LIDAR -- "12 values, FIXED 30 deg spacing over 360 deg, do NOT turn with the nose" --> W1
+    W1 -- "(256, 18) + 256 = 4,864 params, tanh" --> W2
+    W2 -- "(256, 256) + 256 = 65,792 params, tanh" --> W3
+    W3 -- "(4, 256) + 4 = 1,028 params — 71,684 in total" --> RAW
+    RAW -- "raw[:2]" --> LOC
+    RAW -- "raw[2:] — DISCARDED, the deployment never samples the distribution" --> SCALE
+    LOC -- "tanh(loc), deterministic_action_dim 2" --> OUT
+    OUT -- "the action space contains no rotation at all" --> YAW
 ```
+
+*The lidar block is **proximity, not range** — `0.35 - range`, so bigger means closer — and it
+reads **0 past the 0.875 m horizon** regardless of what is in the room. That is what
+`evidence/2026-08-19-what-the-policy-sees/` caught with two bins plainly in the camera at
+1.7 m and 2.7 m and twelve zeros in the vector.*
 
 **Read the collapse on the right of that diagram, because it explains more of this paper
 than any other single fact about the policy.** The network emits four numbers; two of them
@@ -245,45 +234,13 @@ are a distribution's spread that the deployment throws away
 and pure drives before a Lite3 can execute it, why `--heading-servo` defaults to `off`, and
 why [A1](#a1-our-control-law-a-heading-servo-that-drove-into-a-wall) happened at all.
 
-Two more consequences worth having in front of you before Part I:
+Two more consequences worth carrying into Part I. **The 12 rays are the policy's entire model
+of the world**, and they are filled in from the stack's short list of *recognised objects*, not
+from a sensor — so free space in that vector means "nothing was recognised", not "nothing is
+there". And **median perception latency on this path is 309 ms** (p90 436 ms), so tracks are
+extrapolated and their radii inflated to cover it; the policy sees that result, never the raw
+sensor.
 
-- **The 12 rays are the policy's entire model of the world**, and they are filled in from the
-  stack's short list of *recognised objects*, not from a sensor. Free space in that vector
-  means "nothing was recognised", not "nothing is there".
-- **The horizon is 0.875 m** — `lidar_range_vmas` 0.35 × `meters_per_vmas_unit` 2.5, both in
-  `policy/config.json`, the first pinned by the checkpoint's own metadata. Past that the lidar
-  block is twelve zeros regardless of what is in the room, which is what
-  `evidence/2026-08-19-what-the-policy-sees/` caught with two bins plainly in the camera at
-  1.7 m and 2.7 m.
-
-And this is the path one camera frame actually travels, end to end:
-
-```mermaid
-flowchart LR
-    F["one RGB frame<br/>1920×1080 Go2 · 1280×720 Lite3"] --> D["detector + colour_detector<br/>224 or 300 px, 0.25/0.40/0.45 floor,<br/>1 or 20 classes — four launchers, §12"]
-    D --> S["sightings: bearing from focal_px,<br/>range from angular size or ground contact"]
-    S --> G{"rangeable?"}
-    G -- "no" --> H["hold — §3"]
-    G -- "yes" --> M["tracker → static_map, in odom"]
-    M --> O["18-value observation<br/>6 state + 12 proximity rays"]
-    O --> A["actor · 71,684 params<br/>18 → 256 → 256 → 4"]
-    A --> V["tanh(loc) → vx, vy"]
-    V --> E["envelope clamp<br/>max_vx 0.35 · max_vy 0.20 · forward only"]
-    E --> GF{"≥ gait floor?"}
-    GF -- "no" --> ST["stop, and say so"]
-    GF -- "yes" --> VE{"veto: roll forward 2.5 s,<br/>does it end inside anything?"}
-    VE -- "yes" --> PL["the planner's own command"]
-    VE -- "no" --> T["transport model<br/>proportional Go2 · sign-only Lite3"]
-    PL --> T
-    T --> LG(["legs"])
-
-    classDef refuse fill:#fde2e2,stroke:#b42318,color:#5c1410;
-    class H,ST refuse;
-```
-
-*Median perception latency on this path is **309 ms** (p90 436 ms), so tracks are
-extrapolated and their radii inflated to cover it; the policy sees that result, never the
-raw sensor.*
 
 
 ---
@@ -576,42 +533,40 @@ than take this diagram's word for it. The record exists because the 2026-08-26 r
 not say whether a `hold` was the policy's, the envelope's or the transport's:
 
 ```mermaid
-flowchart TB
-    OBS["obstacle list + pose + goal"] --> POL["<b>MAPPO actor</b><br/>18 → 256 → 256 → 4 → 2"]
-    POL --> K1[["<code>policy_raw</code><br/>vx, vy, wz"]]
-    K1 --> ENV["<b>envelope clamp</b> — the STACK's ceiling, which --derate<br/>may put BELOW the policy config's own.<br/>Forward only: the policy is holonomic and does not know<br/>which way the sensors point"]
-    ENV --> K2[["<code>after_limits</code>"]]
-    K2 --> GF["<b>gait floor</b> — --policy-gait-floor raises a sub-floor<br/>command onto the floor ellipse, KEEPING its direction.<br/>Opt-in, and on a sign-only transport it changes<br/>nothing the legs see"]
-    GF --> K3[["<code>after_gait_floor</code>"]]
-    K3 --> SUP{"static obstacle blocking<br/>the line to the goal?"}
-    SUP -- "yes, and turn-drive is on" --> TD["<b>turn-drive supervisor</b><br/>pure turns and pure drives — the only motions<br/>this Lite3's measured axis profile performs.<br/>vy is always exactly 0.0"]
-    TD --> K4[["<code>supervisor</code>"]]
-    SUP -- "no" --> VETO
-    K4 --> VETO{"<b>dynamic-window veto</b><br/>roll the command actually going out<br/>forward 2.5 s against the TRANSPORT MODEL.<br/>Does it keep every obstacle's hard gap?"}
-    VETO -- "no" --> PLAN["the planner's own command,<br/>or veto-hold"]
-    VETO -- "yes" --> PASS["the command passes"]
-    PLAN --> STOPQ
-    PASS --> STOPQ{"<b>_gait_floor_stop</b><br/>below the floor the robot produces no gait,<br/>stands still, and reports NO FAULT"}
-    STOPQ -- "below" --> ZERO["stop, with the reason named"]
-    STOPQ -- "at or above" --> K5
-    ZERO --> K5[["<code>final</code> + <code>axis_preview</code><br/>computed on the command actually leaving,<br/>never on a candidate that did not"]]
-    K5 --> LEGS(["legs"])
+flowchart LR
+    subgraph POL["The policy proposes"]
+      ACTOR[MAPPO actor]
+    end
+    subgraph EXEC["integration/mappo_drive.py — every stage writes its own telemetry key"]
+      ENV[envelope clamp]
+      GFR[gait-floor raise]
+      SUP[turn-drive supervisor]
+    end
+    subgraph SAFE["The shared planner disposes"]
+      VETO[dynamic-window veto]
+      STOP[_gait_floor_stop]
+    end
+    LEGS[legs]
 
-    classDef key fill:#eef2f6,stroke:#475467,color:#1d2939;
-    classDef refuse fill:#fde2e2,stroke:#b42318,color:#5c1410;
-    class K1,K2,K3,K4,K5 key;
-    class ZERO,PLAN refuse;
+    ACTOR -- "policy_raw — vx, vy, wz" --> ENV
+    ENV -- "after_limits — 0.35 vx / 0.20 vy, forward only" --> GFR
+    GFR -- "after_gait_floor — opt-in, and a sign-only transport ignores it" --> SUP
+    SUP -- "supervisor — pure turns and pure drives, vy exactly 0.0" --> VETO
+    SUP -- "no static blocker: the policy's command, unchanged" --> VETO
+    VETO -- "rolled forward 2.5 s, keeps every obstacle's hard gap" --> STOP
+    VETO -- "veto-hold, or the planner's own command instead" --> STOP
+    STOP -- "below 0.35 m/s: stop, with the reason named" --> LEGS
+    STOP -- "final + axis_preview, computed on the command actually leaving" --> LEGS
 ```
 
 Three placements in that order are decisions rather than accidents. The **veto runs on the
-supervisor's output, not beside it** — the first version returned the detour command
-directly and routed around the dynamic-obstacle check, so the safety layer's own replacement
-would have walked into a person stepping onto the detour. The **gait-floor stop lives in the
-shared planner** rather than on this file's policy-driven path, because the bug it is about
-reaches every platform and both drive modes: a Lite3 run with no policy at all got nothing
-from the old placement. And the **axis preview is computed at the exit**, on the command
-actually leaving, so the record can never show the axes a different candidate would have
-produced.
+supervisor's output, not beside it** — the first version returned the detour command directly
+and routed around the dynamic-obstacle check, so the safety layer's own replacement would have
+walked into a person stepping onto the detour. The **gait-floor stop lives in the shared
+planner** rather than on this file's policy-driven path, because the bug it is about reaches
+every platform and both drive modes: a Lite3 run with no policy at all got nothing from the old
+placement. And the **axis preview is computed at the exit**, on the command actually leaving, so
+the record can never show the axes a different candidate would have produced.
 
 The same argument applies to the **gait floor**: the speed below which a robot stands still
 without faulting. It is a platform characteristic a portable planner has to learn per robot
@@ -971,37 +926,42 @@ in any of the six, so the set holds at most six viewpoints, and sampling for nov
 everything that follows.
 
 ```mermaid
-flowchart TB
-    REC["6 --record-raw clips · 5,854 frames · 1280×720 · 15 fps<br/>one room, one morning, 13 minutes"]
-    KEY["456 DISTINCT VIEWS — 7.8%<br/>the other 5,398 are near-duplicates"]
-    REC --> KEY
-    PH[/"the phrase — 'a small white four-legged machine'<br/>NOT 'a robot dog', which scores 0.000"/]
-    KEY --> OWL["<b>OWLv2</b> base-patch16-ensemble<br/>phrase → box"]
-    PH --> OWL
-    OWL --> THR{"score ≥ 0.22 per query<br/>set where the HAND-CHECK turned,<br/>not from the score distribution"}
-    THR -- "below" --> DROP["discarded — half the person boxes,<br/>on purpose: a wrong box poisons a<br/>training set, a missing one only<br/>makes it smaller"]
-    THR -- "at or above" --> SAM["<b>SAM 2.1</b> hiera-large, IMAGE mode<br/>box → mask. Not video propagation:<br/>image mode has no state and cannot drift"]
-    SAM --> BOX["the mask's extent is the label<br/><b>131 lite3 keyframe boxes</b>"]
-    BOX --> RIDE["±1-frame ride-along · median IoU 0.954<br/>+4 has a p10 of 0.496, so nothing wider rides along"]
-    RIDE --> REAL[["<b>283 real positives</b>"]]
-    REAL --> SYN["offline synthetic — three families the trainer<br/>has NO operator for:<br/>shear 849 · colour-slice 849 · occlude 844"]
-    SYN --> MIX[["<b>2,825 positives</b><br/>real : synthetic = <b>1 : 9.0</b>"]]
-    REAL --> MIX
-    REAL --> RA["<b>a_ws_real</b> · 283"]
-    MIX --> RB["<b>b_ws_synth</b> · 2,825"]
-    MIX --> RC["<b>c_ws_synth_aug</b> · 2,825<br/>+ --motion-blur 0.5 --sensor-noise 0.5 --composite 0.3"]
-    RA --> SPARK
-    RB --> SPARK
-    RC --> SPARK["<b>DGX Spark</b> · finetune_ssd.py · 40 epochs, one script, run in parallel<br/>constant across all three: --freeze-through= --backbone-lr-scale 0.5<br/>--pseudo-labels 0.3 --distil 0.1"]
-    SPARK --> SCORE["score_checkpoints.py at a <b>NAMED</b> preprocessing — §12 is why<br/>lite3: 36 held-out frames, SAME SESSION<br/>person: 284 frames, CROSS-DAY — this is the gate"]
-    SCORE --> GATE{"lose ZERO of the people<br/>the shipped network sees"}
-    GATE --> NOPE["at 224 px — the size deploy/run-peer-supervised.sh actually launches —<br/><b>no checkpoint from any of the three runs both detects the Lite3<br/>and holds its people.</b> Nothing is recommended."]
+flowchart LR
+    subgraph SRC["The ceiling: one room, one morning, 13 minutes — and the camera never moves"]
+      CLIPS[6 --record-raw clips]
+      VIEWS[distinct views]
+    end
+    subgraph LABEL["Labelling — neither model names a class; the class is the folder plus the phrase"]
+      OWL[OWLv2 base-patch16-ensemble]
+      SAM["SAM 2.1 hiera-large, IMAGE mode"]
+    end
+    subgraph DATA["The training set"]
+      REAL[real positives]
+      SYN[offline synthetic]
+    end
+    subgraph SPARK["DGX Spark — finetune_ssd.py, 40 epochs, one variable moved at a time"]
+      RA[a_ws_real]
+      RB[b_ws_synth]
+      RC[c_ws_synth_aug]
+    end
+    GATE[the standing gate]
+    OUT[shipped]
 
-    classDef refuse fill:#fde2e2,stroke:#b42318,color:#5c1410;
-    classDef good fill:#e0f0ff,stroke:#175cd3,color:#0b2f66;
-    class DROP,NOPE refuse;
-    class PH good;
+    CLIPS -- "5,854 frames, 1280x720 at 15 fps; camera motion 0.0-1.0 px median" --> VIEWS
+    VIEWS -- "456 distinct views = 7.8%; the other 5,398 are near-duplicates" --> OWL
+    OWL -- "phrase -> box, kept at 0.22 per query, set where the HAND-CHECK turned" --> SAM
+    SAM -- "box -> mask; the mask extent is the label. 131 lite3 keyframe boxes" --> REAL
+    REAL -- "283, after a +/-1-frame ride-along at 0.954 median IoU" --> SYN
+    SYN -- "shear 849 + colour-slice 849 + occlude 844 = 2,542" --> RB
+    REAL -- "283 real only — the contemporaneous paired control" --> RA
+    SYN -- "2,825 total, real : synthetic = 1 : 9.0" --> RC
+    RA -- "no augmentation flags" --> GATE
+    RB -- "+ the offline synthetic half" --> GATE
+    RC -- "+ --motion-blur 0.5 --sensor-noise 0.5 --composite 0.3" --> GATE
+    GATE -- "lose ZERO of the 284 cross-day people the shipped network sees" --> OUT
+    OUT -- "at 224 px, what deploy/run-peer-supervised.sh launches: NOTHING PASSES" --> OUT
 ```
+
 
 `a_ws_real` is a real contemporaneous control and not a citation to an earlier run: these
 augmentation operators call `rng.random()` even at probability 0, so no previous run is
