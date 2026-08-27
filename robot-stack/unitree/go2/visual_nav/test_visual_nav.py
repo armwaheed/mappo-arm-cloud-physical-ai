@@ -899,6 +899,61 @@ def test_an_ordinary_stop_still_does_not_end_the_run():
     assert _walk(navigator, held, [(0.0, 0.0)] * 60) is None
 
 
+#: What ``avoidance.DynamicWindowPlanner`` emits when the command it would have issued
+#: is one the LEGS turn into something else — a sign-only transport substituting the
+#: full-speed primitive for a crawl (issue #145). A stop, `hold`, carrying the sentence
+#: with both speeds in it.
+TRANSPORT_STOP = Command(
+    vx=0.0, vy=0.0, wz=0.0, reason="hold", gap_m=0.3,
+    transport_refusal="asked for 0.050 m/s and the legs would receive 0.300 m/s, whose "
+                      "own rollout ends inside an obstacle's hard gap")
+
+
+def test_a_transport_refusal_ends_the_run_instead_of_standing_there():
+    """⚠️ THE SAME OBJECTION AS THE FLOOR STOP'S, ONE SUBSYSTEM ALONG.
+
+    Issue #145's fix stops a Lite3 walking into a bin at full speed when its planner
+    wanted to creep. What it leaves behind is a zero command, and every zero command is
+    declined by the branch below — "not asking it to go anywhere" — so without this the
+    fix would have swapped a robot that walks into a bin for a robot that stands in
+    front of one until ``--max-seconds``, saying nothing. That is the same defect the
+    fix is about.
+    """
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    verdict = _walk(navigator, TRANSPORT_STOP, [(0.0, 0.0)] * 3)
+    assert verdict is not None, "a transport refusal stood there rather than ending the run"
+    assert "stopped by the transport" in verdict, verdict
+    assert "0.300 m/s" in verdict, "the sentence lost the speed the legs would have got"
+    # It must NOT send the reader to the knob that cannot help. `--max-vx` and
+    # `--derate` are enforced at pre-flight against the profile and never reach the wire
+    # on this transport, so naming them here would cost an afternoon.
+    assert "--robot-radius" in verdict, verdict
+    assert "cannot help" in verdict, verdict
+
+
+def test_the_two_deliberate_stops_do_not_share_a_sentence():
+    """A floor stop and a transport refusal want opposite responses, and an operator
+    reading the wrong one goes to a knob that cannot move.
+
+    "commanded 0.10 m/s and did not move" says this robot cannot walk that slowly, so
+    stop asking it to. "the legs would receive 0.300 m/s" says this robot has no slow at
+    all, so the ceiling is irrelevant and only geometry helps. Folding them into one
+    branch is the tempting simplification and this is what it would cost.
+    """
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    floor = navigator._blocked_reason(FLOOR_STOP, 0.0, (0.0, 0.0, 0.0))
+    transport = navigator._blocked_reason(TRANSPORT_STOP, 0.0, (0.0, 0.0, 0.0))
+    assert floor is not None and transport is not None
+    assert "gait floor" in floor and "gait floor" not in transport, transport
+    assert "transport" in transport and "transport" not in floor, floor
+    # And an ordinary hold is still neither.
+    assert navigator._blocked_reason(
+        Command(vx=0.0, vy=0.0, wz=0.0, reason="hold", gap_m=0.2),
+        0.0, (0.0, 0.0, 0.0)) is None
+
+
 def test_a_dry_run_clears_the_planners_gait_floor_guard_as_well():
     """⚠️ AGAINST A REAL PLANNER, because a fake cannot go wrong in the way that matters.
 

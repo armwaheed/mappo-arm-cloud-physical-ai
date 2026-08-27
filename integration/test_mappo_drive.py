@@ -1395,6 +1395,95 @@ def test_a_floor_above_the_envelope_is_announced_when_the_planner_is_built():
     assert "gait floor 0.350" in shipped, shipped
 
 
+class _TwoSpeedTransport:
+    """A sign-only transport's shape: ``{0, one speed}`` past a deadband. Issue #145."""
+
+    is_proportional = False
+
+    def __init__(self, delivered: float, deadband: float = 0.05):
+        self.delivered, self.deadband = delivered, deadband
+
+    def executed(self, commands):
+        rows = [((self.delivered if vx > 0 else -self.delivered) if
+                 math.hypot(vx, vy) >= self.deadband and vx else 0.0, 0.0, wz)
+                for vx, vy, wz in commands]
+        return rows, [True] * len(rows)
+
+    def describe(self):
+        return f"sign-only test transport: forward is 0 or {self.delivered:.3f} m/s"
+
+
+def test_the_sub_floor_report_judges_the_legs_rather_than_the_typed_number():
+    """⚠️ ISSUE #145 IN THE HALF OF #26 THAT ONLY REPORTS, AND IT FAILS THE SAME WAY.
+
+    A gait floor is a fact about the legs. Comparing the COMMANDED number against it is
+    the right question only on a transport that delivers the commanded number. On the
+    Lite3's sign-only axis mapping the planner asks for 0.05 m/s and the legs walk at the
+    primitive's 0.30, so this gate used to count every moving tick of every run as
+    sub-floor and would have printed "COMMANDED BELOW THE GAIT FLOOR AND NOT MOVING" at
+    an operator whose robot was walking past them at full speed.
+
+    Two halves, and the second is what stops this reading as the gate being switched off.
+    """
+    # A primitive ABOVE the stated floor: no tick is sub-floor, however small the number
+    # the planner typed, and 0.30 m/s of legs against a 0.30 m/s floor is why.
+    walking = _planner(limits=Limits(max_vx=0.55, max_vy=0.0, max_wz=0.90,
+                                     transport=_TwoSpeedTransport(0.30)),
+                       platform_floor_m_s=0.30)
+    printed = _drive_sub_floor(walking, speed=0.050, ticks=20, delivered=0.30)
+    assert walking.counts["sub_floor"] == 0, walking.counts
+    assert walking.counts["sub_floor_stalled"] == 0, walking.counts
+    assert "GAIT FLOOR" not in printed, printed
+
+    # A primitive BELOW it is a real finding and has to keep being made. Same typed
+    # command, same floor; only the speed the legs produce is different, and the robot
+    # covers no ground.
+    crawling = _planner(limits=Limits(max_vx=0.55, max_vy=0.0, max_wz=0.90,
+                                      transport=_TwoSpeedTransport(0.12)),
+                        platform_floor_m_s=0.30)
+    printed = _drive_sub_floor(crawling, speed=0.050, ticks=20, delivered=0.0)
+    assert crawling.counts["sub_floor"] == 20, crawling.counts
+    assert crawling.counts["sub_floor_stalled"] >= 1, crawling.counts
+    assert "COMMANDED BELOW THE GAIT FLOOR" in printed, printed
+    assert "0.120 m/s" in printed, (
+        "the banner quoted the typed number rather than the speed the legs produced: "
+        + printed)
+
+
+def test_a_transport_refusal_is_announced_once_and_counted_every_tick():
+    """The planner refuses; this file is what says so. A guard that acts without saying
+    why is the defect one level along — ``mappo_drive``'s own words about issue #26.
+
+    Once, not per tick: at 10 Hz a per-tick banner is a banner nobody reads. The count
+    keeps rising after it, which is what a post-run report needs.
+    """
+    planner = _planner(limits=Limits(max_vx=0.55, max_vy=0.0, max_wz=0.90,
+                                     transport=_TwoSpeedTransport(0.30)))
+    refused = Command(0.0, 0.0, 0.0, reason="hold", gap_m=0.3,
+                      transport_refusal="asked for 0.050 m/s and the legs would "
+                                        "receive 0.300 m/s")
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        for _ in range(5):
+            planner._note_transport_refusal(refused)
+    printed = out.getvalue()
+    assert planner.counts["transport_refused"] == 5, planner.counts
+    assert printed.count("THE TRANSPORT REFUSED THIS COMMAND") == 1, printed
+    assert "0.300 m/s" in printed, printed
+    assert "Raising a ceiling will not help" in printed, printed
+    assert "refused because the legs' version" in planner.report(), planner.report()
+
+    # An ordinary command says nothing and counts nothing — without this the test above
+    # would pass against a banner printed on every tick of every run.
+    quiet = _planner()
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        quiet._note_transport_refusal(Command(0.3, 0.0, 0.0, reason="goal", gap_m=1.0))
+    assert out.getvalue() == "", out.getvalue()
+    assert quiet.counts["transport_refused"] == 0, quiet.counts
+    assert "refused because" not in quiet.report(), quiet.report()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

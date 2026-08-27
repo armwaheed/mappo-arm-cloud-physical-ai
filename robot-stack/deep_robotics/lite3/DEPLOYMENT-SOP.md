@@ -289,6 +289,21 @@ checks PASS.
 前进 `+32767`，偏航 `±16000`，侧移与倒退为 `null`；配置文件
 `lite3_axis_profile_LITE3-A.json`，6/6 项检查通过。
 
+**EN — and `measured_m_s` is no longer optional.** Run
+[`commissioning/axis_primitive_probe.py`](commissioning/axis_primitive_probe.py) and
+paste its numbers into the profile's `measured_m_s`. **A live run now REFUSES without
+them** for every enabled linear direction. The reason is not the envelope gate it was
+added for; it is that this transport's speed IS that number, so with the field absent
+nothing above the transport can say how fast the robot will go, and the planner refuses
+every command rather than guessing. See §8, "A crawl is not slow on this robot".
+
+**中文 —— 而且 `measured_m_s` 不再是可选项。** 运行
+[`commissioning/axis_primitive_probe.py`](commissioning/axis_primitive_probe.py)，
+把测得的数字填进配置文件的 `measured_m_s`。**实机运行现在会因为缺少它而直接拒绝**，
+凡是启用的直线方向都要有。原因不是当初加它时的包线闸门：这套传输的实际速度**就是**
+这个数字，字段缺失时，传输层以上没有任何环节能说出机器人会走多快，规划器只能拒绝
+每一条指令而不是去猜。见第 8 节"这台机器人没有'慢'这一档"。
+
 ---
 
 ## 4. Phase 2 — camera calibration and the goal profile
@@ -483,6 +498,72 @@ between runs.
 | calibration width-displacement FAIL at close range / 近距离标定报宽度位移 FAIL | Detector min-area morphology artifact, not a geometry change. / 检测器最小面积形态学伪影，不是几何变化。 | If stand-1 width is within a few percent and pitch fit is small (LITE3-A: +2.4%, −0.57°), accept and write `calibration_status=validated`. / 若站 1 宽度偏差在百分之几内且俯仰拟合很小（LITE3-A：+2.4%、−0.57°），接受并写入 `calibration_status=validated`。 |
 | battery falls faster than expected / 电量下降比预期快 | Live runs are short but draw hard: 50→28% across four runs on 2026-08-26. / 实机运行虽短但耗电大：2026-08-26 四次运行从 50% 掉到 28%。 | Start ≥ 40%, abort 20%, charge between sessions, cool between runs. / 开工 ≥ 40%、20% 中止、场次之间充电、运行之间散热。 |
 | SSH times out mid-session / SSH 中途超时 | Wired link or connector disturbed. / 有线链路或接头被动过。 | Check the cable and link first; recover any evidence still on the robot before further runs. / 先查网线和链路；继续跑之前先把还留在机器人上的证据取回。 |
+| `REFUSING TO WALK: ... these primitives do not declare one: forward_positive` | The axis profile has no `measured_m_s` for a direction the envelope enables. Since issue #145 this is a refusal rather than a warning: the speed the legs produce **is** that number. / 轴配置文件里，被包线启用的方向没有 `measured_m_s`。自 issue #145 起这是拒绝而不是警告：腿实际走多快**就等于**这个数字。 | Run `commissioning/axis_primitive_probe.py` and paste its `measured_m_s` into the profile. Do not type a plausible number. / 运行 `commissioning/axis_primitive_probe.py`，把测得的 `measured_m_s` 填进配置文件。不要凭感觉填一个"差不多"的数。 |
+| `THE TRANSPORT REFUSED THIS COMMAND — IT IS NOT THE ROOM AND NOT THE TETHER` | The planner wanted to creep and this robot has no creep: the command it could have issued would have left as the full-speed primitive, and that speed's own rollout ends inside the obstacle. Issue #145. / 规划器想慢慢挪，而这台机器人没有"慢"这一档：它本来能发出的指令，到腿上就是全速原语，而那个速度的推演会撞进障碍物。见 issue #145。 | **Raising or lowering a ceiling will not help** — `--max-vx` and `--derate` never reach the wire on this transport. Give it geometry instead: more lane, or a `--robot-radius` that matches the measured loaded body, or an approach that does not need a crawl. / **调高或调低上限都没用** —— 这套传输上 `--max-vx` 和 `--derate` 根本到不了线上。要给的是几何空间：更宽的通道、与实测负载外形一致的 `--robot-radius`、或者一条不需要慢挪的进近路线。 |
+| `THE EXECUTED YAW RATE IS NOT MEASURED` at pre-flight / 起飞前检查打印该行 | `measured_rad_s` is undeclared, which it is on every profile today: `axis_primitive_probe.py` deliberately does not time yaw while the unwrapped `Segment.yaw_change_deg` can report a turn through pi backwards. / `measured_rad_s` 没有填，目前所有配置文件都是这样：`axis_primitive_probe.py` 故意不测偏航，因为未解卷绕的 `Segment.yaw_change_deg` 在转过 pi 时会报反。 | Expected. The run continues; the robot will **turn in place, then walk**, rather than turning and stepping together, and the path will look squarer than a Go2's. Not a fault. / 属于预期。运行会继续；机器人会**先原地转、再直行**，而不是边转边走，路径看起来会比 Go2 更"方"。不是故障。 |
+
+### A crawl is not slow on this robot
+### 这台机器人没有"慢"这一档
+
+**EN** — `--gait-floor` is one number and it reads like the bottom of a range. On the
+simple-axis transport there is no range. The mapping is **sign-only**: past
+`input_deadband.linear_m_s` one evidenced raw value goes out at full scale, whatever
+speed was asked for. So the **executable forward set is two values — `{0, the
+primitive's measured speed}`** — and `input_deadband.linear_m_s` is not a small-command
+filter, it is *the commanded magnitude at which a full-speed primitive fires*. Measured
+against the shipped example profile (deadband 0.05 m/s, forward primitive 0.30 m/s):
+
+| planner asks | robot walks at |
+| ---: | --- |
+| 0.049 m/s | 0.00 m/s |
+| 0.050 m/s | **0.30 m/s** |
+| 0.100 m/s | 0.30 m/s |
+| 0.550 m/s | 0.30 m/s |
+
+Three consequences to plan the demo around, all of them issue #145:
+
+1. **The robot commits `primitive speed x planner horizon` every time it steps.** At
+   0.30 m/s and the default 2.5 s that is **0.75 m**. It has to decide to go, or not,
+   that far out — where a Go2 would slow down and keep its options open. It will hold
+   earlier and further from an obstacle than a Go2 does, and that is correct rather than
+   over-cautious.
+2. **`--max-vx` and `--derate` do not reach the wire.** They are enforced at pre-flight,
+   against the profile's `measured_m_s`, and nowhere else. Changing them cannot make a
+   refused approach work.
+3. **Yaw has the same cliff**, at `input_deadband.yaw_rad_s`, and nobody has measured
+   the rate it fires at. Until somebody does, the planner will not turn and step at the
+   same time — see the last troubleshooting row.
+
+⚠️ **No Lite3 has run any of this.** The behaviour above is read off the transport's own
+code and a probe of it; the numbers a real robot produces depend on its own
+`measured_m_s`. Report what you see to issue #145.
+
+**中文** —— `--gait-floor` 只是一个数字，看起来像是某个区间的下限。在简易轴传输上
+**根本没有区间**。这个映射是**只取符号**的：一旦超过 `input_deadband.linear_m_s`，
+就按满量程发出那一个有证据的原始轴值，跟你请求多少速度无关。也就是说，
+**可执行的前进速度集合只有两个值 —— `{0, 该原语实测的速度}`**，而
+`input_deadband.linear_m_s` 不是"小指令过滤阈值"，它是*让全速原语开始发射的那个指令幅值*。
+按随附示例配置（死区 0.05 m/s、前进原语 0.30 m/s）实测：
+
+| 规划器请求 | 机器人实际速度 |
+| ---: | --- |
+| 0.049 m/s | 0.00 m/s |
+| 0.050 m/s | **0.30 m/s** |
+| 0.100 m/s | 0.30 m/s |
+| 0.550 m/s | 0.30 m/s |
+
+由此有三条必须写进演示方案的结论，都是 issue #145：
+
+1. **机器人每迈一步就承诺了"原语速度 x 规划器预测时域"的距离。** 0.30 m/s 配默认的
+   2.5 s 就是 **0.75 m**。它必须在这么远的地方就决定走还是不走 —— 而 Go2 在同样位置
+   可以减速、把选择留到后面。它会比 Go2 更早、离障碍更远就停住，这是正确行为，不是过度保守。
+2. **`--max-vx` 和 `--derate` 到不了线上。** 它们只在起飞前检查里、对着配置文件的
+   `measured_m_s` 生效，别处都不生效。改这两个值救不回一条被拒绝的进近路线。
+3. **偏航有同样的悬崖**，阈值是 `input_deadband.yaw_rad_s`，而且没有人测过它发射时的
+   角速度。在测出来之前，规划器不会边转边走 —— 见故障排查表最后一行。
+
+⚠️ **还没有任何 Lite3 跑过上述任何一条。** 以上行为是从传输层代码本身和对它的探针读出来的；
+真实机器人的数字取决于它自己的 `measured_m_s`。把你看到的结果回报到 issue #145。
 
 **EN** — A refusal is a result, not a failure. If a refusal blocks you and neither this
 table nor the RUNBOOK catalogue resolves it, stop and write it into issue #13 with the

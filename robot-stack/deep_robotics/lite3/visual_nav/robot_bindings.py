@@ -16,8 +16,10 @@ from deep_robotics.lite3.locomotion.lite3_axis_locomotion import (
     AXIS_RATE_HZ,
     COMMAND_TTL_S,
     HEARTBEAT_HZ,
+    YAW_PRIMITIVES,
     AxisProfile,
     AxisProfileError,
+    SignOnlyAxisTransport,
     axis_locomotion_factory,
 )
 from deep_robotics.lite3.locomotion.lite3_axis_udp import DEFAULT_LOCAL_PORT
@@ -510,13 +512,52 @@ class Lite3Bindings:
                 "[lite3] REFUSING TO WALK: the axis mapping is sign-only, so --derate "
                 "cannot scale these primitives down to the envelope: " + "; ".join(over)
             )
+        linear = [name for name in unmeasured if name not in YAW_PRIMITIVES]
+        if linear:
+            # WAS A WARNING UNTIL ISSUE #145, and the warning was the whole gap. An
+            # undeclared linear speed used to mean only that the ENVELOPE ceiling went
+            # unchecked, which is a comparison nobody may have wanted. It now also means
+            # the planner cannot roll out what the legs will do, because the number it
+            # would roll out is the one the transport discards. Every candidate is then
+            # unnameable, every candidate is refused, and the robot holds for the whole
+            # run while its log says "hold" — a refusal in the operator's face before a
+            # leg moves is strictly better than the same refusal discovered as a robot
+            # that will not walk.
+            raise SystemExit(
+                "[lite3] REFUSING TO WALK: the axis mapping is sign-only, so the speed "
+                "the legs produce is the primitive's measured speed and nothing else, "
+                "and these primitives do not declare one: " + ", ".join(linear)
+                + ". Without it --max-vx has nothing to gate and the planner has "
+                "nothing to roll out, so a 0.05 m/s command would go out as a "
+                "full-speed walk that no feasibility check has seen. Run "
+                "commissioning/axis_primitive_probe.py and paste its measured_m_s into "
+                "the profile."
+            )
         if unmeasured:
-            print("[lite3] AXIS SPEEDS ARE NOT VERIFIED AGAINST THE ENVELOPE: "
+            # Yaw only, and it is not refused. `axis_primitive_probe.py` DELIBERATELY
+            # does not time yaw — issue #13 has the angular-velocity unit unconfirmed and
+            # `Segment.yaw_change_deg` can report a turn through pi backwards — so every
+            # profile in this repository reaches here, and refusing would leave a robot
+            # that cannot turn at all. What it costs is stated rather than hidden: the
+            # planner will not combine a turn with a step, because a rollout that
+            # translates on an unknown arc ends somewhere nobody can name. A pure turn
+            # is a rollout that stays at one point, so those still run.
+            print("!" * 78)
+            print("[lite3] ⚠️  THE EXECUTED YAW RATE IS NOT MEASURED: "
                   + ", ".join(unmeasured))
-            print("[lite3]   the axis mapping is sign-only, so --derate and --max-vx do "
-                  "not reach the wire.")
-            print("[lite3]   Add measured_m_s/measured_rad_s to the profile once these "
-                  "primitives are timed.")
+            print("[lite3]   The axis mapping is sign-only on yaw too, and with the same "
+                  "cliff: past")
+            print("[lite3]   input_deadband.yaw_rad_s the yaw primitive fires at whatever "
+                  "rate it produces,")
+            print("[lite3]   so --max-wz never reaches the wire. It is the same defect as "
+                  "issue #145's")
+            print("[lite3]   linear half, one axis along, and it cannot be fixed here "
+                  "because nothing has")
+            print("[lite3]   timed it. UNTIL IT IS, THE PLANNER WILL NOT TURN AND STEP AT "
+                  "THE SAME TIME:")
+            print("[lite3]   it turns in place, then walks. Expect a squarer path than a "
+                  "Go2's.")
+            print("!" * 78)
 
     def preflight_calibration(self, args, health) -> None:
         if not args.spin:
@@ -608,6 +649,41 @@ class Lite3Bindings:
     @staticmethod
     def gait_floor(args) -> float | None:
         return args.gait_floor
+
+    def transport_model(self, args):
+        """What the planner must know about this robot's legs. Issue #145.
+
+        ⚠️ **A LITE3 ON THE SIMPLE-AXIS TRANSPORT IS NOT A ROBOT THE SHARED PLANNER'S
+        ROLLOUTS DESCRIBE, AND UNTIL NOW NOTHING SAID SO.** ``AxisProfile.map_velocity``
+        is sign-only: past ``input_deadband.linear_m_s`` one evidenced raw value goes out
+        whatever was asked for, so the executable forward set is ``{0, the primitive's
+        measured speed}`` — two values, not a range. Every velocity the planner sampled
+        was rolled forward at the magnitude it typed, and the legs got the primitive.
+        Measured against the shipped example profile: 0.049 m/s emits nothing, and 0.050,
+        0.10, 0.20, 0.34 and 0.55 m/s are the same bytes and the same 0.30 m/s of walking.
+
+        The UDP transport is the vendor's complex-velocity sender and does carry a
+        magnitude, so it answers ``PROPORTIONAL`` and the planner behaves as it always
+        has. A run with no profile answers the same, and that is not an assumption being
+        made quietly: the axis transport refuses to send anything at all without one
+        (``Lite3AxisLocomotion.set_velocity``), so there is no configuration in which a
+        profile is absent and axis commands still reach a leg.
+
+        Imported inside the method for the reason ``_go2_envelope`` gives: every caller
+        puts the shared navigator on ``sys.path`` before importing this file, so a
+        top-level import would work and would also be an import-order dependency
+        ``ruff --fix`` is documented in ``AGENTS.md`` to break by hoisting.
+        """
+        from avoidance import PROPORTIONAL
+
+        if getattr(args, "locomotion_transport", "udp") != "axis":
+            return PROPORTIONAL
+        profile = self._axis_profile
+        if profile is None and args.axis_profile is not None:
+            profile = self._load_axis_profile(args)
+        if profile is None:
+            return PROPORTIONAL
+        return SignOnlyAxisTransport(profile)
 
     def robot_radius(self, args, default: float) -> float:
         return default if args.robot_radius is None else args.robot_radius
