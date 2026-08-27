@@ -1,0 +1,19 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint settings for the whitepaper's figure generators. Same selection and line length as
+# evidence/2026-08-27-one-robot-four-detectors/ruff.toml, which is the precedent.
+#
+#   cd docs/figures && ruff check .
+#
+# AGENTS.md records eight directories that no ruff.toml covers and says CI fails if a
+# ninth appears. This file is why this directory is not the ninth.
+#
+# NO per-file-ignores. Nothing here does a `sys.path.insert`: the generators read
+# committed JSON, or vendor meshes from a checkout named on the command line, and import
+# nothing from this repository. An E402 exemption would be a rule that can never fire.
+line-length = 100
+target-version = "py38"
+
+[lint]
+select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
