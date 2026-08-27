@@ -3,17 +3,74 @@ Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
 SPDX-License-Identifier: Apache-2.0
 -->
 
-# Prompt: commission a Lite3 Venture / 提示词：Lite3 Venture 标定
+# Lite3 commissioning — start here / Lite3 标定 —— 从这里开始
 
-**EN** — Paste the block below into your coding agent (VS Code Copilot, Codex, Claude Code…).
-It drives `commissioning/commission.py` through its four stages and stops at each gate.
-
-**中文** —— 把下面整段粘贴给你的编程助手。它会驱动 `commissioning/commission.py`
-走完四个阶段，并在每个关卡停下等你确认。
-
-**Read first / 请先阅读**: [`LIVE-RUN-RUNBOOK.md`](LIVE-RUN-RUNBOOK.md) §0.
+**For: Timo Tang and the Arm Shanghai team. / 致：唐天目与 Arm 上海团队。**
 
 ---
+
+## 1. Why this page exists / 本页的目的
+
+**EN** — The Lite3 avoidance work is merged (PR #150, rebased and green). **One thing blocks
+it on hardware, and it is yours to unblock**: `axis_primitive_probe.py` has never run on a
+Lite3. Without `measured_m_s` a live axis run **refuses**. So
+`--execution-supervisor turn-drive` is not "unverified" — it is **unreachable** until those
+numbers exist. Everything else waits on them.
+
+**中文** —— Lite3 避障功能已合入（PR #150，已 rebase 且 CI 通过）。**目前只有一件事阻塞实机运行，
+需要你来解除**：`axis_primitive_probe.py` 从未在 Lite3 上运行过。没有 `measured_m_s`，
+实机 axis 运行会被**直接拒绝**。因此 `--execution-supervisor turn-drive` 不是"未验证"，
+而是**根本无法到达**。其他工作都在等这几个数。
+
+## 2. You do not need to type nine flags by hand / 不需要手动输入九个参数
+
+**`commissioning/commission.py` measures them all and prints them.** Start with the command
+below — **it moves nothing** and tells you exactly what is missing:
+
+```bash
+cd robot-stack/deep_robotics/lite3/commissioning
+python3 commission.py --record <artefact>.json --emit-flags
+```
+
+On an incomplete record it refuses and names the gaps. Cheapest step in the sequence.
+该命令不会让机器人移动，会直接列出缺失项。
+
+## 3. What is NOT ready / 尚未就绪的部分
+
+**The detector retraining from your videos recommended nothing.** At 224 px — the size
+`deploy/run-peer-supervised.sh` actually launches — no checkpoint both detects a Lite3 and
+keeps its people. Every augmentation step traded one for the other (21 → 7 → 1 people
+retained). **Keep using the shipped detector.** Full working:
+[`evidence/2026-08-27-lite3-training-set/`](../../../evidence/2026-08-27-lite3-training-set/)
+
+**中文** —— 基于你视频的检测器再训练**没有产出可推荐的模型**：在生产实际使用的 224 px 下，
+没有任何检查点能同时检测到 Lite3 又不丢失人的检测。**请继续使用现有检测器。**
+
+## 4. Your recordings, and one thing that would improve them / 关于你的录像
+
+**They were excellent** — raw pixels, six scenes across subject and lighting, telemetry
+attached, and `--record-raw` used correctly. That is exactly what was needed, and it is a
+large step up from the earlier clip.
+
+**One improvement**: all six are **tripod shots** — 0.0–1.0 px median camera displacement.
+The *subject* varies in distance and angle; the *camera* never moves. So 5,854 frames
+contain **456 distinct views**. Moving the camera between takes would multiply that at no
+extra cost in time.
+
+**中文** —— 录像质量很好：原始像素、六个场景涵盖不同对象与光照、附带遥测，且正确使用了
+`--record-raw`。**一点改进建议**：六段都是三脚架固定拍摄，主体在变、相机不动，
+因此 5,854 帧只包含 **456 个不同视角**。在拍摄之间移动相机可以成倍增加视角数量，且不增加时间成本。
+
+## 5. One small ask / 一个小请求
+
+If the telemetry `.jsonl` for the earlier 60-second clip
+(`lite3-pov-20260827T024720Z-60s.mp4`) is still on the robot, please send it — it may let us
+label frames we already hold, without you recording anything.
+如果那段 60 秒视频对应的遥测 `.jsonl` 还在机器人上，请一并发送。
+
+---
+
+## 6. The prompt — paste this into your coding agent / 提示词：粘贴给你的编程助手
 
 ```text
 You are commissioning a Deep Robotics Lite3 Venture so that a live MAPPO run can start.
@@ -81,20 +138,15 @@ ALSO WANTED, and it is a real open question rather than a checkbox:
 
 ---
 
-## What this unlocks / 这一步解锁了什么
+## 7. If something refuses / 如果被拒绝
 
-**EN** — `--execution-supervisor turn-drive`, the avoidance path merged in PR #150, **cannot
-be exercised on hardware at all** until `measured_m_s` exists. Not "unverified" — unreachable.
-Everything else waits on these four numbers.
+Every refusal on this path is documented, with what it means and what to do:
+[`LIVE-RUN-RUNBOOK.md`](LIVE-RUN-RUNBOOK.md) — the decoder is §2.
 
-**中文** —— PR #150 合入的避障路径 `--execution-supervisor turn-drive` 在拿到 `measured_m_s`
-之前**根本无法在实机上运行**（不是"未验证"，而是无法到达）。其余工作都在等这几个测量值。
+Two that do **not** look like refusals, and cost the most time:
+- **exits in ~3 s with no banner, rc 139** → `Segmentation fault`; the SDK env was not sourced.
+- **`TOP SPEED … IS BELOW … GAIT FLOOR`** → a **warning**, not a refusal. The run continues
+  and the robot may simply not move, reporting no fault.
 
-## What is NOT ready / 尚未就绪
-
-The Lite3 detector retraining finished and **recommended nothing**. At 224 px — the size the
-peer launcher actually uses — no checkpoint both detects a Lite3 and keeps its people; every
-augmentation step traded one for the other. Keep using the shipped detector.
-See [`evidence/2026-08-27-lite3-training-set/`](../../../evidence/2026-08-27-lite3-training-set/).
-
-Lite3 检测器再训练已完成，但**没有可推荐的模型**。请继续使用现有检测器。
+两种最耗时的情况：约 3 秒无横幅退出（rc 139，未 source SDK 环境）；
+以及低于步态下限的**警告**（不是拒绝，机器人可能原地不动且不报错）。
