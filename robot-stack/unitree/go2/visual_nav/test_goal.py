@@ -19,9 +19,11 @@ Run: ``python3 test_goal.py``
 """
 from __future__ import annotations
 
+import json
 import math
 import os
 import sys
+from pathlib import Path
 
 import numpy as np
 
@@ -375,6 +377,115 @@ def test_the_crop_only_ever_widens_never_narrows():
         goal._goal = (distance, 0.0)
         assert goal._crop_for((0.0, 0.0, 0.0), HEIGHT) >= 0.85
 
+
+# ── the range scale, against a recorded run ─────────────────────────────────
+#: Both live runs of `evidence/2026-08-25-peer-runs/` drove at a printed ArUco marker,
+#: and a printed marker's size is known BY MANUFACTURE — so the range the stack computed
+#: for it carries no unaudited prior. `ArucoGoal` latches
+#: `pose + range*(cos, sin)(yaw + bearing)` on each sighting and the telemetry writes the
+#: latched pair, so every raw fix is recoverable from the committed files.
+_RUNS = Path(os.path.abspath(__file__)).parents[4] / "evidence" / "2026-08-25-peer-runs"
+
+
+def _marker_scale(name: str) -> tuple:
+    """``(k, residual_rms_m, n)`` for one recorded run.
+
+    Reported range is ``k`` times the true one exactly when
+    ``pose_i + (range_i / k) * bearing_i = P`` holds for a fixed ``P``, which is a
+    three-parameter linear least squares in ``(P_x, P_y, 1/k)``. Written out here rather
+    than imported from `evidence/` so the assertion below does not depend on a directory
+    nothing else in the tree imports from.
+    """
+    fixes, previous = [], None
+    with open(_RUNS / f"{name}-run-telemetry.jsonl", encoding="utf-8") as handle:
+        for line in handle:
+            tick = json.loads(line)
+            if tick.get("type") != "tick" or not tick.get("goal"):
+                continue
+            latched = (tick["goal"]["x"], tick["goal"]["y"])
+            if latched == previous:
+                continue
+            previous = latched
+            pose = tick["pose"]
+            offset = (latched[0] - pose["x"], latched[1] - pose["y"])
+            fixes.append((pose["x"], pose["y"], math.hypot(*offset),
+                          math.atan2(offset[1], offset[0])))
+    design, target = [], []
+    for px, py, range_m, bearing in fixes:
+        design.append([1.0, 0.0, -range_m * math.cos(bearing)])
+        target.append(px)
+        design.append([0.0, 1.0, -range_m * math.sin(bearing)])
+        target.append(py)
+    solution, *_ = np.linalg.lstsq(np.array(design), np.array(target), rcond=None)
+    residual = np.array(design) @ solution - np.array(target)
+    rms = float(np.sqrt((residual ** 2).reshape(-1, 2).sum(axis=1).mean()))
+    return 1.0 / float(solution[2]), rms, len(fixes)
+
+
+def test_the_recorded_marker_ranges_agree_with_the_odometry_at_unit_scale():
+    """Issue #35 in one assertion: the range scale is not off by 20-30% in either
+    direction.
+
+    ⚠️ WHAT WOULD MAKE THIS FAIL, stated because it is narrower than it looks. It is a
+    REGRESSION PIN on two committed recordings, so a change to `focal_px` today does not
+    move it — the recordings were written with the focal length of the day. What it does
+    catch is a change to this fit, and what it is FOR is that the number is now written
+    down somewhere a future recalibration has to be re-checked against: re-run
+    `evidence/2026-08-26-range-scale-audit/scale_audit.py` on a NEW recording and this is
+    the value it has to reproduce.
+
+    ⚠️ AND IT IS A RATIO. k = 1.0 says the camera scale and the leg odometry agree, not
+    that either is separately right. A tape is still the only thing that excludes both
+    being wrong by the same factor.
+    """
+    for name, expected in (("hero", 1.092), ("contrast", 1.020)):
+        scale, rms, n = _marker_scale(name)
+        assert n > 40, (name, n)
+        assert abs(scale - expected) < 0.002, (name, scale, expected)
+        assert rms < 0.06, (name, rms)
+        # The claims under test on #35 — "the map reads 25% LONG" from landmark drift and
+        # "the map reads 24% SHORT" from the operator — predict 1.25 and 0.81.
+        assert 0.90 < scale < 1.15, (name, scale)
+
+
+def test_the_marker_fit_is_not_reproducing_odometry_by_construction():
+    """Ask what would make the fit report 1.0 when it should not.
+
+    It cannot come from the geometry: scaling every recorded range by a known factor has
+    to move ``k`` by exactly that factor, or the estimator is reading the odometry back
+    to itself rather than measuring anything. This is the check that the 30-of-35
+    landmark-drift argument on #35 could not make, and it is why that argument was
+    confounded — a Kalman filter converging toward the robot produces the same signature
+    with no scale error at all.
+    """
+    fixes, previous = [], None
+    with open(_RUNS / "hero-run-telemetry.jsonl", encoding="utf-8") as handle:
+        for line in handle:
+            tick = json.loads(line)
+            if tick.get("type") != "tick" or not tick.get("goal"):
+                continue
+            latched = (tick["goal"]["x"], tick["goal"]["y"])
+            if latched == previous:
+                continue
+            previous = latched
+            fixes.append((tick["pose"], latched))
+
+    def scale_with(factor: float) -> float:
+        design, target = [], []
+        for pose, latched in fixes:
+            offset = (latched[0] - pose["x"], latched[1] - pose["y"])
+            range_m = math.hypot(*offset) * factor
+            bearing = math.atan2(offset[1], offset[0])
+            design.append([1.0, 0.0, -range_m * math.cos(bearing)])
+            target.append(pose["x"])
+            design.append([0.0, 1.0, -range_m * math.sin(bearing)])
+            target.append(pose["y"])
+        solution, *_ = np.linalg.lstsq(np.array(design), np.array(target), rcond=None)
+        return 1.0 / float(solution[2])
+
+    base = scale_with(1.0)
+    for factor in (0.75, 1.25):
+        assert abs(scale_with(factor) - base * factor) < 1e-6, factor
 
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

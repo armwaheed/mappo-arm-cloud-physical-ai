@@ -291,6 +291,18 @@ lens — focal 1290.2 px, HFOV 85.27°. Every distance in the system is proporti
 The Lite3 wrapper uses the same spin fit against pose yaw and tags the resulting JSON with
 the platform name. A live Lite3 run refuses a Go2, missing, or malformed calibration file.
 
+**On this unit that scale is now measured, and it is 1.0.** Issue
+[#35](https://github.com/armwaheed/mappo-arm-cloud-physical-ai/issues/35) held four
+estimates of the same bin that disagreed by ±25%, and the range scale had never been
+validated end to end. Fitting the range of a **printed 10 cm ArUco marker** — a size known
+by manufacture — against the robot's own odometry over 2.2–2.6 m of closing gives
+**k = 1.09 and 1.02** across the two runs of `evidence/2026-08-25-peer-runs/`, 4–5 cm
+residual on 43 and 52 fixes. Neither *"the map reads 25% long"* (k ≈ 1.25) nor *"the map
+reads 24% short"* (k ≈ 0.81) survives that, so **the metres quoted below are quoted at a
+scale that measures 1.0 and need no correction.** ⚠️ k is a *ratio* of the camera scale to
+the odometry scale; a tape is still the only thing that excludes both being wrong by the
+same factor. [`evidence/2026-08-26-range-scale-audit/`](evidence/2026-08-26-range-scale-audit/)
+
 **No arm is a simplification, not a bypass.** The D1 costs the Go2 stack a great deal — it is
 why the robot rests prone between moves, why the envelope is derated to 0.35 m/s, and why
 a run can be refused outright (the arm creeps a few degrees off the dorsal line each run
