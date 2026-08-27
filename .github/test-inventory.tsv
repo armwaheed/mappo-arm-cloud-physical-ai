@@ -11,7 +11,7 @@
 # number to make CI pass; the number is the measurement.
 #
 # There is no total line on purpose: a total is a line every test-adding change collides on.
-dashboard	129
+dashboard	148
 detector/labels	50
 detector/labels/pipeline	14
 integration	241
