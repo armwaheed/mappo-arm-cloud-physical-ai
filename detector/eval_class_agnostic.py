@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -55,9 +56,15 @@ import numpy as np
 
 from add_class import VOC_CLASSES
 
-#: Square network input and the preprocessing baked into the published weights.
-INPUT_SIZE = 300
-SSD_SCALE, SSD_MEAN = 1.0 / 127.5, 127.5
+# The detector's preprocessing is NOT declared in this file. It comes from
+# robot-stack/unitree/go2/visual_nav/inference_profile.py, which is the same object
+# deploy/run-peer-supervised.sh takes the robot's own --input-size and --confidence from.
+# See issue #129: this module used to hold `INPUT_SIZE = 300` while every peer run
+# executed at 224, and a 94-checkpoint sweep was ranked against the difference.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "robot-stack" / "unitree"
+                       / "go2" / "visual_nav"))
+import inference_profile
+from inference_profile import PreprocessingMismatch
 
 #: 0.15 is below the prototxt's own floor and must print the same row as 0.25. If it ever
 #: does not, the prototxt in ``--model-dir`` is not the one the robot loads.
@@ -80,10 +87,11 @@ def iou(box: np.ndarray, other: np.ndarray) -> float:
     return overlap / union if union > 0 else 0.0
 
 
-def detections(net, image: np.ndarray) -> list[tuple[str, float, np.ndarray]]:
+def detections(net, image: np.ndarray, profile) -> list[tuple[str, float, np.ndarray]]:
     """``(label, score, box)`` for every class, in the image's own pixel coordinates."""
     height, width = image.shape[:2]
-    net.setInput(cv2.dnn.blobFromImage(image, SSD_SCALE, (INPUT_SIZE, INPUT_SIZE), SSD_MEAN))
+    net.setInput(cv2.dnn.blobFromImage(image, profile.scale, profile.blob_size,
+                                       profile.mean, swapRB=profile.swap_rb))
     out = []
     for row in net.forward()[0, 0]:
         class_id = int(row[1])
@@ -105,7 +113,7 @@ def load_frames(labels: Path, frames_dir: Path) -> tuple[list, list]:
             [(frames_dir / n, []) for n in images if n not in boxes])
 
 
-def score(net, frames: list) -> list:
+def score(net, frames: list, profile) -> list:
     """Every detection on every frame, once, so the thresholds are a sweep and not N passes."""
     out = []
     for path, truth in frames:
@@ -113,7 +121,7 @@ def score(net, frames: list) -> list:
         if image is None:
             print(f"  unreadable, skipped: {path.name}")
             continue
-        out.append((detections(net, image), truth))
+        out.append((detections(net, image, profile), truth))
     return out
 
 
@@ -126,7 +134,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--frames-dir", type=Path, required=True,
                         help="the JPEGs the manifest names; peer-free frames are the rest")
     parser.add_argument("--iou", type=float, default=LANDS_ON_IOU)
+    inference_profile.add_arguments(parser)
     args = parser.parse_args(argv)
+
+    try:
+        profile, reason = inference_profile.resolve(args)
+    except PreprocessingMismatch as refusal:
+        parser.exit(2, f"\nREFUSED\n{refusal}\n\n")
+    print(f"preprocessing: {profile.name} — {profile.input_size} px, confidence "
+          f"{profile.confidence}, scale 1/{1.0 / profile.scale:.1f}, mean {profile.mean}"
+          + ("" if profile.is_deployed else f"\n  RUN BY NO LAUNCHER: {reason}"))
 
     proto = args.model_dir / "MobileNetSSD_deploy.prototxt"
     weights = args.model_dir / "MobileNetSSD_deploy.caffemodel"
@@ -138,7 +155,8 @@ def main(argv: list[str] | None = None) -> int:
     positives, negatives = load_frames(args.labels, args.frames_dir)
     print(f"{len(positives) + len(negatives)} frames: {len(positives)} with a labelled "
           f"peer, {len(negatives)} peer-free")
-    peer_frames, clean_frames = score(net, positives), score(net, negatives)
+    peer_frames = score(net, positives, profile)
+    clean_frames = score(net, negatives, profile)
 
     print(f"\n{'conf':<6} {'box ON the peer':<22} {'anything fired':<22} "
           f"peer-free frames firing")

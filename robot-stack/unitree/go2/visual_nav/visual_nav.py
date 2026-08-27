@@ -1461,6 +1461,34 @@ def warn_if_below_gait_floor(max_vx: float) -> bool:
     return warn_if_below_go2_gait_floor(max_vx)
 
 
+def _preprocessing_record(args) -> dict:
+    """What this run will actually compute, and which declared configuration that is.
+
+    Read off the parsed arguments rather than restated, so it cannot describe a run other
+    than this one. Kept next to nothing: the profile registry lives in
+    ``inference_profile`` and is imported lazily because that module is also imported by
+    the ``detector/`` scorers and by tests on machines with no ``cv2``.
+    """
+    import inference_profile
+
+    match = inference_profile.matching_profile(args.input_size, args.confidence,
+                                               args.classes)
+    goal_match = inference_profile.matching_profile(args.goal_input_size, args.confidence,
+                                                    args.classes)
+    return {
+        "input_size": args.input_size,
+        "confidence": args.confidence,
+        "scale": inference_profile.GO2_PEER_SUPERVISED.scale,
+        "mean": inference_profile.GO2_PEER_SUPERVISED.mean,
+        "swap_rb": inference_profile.GO2_PEER_SUPERVISED.swap_rb,
+        "classes": list(args.classes),
+        "profile": None if match is None else match.name,
+        "deployments": [] if match is None else list(match.deployments),
+        "goal": {"input_size": args.goal_input_size, "crop": args.goal_crop,
+                 "profile": None if goal_match is None else goal_match.name},
+    }
+
+
 def build_parser(bindings=None) -> argparse.ArgumentParser:
     """The CLI, separated from ``main`` so it can be exercised without a robot.
 
@@ -1873,6 +1901,28 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                 "goal": goal_source.description,
                 "classes": list(args.classes),
                 "confidence": args.confidence,
+                # THE RESOLVED PREPROCESSING, BESIDE THE CONFIDENCE THAT WAS ALREADY
+                # HERE — AND THIS IS THE HALF OF #129 THAT MATTERS MOST.
+                #
+                # This robot runs THREE different detectors depending on which script
+                # starts it: 224 px at 0.25 under deploy/run-peer-supervised.sh, 300 px
+                # at 0.45 under run-smoke/berth/chair, 300 px at 0.4 under a bare
+                # visual_nav.py. Until now a run's own record named the confidence and
+                # the class list and nothing about the square, so two runs launched by
+                # different scripts produced numbers that looked comparable and were not.
+                # `evidence/2026-08-27-89-runs-survived-14-can-be-dated` had to establish
+                # what 89 recorded runs computed by reading the launchers, because the
+                # logs could not say. That is the gap this closes.
+                #
+                # `profile` is the declared configuration this matches, or null. Null is
+                # a real answer and is deliberately not rounded to the nearest name: an
+                # operator can pass --input-size 256 and get something nothing here has
+                # ever measured, and the record should say so.
+                #
+                # The goal detector is reported separately because it deliberately runs
+                # its own square on a half crop (`goal.DEFAULT_GOAL_INPUT_SIZE`), and a
+                # reader given one number cannot tell which detector produced a box.
+                "preprocessing": _preprocessing_record(args),
                 "static_prop": (
                     static_profile_used.label if static_profile_used is not None else None
                 ),

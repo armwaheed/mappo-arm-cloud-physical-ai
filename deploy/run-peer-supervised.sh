@@ -64,6 +64,55 @@ SECS="${SECS:-40}"
 # shellcheck disable=SC1091
 source "${TREE}/robot-stack/unitree/go2/install/setup_env.sh"
 export PYTHONPATH=/home/unitree/deps:/home/unitree/unitree_sdk2_python
+
+# ─────────────────────────────────────────────────────────────────────────────
+# THE DETECTOR PREPROCESSING IS NOT WRITTEN DOWN HERE ANY MORE, AND THAT IS THE FIX.
+#
+# THIS ROBOT RUNS THREE DIFFERENT DETECTORS DEPENDING ON WHICH SCRIPT STARTS IT:
+#
+#   this script                        --input-size 224   --confidence 0.25
+#   run-smoke / run-berth / run-chair    (no flag) -> 300   --confidence 0.45
+#   a bare visual_nav.py                 (default) -> 300              0.4
+#
+# Nothing reconciled those, and no run recorded which one produced it, so a number
+# carried between two runs launched by different scripts was silently comparing two
+# detectors. The checkpoint sweep then managed to score through a FOURTH configuration
+# that no launcher runs at all -- 300 px from a scorer constant, 0.25 from THIS script's
+# floor -- and ranked 94 checkpoints on it. Issue #129.
+#
+# So every configuration lives in ONE importable object now, each naming the launcher
+# that produces it, and this script asks for its own. The same object is what
+# `detector/score_crossday.py` scores through; that script has no default and REFUSES a
+# configuration no launcher runs unless given a reason it then records. There is no
+# longer a copy here that could drift.
+#
+# The other three launchers are on the robot, not in this repository, so nothing here
+# can make them ask. They are declared in inference_profile.py by hand and checked
+# against `dashboard/run-profile.example.json`, which is the one copy of run-smoke.sh's
+# invocation this repository holds.
+#
+# ⚠️ Changing the profile changes what the robot does, and needs a live run to justify.
+# See the warning on `GO2_PEER_SUPERVISED` in inference_profile.py for what 224 is
+# measured to cost and to buy; the axis is non-monotonic and neither result generalises.
+INFERENCE_ARGV="$(python3 \
+    "${TREE}/robot-stack/unitree/go2/visual_nav/inference_profile.py" \
+    --argv go2-peer-supervised)"
+INFERENCE=()
+while IFS= read -r flag; do INFERENCE+=("${flag}"); done <<< "${INFERENCE_ARGV}"
+# `set -e` already aborts on a failed command substitution above. This catches the other
+# half: a profile that parsed, emitted, and left out a flag this script is responsible for
+# passing -- which would silently fall back to `visual_nav.py`'s own default of 300, i.e.
+# straight back into #129. Each flag is checked on its own so the check does not also
+# depend on the order they come out in.
+for required in --input-size --confidence --classes; do
+  case " ${INFERENCE[*]} " in
+    *" ${required} "*) ;;
+    *) echo "inference_profile.py emitted no ${required}: ${INFERENCE_ARGV}" >&2
+       exit 3 ;;
+  esac
+done
+printf 'detector preprocessing:'; printf ' %s' "${INFERENCE[@]}"; printf '\n'
+
 cd "${TREE}/integration"
 
 COMMON=(
@@ -76,17 +125,13 @@ COMMON=(
   # Full resolution for the marker. At the default 0.5 a 105 mm marker stops locking
   # past ~3.0 m, which aborted two runs as "goal never sighted".
   --goal-detect-scale 1.0
-  # 224 rather than 300: measured 12/12 detections of this peer against 2/12 at 300,
-  # and faster. Non-monotonic in input size, which is a marginal-detection smell --
-  # do not read it as a rule.
-  --input-size 224
-  --classes aeroplane bicycle bird boat bottle bus car cat chair cow diningtable dog
-            horse motorbike person pottedplant sheep sofa train tvmonitor
+  # --input-size, --confidence and --classes, from inference_profile.py above. Not
+  # spelled out here: a literal in this file is a copy, and a copy is what broke.
+  "${INFERENCE[@]}"
   # The peer's own dimensions. Passing width explicitly matters: without it the width
   # prior comes from a standing adult's aspect ratio and a vertically clipped box ranges
   # the peer at 0.09-0.14 m, inside the robot's own footprint.
   --obstacle-height 0.514 --obstacle-width 0.31
-  --confidence 0.25
   --robot-radius 0.25 --obstacle-radius 0.20
   --no-latch-arm --arrive 0.30
   --policy-mode supervised          # THE VETO STAYS ON

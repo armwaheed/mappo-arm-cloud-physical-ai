@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from glob import glob
 from pathlib import Path
 
@@ -56,9 +57,15 @@ import numpy as np
 
 from add_class import VOC_CLASSES
 
-#: Square network input and the preprocessing baked into the weights.
-INPUT_SIZE = 300
-SSD_SCALE, SSD_MEAN = 1.0 / 127.5, 127.5
+# The detector's preprocessing is NOT declared in this file. It comes from
+# robot-stack/unitree/go2/visual_nav/inference_profile.py, which is the same object
+# deploy/run-peer-supervised.sh takes the robot's own --input-size and --confidence from.
+# See issue #129: this module used to hold `INPUT_SIZE = 300` while every peer run
+# executed at 224, and a 94-checkpoint sweep was ranked against the difference.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "robot-stack" / "unitree"
+                       / "go2" / "visual_nav"))
+import inference_profile
+from inference_profile import PreprocessingMismatch
 
 #: Thresholds the table reports. Nothing below 0.25 is reachable: the prototxt's
 #: ``detection_output_param`` carries ``confidence_threshold: 0.25``, so DetectionOutput has
@@ -97,10 +104,11 @@ def mask_overlay(image: np.ndarray) -> np.ndarray:
     return out
 
 
-def detections(net, image: np.ndarray) -> np.ndarray:
+def detections(net, image: np.ndarray, profile) -> np.ndarray:
     """``(label, score, xmin, ymin, xmax, ymax)`` rows in PIXELS, from DetectionOutput."""
     height, width = image.shape[:2]
-    net.setInput(cv2.dnn.blobFromImage(image, SSD_SCALE, (INPUT_SIZE, INPUT_SIZE), SSD_MEAN))
+    net.setInput(cv2.dnn.blobFromImage(image, profile.scale, profile.blob_size,
+                                       profile.mean, swapRB=profile.swap_rb))
     rows = net.forward()[0, 0]
     out = np.zeros((len(rows), 6), np.float32)
     out[:, 0] = rows[:, 1]
@@ -110,7 +118,7 @@ def detections(net, image: np.ndarray) -> np.ndarray:
 
 
 def score_model(proto: Path, model: Path, frames: list, new_class: int,
-                masked: bool) -> dict:
+                masked: bool, profile) -> dict:
     """Per-frame detections for the new class plus ``person``'s best score."""
     net = cv2.dnn.readNetFromCaffe(str(proto), str(model))
     person = VOC_CLASSES.index("person")
@@ -121,7 +129,7 @@ def score_model(proto: Path, model: Path, frames: list, new_class: int,
             raise FileNotFoundError(frame["image"])
         if masked:
             image = mask_overlay(image)
-        rows = detections(net, image)
+        rows = detections(net, image, profile)
         mine = rows[rows[:, 0] == new_class]
         results.append({
             "image": str(frame["image"]),
@@ -235,7 +243,16 @@ def main(argv: list | None = None) -> int:
     parser.add_argument("--reference", type=Path, default=None,
                         help="model to compare person scores against; see person_shift")
     parser.add_argument("--out", type=Path, default=None, help="write raw detections here")
+    inference_profile.add_arguments(parser)
     args = parser.parse_args(argv)
+
+    try:
+        profile, reason = inference_profile.resolve(args)
+    except PreprocessingMismatch as refusal:
+        parser.exit(2, f"\nREFUSED\n{refusal}\n\n")
+    print(f"preprocessing: {profile.name} — {profile.input_size} px, confidence "
+          f"{profile.confidence}, scale 1/{1.0 / profile.scale:.1f}, mean {profile.mean}"
+          + ("" if profile.is_deployed else f"\n  RUN BY NO LAUNCHER: {reason}"))
 
     manifest = json.loads(args.manifest.read_text())
     frames = [f for f in manifest["frames"]
@@ -251,7 +268,8 @@ def main(argv: list | None = None) -> int:
 
     ranking, dump = [], []
     for model in models:
-        scored = score_model(args.proto, model, frames, args.class_index, args.mask_overlay)
+        scored = score_model(args.proto, model, frames, args.class_index,
+                             args.mask_overlay, profile)
         rows = table(scored)
         dump.append({"model": str(model), "table": rows, "frames": scored["frames"]})
         pick = min(rows, key=lambda r: abs(r["threshold"] - args.select_threshold))
@@ -273,7 +291,7 @@ def main(argv: list | None = None) -> int:
           f"{np.mean(persons):.3f}")
     if args.reference:
         reference = score_model(args.proto, args.reference, frames, args.class_index,
-                                args.mask_overlay)
+                                args.mask_overlay, profile)
         best = next(e for e in dump if e["model"] == best_model)
         shift = person_shift(reference, {"frames": best["frames"]})
         print(f"person, on the {shift['frames']} frames the reference still detects one: "
@@ -281,7 +299,9 @@ def main(argv: list | None = None) -> int:
               f"worst drop {shift.get('worst_drop', 0):.3f}, "
               f"lost below {PERSON_FLOOR} on {shift.get('lost', 0)}")
     if args.out:
-        args.out.write_text(json.dumps(dump, indent=2))
+        args.out.write_text(json.dumps(
+            {"preprocessing": inference_profile.stamp(profile, reason), "models": dump},
+            indent=2))
     return 0
 
 

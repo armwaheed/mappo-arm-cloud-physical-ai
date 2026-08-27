@@ -34,17 +34,30 @@ reshaping that the loss does for itself.
 from __future__ import annotations
 
 import re
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 import torch
 from torch import nn
 
-#: Square network input, matching what the robot runs.
-INPUT_SIZE = 300
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "robot-stack" / "unitree"
+                       / "go2" / "visual_nav"))
+import inference_profile
+
+#: The square the weights this mirror loads were TRAINED at, from
+#: ``inference_profile.MOBILENET_SSD_TRAINED``. It used to read "matching what the robot
+#: runs", which names something that does not exist: the robot runs 300 under
+#: run-smoke/berth/chair and 224 under deploy/run-peer-supervised.sh (issue #129). The
+#: mirror's job is to reproduce cv2's output on the same input, so it must be given the same
+#: square as whatever it is checked against -- a parameter of the check, not a property of
+#: this file.
+INPUT_SIZE = inference_profile.MOBILENET_SSD_TRAINED.input_size
 
 #: Preprocessing baked into the published weights: ``(pixel - 127.5) / 127.5``.
-SSD_SCALE, SSD_MEAN = 1.0 / 127.5, 127.5
+SSD_SCALE = inference_profile.MOBILENET_SSD_TRAINED.scale
+SSD_MEAN = inference_profile.MOBILENET_SSD_TRAINED.mean
 
 #: Feature maps that feed the detection heads, in the order the heads are concatenated.
 #: Read off the prototxt rather than assumed; :func:`build` checks each one exists.
