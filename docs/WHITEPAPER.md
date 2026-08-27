@@ -113,6 +113,15 @@ own measured caveat inline, so the appendix deepens the argument rather than rev
                          (--telemetry: the interface, section 4)
 ```
 
+![Annotated render of a Unitree Go2 with its front RGB camera, joint actuators, onboard compute and dorsal mount called out](figures/go2-walk-profile.png)
+
+*Rendered from Unitree's own Go2 description package
+([`unitree_ros/robots/go2_description`](https://github.com/unitreerobotics/unitree_ros),
+BSD-3-Clause, © 2016-2022 HangZhou YuShu TECHNOLOGY CO.,LTD. "Unitree Robotics") by
+[`docs/figures/make_robot_profile.py`](figures/make_robot_profile.py). The meshes are **not**
+vendored here; the generator reads them from a checkout you fetch — see
+[Appendix C](#appendix-c--figure-provenance-and-licences).*
+
 Two live runs on a real Go2 anchor everything that follows.
 
 **Going around a static obstacle, to a detected goal.**
@@ -329,6 +338,15 @@ are not the obvious ones — each pinned by a test that says why:
 
 Nothing about "one RGB camera and no LiDAR" is Unitree-specific, so the port to the Deep
 Robotics Lite3 Venture was the test of whether the design was portable or merely working.
+
+![Annotated render of a Deep Robotics Lite3 with its RGB camera, joint actuators and UDP axis interface called out, and no LiDAR or depth module](figures/lite3-profile.png)
+
+*Rendered from Deep Robotics' own Lite3 description
+([`deep_robotics_model/Lite3`](https://github.com/DeepRoboticsLab/deep_robotics_model),
+BSD-3-Clause, © 2024 DeepRoboticsLab) by
+[`docs/figures/make_robot_profile.py`](figures/make_robot_profile.py). This is the vendor's
+stock description; the Venture units in this work carry no head LiDAR and no depth module,
+which is the whole reason they were chosen.*
 
 **Everything that turns pixels into a plan moved unchanged.** `camera_model`,
 `person_detector`, `colour_detector`, `tracker`, `static_map`, `avoidance`, `goal`,
@@ -549,6 +567,15 @@ Two measured results:
 
 Two robots sharing a room is the demo. The obvious route is to teach the detector what a
 quadruped looks like. We measured that route to its ceiling and then took a different one.
+
+![Annotated render of a Unitree Go2-W, the wheeled variant, with its wheel actuators and footprint called out](figures/go2-wheel-profile.png)
+
+*The peer robot. Rendered from
+[`unitree_ros/robots/go2w_description`](https://github.com/unitreerobotics/unitree_ros),
+BSD-3-Clause, © 2016-2022 HangZhou YuShu TECHNOLOGY CO.,LTD. "Unitree Robotics", by
+[`docs/figures/make_robot_profile.py`](figures/make_robot_profile.py). Same trunk as the Go2
+and nearly the same silhouette head-on, which is what makes it hard to detect and easy to
+publish a pose for.*
 
 **Each robot publishes its own pose** as a `peer_pose` event on the Device Connect mesh at
 10 Hz, and the navigator consumes it as one more obstacle disc in the same list the policy
@@ -917,8 +944,8 @@ The deployed detector's confidence floor was baked into its `prototxt` at 0.25, 
 "sub-0.25 measurement" this project had ever recorded was really 0.25, and any sweep below it
 was inert (issue #68; the prototxt line and the patch are in
 `evidence/2026-08-25-peer-detector-threshold-and-tracks/`). Patched to 0.01, the same frames
-yield 5.4× as many detections and recall
-climbs 64% → 91%. In the same audit, the **18% false-alarm rate the expansion filter was
+yield 5.4× as many detections and recall climbs 64% → 91%. In the same audit, the **18%
+false-alarm rate the expansion filter was
 commissioned to fix turned out to be 192 mislabelled frames**: on the 705 genuinely peer-free
 frames the rate is **0.0%**. The filter was built against a number that did not exist.
 
@@ -1036,31 +1063,81 @@ requires cannot be entered from the AI motion state.
 
 ## Appendix C — Figure provenance and licences
 
-**A render is a derivative work.** The robot figures in this paper are rendered from vendor
-description packages, and this repository contains exactly one URDF of its own — the D1 arm at
+**A render is a derivative work**, so this appendix exists to make each figure's source and
+licence explicit rather than leaving them to be inferred.
+
+**No vendor URDF, mesh, STL or Collada file is committed to this repository.** This repository
+holds exactly one URDF of its own — the D1 arm at
 `robot-stack/unitree/go2/d1_arm/urdf/d1_description.urdf` — and no USD.
+`docs/figures/make_robot_profile.py` reads the vendor descriptions from a checkout **you**
+make, outside the tree, and writes only a PNG. That is deliberate: a prior Arm repository
+shipped a byte-identical vendor URDF under an Arm copyright and an Apache-2.0 SPDX identifier
+with no vendor attribution. That was a real licence violation and had to be corrected.
+Committing a rendered PNG with explicit attribution, and leaving the source assets where their
+licence found them, does not repeat it.
 
-**No vendor URDF, mesh, STL or Collada file is committed to this repository.** The generator
-reads them from a local checkout you fetch yourself, exactly as the fetch commands beside each
-figure describe. This is deliberate: a prior Arm repository shipped a byte-identical vendor URDF
-under an Arm copyright and an Apache-2.0 SPDX identifier with no vendor attribution, which was a
-real licence violation and had to be corrected. Committing a rendered PNG with explicit
-attribution, and leaving the source assets where their licence found them, avoids repeating it.
+Licences established by reading the `LICENSE` file in each source repository:
 
-Licences we established, by reading the `LICENSE` file in each source repository:
-
-| asset | source | licence | copyright holder as stated |
+| figure | source | licence | copyright holder, verbatim |
 | --- | --- | --- | --- |
-| Go2 description | `unitreerobotics/unitree_ros` → `robots/go2_description` | **BSD-3-Clause** | © 2016-2022 HangZhou YuShu TECHNOLOGY CO.,LTD. ("Unitree Robotics") |
-| Go2-W description | `unitreerobotics/unitree_ros` → `robots/go2w_description` | **BSD-3-Clause** | as above |
-| Lite3 description | `DeepRoboticsLab/deep_robotics_model` → `Lite3/` | **BSD-3-Clause** | © 2024 DeepRoboticsLab |
+| `go2-walk-profile.png` | `unitreerobotics/unitree_ros` → `robots/go2_description` | **BSD-3-Clause** | © 2016-2022 HangZhou YuShu TECHNOLOGY CO.,LTD. ("Unitree Robotics") |
+| `go2-wheel-profile.png` | `unitreerobotics/unitree_ros` → `robots/go2w_description` | **BSD-3-Clause** | as above |
+| `lite3-profile.png` | `DeepRoboticsLab/deep_robotics_model` → `Lite3/` | **BSD-3-Clause** | © 2024, DeepRoboticsLab |
 
 Licences we could **not** establish, recorded so nobody assumes otherwise:
-`unitreerobotics/xr_teleoperate` carries no detected licence (GitHub reports `NOASSERTION`), so
-its redistribution terms are unestablished and nothing derived from it appears here.
+`unitreerobotics/xr_teleoperate` carries no detected licence — GitHub reports `NOASSERTION` —
+so its redistribution terms are unestablished, and nothing derived from it appears here.
 
-All photography and video in this paper was recorded by the authors on their own robots and is
-covered by this repository's Apache-2.0 licence.
+### Regenerating the robot figures
+
+Fetch the descriptions into any scratch directory outside this repository:
+
+```bash
+mkdir -p "$ASSETS" && cd "$ASSETS"
+
+git clone --depth 1 --filter=blob:none --sparse \
+    https://github.com/unitreerobotics/unitree_ros.git
+(cd unitree_ros && git sparse-checkout set robots/go2_description robots/go2w_description)
+
+git clone --depth 1 https://github.com/DeepRoboticsLab/deep_robotics_model.git
+```
+
+Then, from `docs/figures/`, one command per figure:
+
+```bash
+python3 make_robot_profile.py --preset go2 \
+    --urdf "$ASSETS/unitree_ros/robots/go2_description/urdf/go2_description.urdf" \
+    --out go2-walk-profile.png
+python3 make_robot_profile.py --preset go2w \
+    --urdf "$ASSETS/unitree_ros/robots/go2w_description/urdf/go2w_description.urdf" \
+    --out go2-wheel-profile.png
+python3 make_robot_profile.py --preset lite3 \
+    --urdf "$ASSETS/deep_robotics_model/Lite3/urdf/Lite3.urdf" \
+    --out lite3-profile.png
+```
+
+The renderer is a numpy software rasteriser — no OpenGL, no trimesh, no scene-graph library —
+that parses the URDF with `xml.etree`, walks the kinematic tree, loads binary STL, ascii STL
+and Collada, projects, z-buffers and flat-shades. **Callout leader lines are anchored to
+projected link positions**, so a label names a link and an offset in that link's own frame and
+the arrow lands wherever the camera puts it; changing `--azimuth` cannot silently detach a
+label from the part it points at.
+
+**The pose is not the zero pose, and saying so matters.** `--zero-pose` walks the tree with
+every joint at zero, which is what the URDF describes and is a pose neither robot can hold:
+the Go2's calf joint is limited to [−2.7227, −0.8378] and the Lite3's knee to [0.524, 2.792],
+so zero is outside the vendor's own `<limit>` on eight of the twelve joints between them, and
+the result is a straight-legged animal on stilts. Each preset therefore carries a stance whose
+every angle is inside those limits; `--print-pose` prints it.
+
+### Other figures
+
+`detector-configuration-spread.png` is generated by
+[`docs/figures/make_detector_spread.py`](figures/make_detector_spread.py) from the committed
+sweep JSON; `--check` re-derives the recalls this paper quotes and exits non-zero if any has
+moved. The two animated runs, the observation triptych and the peer contact sheet are the
+authors' own recordings of their own robots and are covered by this repository's Apache-2.0
+licence.
 
 ---
 
