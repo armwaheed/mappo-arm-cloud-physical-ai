@@ -141,7 +141,7 @@ survive the port. The `SENSING` box has one item in it on purpose.*
 BSD-3-Clause, © 2016-2022 HangZhou YuShu TECHNOLOGY CO.,LTD. "Unitree Robotics") by
 [`docs/figures/make_robot_profile.py`](figures/make_robot_profile.py). The meshes are **not**
 vendored here; the generator reads them from a checkout you fetch — see
-[Appendix C](#appendix-c--figure-provenance-and-licences).*
+[Appendix D](#appendix-d--figure-provenance-and-licences).*
 
 Two live runs on a real Go2 anchor everything that follows.
 
@@ -727,7 +727,7 @@ Two measured results:
 > **Caveats, inline.** (a) **No robot has moved under this yet.** The one hardware contact
 > was read-only against the Go2 at `192.168.123.18` — 18 functions enumerated, motion never
 > enabled — and it immediately exposed a real defect, that the event drawer orders a batch by
-> the emitting robot's clock and that Go2 reports 1970 ([B3](#b3-the-clock-is-not-set)).
+> the emitting robot's clock and that Go2 reports 1970 ([C3](#c3-the-clock-is-not-set)).
 > (b) The bench double reports `delivered_fraction` **1.00**, which is precisely the number no
 > real robot produces: this Go2 measures ~0.45 derated and 0.70 at full command, and the Lite3
 > 0.74 forward / 0.27 lateral. (c) **The page has no login**; `--host 0.0.0.0` means anyone
@@ -823,21 +823,18 @@ of.
 
 ### SAM-based auto-labelling: this has now landed, and it is section 13
 
-The step after detector-box weak labels is **promptable segmentation** — run a segmentation
-foundation model over the harvested frames, take the resulting masks' bounding boxes as
-labels, and stop inheriting the deployed detector's 64% recall. The design is the SAM "data
-engine" pattern: model proposes, human verifies the fraction that needs it, model retrains
-([reference 2](#references)).
+The step after detector-box weak labels is **promptable segmentation** — take a mask's bounding
+box as the label and stop inheriting the deployed detector's 64% recall. The design is the SAM
+"data engine" pattern: model proposes, human verifies the fraction that needs it, model
+retrains ([reference 2](#references)).
 
 ⚠️ **An earlier draft of this paper said "zero SAM-derived labels exist" and "there is no SAM
-code in the tree". Both were true when written and neither is true now**, which is the sort of
-sentence a document like this has to correct out loud rather than quietly delete. The run that
-was in progress landed on 2026-08-27 as
-`evidence/2026-08-27-lite3-training-set/` — `sam_label.py`, `sam_labels.json`, 131 labelled
-keyframes and three fine-tunes scored against the incumbent. It produced **nothing shippable**,
-and it is written up in full for that reason in
+code in the tree". Both were true when written and neither is true now** — the sort of sentence
+a document like this corrects out loud rather than quietly deletes. The run landed on
+2026-08-27 as `evidence/2026-08-27-lite3-training-set/`, and it produced **nothing shippable**,
+which is why it is written up in full as
 [§13](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it).
-The two hand-labelled manifests referenced above are unchanged and remain the corpus of record.
+The two hand-labelled manifests above are unchanged and remain the corpus of record.
 
 > **Attribution, corrected.** This technique is often described in conversation as a
 > "Stability AI technique". We could not establish that provenance. Segment Anything, the
@@ -1187,7 +1184,7 @@ This is the most distinctive material in the repository, and it is **self-critiq
 forty-odd defects on record, roughly thirty are ours: our control law, our recorder, our
 fallbacks, our launchers, our dashboard, our deployment practice, our tests. Four are platform
 characteristics, they split across two manufacturers, and they are in
-[Appendix B](#appendix-b--platform-characteristics-a-portable-stack-has-to-accommodate)
+[Appendix C](#appendix-c--platform-characteristics-a-portable-stack-has-to-accommodate)
 because a researcher cannot port this work without knowing which behaviours it accommodates.
 
 Each entry names the mechanism, because the mechanism is the transferable part.
@@ -1333,7 +1330,9 @@ actually aimed at. Final development is happening in **Shanghai** and is **ongoi
 [developer.arm.com/arm-create](https://developer.arm.com/arm-create)). Read every Go2 number
 in this document as a proxy measurement taken to de-risk that: it is why the Go2 half ran on
 a robot and the Lite3 half essentially did not, and it is why the corrections below are worth
-more than the runs that produced them.
+more than the runs that produced them — and
+[Appendix B](#appendix-b--what-a-payload-costs-a-proxy-platform) prices what the proxy's own
+payload, an arm the target platform does not carry, cost the test robot.
 
 A live Go2 run passed a peer robot cleanly and was written up as peer avoidance. The telemetry
 disagrees: the correlation between the lateral command and the **goal** distance is **+0.951**;
@@ -1369,13 +1368,85 @@ directories from the count. The general shape: a suite that cannot reach a test 
 green as a suite that passes it, which is why CI now discovers `test_*.py` by globbing and
 re-measures rather than trusting a list.
 
-## Appendix B — Platform characteristics a portable stack has to accommodate
+## Appendix B — What a payload costs a proxy platform
+
+The Go2s in this paper are **proxies** for the Lite3s
+([A15](#a15-our-evidence-the-run-that-cleared-the-peer-did-not-avoid-it)). The Lite3 Venture
+carries **no arm at all**. The proxy carried a **3.15 kg Unitree D1-550** cantilevered over its
+back, and this is what that cost — the generalisable version of a lesson any lab standing one
+robot in for another can act on before it buys the mount.
+
+| what the payload bought | measured |
+| --- | --- |
+| `robot-stack/unitree/go2/d1_arm/` | **1,114 lines** of Python |
+| arm-specific guards in `visual_nav/safety.py` | **297 lines** — `ArmStowMonitor` 150, `latch_arm` 91, `LatchResult` 23, `stand_up` 20, `lie_down` 13 |
+| arm-specific constants in that file | **7 of its 11** module constants |
+| thermal envelope | **70 °C abort / 55 °C warn**, against an idle reading of ~30 °C |
+| standing budget | the hind legs saturated badly enough that the robot **could not hold a stand for 60 s** and squatted unannounced; `--rest-after` now lies it down after **15 s** blocked |
+
+**Roughly 1,411 lines of guard code, and the entire thermal envelope of the test platform,
+exist because of a payload the target platform does not carry.** The thermal limits are not
+incidental to the arm — `safety.py:64` states the reason in the code:
+
+> *"Conservative operating limits for the **ARM-LOADED case**, not vendor maxima. The point is
+> to stop on a trend, long before the motors' own protection would act — **with the arm fitted
+> there is no margin to spend.**"*
+
+It is why the robot rests prone and stands only to walk, why the envelope is derated, and why
+`safety.py` refuses a walk unless forward kinematics puts the jaw within **0.30 m** of the arm
+base *and* within **0.05 m** of the dorsal centreline — a compact fold that sits out over the
+flank passes the first test and still unbalances the gait. Not theoretical: a live run on
+2026-08-27 exited in about three seconds on the arm-not-stowed refusal, the arm having been
+knocked out of stow by an earlier collision. *(That run is an operator report; it is not
+committed as evidence in this repository, unlike every measurement in the table above.)*
+
+### The figure is a kinematic chain, because the URDF has no meshes
+
+⚠️ `robot-stack/unitree/go2/d1_arm/urdf/d1_description.urdf` is **kinematics only** — joint
+origins, axes and travel, and no visual, collision, inertial or mesh element. Unitree's D1 STL
+meshes are not redistributed here, so a photoreal render is not available from it and **must
+not be faked**. A stick diagram is the better figure anyway: it makes the degrees of freedom
+obvious where a render hides them. Every number below is read from that 5 KB file.
+
+```mermaid
+flowchart LR
+    BASE["base_link — the Go2 trunk mounting face"]
+    L1[Link1]
+    L2[Link2]
+    L3[Link3]
+    L4[Link4]
+    L5[Link5]
+    L6[Link6]
+    F1[Link7_1]
+    F2[Link7_2]
+
+    BASE -- "Joint1 · J0 base-yaw · revolute · axis +Z · ±2.35 rad · +0.0533 m" --> L1
+    L1 -- "Joint2 · J1 shoulder · revolute · axis −Z · ±1.57 rad · +0.0563 m" --> L2
+    L2 -- "Joint3 · J2 elbow · revolute · axis −Z · ±1.57 rad · +0.2693 m, the long link" --> L3
+    L3 -- "Joint4 · J3 elbow-roll · revolute · axis +Z · ±2.35 rad" --> L4
+    L4 -- "Joint5 · J4 wrist-pitch · revolute · axis −Z · ±1.57 rad · +0.1402 m" --> L5
+    L5 -- "Joint6 · J5 wrist-roll · revolute · axis −Z · ±2.35 rad · +0.0825 m" --> L6
+    L6 -- "Joint7_1 · PRISMATIC · axis −Z · 0 to 0.03 m" --> F1
+    L6 -- "Joint7_2 · PRISMATIC · axis +Z · −0.03 to 0 m" --> F2
+```
+
+**9 links, 8 joints: 6 revolute plus the 2 prismatic jaw fingers**, which is the whole reason
+the chain branches at `Link6`. From `base_link` the jaw reaches **0.733 m** and the wrist
+0.662 m; measured from the shoulder axis instead — the datum Unitree quotes from, 0.11 m higher
+— the wrist reach is **0.553 m** against a published 550 mm, a 3 mm agreement that is how this
+file was validated. ⚠️ **Commandable is not mechanical**: the limits above are mechanical
+travel, while the D1 firmware clamps every commanded angle to a tighter documented envelope
+(J0 ±135°, J1 ±90°, J2 ±90°, J3 ±135°, J4 ±90°, J5 ±135°) — commanding −95° parks the shoulder
+at −90.3°. Plan IK against `d1_fk.COMMANDABLE_LIMITS_DEG`, or generate poses the arm can be
+pushed into by hand and never driven to.
+
+## Appendix C — Platform characteristics a portable stack has to accommodate
 
 These are not defects; they are behaviours of shipping products, and both manufacturers appear.
 A portable stack has to learn them per robot rather than assume them, and a researcher porting
 this work needs them by name.
 
-### B1. The axis transport is sign-only
+### C1. The axis transport is sign-only
 
 The Deep Robotics Lite3's high-level axis interface **discards commanded magnitude** and keeps
 only the sign, so the executable set per axis is `{0, one evidenced speed}`. The Unitree Go2's
@@ -1384,7 +1455,7 @@ safety argument that holds on one platform and not the other, which is why the p
 models its transport ([§6](#6-a-planner-that-models-its-own-transport)). This is a
 cross-vendor portability result, and it would not have been visible on either robot alone.
 
-### B2. The gait floor, and how many of them there are
+### C2. The gait floor, and how many of them there are
 
 Below some forward speed a quadruped stands still without faulting: Go2 **0.35 m/s** (0.21 m/s
 stalled five runs of five), Lite3 **0.30 m/s**. The Lite3's calibration interface exposes *one*
@@ -1393,7 +1464,7 @@ has never been measured at all. Delivered fraction differs the same way: this Go
 0.45 of a derated command and 0.70 at full command; the Lite3 0.74 forward and 0.27 lateral.
 None of these is inferable from a datasheet.
 
-### B3. The clock is not set
+### C3. The clock is not set
 
 The Unitree Go2 ships without its real-time clock set and reports **1970**. Anything that orders
 events by the emitting device's own timestamp — an event drawer, a merge of two robots' streams
@@ -1401,7 +1472,7 @@ events by the emitting device's own timestamp — an event drawer, a merge of tw
 `dashboard/README.md` records the reading). A test now pins it: two robots with unsynchronised
 clocks *cannot* be interleaved by their own stamps.
 
-### B4. Some telemetry a safety gate needs is simply not published
+### C4. Some telemetry a safety gate needs is simply not published
 
 Motor temperatures are absent from the Lite3's high-level stream, and battery had to be
 delegated through a platform combinator. A stack whose safety gate is "refuse without motor
@@ -1411,7 +1482,7 @@ the vendor's legacy autonomous velocity interface accepted well-formed packets a
 the robot **zero** millimetres, and reported `error 0` throughout, because the control mode it
 requires cannot be entered from the AI motion state.
 
-## Appendix C — Figure provenance and licences
+## Appendix D — Figure provenance and licences
 
 **A render is a derivative work**, so this appendix exists to make each figure's source and
 licence explicit rather than leaving them to be inferred.
