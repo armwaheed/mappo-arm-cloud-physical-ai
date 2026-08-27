@@ -15,16 +15,246 @@ directory's `--live`.
 ```
    browser
       │  HTTP + Server-Sent Events
-   server.py                              ← a workstation. No robot code, no SDK.
-      │  device-connect-agent-tools
- ═════╪══════ Device Connect mesh ═══════   D2D by default: no broker, no etcd, no Docker
-      │  device-connect-edge
- robot_driver.py                          ← ON the robot, Python ≥ 3.11
+   server.py                              ┐
+      │  device-connect-agent-tools       │
+ ═════╪══════ Device Connect mesh ═══════ │ a WORKSTATION, Python >= 3.11.
+      │  device-connect-edge              │ D2D by default: no broker, no etcd, no Docker
+ robot_driver.py                          ┘
       │  subprocess, one command, JSON, exit
- drive_bridge.py                          ← ON the robot, the SDK env, Python 3.8
+ drive_bridge.py                          ← the SDK env, Python 3.8
       │
  Go2Locomotion / Lite3Locomotion
 ```
+
+⛔ **The robot cannot host the driver, and that is architecture rather than a packaging
+bug.** The Go2's Jetson carries Python 3.8.10 and 3.9.5 and nothing else — measured on
+`192.168.123.18`, and `apt-cache policy python3.11` has no candidate on Ubuntu 20.04 /
+JetPack 5. `device-connect-edge` requires ≥ 3.11. **A virtualenv cannot close that gap**: a
+venv is built *from* an interpreter and cannot supply a version the machine does not have,
+which is also why [`../AGENTS.md`](../AGENTS.md) forbids installing a newer Python on a
+robot. So `robot_driver.py` runs on a workstation, and everything that must execute *on*
+the robot crosses a seam that was built for it:
+
+| what has to be on the robot | how it gets there |
+| --- | --- |
+| the SDK calls that move or read the robot | `drive_bridge.py`, launched by `--bridge-python` over the robot's own 3.8 |
+| the front camera | `go2_frame_server.py`, started by hand on the robot, read by `--camera-url` |
+| a MAPPO run | ⏳ nothing yet — see [The seven things](#the-seven-things-and-which-of-them-work) |
+
+## Start it
+
+One command, from `dashboard/`, on a **workstation** — not on the robot:
+
+```bash
+./start-dashboard.sh                              # a bench double. No robot needed.
+./start-dashboard.sh --robot 192.168.123.18       # a real Go2's camera, simulated pose
+```
+
+It starts the checkpoint server, one driver and the dashboard, waits until the page
+answers, prints the URL, and **stops all three together** on Ctrl-C. `--help` lists the
+rest; `--dry-run` prints the three commands it would run without running them.
+
+It was three terminals, and each of the three had its own way of failing several steps
+after the mistake. So it refuses first, by name:
+
+| it refuses on | rather than |
+| --- | --- |
+| an interpreter below 3.11, naming one on this machine that works | `ModuleNotFoundError: device_connect_edge`, which reads as a missing package |
+| a missing package, printing the exact `pip install` **for that interpreter** | three tracebacks, twenty seconds apart, one per process |
+| a policy package with no `config.json` | a driver that starts and answers `list_models` about nothing |
+| port 8080 or 8800 already held, naming the pid | `Address already in use` from inside the second process to start |
+
+⚠️ **It never enables motion.** `--allow-motion` is added to the driver's command line only
+when a person types it on this one; no environment variable, default or config file can
+turn it on, and `test_start_dashboard.py` pins that with the complement test beside it so
+the check cannot pass by the flag never working at all.
+[`../robot-stack/SAFETY.md`](../robot-stack/SAFETY.md) governs it identically to `--live`.
+
+### What has to be installed first
+
+```bash
+python3.11 -m pip install device-connect-edge device-connect-agent-tools aiohttp numpy Pillow
+```
+
+⚠️ **`aiohttp` and `numpy` are not optional and nothing else installs them.**
+`device-connect-agent-tools` depends only on `device-connect-edge`, which depends on
+`eclipse-zenoh`, `nats-py`, `nkeys`, `pydantic` and `pyyaml` — so a line naming the two
+Device Connect packages and `eclipse-zenoh` (which is already a dependency) installs
+nothing any of these three programs import. Measured in a clean 3.11 venv: `server.py`
+dies at `No module named 'aiohttp'`, `robot_driver.py` at `numpy`, and `model_server.py`
+at `numpy` through `model_store`. `Pillow` is needed only by the **synthetic** sim camera.
+
+`python3` on macOS is the Command Line Tools 3.9.6 however many Homebrew Pythons are
+installed, so `python3.11` above is literal. The launcher picks an interpreter that can
+already import `device_connect_edge` before it picks the newest ≥ 3.11, because a machine
+with 3.11, 3.12 and 3.13 usually has Device Connect in exactly one of them.
+
+## The seven things, and which of them work
+
+| | | how | today |
+| --- | --- | --- | --- |
+| 1 | **Open the dashboard** | `./start-dashboard.sh`, then the URL it prints — `http://127.0.0.1:8080` | ✅ verified |
+| 2 | **View the fleet, or one real robot** | the fleet table, grouped by platform; `--robot HOST` puts a live Go2 camera on the row | ✅ verified — 1920×1080 frames off `192.168.123.18` at 6 fps, `frame age 0.03 s` |
+| 3 | **Connect to a model server** | the launcher starts `model_server.py` and advertises it, so **Load from Cloud AI** opens with the source and address filled in | ✅ verified — `Browse` → `served by mappo-model-server` |
+| 4 | **Load a model** | **Download** on a browsed row. The fetch runs **on the robot**, not in the browser | ✅ verified — 268 063 bytes, sha256 `7327f724…ca11` |
+| 5 | **Start MAPPO on the robot** | **Start** runs in **simulation by default**; a real-motion run needs `--allow-motion` at driver launch *and* an explicit arm in the UI. ⏳ the RPCs do not exist yet — today a run is `integration/mappo_drive.py --live` over SSH | ⏳ being built in parallel |
+| 6 | **Stop / start / take manual control** | per-row stop, `STOP ALL (n)`, and the motion pad — the pad needs `--allow-motion` | ✅ verified on the bench double; ❌ never on a real robot |
+| 7 | **Swap models** | **Arm** on a checkpoint row. Takes effect on the **next** run | ✅ verified — `previous` reported, and deleting the armed one refused |
+
+### 5: what Start will do, and why it is not one button
+
+**Sim is the default and real motion is two deliberate acts, not one.** Pressing **Start**
+runs the policy against the bench double: no legs, no lane, no operator on the abort, which
+is the state a demo floor is usually in and the state a first press should land in. A run
+that moves a robot needs **both** of:
+
+1. `--allow-motion` on the driver, typed at launch by whoever has looked at the room. It is
+   this directory's `--live` and `start-dashboard.sh` will never add it for you.
+2. an explicit **arm** in the UI, on the page, for that run.
+
+Two gates rather than one, on different surfaces and at different times, because the failure
+mode being designed out is a single click that is one keystroke away from a simulated one.
+Neither is a preference the page remembers; `--allow-motion` dies with the driver process
+and the arm dies with the run.
+
+⏳ **The RPC names are deliberately not written here.** The run-control PR is choosing them,
+and a README that guesses is a README that is wrong on the day it merges. This section is
+the *shape* the RPCs have to fit; the names land in the same rebase that flips row 5 to ✅.
+
+### and it is a missing seam, not a missing button
+
+`invoke → walk_forward` and `invoke → start a MAPPO run` look like the same shape and are
+not, for three reasons that are already load-bearing elsewhere in this directory:
+
+* **A run is 45 seconds and an RPC handler may not block.** `DeviceRuntime._cmd_subscription`
+  dispatches one RPC at a time per device, so a handler that waits for a run makes the robot
+  deaf to `stop` for the length of it. Motion RPCs solved this by returning on *accept* and
+  reporting the outcome as an event; run control has to do the same, and additionally has to
+  stay stoppable for far longer.
+* **`mappo_drive.py` cannot be imported by the driver.** It imports the vendored stack and
+  `unitree_sdk2py`, which is the 3.8 side of the wall. `drive_bridge.py` is the seam for
+  that — but its rule is *one command, one process, exit*, and the only command exempt from
+  it today is `pose-stream`, which is exempt because a pose reader has no velocity to latch.
+  A run does.
+* **And the driver is not on the robot.** Everything above assumes a process that can start
+  another process on the Jetson. `robot_driver.py` runs on a workstation, so run control
+  needs something robot-side that outlives a single command — which `go2_frame_server.py` is
+  the first, deliberately tiny, example of.
+
+**A run-control PR is in flight** adding RPCs to `robot_driver.py`, `drive_bridge.py` and
+`server.py`. This section is the shape it has to fit, written before it lands so the two can
+be compared; the row above stays ⏳ until the RPCs are in `ALLOWED_FUNCTIONS` in
+`server.py` and answering.
+
+### What is real when you ask for a real robot
+
+`--robot 192.168.123.18` expands to `--platform go2 --simulate --camera-url
+http://192.168.123.18:8801/`, and **that is a mixture on purpose.** A demo that implies
+more than it shows is the failure this repository spends its evidence files avoiding, so:
+
+| on the page | where it comes from | real? |
+| --- | --- | --- |
+| the camera viewport | the Go2's own `VideoClient`, over HTTP from `go2_frame_server.py` | ✅ **the robot** |
+| pose, velocity, `mode` | the bench double — `mode` reads `sim`, pose reads `0, 0, 0` | ❌ simulated |
+| the gait floors, and every refusal built on them | the **Go2's measured** table: 0.35 forward, 0.20 lateral, yaw unmeasured | ✅ real numbers |
+| a motion command | the bench double. `delivered_fraction` is 1.0, which a real robot never produces | ❌ simulated |
+| the checkpoint list, free space, downloads | the **workstation's** `--package` directory | ❌ not the robot's |
+
+Drop `--simulate` (`--platform go2 --bridge-python …`) and pose, mode and motion become the
+robot's — at the cost below.
+
+⚠️ **A `status` read costs ~1.95 s, not milliseconds.** Measured on the Go2's Jetson over
+three consecutive `drive_bridge.py status` calls: **1.98 s, 1.93 s, 1.95 s**, all of it the
+cold SDK import and DDS discovery, paid *per invocation* because the bridge is one command
+per process. Against `STATE_INTERVAL_S = 5.0` that is ~39 % of every poll period with a DDS
+client on the bus, and it is why the fleet row updates in seconds rather than in frames.
+
+🔴 **The robot reports `mode='mcf'`, not a sport mode.** `Go2Locomotion` warns that `Move`
+commands may be silently ignored in that mode, and nothing was commanded on the read-only
+run that found it — so it is a reading, not a fault. But an operator who presses
+**walk forward** on a robot in `mcf` gets a robot that accepts every command, reports no
+error and never steps. A motion run has to call `ensure_sport_mode()` first, and knowing
+that beforehand is the difference between a five-second fix and an afternoon.
+
+⚠️ **`~/mappo-run` on that robot matches no single commit.** Most of it was 34–36 commits
+behind `main`, its `README.md` older still, its `dashboard/` a different lineage again, and
+**two files match nothing at all**. None of the deployed trees is a git checkout — no
+`.git`, so no branch and no commit — so **a live run does not tell you which code produced
+it.** Copy a fresh tree, record what you copied, and do not report a robot observation as
+evidence about `main` without saying what was actually on the robot.
+
+### The camera server, which is started by hand on the robot
+
+Copy `go2_frame_server.py` to the robot, then — this is the recipe that is running as these
+words are written, not a reconstruction of one:
+
+```bash
+ssh unitree@192.168.123.18
+source /home/unitree/mappo-main/robot-stack/unitree/go2/install/setup_env.sh
+export PYTHONPATH=/home/unitree/deps:/home/unitree/unitree_sdk2_python
+setsid nohup python3 /home/unitree/go2_frame_server.py \
+       > /home/unitree/frame_server.log 2>&1 < /dev/null &
+```
+
+Read-only: it opens `VideoClient` and nothing else — no lease, no motion, no writes. `/`
+returns the latest JPEG; `/status` returns exactly
+
+```json
+{"seq": 7635, "age_s": 0.02, "have_frame": true}
+```
+
+which is the quickest way to tell "the camera is dark" from "the server is not running":
+`have_frame` is a JSON boolean, and `age_s` is `-1.0` when no frame has ever arrived.
+
+**The interface is hard-coded to `eth0`.** A trailing `eth0` on that command line is inert —
+`go2_frame_server.py` never reads `sys.argv`, and `ChannelFactoryInitialize(0, "eth0")` is a
+literal. Passing another interface name changes nothing, which is worse than being rejected;
+edit the file if you need a different one.
+
+⛔ **Drop the `source` line and it does not fail, it SEGFAULTS.** Measured on this robot:
+with the environment, `go2_frame_server.py` gets as far as its socket bind; with
+`LD_LIBRARY_PATH` unset it dies `Segmentation fault`, rc **139**, at the first
+`VideoClient.GetImageSample()`, before printing its banner. The cause is diagnosed in
+[`../robot-stack/unitree/go2/install/setup_env.sh`](../robot-stack/unitree/go2/install/setup_env.sh):
+the Jetson ships two CycloneDDS 0.10.2 builds, `ldconfig` resolves the wrong one, and only
+the RPC serialize path is sensitive — so passive subscribers work either way and every RPC
+client crashes. From the workstation it reads as `camera url … unreachable: Connection
+refused`, not as a missing variable.
+
+⚠️ **The venv is what makes it work, and it has been reported as the thing to avoid.**
+Stated plainly because a wrong reason is a fix nobody can reproduce:
+`setup_env.sh` prepends `/home/unitree/robotics-connect-envs/armwaheed/bin` to `PATH`, so
+the `python3` in that recipe **is** that venv — the process serving frames right now has
+exactly that `PATH`. Measured, four ways, with `LD_LIBRARY_PATH` set:
+
+| interpreter | `import cyclonedds` | `GetImageSample()` |
+| --- | --- | --- |
+| `robotics-connect-envs/armwaheed/bin/python3` | from the venv's site-packages | **`0`, 188 399 bytes** |
+| `/usr/bin/python3` | `ModuleNotFoundError` | never reached |
+
+`cyclonedds` is installed **only** in that venv, and its `bin/python3` is a symlink to
+`/usr/bin/python3` with `include-system-site-packages = true` — so "the venv" and "the
+system interpreter" are the same binary and differ only in which site-packages they see.
+The thing that segfaults is a **missing `LD_LIBRARY_PATH`**, not the venv; running the
+venv's interpreter directly without sourcing `setup_env.sh` produces both symptoms at once
+and is the likeliest way to reach the wrong conclusion.
+
+⚠️ **To stop it, resolve the pid and kill the pid.**
+
+```bash
+ssh unitree@192.168.123.18 "ps -eo pid,cmd | grep '[g]o2_frame_server'"   # note the pid
+ssh unitree@192.168.123.18 "kill <pid>"
+```
+
+⛔ **Never `pkill -f go2_frame_server` over SSH.** The pattern matches the SSH command line
+carrying it, so `pkill` kills your own calling shell, reports nothing, and leaves the target
+running — a stop that looks like it worked and did not. The `[g]` in the `grep` above is the
+same trap in its milder form: it stops the grep matching itself.
+
+⚠️ **The robot's copy is not a checkout and does not report its own version.** Check `md5sum`
+against `dashboard/go2_frame_server.py` on `main` before treating a frame as evidence — the
+robot's copy has already been ahead of the repository's once, when it carried a lint fix the
+repository did not.
 
 ## What it does
 
@@ -82,6 +312,13 @@ as a frozen last frame that still looks live.
 base64 adds a third, so 6 fps is roughly 200–320 KB/s *per watched robot* and 12 is double
 that — for a viewport whose job is "can I see where the robot is pointing". It is a
 parameter, so raising it is a decision someone makes with the number in front of them.
+
+⚠️ **On a real Go2 it is four times that, because the frames are 1920×1080.** Measured
+through `/api/camera/…?fps=6` against `192.168.123.18`: **48 frames in 8 s, 186 KB each,
+1.09 MB/s** from one watcher. The paragraph above describes a 640×480 camera and the Go2 is
+not one. `MAX_FRAME_BYTES` (512 KB) still holds with 2.8× of headroom, so nothing refuses —
+but two people watching two robots is 4 MB/s off a demo LAN, and `?fps=` is the number to
+lower rather than the one to raise.
 Nothing streams to an empty room: the feed starts when a viewer asks and stops when that
 interest lapses, so closing the tab stops the robot emitting.
 
@@ -197,6 +434,12 @@ indistinguishable from a real one is a hazard rather than a better demo.
 rather than by the page — a screenshot keeps the pixels and loses the caption. See
 [`../deploy/demo/`](../deploy/demo/README.md).
 
+`--camera-url` is the opposite case and is deliberately **not** labelled: those frames are
+live, so stamping them would be the false claim. It is also the one flag that puts a real
+robot's pixels beside a simulated pose, which is why
+[What is real when you ask for a real robot](#what-is-real-when-you-ask-for-a-real-robot)
+spells out which half is which.
+
 ## Many robots, of more than one kind
 
 The fleet table is the page's spine and the **Focus** selector is not a fleet control. Focus
@@ -257,66 +500,31 @@ Adding robots costs no extra polling. Pose, mode and armed checkpoint are folded
 `robot_state` events already streaming through the page; capabilities are fetched once per
 robot and cached, since they cannot change while a driver is up.
 
-## Run it
+## Starting the three by hand
 
-Install Device Connect into a Python ≥ 3.11 environment on the robot:
-
-```bash
-pip install device-connect-edge boto3          # boto3 only if you want S3 sources
-```
-
-On the robot — **status and checkpoints only, which is where to start**:
+`start-dashboard.sh` runs exactly these, and there is no fourth thing it does. Run them
+yourself when you want a driver the launcher does not build — a Lite3, a second robot on
+one page, or a real Go2 with no `--simulate`. Every command below is Python **≥ 3.11**, on
+a workstation, from `dashboard/`.
 
 ```bash
-python3 robot_driver.py --platform go2 --package ../policy \
-        --bridge-python /home/unitree/robotics-connect-go2/bin/python
-```
-
-`--bridge-python` is the interpreter that can import `unitree_sdk2py`. It is **not** the one
-running the driver, and getting it wrong makes every command fail with an import error —
-`get_capabilities` reports the path it will use, so check it before you need it.
-
-Then, with a clear area and an operator on the controller abort, add `--allow-motion`.
-On a Lite3, stand the robot and enable high-level navigation mode on the vendor interface
-first, then add `--operator-ready`.
-
-On a workstation:
-
-```bash
-pip install device-connect-agent-tools aiohttp
-python3 server.py --port 8080                  # then open http://127.0.0.1:8080
-```
-
-The default bind is loopback. Pass `--host 0.0.0.0` to reach it from the demo LAN, and note
-what that means: **this dashboard has no login.** Anyone who can reach the port can drive
-any robot on the mesh that was started with motion enabled.
-
-No robot? Everything above works against a bench double:
-
-```bash
-python3 robot_driver.py --platform sim --package ../policy --allow-motion
-```
-
-### The whole thing on one laptop, including Cloud AI
-
-Three processes and a browser. Nothing here needs a robot, a bucket or AWS credentials —
-the last of which is why `model_server.py` exists. Run each in its own terminal, from
-`dashboard/`, on Python ≥ 3.11:
-
-```bash
-pip install device-connect-edge device-connect-agent-tools aiohttp numpy Pillow
+python3.11 -m pip install device-connect-edge device-connect-agent-tools aiohttp numpy Pillow
 
 # 1. the checkpoint source, standing in for the bucket. It WRITES sources.json.
-python3 model_server.py --models-dir ../policy/models \
+python3.11 model_server.py --models-dir ../policy/models --port 8800 \
         --emit-sources /tmp/sources.json --label "Arm AGI CPU server"
 
 # 2. a robot. Use a COPY of ../policy — arming a checkpoint rewrites its config.json.
-python3 robot_driver.py --platform sim --package /tmp/package \
-        --model-sources /tmp/sources.json --allow-motion
+python3.11 robot_driver.py --platform go2 --simulate --package /tmp/package \
+        --model-sources /tmp/sources.json --camera-url http://192.168.123.18:8801/
 
 # 3. the dashboard
-python3 server.py --port 8080          # then open http://127.0.0.1:8080
+python3.11 server.py --port 8080                  # then open http://127.0.0.1:8080
 ```
+
+Drop `--camera-url` and you have the same thing with a synthetic camera and no robot at
+all; drop `--simulate` too and `--platform sim` is the bench double, which is what to use
+on a demo host with no hardware in the room.
 
 **A working screen** has `MESH UP` in the top bar and the robot on a fleet row with a green
 `LIVE` badge and a pose; `STOP ALL (1)` counts what it will hit. The checkpoint table lists
@@ -332,17 +540,68 @@ simulated Go2 refuses `strafe_left 0.15` with its own measured 0.200 floor while
 double accepts it:
 
 ```bash
-python3 robot_driver.py --platform go2 --simulate --package /tmp/package \
-        --allow-motion --device-id mappo-go2-sim
+python3.11 robot_driver.py --platform sim --package /tmp/package \
+        --model-sources /tmp/sources.json --allow-motion --device-id mappo-bench
 ```
 
-See [`../evidence/2026-08-26-dashboard-local-trial/`](../evidence/2026-08-26-dashboard-local-trial/)
-for a capture of exactly this, and for what it does and does not prove.
+### The routes, because prose about them has been wrong
+
+`server.py` serves six, and a runbook written from memory guessed different ones. These are
+the names in `create_app`:
+
+| | |
+| --- | --- |
+| `GET /api/devices` | everything the mesh announces, with each device's function list |
+| `GET /api/fleet` | one row per robot: pose, mode, armed checkpoint, capabilities, `age_s` |
+| `POST /api/stop-all` | `{stopped: [...], failed: [...], matched: n}` — see the argument for `invoke_many` above |
+| `GET /api/camera/{device_id}` | `multipart/x-mixed-replace`, `?fps=` clamped to 1–15 |
+| `POST /api/invoke` | `{device_id, function, params}`, against an **allow-list**; anything else is a 403 that never reaches the mesh |
+| `GET /api/events` | Server-Sent Events: the ring buffer, then everything new |
+
+Measured against a live driver, so they are runnable and not remembered:
+
+```bash
+curl -s localhost:8080/api/fleet | python3 -m json.tool
+curl -s -X POST localhost:8080/api/invoke -H 'Content-Type: application/json' \
+     -d '{"device_id":"mappo-go2","function":"get_status"}'
+curl -s -X POST localhost:8080/api/stop-all -H 'Content-Type: application/json' -d '{}'
+```
+
+### On a real robot, without the bench double
+
+```bash
+python3.11 robot_driver.py --platform go2 --package ../policy \
+        --bridge-python /home/unitree/robotics-connect-envs/$USER/bin/python3 \
+        --camera-url http://192.168.123.18:8801/
+```
+
+`--bridge-python` is the interpreter that can import `unitree_sdk2py`. It is **not** the one
+running the driver, and getting it wrong makes every command fail with an import error —
+`get_capabilities` reports the path it will use, so check it before you need it.
+
+⚠️ **That interpreter is on the robot and this process is not**, so `--bridge-python` alone
+is not enough: it has to name something on *this* machine that reaches the robot's 3.8 —
+today an SSH wrapper, which is a workaround and not a supported deployment. Its limits are
+real: `list_models`, `free_bytes` and `download_model` then act on the **workstation's**
+package directory, so the checkpoint panel is answering about the wrong machine. Only
+`get_status`, `get_capabilities` and the motion gate genuinely reach the robot. See
+[`../evidence/2026-08-26-dashboard-local-trial/`](../evidence/2026-08-26-dashboard-local-trial/).
+
+Then, with a clear area and an operator on the controller abort, add `--allow-motion`.
+On a Lite3, stand the robot and enable high-level navigation mode on the vendor interface
+first, then add `--operator-ready`.
+
+The default bind is loopback. Pass `--host 0.0.0.0` to reach it from the demo LAN, and note
+what that means: **this dashboard has no login.** Anyone who can reach the port can drive
+any robot on the mesh that was started with motion enabled.
 
 ⚠️ **`--host 127.0.0.1` on the model server is unreachable from a robot**, and the server
 says so at startup. The download runs on the robot, so an address that only the laptop can
 resolve gives a field that looks right and fails on fetch. Bind a LAN address for a real
 robot.
+
+See [`../evidence/2026-08-26-dashboard-local-trial/`](../evidence/2026-08-26-dashboard-local-trial/)
+for a capture of exactly this, and for what it does and does not prove.
 
 ### When the bucket arrives, nothing here changes
 
@@ -412,25 +671,39 @@ exists because it was asked for, it is capped at 2 s rather than 5, and it says 
 
 | | |
 | --- | --- |
-| `robot_driver.py` | The Device Connect device. 16 RPCs, 9 events. Runs on the robot, Python ≥ 3.11. |
+| `start-dashboard.sh` | The three processes as one command, with the refusals that stop a demo failing four steps later. `--dry-run`, `--help`. |
+| `robot_driver.py` | The Device Connect device. 18 RPCs, 10 events (both counted from the file, and the mesh agrees: `/api/devices` reports `function_count: 18`). Runs on a **workstation**, Python ≥ 3.11 — see the diagram. |
 | `drive_bridge.py` | The SDK-env worker: one command, one JSON line, exit — plus `pose-stream`, which does not exit. Python 3.8, stdlib only. |
 | `peer_link.py` | The other direction: subscribe to peers' poses on the mesh and spool them for a Python 3.8 control loop. Runs on the robot, Python ≥ 3.11. |
 | `model_store.py` | Checkpoints on disk: what is here, what is armed, what may replace it. |
 | `cloud_models.py` | S3 and http(s) fetch, with the refusals that make a URL field on a web page safe. |
 | `model_server.py` | The other end of that fetch: a directory of checkpoints served as a Cloud AI source, for a demo floor with no bucket. Stdlib only. |
-| `camera_source.py` | Front-camera frames per platform — live, synthetic, or a labelled replay — with the ceilings and the who-is-watching lifecycle. |
+| `camera_source.py` | Front-camera frames per platform — live, synthetic, an HTTP pull, or a labelled replay — with the ceilings and the who-is-watching lifecycle. |
+| `go2_frame_server.py` | **Copied to the robot** and run there under its SDK environment: the Go2's `VideoClient` behind a read-only HTTP endpoint, so only the frame crosses the version wall. |
 | `server.py` | The dashboard: discovery, an invoke allow-list, the SSE event fan-out, and the MJPEG stream. |
 | `templates/`, `static/` | The page. It renders from `get_capabilities()`, so it never hard-codes what a robot can do. |
 
 ## Tests
 
 ```bash
-for t in test_*.py; do python3 $t; done       # 160
+for t in test_*.py; do python3.11 $t; done    # 3.11, not python3 — see above
 ruff check .                                  # must be clean
 ```
 
 Needs `device-connect-edge`, `device-connect-agent-tools`, `aiohttp` and `numpy`; `boto3`
-only for the S3 path, and `Pillow` only for the sim camera. `test_drive_bridge.py`,
+only for the S3 path, and `Pillow` only for the sim camera. `test_start_dashboard.py` needs
+none of them: it drives `start-dashboard.sh` against a **stub interpreter** — a real Python
+with `sys.version_info` overwritten, a meta-path finder that refuses named modules, and a
+directory of stand-in modules on `sys.path` that satisfy the rest — so both "a 3.9
+interpreter is refused" and "a complete one is accepted" are conditions the test supplies
+rather than ones the machine happens to have. A test that asserted the first with the local
+`python3` would pass on a Mac and assert nothing on a runner whose `python3` is 3.11; and
+**the second half was learned the hard way** — without the stand-ins the happy-path tests
+passed on a laptop with Device Connect installed and failed on CI, which does not have it.
+A stub that can only take modules away still lets the environment decide the answer. Its
+one end-to-end test is the teardown: three real children, a real SIGTERM, and the process
+table read afterwards.
+`test_drive_bridge.py`,
 `test_model_store.py`, `test_peer_link.py` and `test_model_server.py` run without the
 Device Connect packages — and two of them are end-to-end against the real counterpart
 rather than against a second opinion about the format. `test_peer_link.py` runs the real
@@ -446,7 +719,18 @@ the edge package is not, and the latter therefore skips `test_robot_driver.py`; 
 pass and are **not** in the inventory's count for this directory. `arm_dc_robotkit` really
 is still absent from PyPI.
 
-Seventeen guards are mutation-tested rather than assumed — the ten in
+**Twenty-four guards are mutation-tested rather than assumed.** Seven of them are this
+PR's, on `start-dashboard.sh`, each removed one at a time with the patch verified to have
+applied first: the ≥ 3.11 gate, the `aiohttp`/`numpy` half of the package check, an
+`ALLOW_MOTION` that reads the environment, the port pre-flight, `--robot` no longer implying
+`--simulate`, `cleanup` killing nothing, and the single combined `trap cleanup EXIT INT TERM`
+that stops all three correctly and then resumes its own watchdog. One survived on the first
+attempt — removing only the `kill -TERM` left the later `kill -KILL` to do the job, so the
+children still died and "they all stopped" could not tell the difference. **SIGTERM before
+SIGKILL is a safety property, not a tidiness one** (`robot_driver.py`'s motion worker damps
+on SIGTERM, and `SportClient.Move` has no dead-man timeout), so the test now uses a child
+that records the signal it got, and that mutation is caught. The other seventeen are the ten
+in
 [`../evidence/2026-08-21-device-connect-dashboard/`](../evidence/2026-08-21-device-connect-dashboard/),
 which also records the two defects the bring-up run found, and seven in
 [`../evidence/2026-08-26-dashboard-local-trial/`](../evidence/2026-08-26-dashboard-local-trial/),
