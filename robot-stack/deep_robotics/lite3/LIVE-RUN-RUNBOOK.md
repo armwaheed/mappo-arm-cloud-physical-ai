@@ -14,6 +14,59 @@ happened. This page exists so that no refusal costs you a day.
 
 ---
 
+## 0. You probably should not type these by hand / 先别手动输入这些参数
+
+**EN** — `commissioning/commission.py` measures all of them and **prints the flags for you**.
+Start here; §1 below is the reference for when something still refuses.
+
+**中文** —— `commissioning/commission.py` 会测量全部参数并**直接输出命令行参数**。
+请从这里开始；下面第 1 节是排查拒绝原因时的参考。
+
+```bash
+cd robot-stack/deep_robotics/lite3/commissioning
+
+# 1. Nothing moves: read-only probes, tape measure, marker calibration.
+python3 commission.py --robot-id LITE3-A --firmware V1.0.8 --payload none \
+    --front 0.42 --back 0.38 --left 0.24 --right 0.24 --stance-confirmed \
+    --camera-source 0 --marker 1.50 --marker-size 0.15 \
+    --lens-height 0.37 --lens-height-source 'tape, standing, floor to lens centre'
+
+# 2. The two that walk. Lane clear, robot standing, hand on the stop.
+python3 commission.py ... --live --operator-ready \
+    --ladder-top 0.50 --lateral-top 0.30 --lane-metres 6.0 --lane-width-metres 2.0 \
+    --envelope-vx 0.35
+
+# 3. A human reads the numbers and signs for them.
+python3 commission.py --record lite3-commissioning-LITE3-A.json --review 'Timo Tang'
+
+# 4. Now the live-run flags exist.
+python3 commission.py --record lite3-commissioning-LITE3-A.json --emit-flags
+```
+
+**Ask it what is missing before you go near the robot / 在接近机器人之前，先问它缺什么**:
+
+```bash
+python3 commission.py --record <artefact>.json --emit-flags
+```
+
+On an incomplete record it refuses and **names the gaps** — *"this record cannot produce
+live-run flags; it is missing …. Run those stages before asking for the flags."* That check
+costs nothing and moves no legs. 该命令会拒绝并**列出缺失项**，且不会让机器人移动。
+
+**The order is the safety argument**, not convenience: read-only, then a tape measure, then a
+camera, and only then anything that walks — and the gait floor is measured **before** the
+actuator gain, because a gain fitted across the floor is dragged down by every sub-floor
+point it swallowed. **顺序本身就是安全论证**，请勿调换。
+
+⚠️ `--emit-flags` **refuses a `provisional` record.** Step 3 is not paperwork: a number that
+has been measured and a number that has been *believed* are different things, and only a
+person can turn one into the other. `--emit-flags` **拒绝 `provisional` 记录**，第 3 步不是走流程。
+
+Motor temperature has its own probe — `motor_temperature_probe.py` — so §3 below is a
+question about limits, not about building an instrument.
+
+---
+
 ## 1. The nine required inputs / 九项必需输入
 
 | flag | where the value comes from / 数值来源 |
