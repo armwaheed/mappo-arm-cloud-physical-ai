@@ -926,10 +926,10 @@ everything that follows.
 ```mermaid
 flowchart LR
     subgraph SRC["The ceiling: one room, one morning, 13 minutes — and the camera never moves"]
-      CLIPS[6 --record-raw clips]
+      CLIPS["6 --record-raw clips"]
       VIEWS[distinct views]
     end
-    subgraph LABEL["Labelling — neither model names a class; the class is the folder plus the phrase"]
+    subgraph LBL["Labelling — neither model names a class; the class is the folder plus the phrase"]
       OWL[OWLv2 base-patch16-ensemble]
       SAM["SAM 2.1 hiera-large, IMAGE mode"]
     end
@@ -942,8 +942,8 @@ flowchart LR
       RB[b_ws_synth]
       RC[c_ws_synth_aug]
     end
-    GATE[the standing gate]
-    OUT[shipped]
+    GATE[scored at a NAMED preprocessing]
+    OUT["at 224 px, the size the launcher opens at: NOTHING PASSES"]
 
     CLIPS -- "5,854 frames, 1280x720 at 15 fps; camera motion 0.0-1.0 px median" --> VIEWS
     VIEWS -- "456 distinct views = 7.8%; the other 5,398 are near-duplicates" --> OWL
@@ -956,8 +956,7 @@ flowchart LR
     RA -- "no augmentation flags" --> GATE
     RB -- "+ the offline synthetic half" --> GATE
     RC -- "+ --motion-blur 0.5 --sensor-noise 0.5 --composite 0.3" --> GATE
-    GATE -- "lose ZERO of the 284 cross-day people the shipped network sees" --> OUT
-    OUT -- "at 224 px, what deploy/run-peer-supervised.sh launches: NOTHING PASSES" --> OUT
+    GATE -- "the standing gate: lose ZERO of the 284 cross-day people the shipped network sees" --> OUT
 ```
 
 
