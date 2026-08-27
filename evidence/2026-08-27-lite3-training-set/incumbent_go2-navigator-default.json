@@ -1,0 +1,20 @@
+{
+ "preprocessing": "go2-navigator-default",
+ "profile": {
+  "input_size": 300,
+  "confidence": 0.4
+ },
+ "note": "lite3 is SAME-SESSION; person is CROSS-DAY. See the README.",
+ "results": [
+  {
+   "model": "mnssd22.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "person": {
+    "frames": 284,
+    "people_kept": 24
+   }
+  }
+ ]
+}

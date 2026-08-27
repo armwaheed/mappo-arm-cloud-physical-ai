@@ -1,0 +1,610 @@
+{
+ "preprocessing": "go2-navigator-default",
+ "profile": {
+  "input_size": 300,
+  "confidence": 0.4
+ },
+ "note": "lite3 is SAME-SESSION; person is CROSS-DAY. See the README.",
+ "results": [
+  {
+   "model": "epoch001.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 2,
+    "agnostic_hit": 2
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 26
+   }
+  },
+  {
+   "model": "epoch002.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 3,
+    "agnostic_hit": 3
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 15
+   }
+  },
+  {
+   "model": "epoch003.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 6,
+    "agnostic_hit": 7
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 12
+   }
+  },
+  {
+   "model": "epoch004.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 9,
+    "agnostic_hit": 9
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 4
+   }
+  },
+  {
+   "model": "epoch005.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 10,
+    "agnostic_hit": 10
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch006.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 14,
+    "agnostic_hit": 14
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch007.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 15,
+    "agnostic_hit": 15
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch008.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 14,
+    "agnostic_hit": 14
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch009.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 16,
+    "agnostic_hit": 16
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch010.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 16,
+    "agnostic_hit": 16
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 4
+   }
+  },
+  {
+   "model": "epoch011.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 16,
+    "agnostic_hit": 16
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch012.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 16,
+    "agnostic_hit": 16
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch013.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 16,
+    "agnostic_hit": 16
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch014.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch015.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 15,
+    "agnostic_hit": 15
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch016.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch017.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 3
+   }
+  },
+  {
+   "model": "epoch018.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch019.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch020.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch021.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch022.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch023.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch024.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 16,
+    "agnostic_hit": 16
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch025.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 1
+   }
+  },
+  {
+   "model": "epoch026.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 16,
+    "agnostic_hit": 16
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch027.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch028.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 2
+   }
+  },
+  {
+   "model": "epoch029.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 1
+   }
+  },
+  {
+   "model": "epoch030.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch031.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 19,
+    "agnostic_hit": 19
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch032.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch033.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 17,
+    "agnostic_hit": 17
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch034.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 1
+   }
+  },
+  {
+   "model": "epoch035.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch036.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch037.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch038.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch039.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  },
+  {
+   "model": "epoch040.caffemodel",
+   "preprocessing": "go2-navigator-default",
+   "input_size": 300,
+   "confidence": 0.4,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 18,
+    "agnostic_hit": 18
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 0
+   }
+  }
+ ]
+}

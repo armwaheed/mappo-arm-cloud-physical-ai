@@ -163,6 +163,89 @@ without adding information.
 ⚠️ **It adds 0 viewpoints, 0 rooms and 0 days.** Augmentation multiplies examples. 456 views
 from 13 minutes of one morning is the ceiling, and a 1:9 ratio does not move it.
 
+## The three fine-tunes, and the gate two of them fail everywhere
+
+`k_full_pseudo03` is the best detector this project has produced — 89% recall at 12% false
+alarms against the shipped weights' 68%/56%, keeping 17 of 22 people, and it ran with **no
+augmentation flags**. Its hyperparameters are the constant across all three runs
+(`--freeze-through= --backbone-lr-scale 0.5 --pseudo-labels 0.3 --distil 0.1`, 40 epochs);
+one thing moves at a time.
+
+| run | positives | what it isolates |
+| --- | ---: | --- |
+| `a_ws_real` | 283 | the contemporaneous paired control |
+| `b_ws_synth` | 2,825 | + the offline synthetic half |
+| `c_ws_synth_aug` | 2,825 | + the wave-6 `--motion-blur/--sensor-noise/--composite` flags |
+
+`a` is a real control, not a citation: these operators call `rng.random()` even at
+probability 0, so no earlier run is byte-reproducible under this code.
+
+```bash
+python3 summarise_scores.py
+```
+
+### Incumbent, scored here by the same script
+
+| preprocessing | | people kept, cross-day |
+| --- | --- | ---: |
+| `go2-peer-supervised` — **what production launches** | 224 px / 0.25 | **25 / 284** |
+| `go2-navigator-default` | 300 px / 0.4 | 24 / 284 |
+| `go2-run-smoke` | 300 px / 0.45 | 20 / 284 |
+
+### Best `lite3` epoch, and what it costs in people
+
+⚠️ This table is an argmax of one metric with the other merely *reported* at that point. It
+is how a checkpoint sweep picks a winner and it is not a basis for shipping anything.
+
+| run | 224 px / 0.25 (production) | 300 px / 0.4 | 300 px / 0.45 |
+| --- | --- | --- | --- |
+| `a` real only | 4/36 lite3, **21** people (−4) | 7/36, **29** (+5) | 7/36, **25** (+5) |
+| `b` + synthetic | 15/36, **7** (−18) | 18/36, **18** (−6) | 17/36, **16** (−4) |
+| `c` + synthetic + flags | 15/36, **1** (−24) | 19/36, **0** (−24) | 18/36, **2** (−18) |
+
+The ablation is monotone in both directions at once: **every step that adds augmentation adds
+`lite3` hits and removes people.** `c` at 300 px finds the robot in 19 of 36 frames and has
+almost stopped seeing people at all — 0 of 284. That reproduces wave 6's own finding, where
+adding the same three flags to `k_full_pseudo03` lost 4–13 people at every matched epoch.
+
+### Best epoch that keeps at least as many people as the incumbent
+
+This is the column that decides shipping, because the standing gate is *lose zero of the
+people the shipped network sees*.
+
+| run | 224 px / 0.25 (production) | 300 px / 0.4 | 300 px / 0.45 |
+| --- | --- | --- | --- |
+| `a` real only | **no epoch passes** | ep026 — **7/36**, 29 people (+5) | ep026 — 7/36, 25 (+5) |
+| `b` + synthetic | ep001 — 0/36, 29 (+4) | **no epoch passes** | ep002 — 3/36, 22 (+2) |
+| `c` + synthetic + flags | ep001 — 0/36, 34 (+9) | ep001 — 2/36, 26 (+2) | **no epoch passes** |
+
+`ep001` is the base weights barely moved, so a row reading "ep001, 0/36" is the gate saying
+*nothing here*.
+
+### ⛔ Nothing is recommended, and here is the one bright corner
+
+**At 224 px, the size `deploy/run-peer-supervised.sh` actually launches, no checkpoint from
+any of the three runs both detects the Lite3 and holds its people.** The best that detects
+anything at all, `b` at 15/36, keeps **7 of 284** people against the incumbent's 25. That is
+a worse failure than the previous Lite3 wave's 3-and-5-of-17, and it is refused on the same
+grounds.
+
+The one real gain: **`a_ws_real` epoch 026 at `go2-navigator-default` finds the Lite3 in 7 of
+36 held-out frames while keeping 29 of 284 people against the incumbent's 24** — it gains 5.
+That is a checkpoint that learned a new class without paying for it in the old one. Three
+caveats, all of them load-bearing:
+
+* the 7/36 is **same-session**, and 19% recall is weak besides;
+* 300 px / 0.4 is `go2-navigator-default`, which is what a launcher that passes *no flags*
+  produces — **not** what the peer-avoidance launcher passes;
+* 29 vs 24 people is +5 on a base of 284, and the r/s duplicate pair on the Go2 corpus puts
+  this project's own run-to-run noise at ±1–3 people. +5 is outside that, but not by much.
+
+**The 300-vs-224 split is still the blocker, and this is now the third wave to hit it.** The
+previous Lite3 wave measured every checkpoint at 168/168 at 300 and 0/168 at 224.
+`finetune_ssd.py` resizes every training image to 300; the launcher opens at 224; the class
+the training produces is weakest exactly where it has to run.
+
 ## ⛔ Pixels only
 
 Nothing here reads `range_m`, `focal_px`, `height_m` or `hfov_deg`. The camera block embedded
@@ -197,7 +280,9 @@ Both are written up for the operator, bilingually, in
 | `sam_label.py` | owlv2 + sam2, image mode |
 | `build_dataset.py` | labels → train/eval/negative manifests |
 | `make_synthetic.py` | the three synthetic families |
-| `score_checkpoints.py` | scores checkpoints at a **named** preprocessing |
+| `score_checkpoints.py` | scores checkpoints at a **named** preprocessing, fresh net per configuration |
+| `summarise_scores.py` | the two score tables above, both selection rules |
+| `scored_*.json`, `incumbent_*.json` | every checkpoint at every profile |
 | `run_lite3_ws.sh` | the Spark wave |
 | `scene_queries.json` | **what each class means** — folder name + prompted phrase |
 | `handcheck.json` | every hand-inspected frame and its verdict |
