@@ -876,6 +876,38 @@ def test_a_floor_stop_is_separable_from_every_other_stop_in_the_record():
         "defect issue #26 was about")
 
 
+def test_the_decision_and_transport_layers_round_trip():
+    """The 2026-08-26 runs were undiagnosable because a tick held a reason string and
+    nothing else. These two keys are the fix's data: WHAT each layer decided, and WHAT
+    the transport actually accepted. They must come back out byte-for-byte."""
+    decision = {"policy_raw": {"vx": 0.35, "vy": 0.20, "wz": 0.0},
+                "after_limits": {"vx": 0.35, "vy": 0.0, "wz": 0.0},
+                "supervisor": {"phase": "turn", "side": "left",
+                               "waypoint": [0.88, 0.69], "blocker": "landmark-1",
+                               "command": {"vx": 0.0, "vy": 0.0, "wz": 1.0}},
+                "final": {"vx": 0.0, "vy": 0.0, "wz": 1.0, "reason": "exec-turn"},
+                "axis_preview": {"forward": 0, "yaw": 16000, "sign_only": True}}
+    transport = {"forward": 0, "lateral": 0, "yaw": 16000}
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer, decision=decision, transport=transport)
+        record = _read(directory)[0]
+    assert record["decision"] == decision
+    assert record["transport"] == transport
+
+
+def test_absent_decision_and_transport_leave_no_keys():
+    """ABSENT WHEN ABSENT, never null: a tick that never invoked the planner (stale
+    perception, goal search) carries no decision — a null would be indistinguishable
+    from a planner that produced one, which is the stale-inheritance defect."""
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            _tick(writer)
+        record = _read(directory)[0]
+    assert "decision" not in record
+    assert "transport" not in record
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

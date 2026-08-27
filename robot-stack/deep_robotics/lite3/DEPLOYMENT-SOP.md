@@ -379,13 +379,20 @@ shortfall cost a stalled run. Measure the obstacle, not its spec sheet.
    **目标椅**：在机器人正前方 2.0–2.5 m、**位于相机中轴线上**、完整露出、不被桌子半遮。
    `goal never sighted in 20 s` 是摆放问题，不是检测器问题 —— 先重新摆椅子，再考虑动阈值。
    备用手段是 `--goal-confidence 0.40`，仅在确认摆放无误后使用。
-2. **Obstacle box**: centre at least **0.9 m** off the robot→chair line
-   (0.40 m robot radius + 0.28–0.33 m measured box radius + margin). The earlier
-   "≥ 0.5 m" rule was computed from the 0.20 m nominal radius and is not enough — a run
-   held in corridor for 58 s and timed out on it.
-   **障碍箱**：箱心距"机器人→椅子"连线至少 **0.9 m**（机器人半径 0.40 m + 箱子实测半径
-   0.28–0.33 m + 余量）。之前的"≥ 0.5 m"规则是按 0.20 m 标称半径算的，不够 ——
-   有一次运行因此在走廊判定里卡了 58 秒直到超时。
+2. **Obstacle box**: squarely **ON** the robot→chair line, between the two — this demo
+   exists to prove the robot goes AROUND it. The earlier rule ("≥ 0.9 m off the line")
+   dates from the plain goal follower, which could only stop for a blocker; keeping the
+   box off the line now would demonstrate nothing. What the box needs instead is room
+   to be passed: the turn-drive supervisor routes a tangent corner
+   ~0.9 m off the line (0.40 m robot radius + 0.28–0.33 m measured box radius +
+   0.14 m clearance), so at least one side of the lane must keep that much clear
+   width — measure it, and prefer both sides clear so the shorter side can be chosen.
+   **障碍箱**：端端正正放在"机器人→椅子"连线上、位于两者之间 —— 这个演示要证明的就是
+   机器人**绕过**它。之前的"箱心离线至少 0.9 m"规则属于只会刹停的普通目标跟随模式；
+   现在把箱子摆在线外等于什么都没演示。箱子真正需要的是**可被绕过的空间**：
+   turn-drive supervisor 的绕行拐角在连线一侧约 0.9 m 处（机器人半径 0.40 m +
+   箱子实测半径 0.28–0.33 m + 0.14 m 间距），所以通道至少要有一侧留出这个宽度 ——
+   用卷尺量；最好两侧都够，让 supervisor 自己选较短的一侧。
 3. **Everything else**: the lane stays clear on both sides; the second robot stays
    outside the lane, powered off; people step out before `--live`.
    **其它所有东西**：通道两侧保持清空；第二台机器人停在通道外并关机；
@@ -397,19 +404,30 @@ shortfall cost a stalled run. Measure the obstacle, not its spec sheet.
 ## 6. 阶段 4 —— 先影子运行，再实机
 
 **EN** — Always shadow first (Phase 0, check 3 is the shadow command): perception
-running, goal detected at the placement you measured, ranges plausible. Only then live.
+running, goal detected at the placement you measured, ranges plausible. For the
+avoidance demo the FULL shadow is the command below minus `--live --operator-ready`:
+the marker must hold in the static map continuously, and every planner tick's
+`decision` chain — policy raw, envelope, supervisor, axis preview — must appear in
+the telemetry. Only then live.
 The live command, with every robot-specific value in `<angle brackets>`:
 
 **中文** —— 永远先跑影子模式（阶段 0 第 3 项检查就是影子命令）：感知在跑、目标在你实测的
-位置上被检测到、测距合理。然后才实机。实机命令模板如下，所有因机而异的值放在
-`<尖括号>` 里：
+位置上被检测到、测距合理。避障演示的**完整**影子运行就是下面的命令去掉
+`--live --operator-ready`：marker 必须连续留在静态地图里，且每个 planner tick 的
+`decision` 决策链（policy 原始值、包络、supervisor、轴映射预览）都必须出现在遥测里。
+然后才实机。实机命令模板如下，所有因机而异的值放在 `<尖括号>` 里：
 
 ```bash
 cd $HOME/mappo-lite3-stage/releases/<TAG>/robot-stack/deep_robotics/lite3/visual_nav
 source $HOME/mappo-lite3-stage/venv/bin/activate      # Phase 0 — --live REFUSES without it
 export PYTHONPATH=$HOME/mappo-lite3-stage/python
 export MAPPO_ROBOT_HOST=1
-python3 lite3_visual_nav.py \
+python3 mappo_drive.py \
+    --package $HOME/mappo-lite3-stage/policy \
+    --policy-mode supervised \
+    --policy-scale 4.0 \
+    --execution-supervisor turn-drive \
+    --policy-gait-floor 0.30 \
     --camera-source rtsp://127.0.0.1:8554/test \
     --model-dir $HOME/mappo-lite3-stage/models/mobilenet-ssd \
     --calibration <VALIDATED_CALIBRATION_JSON> \
@@ -425,6 +443,36 @@ python3 lite3_visual_nav.py \
     --record $HOME/mappo-lite3-stage/evidence/<RUN_ID>.mp4 \
     --telemetry $HOME/mappo-lite3-stage/evidence/<RUN_ID>.jsonl
 ```
+
+**EN** — The entry point is `mappo_drive.py`, the MAPPO drive path — NOT
+`lite3_visual_nav.py`, whose four 2026-08-26 runs are why the demo showed no
+avoidance: the holonomic policy's strafe intent died at `--max-vy 0` on a robot with
+no measured lateral primitive. `--execution-supervisor turn-drive` is what re-expresses
+avoidance as the primitives this Lite3 WAS measured to perform (pure turns, pure
+drives); the planner's veto still judges every supervisor command. `--policy-mode
+supervised` is not optional — raw mode has no veto. Neither is `--policy-scale 4.0`:
+the checkpoint's trained agent radius is 0.1 VMAS units, this robot's radius is
+0.40 m, so the implied scale IS 4.0 m/unit — and without it the scale gate REFUSES to
+start (the configured 2.5 belongs to the Go2's 0.25 m radius). The scale also sets
+the policy's sensing horizon: 4.0 × 0.35 = **1.40 m**, enough to see the box from the
+start pose. For any other checkpoint or robot radius, pass exactly what the gate's
+refusal prints — never guess it. The telemetry tick
+now records every decision layer (`decision`) and the raw axes the transport accepted
+(`transport`) — after the run, check both exist before calling the run evidence.
+
+**中文** —— 入口是 `mappo_drive.py`，即 MAPPO 驱动路径 —— 不是 `lite3_visual_nav.py`；
+2026-08-26 的四次运行用的就是后者，这正是演示没有避障的原因：holonomic 策略的横移意图
+在 `--max-vy 0` 处被删除，而这台机器人没有实测过的横移 primitive。
+`--execution-supervisor turn-drive` 把避障改写成这台 Lite3 **实测能执行**的动作
+（纯转向、纯前进）；planner 的 veto 仍然逐条审查 supervisor 的命令。
+`--policy-mode supervised` 不可省略 —— raw 模式没有 veto。
+`--policy-scale 4.0` 同样不是可选项：checkpoint 的训练半径是 0.1 VMAS 单位，机器人半径
+0.40 m，隐含的换算就是 4.0 m/unit；不传这个值，scale 闸门会**直接拒绝启动**
+（4.0 ≠ 配置里的 2.5，那是 Go2 的 0.25 m 半径）。它同时决定了策略的感知视距：
+4.0 × 0.35 = **1.40 m**，足以从起步位置看见 1.0–1.5 m 处的纸箱。如果换用别的 checkpoint
+或别的机器人半径，以闸门拒绝信息里打印的值为准，**不要猜**。遥测的每个 tick 现在会记录
+完整决策链（`decision`）和传输层实际接受的 raw axes（`transport`）—— 运行结束后先确认
+这两个键存在，才能把这次运行当作证据。
 
 **EN** — `--gait-floor` / `--actuator-gain` / `--robot-radius` come from this robot's
 **reviewed** commissioning record (`--emit-flags`), not from this document; the values

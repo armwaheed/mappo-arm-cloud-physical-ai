@@ -119,6 +119,7 @@ from mappo_policy import (
     tick_from_state,
 )
 from peer_source import DEFAULT_SPOOL, PEER_TIMEOUT_S, Alignment, PeerSource
+from turn_drive_supervisor import TurnDriveSupervisor
 
 _STACK = Path(__file__).resolve().parent.parent / "robot-stack" / "unitree" / "go2"
 # `go2/` so `locomotion.*` and `d1_arm.*` resolve as the packages the stack imports them
@@ -222,10 +223,28 @@ class MappoPlanner(DynamicWindowPlanner):
                  refusal_log: Path | None = None, scale_override: bool = False,
                  veto_horizon_s: float | None = VETO_HORIZON_S,
                  gait_floor_m_s: float = 0.0,
-                 platform_floor_m_s: float = 0.0):
+                 platform_floor_m_s: float = 0.0,
+                 execution_supervisor: TurnDriveSupervisor | None = None,
+                 axis_preview=None):
         super().__init__(limits=limits, config=config)
         self._runner = runner
         self._supervised = supervised
+        #: The turn-drive execution supervisor, or ``None``. When it is set and a
+        #: mapped static obstacle blocks the straight line to the goal, its command —
+        #: built only from the primitives this robot was measured to perform —
+        #: replaces the policy's, and the SAME veto is then applied to it. See
+        #: ``--execution-supervisor``.
+        self._execution_supervisor = execution_supervisor
+        #: Optional ``(vx, vy, wz) -> dict`` translating a command into the raw
+        #: transport axes it WOULD leave as, for the decision record. The Lite3 axis
+        #: mapping is sign-only, so the record says so rather than implying the
+        #: magnitudes survive.
+        self._axis_preview = axis_preview
+        #: The per-tick decision record, rebuilt by every ``plan()`` call that reaches
+        #: the policy. Read by ``visual_nav`` on the tick that planned; a tick that
+        #: never called ``plan()`` has nothing to inherit because the navigator only
+        #: reads this on the planning path.
+        self._last_decision: dict | None = None
         #: How far ahead the veto rolls a proposed command. ``None`` is the planner's own
         #: horizon (2.5 s). This is the parameter that decides WHERE the planner takes the
         #: avoidance off the policy, and it is not the policy's sensing horizon: measured
@@ -251,7 +270,8 @@ class MappoPlanner(DynamicWindowPlanner):
                              "velocity_unavailable": 0, "speed_raised": 0,
                              "peer_held": 0, "floor_unreachable": 0,
                              "raised_below_floor": 0, "sub_floor": 0,
-                             "sub_floor_stalled": 0, "transport_refused": 0}
+                             "sub_floor_stalled": 0, "transport_refused": 0,
+                             "turn_drive": 0}
         #: Commanded speeds below this are scaled up, direction preserved — see
         #: :meth:`_at_least_walking_pace`. Zero disables it. This is
         #: ``--policy-gait-floor``: an OPT-IN override of what the policy asked for, and
@@ -443,8 +463,24 @@ class MappoPlanner(DynamicWindowPlanner):
         self._note_transport_refusal(command)
         return command
 
+    def decision_record(self) -> dict | None:
+        """The decision layers of the LAST ``plan()`` call, for the telemetry tick.
+
+        ``None`` until the first call and whenever the last call never reached the
+        policy — which is the property that stops a stale, goal-less or stand-switch
+        tick inheriting a decision it never made. The record names every layer the
+        command passed through — the policy's raw action, the envelope clamp, the gait
+        floor, the execution supervisor, the command that left, and the transport axes
+        it translates to — because the 2026-08-26 live runs were undiagnosable in
+        exactly these terms: their telemetry held a reason string and nothing else.
+        """
+        return self._last_decision
+
     def _choose(self, pose, goal, last_command, obstacles, control_dt: float = 0.1,
                 last_reason: str = "goal") -> Command:
+        # Rebuilt on every call, so a tick that returns before the policy ran — no
+        # goal, a peer hold — leaves NOTHING behind rather than last tick's record.
+        self._last_decision = None
         # The incumbent is computed on EVERY tick, used or not, so that its acceleration
         # window and reason hysteresis stay continuous. A planner consulted for the first
         # time mid-run plans from a standstill the robot is not in.
@@ -524,12 +560,88 @@ class MappoPlanner(DynamicWindowPlanner):
         # goal distance grew from 2.64 m to 2.73 m while the robot reversed toward
         # unobserved floor. The camera is an 85-degree forward cone; there is nothing
         # behind it but the optimistic default that unseen bearings read as clear.
-        proposed = (
+        clamped = (
             max(0.0, min(self.limits.max_vx, step.vx_mps)),
             max(-self.limits.max_vy, min(self.limits.max_vy, step.vy_mps)),
             max(-self.limits.max_wz, min(self.limits.max_wz, step.wz_radps)))
 
-        proposed = self._at_least_walking_pace(proposed)
+        proposed = self._at_least_walking_pace(clamped)
+
+        decision = {
+            "policy_raw": {"vx": step.vx_mps, "vy": step.vy_mps,
+                           "wz": step.wz_radps},
+            "after_limits": {"vx": clamped[0], "vy": clamped[1], "wz": clamped[2]},
+            "after_gait_floor": {"vx": proposed[0], "vy": proposed[1],
+                                 "wz": proposed[2]},
+        }
+
+        # The execution supervisor gets the scene AFTER the policy has answered: it
+        # exists to re-express avoidance in primitives this robot can perform, not to
+        # drive the run. ``None`` from it — no static blocker on the goal line, or no
+        # clear detour — leaves the policy's command exactly where it was.
+        override = (None if self._execution_supervisor is None
+                    else self._execution_supervisor.command(pose, goal, obstacles))
+        if override is not None:
+            candidate = (override.vx, override.vy, override.wz)
+            decision["supervisor"] = {
+                "phase": override.phase, "side": override.side,
+                "waypoint": [override.waypoint[0], override.waypoint[1]],
+                "blocker": override.blocker_id,
+                "command": {"vx": candidate[0], "vy": candidate[1],
+                            "wz": candidate[2]},
+            }
+            # THE SAME VETO, ON THE OVERRIDE. The first version of this bypass
+            # returned the supervisor's command directly, which routed AROUND the
+            # dynamic-obstacle check — a person stepping onto the detour path would
+            # have been walked into by the safety layer's own replacement. The
+            # supervisor only ever looks at the static map; everything that moves is
+            # judged here, on the command that is actually going out.
+            if self._supervised and not self.is_feasible(
+                    pose, candidate, obstacles, horizon_s=self._veto_horizon_s):
+                self.counts["vetoed"] += 1
+                decision["supervisor"]["vetoed"] = True
+                # `floor_reach_m_s` and `transport_refusal` travel HERE and not on the
+                # branch below, and the difference is which velocity is going out. This
+                # branch re-emits THE PLANNER'S OWN command, so both fields describe it
+                # and dropping them would strip the state off the exact velocity that
+                # carries it — issue #26 and issue #145, the same argument the policy
+                # veto below makes.
+                return self._finalise(decision, Command(
+                    planned.vx, planned.vy, planned.wz,
+                    reason=f"veto-{planned.reason}", gap_m=planned.gap_m,
+                    feasible=planned.feasible, evaluated=planned.evaluated,
+                    floor_reach_m_s=planned.floor_reach_m_s,
+                    transport_refusal=planned.transport_refusal))
+            self.counts["turn_drive"] += 1
+            # The reason is `exec-<phase>`, a word OUTSIDE PLANNER_REASONS on purpose:
+            # `base_reason` returns it unchanged, so the rest-after-blocked dispatch,
+            # both Schmitt triggers and the bridge's mover hold all read it as itself
+            # and none of them mistake a supervised detour for a planner hold.
+            #
+            # ⚠️ **`floor_reach_m_s` AND `transport_refusal` ARE STATED AS `None` HERE
+            # RATHER THAN FORWARDED, AND THAT IS THE WHOLE COMPOSITION OF #145 AND
+            # #13.** Both describe `planned` — the command the shared planner would
+            # have issued — and `planned` is precisely what this branch REPLACES.
+            # `visual_nav` ends the run on either of them (`stopped by the transport`,
+            # `stopped below the gait floor`), so forwarding them would end the run on
+            # the exact tick the supervisor found the way around: the planner refuses a
+            # straight line it cannot execute, the supervisor answers with a turn and a
+            # drive it can, and the refusal that has just been superseded would still be
+            # the last word. Measured on the scene in
+            # `test_the_supervisors_detour_survives_the_transport_aware_veto`: 18 of the
+            # run's 51 supervisor ticks carry a planner refusal, the first at tick 24 of
+            # 104, and forwarding it ends the run on the detour's first drive leg.
+            #
+            # STATED rather than omitted, because `test_every_branch_that_returns_a_
+            # command_states_its_search` requires every producer to say what it means —
+            # and "deliberately nothing to report" and "forgot to forward" must not be
+            # the same diff. `test_a_planner_transport_refusal_does_not_end_a_supervised
+            # _detour` is what keeps the value right.
+            return self._finalise(decision, Command(
+                candidate[0], candidate[1], candidate[2],
+                reason=f"exec-{override.phase}", gap_m=planned.gap_m,
+                feasible=planned.feasible, evaluated=planned.evaluated,
+                floor_reach_m_s=None, transport_refusal=None))
 
         if self._supervised and not self.is_feasible(pose, proposed, obstacles,
                                                      horizon_s=self._veto_horizon_s):
@@ -548,11 +660,12 @@ class MappoPlanner(DynamicWindowPlanner):
             # would strip the gait-floor state off the exact velocity that carries it.
             # The 2026-08-27 run that reopened issue #26 was policy-driven, and 37 of its
             # 38 planner-issued ticks came out of this branch.
-            return Command(planned.vx, planned.vy, planned.wz,
-                           reason=f"veto-{planned.reason}", gap_m=planned.gap_m,
-                           feasible=planned.feasible, evaluated=planned.evaluated,
-                           floor_reach_m_s=planned.floor_reach_m_s,
-                           transport_refusal=planned.transport_refusal)
+            return self._finalise(decision, Command(
+                planned.vx, planned.vy, planned.wz,
+                reason=f"veto-{planned.reason}", gap_m=planned.gap_m,
+                feasible=planned.feasible, evaluated=planned.evaluated,
+                floor_reach_m_s=planned.floor_reach_m_s,
+                transport_refusal=planned.transport_refusal))
 
         self.counts["policy"] += 1
         # `feasible`/`evaluated` describe the PLANNER's search, which ran on this tick
@@ -562,11 +675,12 @@ class MappoPlanner(DynamicWindowPlanner):
         # feasible", i.e. the robot was boxed in. The recorded runs of 2026-08-17 say
         # exactly that on all 58 policy-driven ticks of the successful one, while the
         # vetoed ticks beside them record 330 of 330. See issue #20.
-        return Command(proposed[0], proposed[1], proposed[2], reason="policy",
-                       gap_m=planned.gap_m,
-                       feasible=planned.feasible, evaluated=planned.evaluated,
-                       floor_reach_m_s=planned.floor_reach_m_s,
-                       transport_refusal=planned.transport_refusal)
+        return self._finalise(decision, Command(
+            proposed[0], proposed[1], proposed[2], reason="policy",
+            gap_m=planned.gap_m,
+            feasible=planned.feasible, evaluated=planned.evaluated,
+            floor_reach_m_s=planned.floor_reach_m_s,
+            transport_refusal=planned.transport_refusal))
 
     def _note_transport_refusal(self, command: Command) -> None:
         """Say, once, that the TRANSPORT stopped the robot rather than the room.
@@ -600,6 +714,24 @@ class MappoPlanner(DynamicWindowPlanner):
         print("    loaded body measures smaller, or an approach that does not need a "
               "crawl. See issue #145.")
         print("!" * 78)
+
+    def _finalise(self, decision: dict, command: Command) -> Command:
+        """Close out the tick's decision record and return the command it describes.
+
+        ONE exit helper rather than a record written at four return sites, because a
+        layer that some paths forget to write is the defect this record exists to
+        close: the 2026-08-26 runs could not say whether a `hold` was the policy's,
+        the envelope's or the transport's. The axis preview is computed HERE, on the
+        command actually leaving, so the record never shows the axes a DIFFERENT
+        candidate would have produced.
+        """
+        decision["final"] = {"vx": command.vx, "vy": command.vy, "wz": command.wz,
+                             "reason": command.reason}
+        if self._axis_preview is not None:
+            decision["axis_preview"] = self._axis_preview(command.vx, command.vy,
+                                                          command.wz)
+        self._last_decision = decision
+        return command
 
     def _at_least_walking_pace(self, proposed: tuple) -> tuple:
         """Scale a policy command up to the gait floor, KEEPING ITS DIRECTION.
@@ -956,6 +1088,8 @@ class MappoPlanner(DynamicWindowPlanner):
         counts = self.counts
         return (f"[mappo_drive] {counts['policy']}/{counts['ticks']} ticks driven by the "
                 f"policy, {counts['vetoed']} vetoed, {counts['stopped']} stopped"
+                + (f", {counts['turn_drive']} taken by the turn-drive supervisor"
+                   if counts["turn_drive"] else "")
                 + (f", {counts['speed_raised']} scaled up to the gait floor"
                    if counts["speed_raised"] else "")
                 + (f", {counts['raised_below_floor']} of those only as far as an "
@@ -1096,6 +1230,20 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                             f"the same blindness as a camera that has. Raising it does "
                             f"not make a peer's position better known, it makes the robot "
                             f"act for longer on a position it no longer has")
+    group.add_argument("--execution-supervisor", choices=("none", "turn-drive"),
+                       default="none",
+                       help="how avoidance is re-expressed when a mapped static "
+                            "obstacle blocks the straight line to the goal. "
+                            "'turn-drive' (the Lite3's answer) replaces the policy's "
+                            "command with a two-segment detour executed as pure turns "
+                            "and pure drives — the only motions this Lite3's measured "
+                            "axis profile can perform, since its lateral and reverse "
+                            "primitives are unmeasured and --max-vy 0 deletes the "
+                            "holonomic policy's strafe intent at the envelope clamp. "
+                            "The planner's veto still runs on the supervisor's command, "
+                            "so a person stepping onto the detour holds the robot. "
+                            "'none' (the default) is today's behaviour: the policy's "
+                            "command, clamped, is what the veto judges")
     group.add_argument("--heading-servo", choices=("off", *SERVO_MODES), default="off",
                        help="turn the nose towards something the policy does not steer "
                             "for. The policy commands no yaw at all, so with the servo "
@@ -1270,6 +1418,18 @@ def main(argv=None, bindings=None) -> int:
 
         def planner_factory(limits, config):
             """Called by the shared run loop in place of ``DynamicWindowPlanner``."""
+            supervisor = None
+            if args.execution_supervisor == "turn-drive":
+                # The detour is planned with the planner's OWN robot disc and executed
+                # at the envelope ceilings. On the sign-only axis transport those
+                # ceilings ARE the executed speeds to within the measured primitives'
+                # accuracy — any command past the deadband leaves at the primitive's
+                # measured rate — so the veto's rollout of a supervisor command
+                # describes the motion the robot will actually make.
+                supervisor = TurnDriveSupervisor(
+                    robot_radius_m=config.robot_radius_m,
+                    drive_speed_m_s=limits.max_vx,
+                    turn_rate_rad_s=limits.max_wz)
             planner = MappoPlanner(limits, config, runner,
                                    supervised=args.policy_mode == "supervised",
                                    refusal_log=args.refusal_log,
@@ -1278,7 +1438,10 @@ def main(argv=None, bindings=None) -> int:
                                                    if args.veto_horizon is None
                                                    else args.veto_horizon),
                                    gait_floor_m_s=args.policy_gait_floor,
-                                   platform_floor_m_s=platform_floor)
+                                   platform_floor_m_s=platform_floor,
+                                   execution_supervisor=supervisor,
+                                   axis_preview=getattr(bindings, "axis_preview",
+                                                        None))
             planners.append(planner)
             return planner
 

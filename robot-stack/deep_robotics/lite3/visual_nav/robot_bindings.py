@@ -685,6 +685,26 @@ class Lite3Bindings:
             return PROPORTIONAL
         return SignOnlyAxisTransport(profile)
 
+    def axis_preview(self, vx: float, vy: float, wz: float) -> dict | None:
+        """The raw axes a command WOULD leave as, for the MAPPO decision record.
+
+        Read through ``getattr`` by ``integration/mappo_drive.py``, so a Go2 — whose
+        bindings define no such method — simply records no preview. The mapping is
+        sign-only, and the record says so: a consumer comparing the requested velocity
+        against the axes must not be left believing the magnitudes reached the wire. A
+        command the profile cannot express (a strafe under a ``null`` lateral
+        primitive) records the refusal rather than raising it out of a telemetry path.
+        """
+        profile = self._axis_profile
+        if profile is None:
+            return None
+        try:
+            axes = profile.map_velocity(vx, vy, wz)
+        except AxisProfileError as error:
+            return {"error": str(error)}
+        return {"forward": axes.forward, "lateral": axes.lateral, "yaw": axes.yaw,
+                "sign_only": True}
+
     def robot_radius(self, args, default: float) -> float:
         return default if args.robot_radius is None else args.robot_radius
 

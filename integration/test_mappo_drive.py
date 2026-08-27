@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
 from avoidance import (
     MIN_GAIT_COMMAND_M_S,
     PLANNER_REASONS,
+    STATIC_HARD_GAP_M,
     Command,
     Limits,
     Obstacle,
@@ -66,6 +67,7 @@ from mappo_policy import (
 )
 from peer_source import PEER_TIMEOUT_S, Alignment, PeerSource, spool_document, write_spool
 from replay_mappo import derived_config
+from turn_drive_supervisor import TurnDriveSupervisor
 
 BIN = Obstacle(x=1.0, y=0.0, vx=0.0, vy=0.0, radius_m=0.23, kind="static",
                object_id="landmark-1")
@@ -1482,6 +1484,190 @@ def test_a_transport_refusal_is_announced_once_and_counted_every_tick():
     assert out.getvalue() == "", out.getvalue()
     assert quiet.counts["transport_refused"] == 0, quiet.counts
     assert "refused because" not in quiet.report(), quiet.report()
+
+# ── The execution supervisor and the decision record ────────────────────────
+def _lite3_bin(x=1.0, y=0.0) -> Obstacle:
+    """The demo bin as ``visual_nav`` actually builds it: static, and carrying the
+    STATIC hard gap — the planner's default is a person's 0.25 m, and a landmark
+    without the override is the configuration defect, not a scene."""
+    return Obstacle(x=x, y=y, vx=0.0, vy=0.0, radius_m=0.23, label="bin",
+                    kind="static", object_id="landmark-1",
+                    hard_gap_m=STATIC_HARD_GAP_M)
+
+
+def _supervised_planner(runner, supervisor=None, axis_preview=None, limits=None):
+    """A supervised planner with the execution seams wired, stdout swallowed — same
+    reasoning as ``_planner``."""
+    with contextlib.redirect_stdout(io.StringIO()):
+        planner = MappoPlanner(limits or Limits(), PlannerConfig(robot_radius_m=0.25),
+                               runner, supervised=True,
+                               execution_supervisor=supervisor,
+                               axis_preview=axis_preview)
+    planner.attach(_Loco())
+    return planner
+
+
+def _turn_drive() -> TurnDriveSupervisor:
+    return TurnDriveSupervisor(robot_radius_m=0.25, drive_speed_m_s=0.50,
+                               turn_rate_rad_s=1.0)
+
+
+def test_the_execution_supervisor_replaces_the_policy_on_a_blocked_line():
+    """THE 2026-08-26 FIX, AT THE SEAM WHERE IT FAILED. The stub policy drives
+    (0.35, 0, 0) straight at the bin — the same command the live runs executed while
+    the map said the bin was there. With the turn-drive supervisor engaged the tick
+    must leave as a pure TURN toward the detour waypoint: the only opening move a
+    Lite3 with no lateral primitive can actually perform."""
+    supervisor = _turn_drive()
+    planner = _supervised_planner(_StubRunner((0.35, 0.0, 0.0)), supervisor)
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0),
+                           [_lite3_bin()])
+    assert command.reason == "exec-turn", command.reason
+    assert command.vx == 0.0 and command.vy == 0.0 and command.wz != 0.0
+    assert planner.counts["turn_drive"] == 1 and planner.counts["vetoed"] == 0
+    decision = planner.decision_record()
+    assert decision["supervisor"]["phase"] == "turn"
+    assert decision["supervisor"]["blocker"] == "landmark-1"
+    assert decision["final"]["reason"] == "exec-turn"
+
+
+def test_the_shared_veto_still_judges_the_supervisors_command():
+    """A person stepping onto the detour path must hold the robot EVEN THOUGH the
+    command came from the supervisor. The supervisor only ever reads the static map;
+    the veto is the only layer that sees movers, and routing the supervisor's command
+    around it would make the safety layer's own replacement walk into someone."""
+    supervisor = _turn_drive()
+    static_bin = _lite3_bin()
+    blocker = supervisor.blocker((0.0, 0.0, 0.0), (3.0, 0.0), [static_bin])
+    waypoint, _side = supervisor._waypoint((0.0, 0.0, 0.0), (3.0, 0.0), blocker,
+                                           [static_bin])
+    # Nose already on the waypoint bearing, so the supervisor commands a DRIVE —
+    # straight through the person standing at 40% of the first leg.
+    yaw = math.atan2(waypoint[1], waypoint[0])
+    person = Obstacle(x=waypoint[0] * 0.4, y=waypoint[1] * 0.4, vx=0.0, vy=0.0,
+                      radius_m=0.35, kind="tracked", object_id="track-1")
+    planner = _supervised_planner(_StubRunner((0.35, 0.0, 0.0)), supervisor)
+    command = planner.plan((0.0, 0.0, yaw), (3.0, 0.0), (0.0, 0.0, 0.0),
+                           [static_bin, person])
+    assert command.reason.startswith("veto-"), command.reason
+    assert planner.counts["vetoed"] == 1 and planner.counts["turn_drive"] == 0
+    decision = planner.decision_record()
+    assert decision["supervisor"]["vetoed"] is True
+    assert decision["final"]["reason"] == command.reason
+
+
+def test_an_unblocked_line_leaves_the_policy_in_charge_and_unrecorded_as_a_detour():
+    """No static blocker: the policy's command stands, and the decision record must
+    carry NO supervisor layer. A record that showed a detour the scene never
+    triggered would be the missing-detection masquerade, one layer down."""
+    planner = _supervised_planner(_StubRunner((0.35, 0.0, 0.0)), _turn_drive())
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+    assert command.reason == "policy"
+    decision = planner.decision_record()
+    assert "supervisor" not in decision
+    assert decision["policy_raw"]["vx"] == 0.35
+
+
+def test_the_decision_record_shows_the_envelope_deleting_lateral_intent():
+    """The 2026-08-26 smoking gun, pinned as data. The holonomic policy asks
+    vy=+0.20; the Lite3 envelope (``--max-vy 0``) deletes it; the record must show
+    BOTH numbers, because the live telemetry that held only the final reason string
+    is exactly why those runs took a day to diagnose."""
+    planner = _supervised_planner(_StubRunner((0.30, 0.20, 0.0)),
+                                  limits=Limits(max_vy=0.0))
+    command = planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+    assert command.reason == "policy"
+    decision = planner.decision_record()
+    assert decision["policy_raw"]["vy"] == 0.20
+    assert decision["after_limits"]["vy"] == 0.0
+    assert decision["final"]["vy"] == 0.0
+
+
+def test_the_axis_preview_describes_the_command_that_left_not_a_candidate():
+    """The preview is computed on the FINAL command, after every layer, so the
+    record never shows the axes a different candidate would have produced. And when
+    no transport provides a preview, the record says NOTHING — fabricated axes are
+    worse than absent ones."""
+    seen = []
+
+    def preview(vx, vy, wz):
+        seen.append((vx, vy, wz))
+        return {"forward": 32767 if vx > 0.0 else 0, "sign_only": True}
+
+    planner = _supervised_planner(_StubRunner((0.35, 0.0, 0.0)),
+                                  axis_preview=preview)
+    planner.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+    decision = planner.decision_record()
+    assert decision["axis_preview"]["forward"] == 32767
+    final = decision["final"]
+    assert seen == [(final["vx"], final["vy"], final["wz"])]
+
+    plain = _supervised_planner(_StubRunner((0.35, 0.0, 0.0)))
+    plain.plan((0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+    assert "axis_preview" not in plain.decision_record()
+
+
+def test_a_tick_that_never_reaches_the_policy_records_no_decision():
+    """The record is rebuilt at the top of every ``_choose`` and written only on the
+    paths that reach the policy. A goal-reached stop must leave NOTHING behind —
+    otherwise the telemetry inherits a decision the tick never made, which is the
+    stale-record defect the rebuild exists to close."""
+    stopped = _supervised_planner(_StubRunner(status="STOP_GOAL_REACHED"))
+    command = stopped.plan((3.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0), [])
+    assert command.reason == "arrived"
+    assert stopped.decision_record() is None
+
+
+def test_the_integrated_drive_path_avoids_the_bin_and_arrives():
+    """The whole demo, end to end, offline: policy + turn-drive supervisor + the
+    shared veto, under ideal kinematics. The "policy" here is a goal-seeking stub —
+    the checkpoint's own steering is not what is under test; the CHAIN is. The run
+    must (a) keep the bin's hard gap at every step, (b) visibly leave the straight
+    corridor — a run that arrives through the bin proves nothing — and (c) arrive,
+    with the supervisor having taken the blocked ticks and a decision record written
+    on every one.
+    """
+    class _GoalSeeker(_StubRunner):
+        """Stands in for the policy in the open: proportional yaw to the goal
+        bearing, constant forward — the policy's actual steering is the checkpoint's
+        business, tested elsewhere; this test's subject is the chain AROUND it."""
+
+        def step(self, tick, monotonic_s=None):
+            from mappo_policy import PolicyStep
+            pose, goal = tick["pose"], tick["goal"]
+            bearing = math.atan2(goal["y"] - pose["y"], goal["x"] - pose["x"])
+            error = (bearing - pose["yaw"] + math.pi) % (2.0 * math.pi) - math.pi
+            return PolicyStep(status="COMMAND", vx_mps=0.35, vy_mps=0.0,
+                              wz_radps=max(-1.0, min(1.0, 2.0 * error)),
+                              action_x=1.0, action_y=0.0, intent_bearing_rad=bearing,
+                              age_s=0.0, observation=())
+
+    planner = _supervised_planner(_GoalSeeker((0.35, 0.0, 0.0)), _turn_drive())
+    obstacle = _lite3_bin(x=1.5)
+    pose, goal, last = (0.0, 0.0, 0.0), (3.0, 0.0), (0.0, 0.0, 0.0)
+    min_free, max_offline = math.inf, 0.0
+    for _tick in range(400):
+        command = planner.plan(pose, goal, last, [obstacle])
+        assert planner.decision_record() is not None, \
+            "every policy-reaching tick must leave a decision record"
+        x, y, yaw = pose
+        yaw += command.wz * 0.1
+        x += command.vx * math.cos(yaw) * 0.1
+        y += command.vx * math.sin(yaw) * 0.1
+        pose, last = (x, y, yaw), (command.vx, command.vy, command.wz)
+        min_free = min(min_free,
+                       math.hypot(obstacle.x - x, obstacle.y - y)
+                       - obstacle.radius_m - 0.25)
+        max_offline = max(max_offline, abs(y))
+        if math.hypot(goal[0] - x, goal[1] - y) < 0.30:
+            break
+    else:
+        raise AssertionError(f"never arrived; ended at {tuple(round(v, 2) for v in pose)}")
+    assert planner.counts["turn_drive"] > 0, "the supervisor never took a tick"
+    assert min_free >= STATIC_HARD_GAP_M - 1e-9, \
+        f"path shaved the bin to {min_free:.3f} m of free space"
+    assert max_offline > 0.30, \
+        f"the path never left the corridor (max |y| {max_offline:.2f}) — no avoidance"
 
 
 if __name__ == "__main__":

@@ -817,6 +817,46 @@ def test_the_transport_describes_the_executable_set_rather_than_a_floor():
     assert "never combined with a step" in blind.describe(), blind.describe()
 
 
+def test_transport_axes_reports_nothing_before_the_first_command():
+    """``None`` before the first ``set_velocity`` — the telemetry must show an absent
+    transport, not a fabricated zero, for a backend that has accepted nothing."""
+    loco = Lite3AxisLocomotion(
+        axis_profile=_load_profile(_profile_data()),
+        motion_host="127.0.0.1",
+        command_port=43893,
+        state_port=0,
+        bind="127.0.0.1",
+        clock=_Clock(),
+    )
+    assert loco.transport_axes() is None
+
+
+def test_transport_axes_reports_what_the_last_accepted_command_mapped_to():
+    """The record is of what the transport ACCEPTED: the sign-only mapping's raw
+    axes, including a zero command recorded as zero axes — a stop the backend
+    accepted is as much evidence as a move it accepted."""
+    clock = _Clock()
+    loco = Lite3AxisLocomotion(
+        axis_profile=_load_profile(_profile_data()),
+        motion_host="127.0.0.1",
+        command_port=43893,
+        state_port=0,
+        bind="127.0.0.1",
+        clock=clock,
+        streamer_factory=lambda **_kwargs: _Streamer(),
+    )
+    loco._state = SimpleNamespace(received_at=clock.now, error_state=0,
+                                  mode=(6, 0, 0, 0))
+    loco.set_velocity(0.2, 0.0, 0.0)
+    assert loco.transport_axes() == {"forward": 7000, "lateral": 0, "yaw": 0}
+    loco.set_velocity(0.0, 0.0, -0.5)
+    # The yaw axis runs opposite to the yaw RATE by the vendor's convention —
+    # recorded as it reached the wire, sign convention and all.
+    assert loco.transport_axes() == {"forward": 0, "lateral": 0, "yaw": 10000}
+    loco.set_velocity(0.0, 0.0, 0.0)
+    assert loco.transport_axes() == {"forward": 0, "lateral": 0, "yaw": 0}
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:
