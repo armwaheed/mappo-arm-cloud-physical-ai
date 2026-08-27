@@ -36,6 +36,22 @@ Two further safety properties are enforced here rather than left to the caller:
     obstacle's radius, so a person who has not been seen for a second is given a
     berth that grows with how stale the estimate is.
 
+THE GAIT FLOOR IS A THIRD, AND IT IS ABOUT WHAT THE ROBOT CAN DO RATHER THAN WHAT IT
+SHOULD. Slowing down is how this planner buys itself room to steer, and on a robot with a
+minimum walking speed that is how it stops: below :attr:`Limits.gait_floor` the legs stop
+swinging, the robot stands still, and nothing faults. Those two facts are incompatible in
+tight space, which is issue #26, and until it the stack could not even tell that they had
+met — a crawl and a stop are the same stationary robot, and the only difference in the
+record was a number you had to know the platform to read.
+
+So :meth:`DynamicWindowPlanner._gait_floor_stop` watches every command that leaves, and
+when one has been under the floor for :data:`SUB_FLOOR_WINDOW_S` while the POSE went
+nowhere it stops the robot on purpose and says which speed it refused. It does not scale,
+clamp, filter or invent a velocity — four attempts to do that are recorded in that
+method, all measured and all worse than the stall — and it triggers on a fact rather than
+on the floor's value, because that value is a guess this repository's own evidence
+contradicts.
+
 Body frame ``+x`` forward / ``+y`` left; planning frame is the estimator's odom frame.
 Pure numpy, no robot needed — ``python3 test_avoidance.py``.
 """
@@ -43,11 +59,28 @@ Pure numpy, no robot needed — ``python3 test_avoidance.py``.
 from __future__ import annotations
 
 import math
+import time
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
 
 from geometry import wrap_pi
+
+#: How long an emitted command may stay under the gait floor while the robot's POSE goes
+#: nowhere before :meth:`DynamicWindowPlanner._gait_floor_stop` commands a stop, seconds.
+#:
+#: SHORTER THAN THE STACK'S OWN STALL GATE ON PURPOSE. ``visual_nav.PROGRESS_WINDOW_S``
+#: is 4.0 s and when it fires it ENDS THE RUN naming the tether, so an explanation that
+#: arrives after that outcome line is an explanation nobody reads. Long enough that a
+#: legitimate standing start is not caught: the accel-limited ramp from rest to the floor
+#: is seven ticks, about 0.7 s at the nominal 10 Hz.
+SUB_FLOOR_WINDOW_S = 2.0
+
+#: Fraction of the commanded travel the pose must actually cover over that window.
+#: ``visual_nav.PROGRESS_FRACTION``'s value, low on purpose in both places: the failure
+#: being caught is total, not marginal — 0.012 m of a commanded 0.17 m.
+SUB_FLOOR_PROGRESS_FRACTION = 0.20
 
 #: Soft gap for a MAPPED STATIC obstacle, metres — the counterpart to
 #: :attr:`PlannerConfig.soft_gap_m`, which is a person's. The soft gap measures how
@@ -214,11 +247,34 @@ class Limits:
     accel_y: float = 0.40         # m/s^2
     accel_wz: float = 1.50        # rad/s^2
 
+    #: THE SLOWEST FORWARD SPEED THIS ROBOT CAN ACTUALLY WALK AT, m/s, or ``0.0`` for a
+    #: platform that has not measured one. See :data:`MIN_GAIT_COMMAND_M_S`, which is the
+    #: Go2's and is this default for the same reason the three ceilings above are Go2
+    #: numbers — this file is the Go2's stack, and a default that is correct for the
+    #: platform it belongs to is not the defect. A Lite3 states its own with
+    #: ``--gait-floor``, which its bindings already require on a live run.
+    #:
+    #: NOT A SECOND CEILING AND NOT PART OF THE ENVELOPE. The envelope says what the
+    #: planner is ALLOWED to command; this says what the robot is ABLE to execute, and
+    #: :meth:`DynamicWindowPlanner._gait_floor_stop` is the only thing that reads it.
+    #: The two are independent: ``--derate 0.6`` puts the ceiling 0.21 UNDER this
+    #: floor, which is a real configuration and is why nothing here may assume ordering.
+    gait_floor: float = MIN_GAIT_COMMAND_M_S
+
     def scaled(self, factor: float) -> Limits:
-        """A uniformly derated envelope (the arm-fitted conservative profile)."""
+        """A uniformly derated envelope (the arm-fitted conservative profile).
+
+        ``gait_floor`` IS NOT SCALED, and that is the whole point of it being here rather
+        than beside the ceilings. A derate is an instruction to the planner to ask for
+        less; it is not a change to the robot, and a floor that shrank with the envelope
+        would make ``--derate 0.6`` report a 0.21 m/s command — the speed measured to
+        stall 5 runs of 5 — as comfortably above the floor. Scaling it is how a physical
+        measurement quietly becomes a preference.
+        """
         return Limits(max_vx=self.max_vx * factor, max_vy=self.max_vy * factor,
                       max_wz=self.max_wz * factor, accel_x=self.accel_x * factor,
-                      accel_y=self.accel_y * factor, accel_wz=self.accel_wz * factor)
+                      accel_y=self.accel_y * factor, accel_wz=self.accel_wz * factor,
+                      gait_floor=self.gait_floor)
 
 
 @dataclass(frozen=True)
@@ -347,6 +403,28 @@ class Command:
     #: :data:`COUNT_NOT_RECORDED` says "not stated", and ``0`` says "boxed in".
     feasible: int = COUNT_NOT_RECORDED
     evaluated: int = COUNT_NOT_RECORDED
+    #: WHAT SEPARATES A DELIBERATE STOP FROM A COMMAND THAT BECAME ONE. ``None`` on
+    #: every ordinary tick. Set only on a stop the gait-floor guard commanded, to the
+    #: sub-floor speed the robot was measured not to walk at
+    #: (:meth:`DynamicWindowPlanner._gait_floor_stop`).
+    #:
+    #: Three states a reader could not tell apart before issue #26, all of which leave a
+    #: stationary robot in the record and one of which is an alarm:
+    #:
+    #:   * ``is_stop`` and this is ``None`` — boxed in, or told to stop. Nothing cleared
+    #:     the hard gap, or a wrapper zeroed the command for a reason of its own.
+    #:   * ``is_stop`` and this is set — A FLOOR STOP. The robot was commanded
+    #:     ``floor_reach_m_s`` m/s for :data:`SUB_FLOOR_WINDOW_S`, went nowhere, and is
+    #:     now being stopped on purpose. It is not the tether.
+    #:   * ``vx`` under the floor and this is ``None`` — A CREEP, and still a legitimate
+    #:     command: the planner chose a slow speed with faster ones in its window, and
+    #:     run C of 2026-08-18 walked 3 m doing exactly that. The guard is watching it.
+    #:
+    #: It describes the PLANNER's verdict, so a wrapper that returns a command of its own
+    #: forwards it exactly as it forwards :attr:`feasible` and :attr:`evaluated`, and
+    #: ``test_avoidance.test_every_branch_that_returns_a_command_states_its_search``
+    #: fails on a branch that does not.
+    floor_reach_m_s: float | None = None
 
     @property
     def is_stop(self) -> bool:
@@ -370,8 +448,164 @@ class DynamicWindowPlanner:
                  config: PlannerConfig | None = None) -> None:
         self.limits = limits or Limits()
         self.config = config or PlannerConfig()
+        #: The gait-floor guard's only state; see :meth:`_gait_floor_stop`. NOT named
+        #: ``_sub_floor``: ``integration/mappo_drive.MappoPlanner`` subclasses this and
+        #: already binds that name to its own reporting window, so the two collided
+        #: silently — its ``__init__`` runs after ``super().__init__`` and replaced this
+        #: deque with ``None``, which surfaced as ``AttributeError: 'NoneType' object has
+        #: no attribute 'clear'`` rather than as a wrong answer, but only because a deque
+        #: and a list are not the same shape. ``plan`` is
+        #: otherwise a pure function of its arguments, which is why ``last_reason`` is
+        #: passed in rather than remembered, and this is the deliberate exception: the
+        #: guard's question — "has this robot moved while being commanded to?" — cannot
+        #: be answered from one tick. Both are cleared by :meth:`reset_gait_floor_guard`.
+        self._floor_samples: deque = deque()
+        self._floor_stalled: float | None = None
 
-    # ── Sampling ────────────────────────────────────────────────────────────
+    # ── The gait-floor guard ───────────────────────────────────────
+    def reset_gait_floor_guard(self) -> None:
+        """Forget everything the guard has observed. Call between runs."""
+        self._floor_samples.clear()
+        self._floor_stalled = None
+
+    def _gait_floor_stop(self, chosen: tuple[float, float, float],
+                         pose: tuple[float, float, float], now: float) -> float | None:
+        """``None``, or the sub-floor speed this robot has just PROVEN it cannot walk at.
+
+        ⚠️ **THE GUARD FOR ISSUE #26, AND THE ONLY THING IN THIS PLANNER THAT OVERRIDES
+        A CHOSEN COMMAND.** Below :attr:`Limits.gait_floor` the robot produces no gait,
+        stands still, and reports NO FAULT — the joint encoders read 0.0 deg of swing,
+        the state estimator agrees, and four seconds later the stack's stall gate fires
+        with *"something is holding the robot — check the tether"*. Every instrument is
+        right and every one of them points away from the cause.
+
+        MEASURED 2026-08-27, Go2 run ``20260827T012702Z-00652ea``, live. 31 of 37
+        planner-issued ticks were under the floor and 90% of all commanded ticks were.
+        Perception ran at ~3 Hz against a 10 Hz loop, so ``perception_timeout_s``
+        commanded a stop on 26 of 86 ticks and each one re-anchored :meth:`_window` at
+        zero; the accel-limited ramp restarted eighteen times and never once got past
+        0.104 m/s. The robot moved 0.012 m in 3.4 s, 0.72 m from a bin, and the run ended
+        blaming the tether. The stopping-distance cap was NOT the constraint — it stood
+        at 0.38-0.39 m/s throughout, above the floor.
+
+        WHAT IT TRIGGERS ON IS A FACT, NOT THE FLOOR'S VALUE, and that is the whole
+        design. ``MIN_GAIT_COMMAND_M_S`` is a GUESS — "the lowest speed observed to work"
+        on 2026-08-14 — and this repository's own run C of 2026-08-18 contradicts it: a
+        sustained 0.295 m/s with 54 of 54 ticks below 0.35, minimum 0.189, 3 m walked,
+        arrived. **A rule that refused sub-floor commands on their value would have
+        killed that run.** So the trigger is *commanded to move and not moving*, and the
+        floor is used only to decide which of the two explanations to believe: above the
+        floor and stationary is something holding the robot, below it and stationary is
+        this. That makes the guard independent of the number issue #26 proposal 2 exists
+        to replace.
+
+        MEASURED FROM POSE, NOT FROM THE VELOCITY ESTIMATE, for the reason
+        ``lateral_floor_probe.py`` gives: the reported velocity on this unit has been
+        caught reading 0.17 m/s of noise as signal, which is larger than the whole
+        0.137 m/s signal being judged. Net displacement between two poses is the same
+        quantity the stack's own stall gate compares against.
+
+        IT CAN ONLY EVER MAKE A COMMAND SLOWER. Issue #26 records two attempts to make a
+        sub-floor command FASTER, both measured and both reverted, and a third was
+        measured on 2026-08-27 while writing this:
+
+        * Filtering sub-floor speeds out of the window leaves only zero from rest.
+        * Allowing them only while ramping up drops the lateral offset around a bin from
+          the required 0.88 m to 0.55 m and clips it.
+        * Replacing a standstill's whole forward window with the floor — so the robot
+          steps off at 0.35 rather than crawling at 0.05 — makes it refuse to START.
+          ``test_closed_loop_sim.test_the_planner_reaches_the_goal_past_the_bin`` went to
+          ``timeout`` with ``path_m=0.0``: one control period of the only walkable speed
+          commits the robot to 0.875 m over the 2.5 s feasibility horizon, and a bin
+          1.3 m away makes every candidate infeasible, so it held for all 600 ticks.
+
+        And a fourth, which is the one that looks most like what an issue asks for:
+        refusing any chosen command under the floor and stopping instead. Rolled against
+        ``test_avoidance.test_it_commits_to_one_side_rather_than_splitting_the_
+        difference``, the planner wanting 0.34 m/s had it zeroed, could then only offer
+        itself 0.35 from the resulting standstill, found that infeasible at that range,
+        and **stopped 1.60 m from the bin for the remaining 588 ticks** — 0.04 m of
+        lateral offset against the 0.88 m the geometry needs. Refusing against a floor
+        that is 1.85x too high refuses speeds this robot demonstrably walks at.
+
+        So: nothing is scaled, nothing is filtered, and no velocity is invented. The one
+        thing this does is write down the zero the legs were going to produce anyway,
+        two seconds before the stall gate misattributes it.
+
+        NOT A COST TERM AND NOT A SAMPLED CANDIDATE. :meth:`_window` deliberately holds
+        no stop row, because a stationary rollout never approaches anything and its
+        clearance term is zero by construction, so it is unbeatable near a hazard — the
+        measured example is in ``_window``'s own comment. This is a branch taken after
+        the choice, exactly like the two holds above it, so "do nothing" still never
+        competes with "do something" on cost.
+
+        Latches, and clears the moment the planner's own choice reaches the floor again —
+        so a person walking out of the way frees the robot on the next tick without
+        anything having to time out, and a robot that is genuinely wedged stays stopped
+        rather than resuming the crawl every two seconds.
+        """
+        floor = self.limits.gait_floor
+        if floor <= 0.0:
+            return None                       # no floor measured for this robot
+        speed = math.hypot(chosen[0], chosen[1])
+        walkable = speed >= floor
+        if self._floor_stalled is not None:
+            # Latched. Only a command that reaches the floor lets the legs go again;
+            # anything else is a speed already proven not to move this robot.
+            if walkable:
+                self._floor_stalled = None
+                self._floor_samples.clear()
+                return None
+            return self._floor_stalled
+        if speed <= 0.0 or walkable:
+            # A stop is a stop and a walkable command walks. Neither is evidence about
+            # the floor, and both end the run of sub-floor ticks.
+            self._floor_samples.clear()
+            return None
+
+        self._floor_samples.append((now, pose[0], pose[1], speed))
+        # SLIDING, NOT TUMBLING, and the difference decided whether this guard was worth
+        # writing. A window that resets on every verdict throws away the ticks between
+        # one verdict and the next arming, and it judges a collapse against travel from
+        # before the collapse. Replayed against the 2026-08-27 run, a tumbling window
+        # spent its first 2.3 s excusing the crawl with 0.18 m of coasting that happened
+        # while the command was still 0.24 m/s, re-armed 0.44 s late, and fired at
+        # t=13.37 — 0.11 s before the run ended on the stall gate's own clock, which is
+        # to say it fired too late to be read. Sliding, the same run fires at t=12.03.
+        #
+        # Pruned by discarding a sample only once the one BEHIND it has aged past the
+        # window, which keeps the newest sample that is still a full window old. Dropping
+        # everything older than the window instead — the obvious spelling — leaves the
+        # oldest survivor younger than the window by construction, so "have I got a full
+        # window yet?" can only pass on a tick landing exactly on the boundary. That
+        # spelling is why `visual_nav._blocked_reason` once sat through a 12 s stall
+        # without judging it, and a unit test with dt=0.5 hid it because 0.5 divides 4.0.
+        while (len(self._floor_samples) > 1
+               and now - self._floor_samples[1][0] >= SUB_FLOOR_WINDOW_S):
+            self._floor_samples.popleft()
+        span = now - self._floor_samples[0][0]
+        if span < SUB_FLOOR_WINDOW_S:
+            return None
+        # Integrated over the samples rather than `speed * span`, which is the stack's
+        # model and takes the LAST tick's command as though it had been held all window.
+        # At an irregular ~3 Hz under a planner that is actively slowing down those are
+        # different numbers: the 2026-08-27 run fell from 0.245 to 0.052 across one tick.
+        # Each sample's command governs the interval that FOLLOWS it, because the loop
+        # issues a command and then sleeps.
+        samples = list(self._floor_samples)
+        travel = sum(held * (later[0] - when)
+                     for (when, _x, _y, held), later in zip(samples, samples[1:]))
+        moved = math.hypot(pose[0] - self._floor_samples[0][1],
+                           pose[1] - self._floor_samples[0][2])
+        if moved >= SUB_FLOOR_PROGRESS_FRACTION * travel:
+            # Sub-floor AND getting somewhere: run C of 2026-08-18, 54 of 54 ticks under
+            # the floor and 3 m walked. Nothing is latched and the window keeps sliding,
+            # so a robot that recovers and stalls again is judged again.
+            return None
+        self._floor_stalled = float(speed)
+        return self._floor_stalled
+
+    # ── Sampling ───────────────────────────────────────────────────────
     def _window(self, current: tuple[float, float, float], control_dt: float
                 ) -> np.ndarray:
         """Candidate ``(vx, vy, wz)`` triples reachable within one control period.
@@ -553,7 +787,8 @@ class DynamicWindowPlanner:
     # ── Planning ────────────────────────────────────────────────────────────
     def plan(self, pose: tuple[float, float, float], goal: tuple[float, float],
              last_command: tuple[float, float, float], obstacles: list[Obstacle],
-             control_dt: float = 0.1, last_reason: str = "goal") -> Command:
+             control_dt: float = 0.1, last_reason: str = "goal",
+             now: float | None = None) -> Command:
         """Choose a velocity command for this tick.
 
         Args:
@@ -567,8 +802,14 @@ class DynamicWindowPlanner:
                 pure function of its arguments — the alternative, a ``self._holding``
                 flag, would make every test depend on call order. It may arrive
                 QUALIFIED by a wrapper, so it is read through :func:`base_reason`.
+            now: monotonic seconds, defaulting to the clock. Read ONLY by the gait-floor
+                guard, which is the one thing here that needs more than this tick — an
+                argument rather than a call inside it so a test can drive the guard
+                without sleeping, which is the difference between a guard that has been
+                watched fire and one that has not.
         """
         cfg = self.config
+        clock = time.monotonic() if now is None else now
         candidates = self._window(last_command, control_dt)
         xy, yaws = self._rollout(candidates, pose)
         per_obstacle_gaps = self._gaps(xy, obstacles)
@@ -593,9 +834,18 @@ class DynamicWindowPlanner:
             feasible = np.ones(gaps.shape[0], dtype=bool)
         if not feasible.any():
             # Swerve early, stop late — see the module docstring.
+            # The guard sees this stop too. Not for the verdict — a hold is not evidence
+            # about the floor — but because it has to CLEAR the window, and a `return`
+            # above it leaves one open across the hold. The travel integral then credits
+            # the last sub-floor command to the seconds the robot spent deliberately
+            # stationary, which inflates the expected distance and makes the guard fire
+            # on a robot that was told to stand still. It fails in the dangerous
+            # direction, so it goes through the same call as everything else.
             return Command(0.0, 0.0, 0.0, reason="hold",
                            gap_m=float(gaps.max()), feasible=0,
-                           evaluated=int(candidates.shape[0]))
+                           evaluated=int(candidates.shape[0]),
+                           floor_reach_m_s=self._gait_floor_stop(
+                               (0.0, 0.0, 0.0), pose, clock))
 
         # Never commit to a speed that outruns the space known to be clear. The margin
         # is NOT added here: this cap is about stopping distance, a physical quantity,
@@ -609,7 +859,9 @@ class DynamicWindowPlanner:
         feasible &= candidates[:, 0] <= max(stopping_cap, 1e-6)
         if not feasible.any():
             return Command(0.0, 0.0, 0.0, reason="hold", gap_m=float(current_gap),
-                           feasible=0, evaluated=int(candidates.shape[0]))
+                           feasible=0, evaluated=int(candidates.shape[0]),
+                           floor_reach_m_s=self._gait_floor_stop(
+                               (0.0, 0.0, 0.0), pose, clock))
 
         # Built once and shared: the clearance cost and the avoid decision are two
         # views of the same quantity, and deriving the soft gaps twice invites them to
@@ -627,12 +879,32 @@ class DynamicWindowPlanner:
         avoid_threshold = cfg.avoid_report_gap_m
         if previous == "avoid":
             avoid_threshold += cfg.reason_hysteresis_m
+
+        # THE GAIT-FLOOR GUARD, on the command that is actually going out. Read
+        # `_gait_floor_stop` before touching this; the short version is that a crawl the
+        # robot has been measured not to walk is a stop already, and this is where that
+        # stop gets written down instead of inferred four seconds later from the wrong
+        # cause. It never raises a speed and it is not a candidate, so it can neither
+        # lunge nor win on cost.
+        chosen = (float(candidates[best, 0]), float(candidates[best, 1]),
+                  float(candidates[best, 2]))
+        stalled = self._gait_floor_stop(chosen, pose, clock)
+        if stalled is not None:
+            # `hold`, not this tick's `avoid`/`goal` label. A stop IS a hold in this
+            # vocabulary, and `hold` is the word `visual_nav.blocked_stop` reads to put
+            # the Go2 prone rather than leave it standing braced under a 3.15 kg arm for
+            # the rest of the run. `floor_reach_m_s` keeps the speed that was refused, so
+            # the record still says which of the two kinds of stop this is.
+            return Command(0.0, 0.0, 0.0, reason="hold", gap_m=float(gaps[best]),
+                           feasible=int(feasible.sum()),
+                           evaluated=int(candidates.shape[0]),
+                           floor_reach_m_s=stalled)
+
         return Command(
-            vx=float(candidates[best, 0]), vy=float(candidates[best, 1]),
-            wz=float(candidates[best, 2]),
+            vx=chosen[0], vy=chosen[1], wz=chosen[2],
             reason="avoid" if gaps[best] < avoid_threshold else "goal",
             gap_m=float(gaps[best]), feasible=int(feasible.sum()),
-            evaluated=int(candidates.shape[0]))
+            evaluated=int(candidates.shape[0]), floor_reach_m_s=None)
 
     @staticmethod
     def _clearance_cost(per_obstacle_gaps: np.ndarray,

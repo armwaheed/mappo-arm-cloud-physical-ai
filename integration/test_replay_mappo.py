@@ -168,6 +168,11 @@ GHOST_BASELINE = {
     "2026-08-18-threading-two-bins/run15-aimed-8deg-off-corridor.jsonl": (42, 0, None),
     "2026-08-18-threading-two-bins/run7-veto-shortened-policy-stall.jsonl": (49, 15, 0.409),
     "2026-08-18-threading-two-bins/run9-full-speed-reverse-hazard.jsonl": (45, 0, None),
+    # Added with the run itself (issue #26). Zero ghosts of 86 ticks, which is what a
+    # run with one mapped bin and one tracked person in a clear lane should look like —
+    # the freeze it records is a VELOCITY failure, not a perception one, and this line is
+    # the assertion that the two do not get confused later.
+    "2026-08-27-gait-floor-freeze/run-20260827T012702Z-00652ea.jsonl": (86, 0, None),
     "2026-08-25-peer-runs/contrast-run-telemetry.jsonl": (91, 44, 0.000),
     "2026-08-25-peer-runs/hero-run-telemetry.jsonl": (59, 32, 0.000),
     "live_run_telemetry.jsonl": (122, 5, 0.720),

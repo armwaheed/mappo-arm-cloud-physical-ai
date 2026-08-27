@@ -15,6 +15,7 @@ Run: ``python3 test_avoidance.py``
 from __future__ import annotations
 
 import ast
+import json
 import math
 import os
 import sys
@@ -754,13 +755,19 @@ def test_every_branch_that_returns_a_command_states_its_search():
     assert any(path.endswith("avoidance.py") for path in files), (
         f"this planner is not among the scanned producers: {sorted(files)}")
 
-    required = {"feasible", "evaluated"}
+    # `floor_reach_m_s` joined the two counts in issue #26 and is guarded the same way,
+    # because it fails the same way: it describes the planner's own verdict on this tick,
+    # it defaults to `None`, and `None` reads as "the gait floor had nothing to say" —
+    # which is a claim, not an absence. The branch that would have dropped it is the
+    # veto, which re-emits the planner's own velocity, and 37 of the 38 planner-issued
+    # ticks of the 2026-08-27 run came out of exactly that branch.
+    required = {"feasible", "evaluated", "floor_reach_m_s"}
     missing = [(path, line, sorted(required - keywords))
                for path, line, keywords in sites if required - keywords]
     assert not missing, "\n".join(
         f"{path}:{line} constructs a Command without stating {sorted(names)} — "
-        f"they describe the planner's search and default to COUNT_NOT_RECORDED, "
-        f"so a consumer reads 'not stated' rather than a count"
+        f"they describe the planner's search and its gait-floor verdict, and each "
+        f"defaults to a value that reads as 'not stated' rather than as a measurement"
         for path, line, names in missing)
 
 
@@ -1051,6 +1058,234 @@ def test_no_shipped_module_compares_a_reason_against_a_bare_planner_word():
         "a Command reason may arrive QUALIFIED (`veto-hold`), so an equality against a "
         "bare planner word silently never matches — read it through "
         "`avoidance.base_reason`:\n  " + "\n  ".join(offenders))
+
+
+# ── The gait-floor guard (issue #26) ──────────────────────────────────────────────────
+#
+# The run these exist for: Go2 `20260827T012702Z-00652ea`, live, 2026-08-27, recorded in
+# `evidence/2026-08-27-gait-floor-freeze/`. 31 of 37 planner-issued ticks were below the
+# floor, 90% of all commanded ticks were, the robot moved 0.012 m in 3.4 s while 0.72 m
+# from a bin, and the run ended blaming the tether.
+
+_FLOOR_RUN = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)),
+    "..", "..", "..", "..", "evidence", "2026-08-27-gait-floor-freeze",
+    "run-20260827T012702Z-00652ea.jsonl")
+
+
+def _crawl(planner, speed, seconds, moved_m, dt=0.1, start=100.0):
+    """Feed the guard a sustained sub-floor command, moving ``moved_m`` in total.
+
+    Returns the verdict on the LAST tick. The pose advances along +x at a constant rate,
+    so ``moved_m=0`` is the freeze and a large one is a robot that is getting somewhere
+    slowly — which is the case that must NOT be caught.
+    """
+    ticks = max(2, round(seconds / dt) + 1)
+    verdict = None
+    for i in range(ticks):
+        now = start + i * dt
+        x = moved_m * i / (ticks - 1)
+        verdict = planner._gait_floor_stop((speed, 0.0, 0.0), (x, 0.0, 0.0), now)
+    return verdict
+
+
+def test_the_gait_floor_guard_stops_a_crawl_that_is_covering_no_ground():
+    """⚠️ THE GUARD FIRING. Commanded 0.10 m/s for three seconds, moved nothing.
+
+    What makes this fail: delete the latch in `_gait_floor_stop` and the verdict is
+    `None`; raise `SUB_FLOOR_WINDOW_S` above the three seconds fed in and it is `None`;
+    take the `moved >= FRACTION * travel` comparison out and every test below it goes
+    red instead. It has been watched failing in all three.
+    """
+    planner = _planner()
+    assert planner.limits.gait_floor > 0.0, "the fixture must have a floor to judge"
+    refused = _crawl(planner, 0.10, 3.0, moved_m=0.0)
+    assert refused == 0.10, f"the guard did not fire on a dead crawl: {refused}"
+
+
+def test_the_guard_turns_that_crawl_into_a_stop_the_record_can_name():
+    """The whole point: `plan` emits zero, says `hold`, and carries the refused speed.
+
+    A crawl and a stop were the same event on the wire until this — the robot is
+    stationary either way, and the only difference was a number the reader had to know
+    the platform to interpret. `floor_reach_m_s` is that difference.
+    """
+    planner = _planner()
+    _crawl(planner, 0.10, 3.0, moved_m=0.0)
+    command = planner.plan(ORIGIN, GOAL, (0.10, 0.0, 0.0), [], now=200.0)
+    assert command.is_stop, command
+    assert command.reason == "hold", command
+    assert command.floor_reach_m_s == 0.10, command
+
+    # ...and it is NOT the same bytes as an ordinary hold. This is the whole of issue
+    # #26's second ask, and the assertion that would have caught it going missing.
+    boxed_in = _planner().plan(ORIGIN, GOAL, CRUISING,
+                               [Obstacle(x=0.45, y=0.0, vx=0.0, vy=0.0, radius_m=0.6)])
+    assert boxed_in.is_stop and boxed_in.reason == "hold", boxed_in
+    assert boxed_in.floor_reach_m_s is None, (
+        "a boxed-in hold must not look like a floor stop; they are different alarms")
+
+
+def test_a_sub_floor_command_that_is_getting_somewhere_is_left_alone():
+    """⚠️ THE MUTATION THAT MATTERS, and it is killed by the run that ARRIVED.
+
+    `MIN_GAIT_COMMAND_M_S` is a GUESS — "the lowest speed observed to work" on
+    2026-08-14 — and run C of 2026-08-18 contradicts it: a sustained 0.295 m/s with 54 of
+    54 ticks below 0.35, minimum 0.189, 3 m walked, arrived. A guard that fired on
+    "sub-floor" alone would have killed that run, so this is the test that stops anyone
+    simplifying the trigger down to the number.
+
+    0.295 m/s for 3 s is 0.885 m of commanded travel; run C delivered about 0.74 of it.
+    """
+    planner = _planner()
+    assert planner.limits.gait_floor > 0.295, "vacuous unless the speed IS sub-floor"
+    verdict = _crawl(planner, 0.295, 3.0, moved_m=0.65)
+    assert verdict is None, f"the guard killed a run that walked 3 m: {verdict}"
+
+
+def test_a_hold_in_the_middle_of_a_crawl_does_not_count_towards_it():
+    """⚠️ FAIL-DANGEROUS IF THE HOLD BRANCHES SKIP THE GUARD, which they used to.
+
+    `plan` has three exits and two of them are holds that `return` before the guard runs.
+    A window left open across a hold credits the last sub-floor command to every second
+    the robot spent DELIBERATELY stationary, so `travel` grows while `moved` cannot, and
+    the guard fires on a robot that was doing exactly what it was told. Stopping to let
+    someone walk past is the commonest reason for a hold there is.
+
+    Two ticks of crawl, a long hold, then one more crawl. Nothing here is two seconds of
+    sub-floor commanding, so nothing may fire.
+    """
+    planner = _planner()
+    boxed_in = [Obstacle(x=0.45, y=0.0, vx=0.0, vy=0.0, radius_m=0.6)]
+    assert planner._gait_floor_stop((0.10, 0.0, 0.0), ORIGIN, 100.0) is None
+    assert planner._gait_floor_stop((0.10, 0.0, 0.0), ORIGIN, 100.1) is None
+    held = planner.plan(ORIGIN, GOAL, CRUISING, boxed_in, now=110.0)
+    assert held.is_stop and held.reason == "hold", held
+    assert held.floor_reach_m_s is None, (
+        "a hold taken because nothing cleared the hard gap is not a floor stop")
+    verdict = planner._gait_floor_stop((0.10, 0.0, 0.0), ORIGIN, 110.1)
+    assert verdict is None, (
+        f"ten seconds of standing still were counted as a crawl covering no ground: "
+        f"{verdict}")
+
+def test_the_guard_lets_go_the_moment_the_planner_wants_a_walkable_speed():
+    """Latched, not permanent. A person stepping out of the way frees the robot on the
+    next tick, without anything having to time out — otherwise the guard would be a
+    one-way trip and worse than the stall it replaces."""
+    planner = _planner()
+    assert _crawl(planner, 0.10, 3.0, moved_m=0.0) == 0.10
+    # Still latched while the choice stays sub-floor...
+    assert planner._gait_floor_stop((0.10, 0.0, 0.0), (0.0, 0.0, 0.0), 110.0) == 0.10
+    # ...and released as soon as it is not.
+    assert planner._gait_floor_stop((0.35, 0.0, 0.0), (0.0, 0.0, 0.0), 111.0) is None
+    assert planner._gait_floor_stop((0.10, 0.0, 0.0), (0.0, 0.0, 0.0), 111.1) is None, (
+        "releasing the latch must also clear the window, or the next sub-floor tick "
+        "re-fires on evidence gathered before the robot was free")
+
+
+def test_a_robot_with_no_measured_gait_floor_is_never_judged():
+    """A Lite3 dry run has no `--gait-floor`, and an unmeasured floor is an ABSENCE.
+
+    Inventing 0.35 for a robot that never produced it is the mistake issues #83, #96,
+    #101 and #103 have each been about; this is the seam where it would happen again.
+    """
+    planner = _planner(gait_floor=0.0)
+    assert _crawl(planner, 0.01, 10.0, moved_m=0.0) is None
+
+
+def test_the_gait_floor_is_not_derated():
+    """⚠️ A DERATE IS AN INSTRUCTION TO THE PLANNER, NOT A CHANGE TO THE ROBOT.
+
+    `--derate 0.6` on the shipped Go2 profile puts the envelope ceiling at 0.21 m/s,
+    which is itself the speed measured to stall 5 runs of 5. Scaling the floor with it
+    would call that ceiling "at the floor" and report a run that was under it from the
+    first tick to the last as fully compliant.
+    """
+    derated = Limits().scaled(0.6)
+    assert derated.max_vx < Limits().gait_floor, "vacuous unless the derate goes under it"
+    assert derated.gait_floor == Limits().gait_floor, derated
+    planner = DynamicWindowPlanner(limits=derated)
+    assert _crawl(planner, 0.21, 3.0, moved_m=0.0) == 0.21, (
+        "a run whose whole envelope is under the floor is exactly the one to judge")
+
+
+def test_the_guard_fires_on_the_recorded_run_before_the_stall_gate_did():
+    """⚠️ THE MEASUREMENT, REPLAYED. Not a fixture — the bytes off the robot.
+
+    Feeds the recorded commands and poses of `20260827T012702Z-00652ea` to the guard in
+    order and asserts it reaches a verdict with time to spare. The run's own outcome line
+    lands at 13.48 s and says *"Something is holding the robot — check the tether"*; the
+    tether was fine.
+    """
+    with open(_FLOOR_RUN, encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle]
+    header = rows[0]
+    ticks = [r for r in rows
+             if r.get("type", "tick") == "tick" and r.get("command") is not None]
+    assert len(ticks) > 40, "the recording is short; this test would prove little"
+
+    planner = _planner()
+    first = None
+    for tick in ticks:
+        command, pose = tick["command"], tick["pose"]
+        refused = planner._gait_floor_stop(
+            (command["vx"], command["vy"], command["wz"]),
+            (pose["x"], pose["y"], pose["yaw"]), tick["wall_time"])
+        if refused is not None and first is None:
+            first = (tick["wall_time"] - header["wall_time"], refused)
+
+    assert first is not None, "the guard never fired on the run it was written for"
+    fired_at, refused = first
+    outcome = next(r for r in rows if r.get("type") == "outcome")
+    assert refused < MIN_GAIT_COMMAND_M_S, refused
+    assert outcome["elapsed_s"] - fired_at >= 1.5, (
+        f"fired at {fired_at:.2f}s against an outcome at {outcome['elapsed_s']:.2f}s — "
+        f"an explanation printed after the outcome line is one nobody reads")
+    assert "check the tether" in outcome["outcome"], (
+        "the recorded outcome is what this guard exists to pre-empt; if it has changed, "
+        "re-derive the numbers above rather than relaxing them")
+
+
+def test_the_arriving_runs_on_record_do_not_trip_the_guard():
+    """⚠️ THE CONTROL, and without it the test above proves only that a gate can fire.
+
+    Every recorded run that ARRIVED, replayed through the guard. A guard that fires on
+    the stall and also on the successes is not a guard, and this repository has shipped
+    both a check that could never fail and a threshold under its own sensor's noise.
+    """
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "..", "..", "evidence")
+    arrived, checked = [], 0
+    for directory, _subdirs, files in os.walk(root):
+        for name in sorted(files):
+            if not name.endswith(".jsonl"):
+                continue
+            with open(os.path.join(directory, name), encoding="utf-8") as handle:
+                try:
+                    rows = [json.loads(line) for line in handle]
+                except ValueError:
+                    continue
+            outcome = [r for r in rows if r.get("type") == "outcome"]
+            ticks = [r for r in rows if r.get("type", "tick") == "tick"
+                     and r.get("command") is not None and "wall_time" in r
+                     and r.get("pose") is not None]
+            if not outcome or not ticks or not outcome[0]["outcome"].startswith("arrived"):
+                continue
+            checked += 1
+            planner = _planner()
+            fired = 0
+            for tick in ticks:
+                command, pose = tick["command"], tick["pose"]
+                if planner._gait_floor_stop(
+                        (command["vx"], command["vy"], command.get("wz", 0.0)),
+                        (pose["x"], pose["y"], pose["yaw"]),
+                        tick["wall_time"]) is not None:
+                    fired += 1
+            if fired:
+                arrived.append(f"{name}: {fired} of {len(ticks)} ticks")
+    assert checked >= 4, f"only {checked} arriving runs on record; the control is thin"
+    assert not arrived, (
+        "the guard fired on runs that reached their goal:\n  " + "\n  ".join(arrived))
 
 
 if __name__ == "__main__":

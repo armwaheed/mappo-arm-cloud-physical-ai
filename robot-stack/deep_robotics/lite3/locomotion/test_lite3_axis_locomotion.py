@@ -583,6 +583,62 @@ def test_axis_connect_discards_legacy_command_socket_without_sending():
         host.close()
 
 
+def test_a_sub_floor_command_fires_the_full_speed_primitive_rather_than_crawling():
+    """⚠️ THE GO2'S GAIT-FLOOR BUG INVERTS ON THIS TRANSPORT, AND NOBODY HAD SAID SO.
+
+    Issue #26 is about a planner that slows down near an obstacle and commands a speed
+    the robot cannot walk at. On a Go2 that is a freeze: 0.05 m/s produces no gait, the
+    robot stands still, and nothing faults. THIS transport discards the magnitude, so the
+    same 0.05 m/s command is above ``input_deadband.linear_m_s`` and fires the forward
+    primitive at whatever speed the profile evidenced it at. The careful crawl leaves as
+    a full-speed walk at the obstacle the planner was creeping past.
+
+    So a fix for #26 phrased as clamping or scaling the MAGNITUDE is a no-op here — there
+    is no magnitude to clamp. The only thing a sign-only transport can be told is GO or
+    STOP, which is why the guard in ``avoidance.DynamicWindowPlanner._gait_floor_stop``
+    emits a stop rather than a slower command: ``map_velocity(0, 0, 0)`` is zero raw on
+    every axis, and that sentence is expressible on every platform in this repository.
+
+    Measured against the shipped example profile's 0.05 m/s deadband. The executable
+    forward set is two values — ``{0, the evidenced primitive speed}`` — and this pins
+    both the gap and its edges.
+    """
+    profile = _load_profile(_profile_data(measured_m_s={"forward_positive": 0.30}))
+    assert profile.linear_deadband_m_s == 0.05, profile.linear_deadband_m_s
+    assert profile.measured_speeds["forward_positive"] == 0.30
+
+    # Under the deadband: nothing moves. This is the ONLY way this transport goes slow.
+    for crawl in (0.0, 0.02, 0.049):
+        assert profile.map_velocity(crawl, 0.0, 0.0).forward == 0, crawl
+
+    # At and above it: one primitive, one speed, whatever was asked for. 0.05 m/s of
+    # intent and 0.55 m/s of intent are the same bytes on the wire.
+    executed = {profile.map_velocity(vx, 0.0, 0.0).forward
+                for vx in (0.05, 0.10, 0.20, 0.34, 0.35, 0.55)}
+    assert executed == {7000}, executed
+    assert profile.map_velocity(0.05, 0.0, 0.0) == profile.map_velocity(0.55, 0.0, 0.0), (
+        "if these ever differ this transport has grown a magnitude and the reasoning in "
+        "this test — and in `_gait_floor_stop` — has to be redone")
+
+
+def test_the_only_two_forward_speeds_this_transport_has_are_zero_and_the_primitive():
+    """The set an ``avoidance.Limits.gait_floor`` for this robot has to describe.
+
+    Stated as a set rather than as prose because ``--gait-floor`` is a single number and
+    a reader will assume it names the bottom of a range. It does not: there is no range.
+    Issue #42 is the other half of this — one field cannot hold a forward floor and a
+    lateral one that differ by 2x — and neither can it hold a floor that is also the
+    ceiling.
+    """
+    profile = _load_profile(_profile_data(
+        measured_m_s={"forward_positive": 0.30, "lateral_positive": 0.12}))
+    speeds = {0.0}
+    for vx in (0.0, 0.03, 0.05, 0.12, 0.30, 0.9):
+        raw = profile.map_velocity(vx, 0.0, 0.0).forward
+        speeds.add(0.0 if raw == 0 else profile.measured_speeds["forward_positive"])
+    assert speeds == {0.0, 0.30}, speeds
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

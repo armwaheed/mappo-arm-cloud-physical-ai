@@ -44,6 +44,16 @@ sub-floor command faster were measured and both were worse than the stall (issue
 ``--policy-gait-floor`` still raises a sub-floor POLICY command onto the floor ellipse,
 and stays opt-in.
 
+**The DECISION now lives one level down, in the shared planner.** This file's check was
+only ever on the policy-driven path, and the bug it is about reaches every platform and
+both drive modes — a Lite3 run with no policy at all got nothing. So
+``avoidance.DynamicWindowPlanner._gait_floor_stop`` is what stops the legs, using the
+same trigger this file already used and the floor now carried on ``Limits``; what stays
+here is the banner, because a guard that acts without saying why is the defect one level
+along. ``_note_sub_floor`` recognises the planner's floor stop and prints for it rather
+than treating it as an ordinary zero — without that branch the fix would have deleted
+its own diagnostic.
+
 ## Peer robots, with no perception at all
 
 ``--peer-odom-align`` turns on a second obstacle source: peer poses published over the
@@ -123,6 +133,8 @@ for _directory in (_STACK, _STACK / "visual_nav"):
     sys.path.insert(0, str(_directory))
 
 from avoidance import (  # noqa: E402
+    SUB_FLOOR_PROGRESS_FRACTION,
+    SUB_FLOOR_WINDOW_S,
     Command,
     DynamicWindowPlanner,
     Obstacle,
@@ -179,23 +191,12 @@ def _record_refusal(path: Path | None, reason: str, detail: dict) -> None:
               file=sys.stderr)
 
 
-#: How long an emitted command may stay below the gait floor while the robot goes
-#: nowhere before the drive path says so, seconds.
-#:
-#: SHORTER THAN THE STACK'S OWN STALL GATE ON PURPOSE. ``visual_nav.PROGRESS_WINDOW_S``
-#: is 4.0 s, and when it fires it ENDS THE RUN with a message naming the tether. An
-#: explanation printed after that outcome line is an explanation nobody reads, so this
-#: one has to arrive first. It does not stop the robot and does not suppress that gate:
-#: the run still ends the same way, with the cause already on the screen above it.
-SUB_FLOOR_WINDOW_S = 2.0
-
-#: Fraction of the commanded travel the robot must actually cover over that window.
-#:
-#: ``visual_nav.PROGRESS_FRACTION``, restated rather than imported, because
-#: ``visual_nav`` needs OpenCV and a robot and this file must stay importable without
-#: either — ``test_mappo_drive.py`` says so in its first paragraph. Low on purpose there
-#: and here: the failure being caught is total, not marginal.
-SUB_FLOOR_PROGRESS_FRACTION = 0.20
+#: ``SUB_FLOOR_WINDOW_S`` and ``SUB_FLOOR_PROGRESS_FRACTION`` now live in ``avoidance``
+#: and are imported above rather than restated here. They used to be defined in this file
+#: with a comment explaining that ``visual_nav.PROGRESS_FRACTION`` could not be imported,
+#: because ``visual_nav`` needs OpenCV and a robot and this file must stay importable
+#: without either. ``avoidance`` needs neither — it is pure numpy, and it is where the
+#: guard that acts on them now lives (issue #26), so one definition serves both.
 
 
 def _axis_reach(value: float, limit: float) -> float:
@@ -493,13 +494,15 @@ class MappoPlanner(DynamicWindowPlanner):
         if peer_link.get("lost"):
             self.counts["peer_held"] += 1
             return Command(0.0, 0.0, 0.0, reason="hold", gap_m=planned.gap_m,
-                           feasible=planned.feasible, evaluated=planned.evaluated)
+                           feasible=planned.feasible, evaluated=planned.evaluated,
+                           floor_reach_m_s=planned.floor_reach_m_s)
 
         if step.status != "COMMAND":
             self.counts["stopped"] += 1
             return Command(0.0, 0.0, 0.0, reason=_STOP_REASONS.get(step.status, "hold"),
                            gap_m=planned.gap_m,
-                           feasible=planned.feasible, evaluated=planned.evaluated)
+                           feasible=planned.feasible, evaluated=planned.evaluated,
+                           floor_reach_m_s=planned.floor_reach_m_s)
 
         # Clamp to the STACK's envelope, which may be derated below the policy config's
         # own ceilings by --derate or --max-vx. The policy does not know about those and
@@ -533,9 +536,15 @@ class MappoPlanner(DynamicWindowPlanner):
             # `avoidance.base_reason` is what a consumer reads it
             # through, and `test_the_reason_a_veto_writes_is_one_base_reason_can_read`
             # is what keeps this end of the contract honest.
+            # `floor_reach_m_s` travels with the other two and for the stronger
+            # reason: this branch RE-EMITS THE PLANNER'S OWN COMMAND, so dropping it
+            # would strip the gait-floor state off the exact velocity that carries it.
+            # The 2026-08-27 run that reopened issue #26 was policy-driven, and 37 of its
+            # 38 planner-issued ticks came out of this branch.
             return Command(planned.vx, planned.vy, planned.wz,
                            reason=f"veto-{planned.reason}", gap_m=planned.gap_m,
-                           feasible=planned.feasible, evaluated=planned.evaluated)
+                           feasible=planned.feasible, evaluated=planned.evaluated,
+                           floor_reach_m_s=planned.floor_reach_m_s)
 
         self.counts["policy"] += 1
         # `feasible`/`evaluated` describe the PLANNER's search, which ran on this tick
@@ -547,7 +556,8 @@ class MappoPlanner(DynamicWindowPlanner):
         # vetoed ticks beside them record 330 of 330. See issue #20.
         return Command(proposed[0], proposed[1], proposed[2], reason="policy",
                        gap_m=planned.gap_m,
-                       feasible=planned.feasible, evaluated=planned.evaluated)
+                       feasible=planned.feasible, evaluated=planned.evaluated,
+                       floor_reach_m_s=planned.floor_reach_m_s)
 
     def _at_least_walking_pace(self, proposed: tuple) -> tuple:
         """Scale a policy command up to the gait floor, KEEPING ITS DIRECTION.
@@ -802,6 +812,18 @@ class MappoPlanner(DynamicWindowPlanner):
         speed = math.hypot(command.vx, command.vy)
         reach = math.hypot(_axis_reach(command.vx, floor_x),
                            _axis_reach(command.vy, floor_y))
+        if command.is_stop and command.floor_reach_m_s is not None:
+            # A FLOOR STOP, which is a stop this file must not treat as one. The planner's
+            # own guard has already measured two seconds of sub-floor commanding that
+            # covered no ground and has stopped the legs on purpose
+            # (`avoidance.DynamicWindowPlanner._gait_floor_stop`). Falling through to the
+            # branch below would clear the window and print nothing, so the fix would
+            # have silently deleted the only banner issue #26 has — the guard would act
+            # and nobody would be told why.
+            self.counts["sub_floor_stalled"] += 1
+            self._announce_sub_floor(command.floor_reach_m_s, SUB_FLOOR_WINDOW_S, 0.0)
+            self._sub_floor = None
+            return
         if speed <= 0.0 or reach >= 1.0:
             # A stop is a stop, and a command on or outside the floor ellipse walks. Both
             # end the run of sub-floor ticks; neither is evidence about the floor.
@@ -833,14 +855,25 @@ class MappoPlanner(DynamicWindowPlanner):
         if moved >= SUB_FLOOR_PROGRESS_FRACTION * travel:
             return
         self.counts["sub_floor_stalled"] += 1
+        self._announce_sub_floor(speed, span, moved, travel)
+
+    def _announce_sub_floor(self, speed: float, span: float, moved: float,
+                            travel: float | None = None) -> None:
+        """Say it once, loudly, whichever of the two detectors got there first.
+
+        Shared with the planner's own guard, which reaches this through
+        :meth:`_note_sub_floor`'s floor-stop branch. One message rather than two, because
+        two would race: the planner stops the legs on the tick it decides, and this
+        file's window would then see a zero command and reset without printing.
+        """
         if self._sub_floor_announced:
             return
         self._sub_floor_announced = True
         print("!" * 78)
         print("[mappo_drive] ⚠️  COMMANDED BELOW THE GAIT FLOOR AND NOT MOVING — "
               "IT IS NOT THE TETHER")
-        print(f"    commanded {speed:.3f} m/s for {span:.1f}s and moved {moved:.3f} m "
-              f"of an expected {travel:.3f} m.")
+        print(f"    commanded {speed:.3f} m/s for {span:.1f}s and moved {moved:.3f} m"
+              + ("." if travel is None else f" of an expected {travel:.3f} m."))
         print(f"    This robot's measured gait floor is "
               f"{self._platform_floor_m_s:.3f} m/s; below it the legs stop swinging "
               f"and")

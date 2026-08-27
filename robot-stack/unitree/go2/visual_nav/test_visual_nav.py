@@ -55,6 +55,7 @@ from avoidance import (
     STATIC_SOFT_GAP_M,
     Command,
     DynamicWindowPlanner,
+    Limits,
     PlannerConfig,
 )
 from camera import Frame
@@ -444,9 +445,20 @@ class _FakePlanner:
     """Always wants to drive forward, so the navigator always wants to be standing."""
 
     config = PlannerConfig()
+    limits = Limits()
+
+    def __init__(self):
+        #: Counts `reset_gait_floor_guard`, so a test can assert the loop cleared the
+        #: guard rather than merely not crashing on it. A fake that swallows the call
+        #: silently would let the dry-run gate be deleted with every test still green,
+        #: and that gate is what keeps the guard off a robot whose legs are switched off.
+        self.guard_resets = 0
 
     def plan(self, *_args, **_kwargs):
         return Command(vx=0.30, vy=0.0, wz=0.0, reason="goal", gap_m=math.inf)
+
+    def reset_gait_floor_guard(self):
+        self.guard_resets += 1
 
 
 def _navigator_with(loco, live=True, ticks=6) -> VisualNavigator:
@@ -842,6 +854,86 @@ def test_a_dry_run_never_reports_a_stall():
     navigator = _navigator_with(_FakeLoco(), live=False)
     navigator._standing = True
     assert _walk(navigator, CRUISE, [(0.0, 0.0)] * 60) is None
+
+
+# ── The gait floor's own stop (issue #26) ───────────────────────────────────
+
+#: What `avoidance.DynamicWindowPlanner` emits when its guard has measured two seconds of
+#: sub-floor commanding that covered no ground: a stop, `hold`, carrying the speed it
+#: refused. A `hold` WITHOUT `floor_reach_m_s` is any other stop, and the two were the
+#: same bytes until this.
+FLOOR_STOP = Command(vx=0.0, vy=0.0, wz=0.0, reason="hold", gap_m=0.3,
+                     floor_reach_m_s=0.10)
+
+
+def test_a_floor_stop_ends_the_run_instead_of_standing_there():
+    """⚠️ THE ANSWER TO THE OBJECTION THAT KEPT THIS A REPORT.
+
+    Commanding a stop was argued against on the grounds that it SUPPRESSES this gate —
+    `commanded <= PROGRESS_MIN_COMMAND_M_S` returns "not asking it to go anywhere", so a
+    deliberate stop would make the run stop ENDING and stand there to `max_run_s`
+    instead. That is true of every other zero command and must stay true; this is the one
+    exception, and it is read before that branch or it is never read at all.
+    """
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    verdict = _walk(navigator, FLOOR_STOP, [(0.0, 0.0)] * 3)
+    assert verdict is not None, "a floor stop stood there rather than ending the run"
+    assert "gait floor" in verdict, verdict
+    assert "NOT the tether" in verdict, (
+        f"the sentence this replaces named the tether and was wrong on 2026-08-27: "
+        f"{verdict}")
+    # It arrives without waiting for this gate's own window: the two seconds of
+    # measurement already happened in the planner.
+    assert navigator._blocked_reason(FLOOR_STOP, 0.0, (0.0, 0.0, 0.0)) is not None
+
+
+def test_an_ordinary_stop_still_does_not_end_the_run():
+    """The anti-vacuity half. If any zero command ended the run, the test above would
+    pass with the new branch deleted — and a robot waiting for someone to walk past
+    would abort every time."""
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    held = Command(vx=0.0, vy=0.0, wz=0.0, reason="hold", gap_m=0.2)
+    assert held.floor_reach_m_s is None
+    assert _walk(navigator, held, [(0.0, 0.0)] * 60) is None
+
+
+def test_a_dry_run_clears_the_planners_gait_floor_guard_as_well():
+    """⚠️ AGAINST A REAL PLANNER, because a fake cannot go wrong in the way that matters.
+
+    A dry run's legs never move, so "commanded to move and not moving" is true of every
+    tick by construction — the same reason this gate declines a dry run. Replayed against
+    `evidence/2026-08-17-corridor-and-room-runs/`, the guard fired on 153 of 172 ticks of
+    a `--live`-less scene check before this line existed.
+
+    The assertion is on the planner's own state rather than on a counter in a fake, so it
+    fails if the loop stops calling the reset AND if the reset stops resetting.
+    """
+    planner = DynamicWindowPlanner(limits=Limits())
+    navigator = _navigator_with(_FakeLoco(), live=False)
+    navigator._planner = planner
+    navigator._standing = True
+    for index in range(40):
+        planner._gait_floor_stop((0.10, 0.0, 0.0), (0.0, 0.0, 0.0), index * 0.1)
+        navigator._blocked_reason(CRUISE, index * 0.1, (0.0, 0.0, 0.0))
+    assert not planner._floor_samples, (
+        "a dry run accumulated sub-floor evidence the legs could never have answered")
+    assert planner._floor_stalled is None, planner._floor_stalled
+
+    # And the control: LIVE and standing, the very same feed does reach a verdict.
+    live_planner = DynamicWindowPlanner(limits=Limits())
+    live = _navigator_with(_FakeLoco(), live=True)
+    live._planner = live_planner
+    live._standing = True
+    verdict = None
+    for index in range(40):
+        verdict = live_planner._gait_floor_stop((0.10, 0.0, 0.0), (0.0, 0.0, 0.0),
+                                                index * 0.1)
+        live._blocked_reason(CRUISE, index * 0.1, (0.0, 0.0, 0.0))
+    assert verdict == 0.10, (
+        f"the live control did not fire, so the dry-run assertion above proves "
+        f"nothing: {verdict}")
 
 
 def test_a_prone_robot_is_not_judged_for_standing_still():
