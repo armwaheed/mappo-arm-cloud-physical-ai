@@ -1,0 +1,19 @@
+{
+ "by_size": {
+  "224": {
+   "best_score": 0.4274,
+   "fired_at_operating_threshold": 0,
+   "frames_with_any_score": 10,
+   "operating_threshold": 0.45
+  },
+  "300": {
+   "best_score": 0.6155,
+   "fired_at_operating_threshold": 2,
+   "frames_with_any_score": 43,
+   "operating_threshold": 0.45
+  }
+ },
+ "frames": 535,
+ "label": "person",
+ "prototxt_floor": 0.25
+}

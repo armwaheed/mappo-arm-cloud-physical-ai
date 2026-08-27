@@ -1,0 +1,50 @@
+{
+ "by_clock": {
+  "epoch": 14,
+  "none": 6,
+  "uptime": 69
+ },
+ "by_generation": {
+  "-": 7,
+  "G0": 11,
+  "G1": 6,
+  "G2": 32,
+  "G3": 16,
+  "G4": 9,
+  "G5": 8
+ },
+ "exact_duplicates": 6,
+ "excluded_person_track_ticks_schema_cannot_sight": 424,
+ "excluded_runs_schema_cannot_sight": 7,
+ "files_seen": 95,
+ "labels": {
+  "aeroplane": 58,
+  "bin": 3693,
+  "car": 2,
+  "chair": 348,
+  "cow": 1,
+  "diningtable": 1,
+  "horse": 10,
+  "motorbike": 1,
+  "person": 502,
+  "pottedplant": 1,
+  "sofa": 2,
+  "train": 4,
+  "tvmonitor": 1
+ },
+ "person_dropped_ticks": 204,
+ "person_track_ticks": 678,
+ "range_sources": {
+  "frame-fill": 95,
+  "height": 4063,
+  "width": 144,
+  "width-capped": 322
+ },
+ "recall_if_those_were_counted": 0.4301,
+ "recall_on_track": 0.6991,
+ "sighting_rows": 4624,
+ "ticks": 9117,
+ "ticks_with_sightings": 2803,
+ "unique_runs": 89,
+ "unrangeable_rows": 417
+}
