@@ -22,25 +22,36 @@ from __future__ import annotations
 import io
 import json
 import os
+import shutil
 import sys
+import tempfile
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from drive_bridge import (
+    CAUSE_FAULT,
+    CAUSE_REFUSED,
+    CAUSE_TRANSPORT_UNAVAILABLE,
+    DEFAULT_LITE3_TRANSPORT,
     GAIT_FLOORS,
+    LITE3_TRANSPORTS,
     MAX_REVERSE_SECONDS,
     MAX_SECONDS,
     MOTION_COMMANDS,
     BridgeError,
     SimLocomotion,
+    TransportUnavailable,
     build_parser,
     check_gait_floor,
+    check_lite3_link,
     command_lie_down,
     command_pose_stream,
+    link_from_args,
     load_platform,
     main,
     plan_nudge,
     run_nudge,
+    stop_guarantee,
 )
 
 
@@ -578,6 +589,369 @@ def test_the_refusal_survives_the_json_round_trip_main_puts_it_through():
     assert result["ok"] is False
     assert result["refused"] is True
     assert "REFUSING TO RUN" in result["error"]
+
+
+# ── issue #141: stop, the transport, and telling a missing module from a fault ────────
+def _main(argv):
+    """Run ``main`` and return ``(exit_code, parsed_last_json_line)``."""
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        code = main(argv)
+    return code, json.loads(buffer.getvalue().strip().splitlines()[-1])
+
+
+def _with_load_platform(raising, argv):
+    """Run ``main(argv)`` with ``load_platform`` replaced by something that raises."""
+    import drive_bridge
+
+    original = drive_bridge.load_platform
+    drive_bridge.load_platform = raising
+    try:
+        return _main(argv)
+    finally:
+        drive_bridge.load_platform = original
+
+
+def test_stop_does_not_die_with_the_transport_it_is_stopping():
+    """⛔ The safety defect in issue #141, and the test that would have caught it.
+
+    ``stop`` used to be dispatched AFTER ``load_platform``, so on a Lite3 whose only
+    locomotion import was the ROS 2 binding it died at ``ModuleNotFoundError`` before
+    ``loco.stop()`` -- the backstop depended on the thing it was backstopping. Made to fail
+    by moving the ``stop`` branch back below ``load_platform``.
+
+    What it must NOT do is come back green. A stop that reports success without acting is
+    worse than one that fails loudly.
+    """
+    def unavailable(*_a, **_k):
+        raise TransportUnavailable("No module named 'ros2_twist_locomotion'")
+
+    code, result = _with_load_platform(
+        unavailable, ["stop", "--platform", "lite3", "--locomotion-transport", "ros2"])
+    assert code == 1 and result["ok"] is False, result
+    assert result["cause"] == CAUSE_TRANSPORT_UNAVAILABLE, result
+    assert result["commanded_zero"] is False and result["reached_robot"] is False, result
+    assert result["refused"] is False, "a missing module is not a refusal by this stack"
+    assert "STOP DID NOT REACH THE ROBOT" in result["error"], result["error"]
+    assert "PHYSICAL ABORT" in result["error"], result["error"]
+
+
+def test_the_axis_stop_admits_it_sent_nothing_rather_than_reporting_a_zero():
+    """The stop that CANNOT be a zero, and says so instead of ticking.
+
+    ``AxisStreamSender`` lives inside the process that started it, so
+    ``Lite3AxisLocomotion.stop()`` in a fresh worker has no setpoint to zero and puts no
+    datagram on the wire. Claiming ``commanded_zero`` there would be this repository's
+    oldest failure -- a check that passes because nothing can make it fail. What ends an
+    axis walk is the streaming process ending, which ``robot_driver.stop`` does first.
+
+    It also needs no ``robot-stack`` and opens no socket, which is the point: the branch
+    returns before anything is imported or connected. With the branch removed this test
+    spends 5 s waiting for a state frame and then fails.
+    """
+    code, result = _main(["stop", "--platform", "lite3",
+                          "--locomotion-transport", "axis"])
+    assert code == 0 and result["ok"] is True, result
+    assert result["commanded_zero"] is False, result
+    # ok means "the stop did what this transport permits"; no other field on the reply may
+    # claim an action that did not happen.
+    assert result["stopped"] is False and result["reached_robot"] is False, result
+    assert "NO ZERO WAS SENT" in result["note"], result["note"]
+    assert "ENDING THAT PROCESS" in result["note"], result["note"]
+    # The one thing nobody has measured, stated where an operator reads it.
+    assert "NOBODY HAS MEASURED IT" in result["note"], result["note"]
+    assert result["locomotion_transport"] == "axis", result
+
+
+def test_a_stop_that_reaches_the_robot_says_so_and_one_that_cannot_says_the_opposite():
+    """``commanded_zero`` separates the two, on the same command and the same reply shape."""
+    _code, sent = _main(["stop", "--platform", "sim"])
+    assert sent["ok"] is True and sent["commanded_zero"] is True, sent
+
+    def unavailable(*_a, **_k):
+        raise TransportUnavailable("robot-stack is not deployed here")
+
+    _code, not_sent = _with_load_platform(unavailable, ["stop", "--platform", "lite3"])
+    assert not_sent["commanded_zero"] is False, not_sent
+
+
+def test_a_missing_python_module_is_not_a_robot_fault_and_not_a_refusal():
+    """Issue #141 item 4, as three states rather than one boolean.
+
+    All three arrive on the same field from the same command, so a reader that branches on
+    ``cause`` cannot confuse a deployment gap with a robot that misbehaved. Made to fail by
+    collapsing any two of the arms in ``main``.
+    """
+    def unavailable(*_a, **_k):
+        raise TransportUnavailable("No module named 'ros2_twist_locomotion'")
+
+    def refuses(*_a, **_k):
+        raise BridgeError("[venv-guard] REFUSING TO RUN: system Python on a robot")
+
+    def faults(*_a, **_k):
+        raise RuntimeError("the Lite3 state stream has been silent for 4.10s")
+
+    _code, gap = _with_load_platform(unavailable, ["status", "--platform", "lite3"])
+    _code, refused = _with_load_platform(refuses, ["status", "--platform", "lite3"])
+    _code, fault = _with_load_platform(faults, ["status", "--platform", "lite3"])
+
+    assert gap["cause"] == CAUSE_TRANSPORT_UNAVAILABLE and gap["refused"] is False, gap
+    assert gap["reached_robot"] is False, gap
+    assert refused["cause"] == CAUSE_REFUSED and refused["refused"] is True, refused
+    assert fault["cause"] == CAUSE_FAULT and fault["refused"] is False, fault
+    assert len({gap["cause"], refused["cause"], fault["cause"]}) == 3
+
+
+def test_stop_guarantee_never_calls_a_press_that_did_nothing_a_success():
+    """The verdict rule, exercised without a driver, a robot or an event loop.
+
+    It lives in ``drive_bridge`` rather than in ``robot_driver`` precisely so that it CAN
+    be: ``test_robot_driver.py`` dies at ``ModuleNotFoundError`` on
+    ``device_connect_edge``, which is not on PyPI before launch, so a safety rule that
+    lived only there would be a rule no CI has ever run.
+    """
+    zeroed = {"ok": True, "commanded_zero": True}
+    ok, note = stop_guarantee(zeroed, interrupted_motion=True, ended_run=False)
+    assert ok is True
+    assert "a zero velocity was COMMANDED" in note and "TERMINATED" in note, note
+    assert "no policy run was ended" in note, note
+
+    gap = {"ok": False, "cause": CAUSE_TRANSPORT_UNAVAILABLE, "commanded_zero": False}
+    ok, note = stop_guarantee(gap, interrupted_motion=False, ended_run=False)
+    assert ok is False, "a stop whose transport would not load must not come back green"
+    assert "NOT commanded" in note and "PHYSICAL ABORT" in note, note
+
+    axis = {"ok": True, "commanded_zero": False}
+    ok, note = stop_guarantee(axis, interrupted_motion=True, ended_run=True)
+    assert ok is True, "the worker was terminated, which is what ends an axis walk"
+    assert "the policy run was ENDED" in note, note
+    assert "a zero velocity was NOT commanded" in note, note
+
+
+# ── issue #141: the yaw gate, and the override that could not be reached ─────────────
+def test_yaw_on_a_lite3_is_still_refused_without_force():
+    """The gate is NOT what #141 asked to change, so this is the half that must not move.
+
+    Nothing has been measured on any Lite3 axis, and ``check_gait_floor``'s third state
+    refuses rather than warning. Made to fail by deleting the ``_nothing_measured`` arm.
+    """
+    for command, flag, value in (("turn", "--wz", "0.70"), ("walk", "--vx", "0.35"),
+                                 ("strafe", "--vy", "0.20")):
+        args = _args([command, "--platform", "lite3", flag, value])
+        try:
+            plan_nudge(args)
+        except BridgeError as exc:
+            assert "no gait floor has ever been measured" in str(exc), str(exc)
+            continue
+        raise AssertionError(f"{command} on an unmeasured platform was allowed")
+
+
+def test_force_reaches_the_yaw_axis_the_same_way_it_reaches_the_others():
+    """#141 item 2. The escape hatch is documented on every axis; it has to work on each.
+
+    ``turn_left``/``turn_right`` had no ``force`` parameter at all, so it was reachable
+    from the command line and not from the RPC the dashboard calls -- which is asserted
+    over in ``test_robot_driver.py``.
+    """
+    for command, flag, value, axis in (("turn", "--wz", "0.70", "yaw"),
+                                       ("walk", "--vx", "0.35", "forward"),
+                                       ("strafe", "--vy", "0.20", "lateral")):
+        _vx, _vy, _wz, _seconds, warning = plan_nudge(
+            _args([command, "--platform", "lite3", flag, value, "--force"]))
+        assert warning and axis in warning and "forced" in warning, (command, warning)
+
+
+# ── issue #141: which interface the legs are commanded through ───────────────────────
+def test_the_default_transport_is_the_navigators_and_not_the_ros_binding():
+    """``udp`` is what robot_bindings.py and robot_link.py default to; this now matches.
+
+    The old behaviour was not a chosen default at all -- it was whatever
+    ``Lite3Locomotion`` constructs with no factory, which is the ROS 2 Twist binding, and
+    that is the configuration in which stop died at an import error.
+    """
+    link = link_from_args(_args(["stop", "--platform", "lite3"]))
+    assert link.transport == DEFAULT_LITE3_TRANSPORT == "udp", link.transport
+    assert link.chosen is False, "an unspecified flag must not read as a chosen one"
+    chosen = link_from_args(_args(["stop", "--platform", "lite3",
+                                   "--locomotion-transport", "axis"]))
+    assert chosen.transport == "axis" and chosen.chosen is True
+
+
+def test_every_transport_this_worker_offers_is_one_the_lite3_tree_names():
+    """A second vocabulary for one vendor interface is the thing not to build.
+
+    ``robot_bindings._add_ros_arguments`` offers exactly these three by name, and
+    ``robot_link.TRANSPORTS`` prices the two it can measure on.
+    """
+    assert sorted(LITE3_TRANSPORTS) == ["axis", "ros2", "udp"]
+    assert LITE3_TRANSPORTS["axis"]["walked"] is True
+    assert LITE3_TRANSPORTS["axis"]["preserves_magnitude"] is False
+    assert LITE3_TRANSPORTS["udp"]["walked"] is False
+
+
+def test_a_transport_flag_is_refused_rather_than_ignored_on_a_robot_that_has_none():
+    """An option that would be silently discarded looks exactly like one that took effect."""
+    for platform in ("go2", "sim"):
+        args = _args(["stop", "--platform", platform, "--locomotion-transport", "axis"])
+        try:
+            check_lite3_link(platform, link_from_args(args), "stop")
+        except BridgeError as exc:
+            assert "would have been ignored" in str(exc), str(exc)
+            continue
+        raise AssertionError(f"--locomotion-transport was accepted for the {platform}")
+
+
+def test_an_axis_profile_is_refused_by_a_transport_that_cannot_read_one():
+    """``robot_link.load_axis_profile``'s rule, in the worker that grew the same flag."""
+    args = _args(["walk", "--platform", "lite3", "--axis-profile", "/tmp/p.json"])
+    try:
+        check_lite3_link("lite3", link_from_args(args), "walk")
+    except BridgeError as exc:
+        assert "looks exactly like a profile that took effect" in str(exc), str(exc)
+        return
+    raise AssertionError("a profile was accepted by --locomotion-transport udp")
+
+
+def test_ros_topics_are_refused_by_a_transport_with_no_ros_node():
+    for flag in ("--cmd-vel-topic", "--odom-topic"):
+        args = _args(["walk", "--platform", "lite3", "--locomotion-transport", "udp",
+                      flag, "/whatever"])
+        try:
+            check_lite3_link("lite3", link_from_args(args), "walk")
+        except BridgeError as exc:
+            assert "accepted and discarded" in str(exc), str(exc)
+            continue
+        raise AssertionError(f"{flag} was accepted on a UDP transport")
+
+
+def test_axis_motion_needs_a_profile_and_stop_deliberately_does_not():
+    """The asymmetry is the point, not leniency.
+
+    ``Lite3AxisLocomotion.set_velocity`` raises without a profile, so a nudge is refused
+    here rather than deep in the transport. ``stop()`` on that class reads no primitive at
+    all -- and a stop with a prerequisite is not a stop.
+    """
+    link = link_from_args(_args(["walk", "--platform", "lite3",
+                                 "--locomotion-transport", "axis"]))
+    for command in sorted(MOTION_COMMANDS):
+        try:
+            check_lite3_link("lite3", link, command)
+        except BridgeError as exc:
+            assert "requires --axis-profile" in str(exc), str(exc)
+            continue
+        raise AssertionError(f"{command} was allowed on axis with no profile")
+    for command in ("stop", "status", "pose-stream"):
+        check_lite3_link("lite3", link, command)
+
+
+#: A ``robot-stack`` whose Lite3 locomotion class does whatever a test needs, so that the
+#: classification can be exercised without ROS 2, without a robot, and without depending on
+#: what happens to be installed on the machine running the suite.
+_FAKE_LOCOMOTION = "\n".join([
+    "class Lite3Locomotion:",
+    "    def __init__(self, **kwargs):",
+    "        pass",
+    "",
+    "    def connect(self):",
+    "        raise {raise_what}",
+    "",
+    "    def shutdown(self):",
+    "        pass",
+    "",
+])
+
+
+def _in_a_fake_stack(raise_what, transport="ros2"):
+    """Call ``_load_lite3`` against a throwaway robot-stack; return what it raised."""
+    import drive_bridge
+
+    root = tempfile.mkdtemp()
+    package = os.path.join(root, "deep_robotics", "lite3", "locomotion")
+    os.makedirs(package)
+    with open(os.path.join(package, "lite3_locomotion.py"), "w") as handle:
+        handle.write(_FAKE_LOCOMOTION.format(raise_what=raise_what))
+    # The real deep_robotics may already be imported by another test in this file, and a
+    # namespace package caches the paths it resolved. Without this purge the fake tree is
+    # never consulted and the two tests below pass for the wrong reason -- which
+    # test_the_fake_stack_is_really_what_gets_loaded is here to notice.
+    purged = [name for name in sys.modules
+              if name == "deep_robotics" or name.startswith("deep_robotics.")]
+    saved = {name: sys.modules.pop(name) for name in purged}
+    previous = os.environ.get("MAPPO_STACK_DIR")
+    os.environ["MAPPO_STACK_DIR"] = root
+    try:
+        drive_bridge._load_lite3(False, drive_bridge.Lite3Link(transport=transport))
+        return None
+    except Exception as exc:
+        return exc
+    finally:
+        if previous is None:
+            os.environ.pop("MAPPO_STACK_DIR", None)
+        else:
+            os.environ["MAPPO_STACK_DIR"] = previous
+        for name in [n for n in sys.modules
+                     if n == "deep_robotics" or n.startswith("deep_robotics.")]:
+            del sys.modules[name]
+        sys.modules.update(saved)
+        while root in sys.path:
+            sys.path.remove(root)
+        shutil.rmtree(root, ignore_errors=True)
+
+
+def test_the_fake_stack_is_really_what_gets_loaded():
+    """A fixture that silently loaded the REAL tree would make the next two vacuous.
+
+    Both of them assert on what ``connect()`` raised, and the real ``Lite3Locomotion``
+    raises on connect too -- for different reasons on different machines, one of which is
+    the very ImportError the next test looks for. So prove the fake is what is in the path
+    first, with a sentinel no real module would ever raise. Measured: with the
+    ``MAPPO_STACK_DIR`` line deleted, the ImportError test still passes and this one does
+    not.
+    """
+    raised = _in_a_fake_stack("KeyError('sentinel-from-the-fake-stack')")
+    assert isinstance(raised, KeyError), repr(raised)
+    assert "sentinel-from-the-fake-stack" in str(raised), repr(raised)
+
+
+def test_an_import_error_raised_at_connect_is_still_a_transport_gap():
+    """The bug the first fix for #141 shipped, and the command that caught it.
+
+    ``lite3_locomotion`` imports its ROS 2 binding LAZILY -- deliberately, so the module
+    stays importable on a workstation with no ROS 2 -- so a ``ModuleNotFoundError`` does
+    not arrive at ``import`` time but one call later, inside ``connect()``. A wrapper
+    around the module import alone therefore classified a missing ROS 2 runtime as
+    ``cause: fault`` exactly as before the fix, and reading the wrapper did not show it:
+    running ``drive_bridge.py status --platform lite3 --locomotion-transport ros2`` did.
+
+    Made to fail by moving the ``_connect_lite3`` call back outside the ``try``.
+    """
+    raised = _in_a_fake_stack("ImportError(\"No module named 'ros2_twist_locomotion'\")")
+    assert isinstance(raised, TransportUnavailable), repr(raised)
+    assert "ros2_twist_locomotion" in str(raised), str(raised)
+
+
+def test_a_link_that_will_not_open_stays_a_fault_and_does_not_become_a_transport_gap():
+    """The other half, and what keeps the three states from collapsing back into two.
+
+    A silent robot is ABOUT THE ROBOT. Calling it "transport unavailable" would send an
+    operator to check a deployment that is fine while the robot is unplugged.
+    """
+    raised = _in_a_fake_stack("RuntimeError('no Lite3 state frame arrived within 5s')")
+    assert isinstance(raised, RuntimeError), repr(raised)
+    assert not isinstance(raised, TransportUnavailable), repr(raised)
+
+
+def test_no_vendor_port_host_or_topic_is_restated_in_this_file():
+    """A copied vendor constant is what the Lite3 row of GAIT_FLOORS used to be.
+
+    Every link option defaults to None, meaning "the transport module's own default", so
+    there is nothing here to drift out of step with ``lite3_udp_locomotion.py``.
+    """
+    link = link_from_args(_args(["status", "--platform", "lite3"]))
+    assert link.link_kwargs() == {}, link.link_kwargs()
+    given = link_from_args(_args(["status", "--platform", "lite3",
+                                  "--state-port", "43897"]))
+    assert given.link_kwargs() == {"state_port": 43897}, given.link_kwargs()
 
 
 if __name__ == "__main__":

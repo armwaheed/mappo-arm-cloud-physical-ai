@@ -1387,6 +1387,275 @@ def test_the_capabilities_show_both_commands_a_press_could_run():
             "a device that will refuse an armed run advertised one anyway")
 
 
+# ── issue #141: the override that was not on the turn keys ───────────────────
+#: Every motion RPC that ``_precheck`` routes to an axis, and the axis it routes to.
+#: Derived from the same mapping ``_precheck`` uses rather than typed out again, so a new
+#: verb cannot be added to one and forgotten in the other.
+_FLOOR_CHECKED_VERBS = {"walk_forward": "forward", "strafe_left": "lateral",
+                        "strafe_right": "lateral", "turn_left": "yaw", "turn_right": "yaw"}
+
+
+def test_every_floor_checked_verb_offers_the_documented_override():
+    """#141 item 2, as the asymmetry rather than as the two verbs it happened to hit.
+
+    ``check_gait_floor`` names ``--force`` as "the operator's documented way past it", and
+    on a Lite3 -- where NOTHING has been measured on any axis -- every one of these verbs
+    is refused without it. ``turn_left`` and ``turn_right`` had signature
+    ``(seconds, rate_rad_s)``, so the documented escape hatch was reachable from the
+    command line and not from the RPC the dashboard calls, and yaw on a Lite3 was refused
+    with no way past.
+
+    Asserted by introspection because the @rpc SCHEMA is what the dashboard renders its
+    controls from: a parameter missing here is a control that cannot exist on the page.
+    """
+    missing = [name for name in sorted(_FLOOR_CHECKED_VERBS)
+               if "force" not in inspect.signature(getattr(MappoRobotDriver, name)).parameters]
+    assert not missing, (
+        f"{missing} are gait-floor checked and offer no `force`. The gate names --force as "
+        f"the documented way past it, so a verb without the parameter is a gate with no "
+        f"door -- and on a Lite3 that is a control that can never succeed.")
+
+
+def test_the_precheck_and_the_force_offering_cover_the_same_verbs():
+    """Keeps the list above honest, in the direction that matters.
+
+    A verb that is floor-checked and not in ``_FLOOR_CHECKED_VERBS`` would be exempted
+    from the test above by omission -- which is exactly how turn_left came to be missing
+    its parameter with a green suite.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, platform="lite3", allow_motion=True)
+        for name, axis in _FLOOR_CHECKED_VERBS.items():
+            commanded = {"forward": {"vx": 0.35}, "lateral": {"vy": 0.20},
+                         "yaw": {"wz": 0.70}}[axis]
+            assert driver._precheck(name, commanded, force=False), (
+                f"{name} is listed as floor-checked and _precheck let it through")
+            assert driver._precheck(name, commanded, force=True) == "", (
+                f"{name} refused even with force -- the override does not reach the gate")
+        # walk_back is deliberately NOT floor-checked (issue #42: the floor measures the
+        # FORWARD gait). It is here as the control that proves the assertion above is not
+        # simply true of everything.
+        assert driver._precheck("walk_back", {"vx": -0.35}, force=False) == ""
+
+
+def test_a_forced_turn_reaches_the_worker_and_an_unforced_one_never_starts_it():
+    """Both halves. The second is the one that must not regress: #141 asked for the
+    override to be REACHABLE, not for the gate to be softened."""
+    with tempfile.TemporaryDirectory() as tmp:
+        seen = []
+        driver = _driver(tmp, platform="lite3", allow_motion=True)
+        driver._bridge_blocking = lambda command, extra=None: seen.append(extra) or {"ok": True}
+
+        async def main():
+            refused = await driver.turn_left(rate_rad_s=0.70)
+            await _settle(driver)
+            assert refused["ok"] is False and refused["refused"] is True, refused
+            assert not seen, "the worker was started for a command that was refused"
+            forced = await driver.turn_left(rate_rad_s=0.70, force=True)
+            await _settle(driver)
+            assert forced["ok"] is True, forced
+        _run(main())
+        assert seen and "--force" in seen[0], seen
+
+
+# ── issue #141: which interface, and where the flags go ──────────────────────
+def test_the_transport_flags_reach_every_worker_including_stop():
+    """A stop that went out on a different interface from the walk it is stopping is not
+    a stop. Made to fail by moving the loop in ``_bridge_blocking`` inside a branch that
+    skips ``stop``."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, platform="lite3", allow_motion=True,
+                         lite3_link={"locomotion-transport": "axis",
+                                     "axis-profile": "/opt/lite3-axis-LITE3-A.json"})
+        seen = {}
+
+        class _Done:
+            returncode = 0
+            def poll(self): return 0
+            def communicate(self, timeout=None): return ('{"ok": true}', "")
+            def terminate(self): pass
+
+        import subprocess as sp
+        original = sp.Popen
+
+        def capture(cmd, *a, **k):
+            seen[cmd[2]] = cmd
+            return _Done()
+
+        sp.Popen = capture
+        try:
+            for command in ("stop", "status", "walk"):
+                driver._bridge_blocking(command, ["--vx", "0.35"])
+        finally:
+            sp.Popen = original
+
+        for command, cmd in seen.items():
+            assert "--locomotion-transport" in cmd, (command, cmd)
+            assert cmd[cmd.index("--locomotion-transport") + 1] == "axis", (command, cmd)
+            assert "--axis-profile" in cmd, (command, cmd)
+
+
+def test_a_simulated_lite3_does_not_carry_a_transport_flag_the_worker_would_refuse():
+    """``--simulate`` drives the bench double, which has no vendor interface at all, and
+    the worker refuses a transport flag it would have to ignore. Passing one here would
+    turn every simulated Lite3 press into a refusal."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, platform="lite3", simulate=True, allow_motion=True,
+                         lite3_link={"locomotion-transport": "axis"})
+        seen = []
+
+        class _Done:
+            returncode = 0
+            def poll(self): return 0
+            def communicate(self, timeout=None): return ('{"ok": true}', "")
+            def terminate(self): pass
+
+        import subprocess as sp
+        original = sp.Popen
+        sp.Popen = lambda cmd, *a, **k: seen.append(cmd) or _Done()
+        try:
+            driver._bridge_blocking("stop")
+        finally:
+            sp.Popen = original
+        assert "--locomotion-transport" not in seen[0], seen[0]
+        assert "--backend" in seen[0] and "sim" in seen[0], seen[0]
+
+
+def test_an_unknown_link_flag_is_a_startup_error_and_not_a_silent_drop():
+    """The list here and the worker's parser have to agree, and the only place that can be
+    checked without a robot is construction."""
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            _driver(tmp, platform="lite3", lite3_link={"locomotion_transport": "axis"})
+        except ValueError as exc:
+            assert "unknown Lite3 link flag" in str(exc), str(exc)
+            return
+    raise AssertionError("an underscored flag name was accepted and would be dropped")
+
+
+def test_the_capabilities_say_which_interface_the_legs_are_on():
+    """The page has to be able to say "no Venture has walked on this transport" before the
+    press, not in the reply after it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        default = _run(_driver(tmp, platform="lite3").get_capabilities())["locomotion"]
+        assert default["transport"] == "udp", default
+        assert default["has_walked_a_venture"] is False, default
+
+        axis = _driver(tmp, platform="lite3",
+                       lite3_link={"locomotion-transport": "axis"})
+        row = _run(axis.get_capabilities())["locomotion"]
+        assert row["has_walked_a_venture"] is True, row
+        assert row["preserves_magnitude"] is False, row
+        assert row["axis_profile"] is None, row
+
+        assert _run(_driver(tmp, platform="go2").get_capabilities())["locomotion"] is None
+
+
+# ── issue #141: a missing module is not a robot fault ────────────────────────
+def test_a_transport_gap_does_not_reach_the_operator_as_a_refusal():
+    """Issue #141 item 4, on the event stream.
+
+    ``motion_refused`` carries the worker's own three-state cause rather than re-deriving
+    it, so a ``ModuleNotFoundError`` arrives labelled ``transport_unavailable`` and the
+    page can say "this never reached the robot" instead of drawing a robot fault.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        emitted = []
+        driver = _driver(tmp, events=emitted, allow_motion=True)
+        driver._bridge_blocking = lambda *a, **k: {
+            "ok": False, "cause": "transport_unavailable", "refused": False,
+            "error": "No module named 'ros2_twist_locomotion'"}
+
+        async def main():
+            await driver.walk_forward()
+            await _settle(driver)
+        _run(main())
+        payload = dict(next(p for name, p in emitted if name == "motion_refused"))
+        assert payload["cause"] == "transport_unavailable", payload
+
+        # And the control: a real refusal by this stack still says so.
+        emitted.clear()
+        _run(_driver(tmp, events=emitted, allow_motion=False).walk_forward())
+        refusal = dict(next(p for name, p in emitted if name == "motion_refused"))
+        assert refusal["cause"] == "refused", refusal
+
+
+def test_an_interpreter_that_will_not_start_is_not_the_robots_fault_either():
+    """``--bridge-python`` pointing at nothing produced ``refused: false`` with no cause,
+    which is the same wrong bucket by another route: the worker never ran, so the robot
+    was never asked."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, allow_motion=True, bridge_python="/nonexistent/python")
+        result = driver._bridge_blocking("stop")
+        assert result["ok"] is False
+        assert result["cause"] == "transport_unavailable", result
+        assert result["reached_robot"] is False, result
+
+
+def test_stop_says_which_of_its_three_levers_moved_and_never_ticks_over_nothing():
+    """⛔ The safety half of #141 at the driver, where the three levers actually are.
+
+    The run and the worker need no transport and still fire; the zero does. A stop whose
+    transport would not load has to come back ``ok: false`` -- the operator needs to be
+    sent to the physical abort, not shown a tick.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, platform="lite3", allow_motion=True)
+        driver._bridge_blocking = lambda *a, **k: {
+            "ok": False, "cause": "transport_unavailable", "refused": False,
+            "commanded_zero": False, "stopped": False,
+            "error": "STOP DID NOT REACH THE ROBOT. No module named 'ros2_twist_locomotion'"}
+        result = _run(driver.stop())
+        assert result["ok"] is False, result
+        assert result["velocity_zeroed"] is False, result
+        assert "NOT commanded" in result["stop_note"], result["stop_note"]
+        assert "PHYSICAL ABORT" in result["stop_note"], result["stop_note"]
+        assert "STOP DID NOT REACH THE ROBOT" in result["error"], result["error"]
+
+        # A stop that did reach the robot reports the same three levers, the other way up.
+        driver._bridge_blocking = lambda *a, **k: {"ok": True, "stopped": True,
+                                                   "commanded_zero": True}
+        good = _run(driver.stop())
+        assert good["ok"] is True and good["velocity_zeroed"] is True, good
+        assert "a zero velocity was COMMANDED" in good["stop_note"], good["stop_note"]
+
+
+def test_an_axis_stop_is_green_only_because_the_worker_was_ended_and_says_so():
+    """The one green stop that sends nothing, and why it is not a green stop that did
+    nothing: on the axis transport the stream belongs to the worker process, so SIGTERM is
+    the stop and the reply names it."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, platform="lite3", allow_motion=True,
+                         lite3_link={"locomotion-transport": "axis"})
+        driver._bridge_blocking = lambda *a, **k: {
+            "ok": True, "stopped": True, "commanded_zero": False,
+            "note": "NO ZERO WAS SENT"}
+        result = _run(driver.stop())
+        assert result["ok"] is True, result
+        assert result["velocity_zeroed"] is False, result
+        assert "a zero velocity was NOT commanded" in result["stop_note"], result
+
+
+def test_a_stop_reports_two_problems_as_two_and_not_as_one():
+    """The run message used to overwrite whatever the bridge had said. Two problems
+    reported as one is one problem the operator does not know about."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(tmp, platform="lite3", allow_motion=True, run_profile=_REMOTE)
+        driver._bridge_blocking = lambda *a, **k: {
+            "ok": False, "cause": "transport_unavailable", "commanded_zero": False,
+            "error": "STOP DID NOT REACH THE ROBOT."}
+
+        async def _unconfirmed(_reason):
+            return {"was_running": True, "confirmed": False, "run_id": "r-1",
+                    "error": "ssh did not answer"}
+
+        driver._end_run = _unconfirmed
+        result = _run(driver.stop())
+        assert result["ok"] is False, result
+        assert "STOP DID NOT REACH THE ROBOT." in result["error"], result["error"]
+        assert "did NOT confirm" in result["error"], result["error"]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
