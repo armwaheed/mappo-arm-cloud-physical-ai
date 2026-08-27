@@ -15,6 +15,16 @@ in this repository had ever named**.
 
 That is the finding. It is about order of work, not about weights.
 
+> ⛔ **Corrected 2026-08-26: every margin on this page is measured against a baseline the
+> robot does not run.** This page scores at **300 px**; `deploy/run-peer-supervised.sh`
+> launches every peer run at **`--input-size 224`**. At 224 the shipped weights are **50%
+> recall / 26% false alarms / 25 people held**, not the 68% / 49% / 54 quoted throughout —
+> and **no candidate has ever been scored at 224**, so none of the comparisons below
+> establishes that anything beats production. The finding above — that 627 checkpoints went
+> unscored — is unaffected and stands. The rankings are not. Full working, and the 224 vs
+> 300 measurement on the same frames in one process, in
+> [`evidence/2026-08-26-detector-input-size/`](../2026-08-26-detector-input-size/README.md).
+
 Check it against the tree: of the sixteen run names below, `git grep` finds four —
 `f_full_distil01`, `i_full_pseudo`, `j_full_distil03`, `l_full_bb02`. The other twelve,
 including the winner, appear nowhere on `main` before this directory.
@@ -361,6 +371,19 @@ which are honest and epoch-matched; an earlier version of that figure drew one a
 `s_pseudo02_aug/20` loses **4 of 54** people the shipped network sees. The property this
 robot ships is *gives way to people*, and 93% is not 100%. What has changed is the size of
 the remaining gap: from 18 of 22 lost at the start of the night to 4 of 54.
+
+> ⛔ **Corrected 2026-08-26 — the baseline row is a 300 px number and the robot runs 224, and
+> the `people` denominator is not the one the hold path uses.** This page cites
+> `deploy/run-peer-supervised.sh:87` for its 0.25 and does not read line **80** of the same
+> file, which passes `--input-size 224`. Scored at 224 the shipped weights are **50% recall at
+> 26% false alarms holding 25 people**, not 68% / 49% / 54 — so the margins on this page are
+> over a baseline production does not run, and no candidate has been scored at 224.
+> Separately, `people` here counts a `person` **label**; the robot stops on `person_shaped`,
+> and on that denominator the candidate loses **5 of 31**, not 4 of 54. The 22 this page
+> records as *"attributed"* and un-derivable from a clone **is** derivable and **is** 22, along
+> with the rest of the shipped row. See
+> [`evidence/2026-08-26-detector-input-size/`](../2026-08-26-detector-input-size/).
+> The candidate-versus-candidate ranking on this page is unaffected.
 
 ## Provenance
 

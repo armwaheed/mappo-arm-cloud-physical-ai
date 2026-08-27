@@ -173,6 +173,40 @@ The full record — the 64-row grid, the raw sweep data, both figures, the augme
 what a clone cannot re-derive — is in
 [`evidence/2026-08-26-checkpoint-sweep/`](../evidence/2026-08-26-checkpoint-sweep/).
 
+### ⛔ Every row of that table is a 300 px number, and the robot runs 224 — measured 2026-08-26
+
+The sweep above, the wave-6 sweep beside it, and every scorer in this directory squash the
+frame into **300 x 300**. `deploy/run-peer-supervised.sh` — the script the sweep cites by line
+number for its `--confidence 0.25` — passes **`--input-size 224`** seven lines earlier, so the
+peer runs this project reports were not executed at the size any of them were scored at.
+
+Measured on the shipped weights, same frames, same rule, one process, changing only the square:
+
+| shipped weights, whole Aug-20 day | peer recall | false alarms | people held |
+| --- | ---: | ---: | ---: |
+| at **300** — every table above | 41/60 = 68% | 108/221 = 49% | 32 |
+| at **224** — what the runs launch | 30/60 = **50%** | 57/221 = **26%** | **25** |
+
+So the baseline the candidates were ranked against is not the incumbent's production
+behaviour, and **no candidate checkpoint has been scored at 224 at all**. The launch script's
+own comment already warned that this axis is *"non-monotonic … a marginal-detection smell"* —
+it measured 224 as **6x better** than 300 on one close-range clip, where the cross-day day
+measures it 18 points **worse**. Both are real; neither transfers.
+
+Rankings *among* candidates survive this, because a shared preprocessing error cancels in a
+comparison scored the same way. The comparison against the shipped weights does not, and that
+is the only one that decides whether anything ships. `--pseudo-labels 0.2` still looks like the
+best configuration found.
+
+⚠️ **The `people` denominator in the wave-6 table is also the wrong one.** It counts frames
+carrying a box *labelled* `person`; the robot stops on `person_shaped` — aspect h/w ≥ 2.0 —
+and this file already explains at length that the label cannot be trusted for it. Filtered by
+the gate the stack applies, the candidate loses **5 of 31 (16%)**, not 4 of 54 (7%).
+
+The measurement, the reproduction script, and the two published denominators it re-derives from
+a clone are in
+[`evidence/2026-08-26-detector-input-size/`](../evidence/2026-08-26-detector-input-size/).
+
 ### ⚠️ `horse` is not a viable label for a quadruped, and counting emitted labels could not tell you
 
 A Go2 Wheel head-on at 1.3 m is labelled `horse 0.28` in the hero run of 2026-08-25, and the

@@ -1,0 +1,60 @@
+{
+ "300": {
+  "test": {
+   "recall_n": 32,
+   "recall_d": 47,
+   "fp_n": 76,
+   "fp_d": 136,
+   "person": 22,
+   "person_shaped": 8,
+   "hold": 16
+  },
+  "select": {
+   "recall_n": 9,
+   "recall_d": 13,
+   "fp_n": 32,
+   "fp_d": 85,
+   "person": 34,
+   "person_shaped": 24,
+   "hold": 24
+  },
+  "whole": {
+   "recall_n": 41,
+   "recall_d": 60,
+   "fp_n": 108,
+   "fp_d": 221,
+   "person": 56,
+   "person_shaped": 32,
+   "hold": 40
+  }
+ },
+ "224": {
+  "test": {
+   "recall_n": 25,
+   "recall_d": 47,
+   "fp_n": 45,
+   "fp_d": 136,
+   "person": 22,
+   "person_shaped": 7,
+   "hold": 8
+  },
+  "select": {
+   "recall_n": 5,
+   "recall_d": 13,
+   "fp_n": 12,
+   "fp_d": 85,
+   "person": 22,
+   "person_shaped": 18,
+   "hold": 19
+  },
+  "whole": {
+   "recall_n": 30,
+   "recall_d": 60,
+   "fp_n": 57,
+   "fp_d": 221,
+   "person": 44,
+   "person_shaped": 25,
+   "hold": 27
+  }
+ }
+}

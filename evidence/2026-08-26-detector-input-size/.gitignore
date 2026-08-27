@@ -1,0 +1,4 @@
+# `reproduce.py` recovers seven MP4s and decodes 284 JPEGs into here -- about 30 MB of
+# scratch, all of it re-derivable from the commit named in README.md. None of it belongs
+# in the repository; the clips are already in git history once.
+_reproduce/
