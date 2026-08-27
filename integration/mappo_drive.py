@@ -1075,9 +1075,49 @@ def platform_gait_floor(bindings, args) -> float:
     return floor
 
 
+#: The deployed tree's own root. ``integration/`` sits directly under it, which is also
+#: what ``_STACK`` above assumes, so the two cannot drift apart without both breaking.
+_ROOT = Path(__file__).resolve().parent.parent
+
+
+def stamp_verdict(root=None, on_robot=None, announce=None):
+    """Refuse a run whose tree does not match the commit its stamp names.
+
+    Imported here rather than at module scope for the reason ``drive_bridge`` gives: this
+    file is imported by an offline suite on machines that have no ``robot-stack``
+    deployed beside it, and a module-level import would make the guard the thing that
+    breaks the tests it is supposed to survive.
+
+    ``on_robot`` comes from ``venv_guard``'s positive-only host evidence so that both
+    pre-flights share one definition of "robot" -- an unstamped tree is a *finding* in a
+    checkout and a *refusal* on a robot, and two definitions of which machine is which is
+    how one of them ends up never firing.
+
+    The verdict is printed either way. A guard that is silent when it passes cannot be
+    told apart from a guard that is not running, and the tree id it prints is the only
+    thing that lets a run log be resolved to a commit afterwards.
+    """
+    root = _ROOT if root is None else root
+    announce = print if announce is None else announce
+    preflight = str(Path(root) / "robot-stack" / "preflight")
+    if preflight not in sys.path:
+        sys.path.insert(0, preflight)
+    from tree_stamp import describe, require_stamped_tree
+    from venv_guard import robot_host_evidence
+    if on_robot is None:
+        on_robot = robot_host_evidence() is not None
+    verdict = require_stamped_tree("mappo_drive", str(root), on_robot=on_robot)
+    announce("[mappo_drive] " + describe(verdict))
+    return verdict
+
+
 def main(argv=None, bindings=None) -> int:
     # Parsed twice on purpose: once here to build the policy before the vendored main()
     # runs, and once by that main() for everything else.
+    # Before anything else, and before the vendored stack is imported: a run that
+    # cannot name its own commit produces a measurement nobody can attribute.
+    stamp_verdict()
+
     import visual_nav
 
     bindings = bindings or visual_nav.Go2Bindings()

@@ -156,20 +156,93 @@ the Lite3 SOP exports `MAPPO_ROBOT_HOST=1` and the guard fires there by declarat
 than by inference. Every live run prints the verdict it reached, including `venv-guard: not
 enforced`, so a gate that is not firing says so instead of being invisible.
 
-### ⚠️ The robot's deployed tree is not a checkout and does not report its own staleness
+### Ask the robot what commit it is running — `deploy/push-to-robot.sh`
 
-Measured on the Go2 2026-08-26: **none of the nine `~/mappo-*` directories is a git
-checkout** — no `.git`, so no `git status`, no branch, no commit. `~/mappo-run` was
-reconstructed from file hashes against `main`:
+**None of the `~/mappo-*` trees on the Go2 is a git checkout** — no `.git`, so no branch and
+no `git status`. That much was always true. What this section used to say next was not:
+it claimed `~/mappo-run` "corresponds to no single commit". Re-measured 2026-08-26 by
+computing **git's own root tree object id from the bytes on the robot's disk**, six of the
+ten trees are bit-perfect checkouts:
 
-- everything except `README.md` matches a commit **34–36 behind `main`**;
-- its `README.md` matches a commit **39–44 behind** — an older one still.
+| tree | root tree id | is |
+| --- | --- | --- |
+| `~/mappo-run` | `287242e9…` | **`cb42b9a`, exactly — 226/226 files** |
+| `~/mappo-probe` | `45fdebf4…` | `15f4f05`, exactly |
+| `~/mappo-shape` | `9d2073f5…` | `8f3639a`, exactly |
+| `~/mappo-shape2` | `0275ad90…` | `efd0b0b`, exactly |
+| `~/mappo-side` | `f0cd2b97…` | `d367fd2`, exactly |
+| `~/mappo-swerve` | `76e29fc6…` | `308658b`, exactly |
+| `~/mappo-main` | `467c3d16…` | **no commit in this repository** |
+| `~/mappo`, `~/mappo-dedup`, `~/mappo-smoke-2b15549` | | no commit |
 
-Those ranges do not overlap, so **the deployed tree corresponds to no single commit**: it is
-a mixture, and "which commit is the robot running" has no answer. `~/mappo-run/dashboard/
-drive_bridge.py` is from a different lineage again and fails with
-`ModuleNotFoundError: No module named 'arm_dc_robotkit'`. Copy a fresh tree for a run whose
-result you intend to quote, and record what you copied.
+`~/mappo-run` read as "no single commit" only because it was reconstructed against `main`,
+and **`cb42b9a` is not on `main`** — it is the tip of the unmerged branch
+`feat/sidestep-when-the-diagonal-cannot-execute`. The tree was never a mixture. The real
+finding is worse in a different way: a run there is a run of an unmerged branch, and
+nothing on the robot said so.
+
+**`~/mappo-main` is the genuine mixture, and it is the tree the wrappers use.**
+`run-smoke.sh`, `run-chair.sh` and `goal-sweep.sh` all `source
+/home/unitree/mappo-main/…/setup_env.sh` and `cd /home/unitree/mappo-main/integration`.
+Against `main` HEAD: 88 files current, 46 differing, 217 tracked files absent. Those 46
+were last current across **21 different commits**, from 8 behind HEAD to 83 behind, and it
+carries two files git has never tracked — `integration/mappo_drive.py.bak-preberth` and
+`robot-stack/unitree/go2/visual_nav/visual_nav.py.orig`. Dropping those still resolves to
+nothing. It is hand-maintained.
+
+#### Deploying
+
+```bash
+ROBOT_SSHPASS=… bash deploy/push-to-robot.sh unitree@192.168.123.18 /home/unitree/mappo-run
+```
+
+Tracked files only, at a named commit, into a staging directory that is stamped and
+verified *before* anything in place is touched; the previous tree is **moved**, never
+deleted; then verified again in place, and a disagreement fails the deploy.
+
+#### Asking
+
+```bash
+python3 robot-stack/preflight/tree_stamp.py verify /home/unitree/mappo-run
+# [tree-stamp] clean: commit 92a0d38817df (feat/…), tree 64a35d3bcd4c
+```
+
+That `tree` is a real git object id — `git rev-parse <commit>^{tree}` resolves it, and
+`tree_stamp.py id <dir>` prints it for *any* directory, stamped or not, which is how the
+table above was built. **No `git` is involved on the robot**: measured on the Go2's Python
+3.8.10 under the venv, a `verify` does not even import `subprocess`.
+
+#### It refuses
+
+`mappo_drive.py` calls the guard before it imports the vendored stack, so a run whose tree
+does not match its stamp stops with the file named, not with a subtle wrong answer:
+
+```
+[tree-stamp] mappo_drive: REFUSING -- /home/unitree/mappo-stamped does not match its stamp.
+stamp says   commit 92a0d38817df…  tree 64a35d3bcd4c…
+disk gives   tree ca3ca14b8872…
+1 modified:
+    integration/mappo_policy.py
+```
+
+An unstamped tree refuses **on a robot** and is merely reported in a checkout — otherwise
+the gate would fire on every clone and every CI job, and gates that always fire get deleted.
+
+#### What it does not claim
+
+It is not tamper-proof, and the module docstring says so. Editing a file is caught. Editing
+the file *and* its manifest entry is still caught, because the tree id is derived from the
+bytes and the stamp's is not — measured on the robot. Editing the tree id as well **will**
+pass on the robot. What that cannot survive is contact with the repository:
+
+```bash
+python3 robot-stack/preflight/tree_stamp.py audit /path/to/.mappo-stamp.json .
+# MISMATCH: this stamp's tree is not the tree of the commit it names.
+```
+
+So a false claim is *falsifiable from the run log*, which is the property a published
+measurement needs. Real tamper-proofing needs a signing key, and a key readable by
+everything on the robot is a key anything on the robot can sign with.
 
 ## 🛑 THE FIRST NUMBER: the Go2 will not walk below ~0.35 m/s
 
