@@ -1066,9 +1066,13 @@ requires cannot be entered from the AI motion state.
 **A render is a derivative work**, so this appendix exists to make each figure's source and
 licence explicit rather than leaving them to be inferred.
 
-**No vendor URDF, mesh, STL or Collada file is committed to this repository.** This repository
-holds exactly one URDF of its own — the D1 arm at
-`robot-stack/unitree/go2/d1_arm/urdf/d1_description.urdf` — and no USD.
+**No vendor URDF, mesh, STL or Collada file is committed to this repository, and these figures
+add none.** The tree holds exactly one URDF and no USD:
+`robot-stack/unitree/go2/d1_arm/urdf/d1_description.urdf`, which predates this paper and is not
+a vendor file — its own header states that it is kinematics only, authored here from
+measurements of the physical arm so the stack can do forward kinematics and IK without a vendor
+SDK download. Read that header before reusing it; do not take this sentence for it.
+
 `docs/figures/make_robot_profile.py` reads the vendor descriptions from a checkout **you**
 make, outside the tree, and writes only a PNG. That is deliberate: a prior Arm repository
 shipped a byte-identical vendor URDF under an Arm copyright and an Apache-2.0 SPDX identifier
@@ -1095,10 +1099,18 @@ Fetch the descriptions into any scratch directory outside this repository:
 ```bash
 mkdir -p "$ASSETS" && cd "$ASSETS"
 
+# The blobless + sparse form is load-bearing: a plain clone of unitree_ros did not
+# finish in five minutes, and this one brings both descriptions down in about 90 s.
+# `sparse-checkout add LICENSE` is what lets you verify the copyright line above --
+# sparse mode excludes it otherwise.
 git clone --depth 1 --filter=blob:none --sparse \
     https://github.com/unitreerobotics/unitree_ros.git
-(cd unitree_ros && git sparse-checkout set robots/go2_description robots/go2w_description)
+(cd unitree_ros \
+    && git sparse-checkout set robots/go2_description robots/go2w_description \
+    && git sparse-checkout add LICENSE)
 
+# deep_robotics_model's .gitattributes is empty -- nothing here is git-lfs, so a plain
+# clone gets real STL bytes rather than pointer files. Its licence file is LICENSE.txt.
 git clone --depth 1 https://github.com/DeepRoboticsLab/deep_robotics_model.git
 ```
 
