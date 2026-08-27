@@ -1,0 +1,79 @@
+{
+ "threshold": 0.5,
+ "lite3_frames": 168,
+ "person_frames": 120,
+ "rows": [
+  {
+   "model": "epoch005.caffemodel",
+   "lite3@224": 0,
+   "person_kept@224": 2,
+   "person_base@224": 4,
+   "lite3@300": 0,
+   "person_kept@300": 8,
+   "person_base@300": 17
+  },
+  {
+   "model": "epoch010.caffemodel",
+   "lite3@224": 0,
+   "person_kept@224": 1,
+   "person_base@224": 4,
+   "lite3@300": 0,
+   "person_kept@300": 7,
+   "person_base@300": 17
+  },
+  {
+   "model": "epoch015.caffemodel",
+   "lite3@224": 0,
+   "person_kept@224": 1,
+   "person_base@224": 4,
+   "lite3@300": 0,
+   "person_kept@300": 5,
+   "person_base@300": 17
+  },
+  {
+   "model": "epoch020.caffemodel",
+   "lite3@224": 0,
+   "person_kept@224": 0,
+   "person_base@224": 4,
+   "lite3@300": 166,
+   "person_kept@300": 5,
+   "person_base@300": 17
+  },
+  {
+   "model": "epoch025.caffemodel",
+   "lite3@224": 0,
+   "person_kept@224": 0,
+   "person_base@224": 4,
+   "lite3@300": 168,
+   "person_kept@300": 5,
+   "person_base@300": 17
+  },
+  {
+   "model": "epoch030.caffemodel",
+   "lite3@224": 0,
+   "person_kept@224": 0,
+   "person_base@224": 4,
+   "lite3@300": 160,
+   "person_kept@300": 5,
+   "person_base@300": 17
+  },
+  {
+   "model": "epoch035.caffemodel",
+   "lite3@224": 0,
+   "person_kept@224": 0,
+   "person_base@224": 4,
+   "lite3@300": 162,
+   "person_kept@300": 5,
+   "person_base@300": 17
+  },
+  {
+   "model": "epoch040.caffemodel",
+   "lite3@224": 0,
+   "person_kept@224": 0,
+   "person_base@224": 4,
+   "lite3@300": 162,
+   "person_kept@300": 5,
+   "person_base@300": 17
+  }
+ ]
+}
