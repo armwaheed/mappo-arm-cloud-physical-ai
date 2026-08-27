@@ -18,12 +18,19 @@ the bytes that survive, and the reason is worth knowing before anyone builds a s
 
 ```bash
 cd evidence/2026-08-27-89-runs-survived-14-can-be-dated
-python3 inventory.py --corpus /path/to/robot-pull   # writes inventory.tsv, failure-modes.json
+
+# the inventory and the recall tables. Standard library only, runs on the 3.8 leg.
+python3 inventory.py --corpus /path/to/robot-pull      # -> inventory.tsv, failure-modes.json
+
+# the walk-3 numbers, at both input sizes. Needs cv2 and the stock weights.
+python3 rescore.py --frames /path/to/walk3-frames --model-dir /path/to/models
+python3 rescore.py --frames ... --model-dir ... --subfloor   # prototxt floor 0.25 -> 0.01
 ```
 
-`inventory.tsv` is committed: 89 rows, one per unique run, 7 KB. The corpus itself is not
-committed, for the reason PR #138 gives — bulk robot data belongs in the dataset store,
-keyed back to a manifest. Where it went is at the bottom of this file.
+Committed here and small: `inventory.tsv` (89 rows, 7 KB), `visual-truth.tsv` (250
+hand-marked frames), `failure-modes.json` and `walk3-rescore.json`. The corpus itself is
+not committed, for the reason PR #138 gives — bulk robot data belongs in the dataset
+store, keyed back to a manifest. Where it went is at the bottom of this file.
 
 ## Why 75 runs cannot be dated
 
