@@ -61,7 +61,14 @@ from camera import Frame
 from camera_model import GO2_CAMERA_HEIGHT_M, FisheyeCamera
 from colour_detector import PROFILES
 from goal import ArucoGoal, OdomWaypoint
-from person_detector import PERSON_ASPECT_MIN, Detection, RangedDetection
+from person_detector import (
+    PERSON_ASPECT_MIN,
+    Detection,
+    GroundRanger,
+    RangedDetection,
+    SizePrior,
+    steerable_bearing_rad,
+)
 from static_map import StaticObstacleMap
 from telemetry import TICK_STAGES, TelemetryWriter
 from tracker import (
@@ -83,6 +90,12 @@ from visual_nav import (
 )
 
 CAMERA = FisheyeCamera.from_hfov(1920, 1080, 85.27)
+#: The same lens WITH a floor under it, which `steerable_bearing_rad` requires and
+#: `CAMERA` deliberately does not carry. Every perception fake exposes this, because
+#: the navigator sizes its saturation floor off the worker's model and a stub that
+#: invented one would let a test pass against a threshold no robot has.
+MOUNTED_CAMERA = FisheyeCamera.from_hfov(1920, 1080, 85.27,
+                                         height_m=GO2_CAMERA_HEIGHT_M)
 
 PERCEPTION_DT = 1.0 / 7.0
 LATENCY_S = 0.16          # a typical age for the newest consumed perception result
@@ -389,10 +402,11 @@ class _FakePerception:
     """Always has a fresh, empty result — the loop under test is the navigator's."""
 
     cycles, errors = 1, 0
+    camera_model = MOUNTED_CAMERA
 
-    def __init__(self):
-        self.result = PerceptionResult(seq=1, capture_time=time.monotonic(),
-                                       pose=(0.0, 0.0, 0.0), observations=[], ranged=[])
+    def __init__(self, open_bearing_rad=math.inf):
+        self._open_bearing_rad = open_bearing_rad
+        self.result = self.latest()
 
     def alive(self):
         return True
@@ -401,7 +415,8 @@ class _FakePerception:
         # Re-stamp so the frame never trips the staleness check while the fake
         # stand-up burns wall-clock.
         return PerceptionResult(seq=1, capture_time=time.monotonic(),
-                                pose=(0.0, 0.0, 0.0), observations=[], ranged=[])
+                                pose=(0.0, 0.0, 0.0), observations=[], ranged=[],
+                                open_bearing_rad=self._open_bearing_rad)
 
 
 class _FakeHealth:
@@ -1466,12 +1481,15 @@ class _ImagePerception(_FakePerception):
     def __init__(self, age_s: float = 0.0) -> None:
         self._age = age_s
         self._image = np.zeros((60, 80, 3), dtype=np.uint8)
+        # LAST: the base constructor calls `latest`, which reads both of the above.
+        super().__init__()
 
     def latest(self):
         return PerceptionResult(seq=1, capture_time=time.monotonic() - self._age,
                                 pose=(0.0, 0.0, 0.0), observations=[], ranged=[],
                                 image=self._image, detect_ms=200.0,
-                                cycle_ms=311.0, wait_ms=104.0)
+                                cycle_ms=311.0, wait_ms=104.0,
+                                open_bearing_rad=self._open_bearing_rad)
 
 
 def _profiled_run(directory, *, planner=None, recorder=None, perception=None, ticks=4,
@@ -1688,6 +1706,7 @@ class _StalePerception:
     """One result, permanently older than ``perception_timeout_s``."""
 
     cycles, errors = 3, 0
+    camera_model = MOUNTED_CAMERA
 
     def __init__(self) -> None:
         self._result = PerceptionResult(seq=1, capture_time=time.monotonic() - 5.0,
@@ -1805,6 +1824,7 @@ class _SplitPerception:
     """A fresh result every tick, carrying a split no control stage could have produced."""
 
     cycles, errors = 1, 0
+    camera_model = MOUNTED_CAMERA
     #: Values with no relation to anything this test does, so a line carrying them can only
     #: have got them off the result the tick consumed. A tuple of pairs rather than a dict,
     #: because a mutable class attribute is one shared object and this is handed out.
@@ -2023,6 +2043,200 @@ def test_blocked_stop_is_decided_by_the_legs_and_by_one_word():
     assert not blocked_stop(Command(0.30, 0.0, 0.0, reason="hold", gap_m=1.0))
     assert not blocked_stop(Command(0.0, 0.12, 0.0, reason="veto-hold", gap_m=1.0))
     assert not blocked_stop(Command(0.0, 0.0, 0.35, reason="hold", gap_m=1.0))
+
+
+# ── issue #6: the tier that needs no size prior ─────────────────────────────
+def test_the_ground_tier_asks_for_a_radius_and_a_pitch_error_instead_of_a_size():
+    """The trade the flag makes, in both directions.
+
+    It stops asking for the two things nobody can measure about a stranger's chair, and
+    starts asking for the two the contact point does NOT supply: the plan-view radius,
+    because `static_map.radius_for` still keys by label, and the pitch error, because it
+    is the estimator's entire error budget and this robot's has never been recorded."""
+    ok = build_parser().parse_args(
+        ["--static-detect", "--static-detect-ground",
+         "--static-detect-radius", "0.25",
+         "--static-detect-pitch-error-deg", "1.6"])
+    prior, radius = static_detect_prior(ok)
+    assert prior is None, "no size prior reaches the tier at all"
+    assert math.isclose(radius, 0.25)
+
+    for flags in (["--static-detect-radius", "0.25"],
+                  ["--static-detect-pitch-error-deg", "1.6"],
+                  []):
+        args = build_parser().parse_args(
+            ["--static-detect", "--static-detect-ground", *flags])
+        try:
+            static_detect_prior(args)
+        except SystemExit:
+            continue
+        raise AssertionError(f"started the ground tier without {flags}")
+
+
+def test_the_ground_tier_does_not_need_a_measured_height_or_width():
+    """The whole of issue #6 in one assertion: the flags the size-prior tier REFUSES to
+    start without are the flags this one never asks for."""
+    args = build_parser().parse_args(
+        ["--static-detect", "--static-detect-ground",
+         "--static-detect-radius", "0.25",
+         "--static-detect-pitch-error-deg", "1.6"])
+    assert args.static_detect_height is None and args.static_detect_width is None
+    assert static_detect_prior(args) is not None
+
+
+def test_a_nonsense_pitch_error_or_tolerance_is_refused():
+    """Both multiply into the range ceiling. A zero would make the band empty and a NaN
+    would make every comparison against it false, which is a gate failing open."""
+    for flag, value in (("--static-detect-pitch-error-deg", "0"),
+                        ("--static-detect-pitch-error-deg", "nan"),
+                        ("--static-detect-max-range-error", "0"),
+                        ("--static-detect-max-range-error", "-0.2")):
+        args = build_parser().parse_args(
+            ["--static-detect", "--static-detect-ground",
+             "--static-detect-radius", "0.25",
+             "--static-detect-pitch-error-deg", "1.6", flag, value])
+        try:
+            static_detect_prior(args)
+        except SystemExit:
+            continue
+        raise AssertionError(f"accepted {flag} {value}")
+
+
+class _StubDetector:
+    """Returns a fixed second-tier detection, so the worker's ranging is what is tested."""
+
+    def __init__(self, static_detections):
+        self._static = static_detections
+
+    def detect_tiered(self, _image):
+        return [], list(self._static)
+
+
+class _OneFrameCamera:
+    def __init__(self):
+        self.image = np.zeros((1080, 1920, 3), dtype=np.uint8)
+
+    def wait_for_new(self, _last_seq, timeout=0.5):
+        return Frame(image=self.image, seq=1, capture_time=time.monotonic(),
+                     stamp=(0.0, 0.0, 0.0))
+
+
+class _SilentGoal(_FakeGoal):
+    """Never sights anything, so a worker cycle is only about the detector's boxes."""
+
+    def update(self, _image, _pose):
+        return None
+
+
+def _worker_cycle(static_detections, **kwargs) -> PerceptionResult:
+    """One perception cycle over ``static_detections``, with everything else stubbed."""
+    worker = PerceptionWorker(
+        _OneFrameCamera(), _StubDetector(static_detections), MOUNTED_CAMERA,
+        _SilentGoal(), lambda: (0.0, 0.0, 0.0), **kwargs)
+    worker._cycle(0)
+    return worker.latest()
+
+
+def test_the_ground_ranger_reaches_the_static_tier_and_needs_no_prior():
+    """Wiring, end to end through the worker: with a ranger and NO prior, a detection
+    nobody measured still becomes a mapped observation.
+
+    Before this the tier was gated on `self._static_prior is not None`, so
+    `--static-detect-ground` would have parsed, built a ranger, and produced nothing."""
+    on_the_floor = Detection(x1=880.0, y1=700.0, x2=1040.0, y2=940.0,
+                             score=0.12, label="chair")
+    ranger = GroundRanger(MOUNTED_CAMERA, math.radians(1.6), 0.18)
+    result = _worker_cycle([on_the_floor], static_ranger=ranger)
+    assert [item.source for item in result.ranged] == ["ground"]
+    assert [obs.label for obs in result.static_observations] == [STATIC_DETECT_LABEL]
+    expected = MOUNTED_CAMERA.ground_range(960.0, 940.0)
+    assert abs(result.ranged[0].range_m - expected) < 1e-9
+
+
+def test_a_frame_the_ranger_refuses_reports_how_little_is_open():
+    """The refusal has to leave something behind, or it reads as an empty world.
+
+    `range_detections` drops what it cannot range, and an empty obstacle list is what
+    `avoidance.DynamicWindowPlanner.is_feasible` answers True to unconditionally. This
+    is the field that says the frame was unreadable rather than clear."""
+    filling = Detection(x1=0.0, y1=0.0, x2=1919.0, y2=1079.0, score=0.12, label="chair")
+    ranger = GroundRanger(MOUNTED_CAMERA, math.radians(1.6), 0.18)
+    result = _worker_cycle([filling], static_ranger=ranger)
+    assert result.ranged == [], "nothing was rangeable"
+    assert math.degrees(result.open_bearing_rad) < 0.1, result.open_bearing_rad
+
+
+def test_an_empty_frame_says_inf_and_not_zero():
+    """A cycle with no detection at all must not read as a saturated one."""
+    assert _worker_cycle([]).open_bearing_rad == math.inf
+
+
+def test_the_shipped_size_prior_path_reports_saturation_too():
+    """⚠️ WITHOUT THIS THE GATE IS DEAD IN THE DEFAULT CONFIGURATION.
+
+    `estimate_range` never refuses. It answers a frame-filling box with
+    `FILLS_FRAME_RANGE_M`, a constant, and a capped width fit with `object_fit_range`,
+    another constant — so those two RETURN rather than being dropped, and a saturation
+    check that only looked at what ranging threw away would see nothing on every run
+    this repository has ever recorded. `--static-detect-ground` is opt-in; this path is
+    what ships."""
+    filling = Detection(x1=0.0, y1=0.0, x2=1919.0, y2=1079.0, score=0.3, label="chair")
+    result = _worker_cycle([filling], static_prior=SizePrior(height_m=0.4, width_m=0.35))
+    assert [item.source for item in result.ranged] == ["frame-fill"], \
+        "the constant is RETURNED, not refused — that is the whole problem"
+    assert math.degrees(result.open_bearing_rad) < 0.1, result.open_bearing_rad
+
+
+# ── issue #72: no open bearing is a stop, not an empty map ──────────────────
+def test_a_saturated_frame_stops_the_robot_with_a_stated_reason():
+    """The acceptance criterion on issue #72, and the failure it replaces.
+
+    On 2026-08-25 a peer inside the blind radius produced no rangeable detection, the
+    obstacle list came back empty, the planner read that as an open arena and the robot
+    drove into the peer and pushed it the length of the corridor. `_FakePlanner` here is
+    that planner: it commands 0.30 m/s forward on every tick, unconditionally. If the
+    hold is not taken, the robot drives."""
+    saturating = math.radians(1.0)
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(
+            directory, perception=_ImagePerception(), ticks=4)
+        moving = [t for t in ticks if t["command"] and t["command"]["vx"] > 0.0]
+        assert moving, "the control: an unsaturated frame is driven"
+        assert all("hold_reason" not in t for t in ticks), "and carries no reason"
+
+    _ImagePerception_saturated = _ImagePerception()
+    _ImagePerception_saturated._open_bearing_rad = saturating
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory, perception=_ImagePerception_saturated, ticks=4)
+    assert ticks, "the loop wrote no ticks"
+    for tick in ticks:
+        assert tick["command"] is None, tick
+        assert "no open bearing" in tick["hold_reason"], tick
+        assert "1.0 deg" in tick["hold_reason"], tick["hold_reason"]
+        assert not tick["perception"]["stale"], \
+            "a saturated frame is CURRENT, not late — the two limits stay separable"
+
+
+def test_the_saturation_floor_is_the_planners_radius_and_not_a_constant_here():
+    """Change the robot and the floor moves with it. A number written into the navigator
+    would be right for a Go2 and silently wrong for the Lite3, whose lens height is still
+    unmeasured (issue #13)."""
+    navigator = VisualNavigator(
+        loco=_FakeLoco(), perception=_FakePerception(), planner=_FakePlanner(),
+        tracker=ObstacleTracker(), goal_source=_FakeGoal(), health=_FakeHealth(4),
+        config=NavConfig(live=True, control_hz=100.0))
+    assert math.isclose(navigator._saturation_floor_rad(),
+                        steerable_bearing_rad(MOUNTED_CAMERA,
+                                              PlannerConfig().robot_radius_m))
+
+    class _WideRobot(_FakePlanner):
+        config = PlannerConfig(robot_radius_m=0.80)
+
+    wider = VisualNavigator(
+        loco=_FakeLoco(), perception=_FakePerception(), planner=_WideRobot(),
+        tracker=ObstacleTracker(), goal_source=_FakeGoal(), health=_FakeHealth(4),
+        config=NavConfig(live=True, control_hz=100.0))
+    assert wider._saturation_floor_rad() > navigator._saturation_floor_rad()
 
 
 if __name__ == "__main__":

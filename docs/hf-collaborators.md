@@ -49,9 +49,23 @@ Do not guess from the near-misses above.
 
 ## Where to click
 
-For each private repo, open `https://huggingface.co/<type>/<owner>/<name>/settings` and
-use the collaborator/member section. Known repo: `armwaheed/go2-peer-detection` (dataset).
+Three private repos hold this project's data. Each needs the collaborators added
+separately — Hugging Face has no organisation-style inheritance between them here:
 
-> The account token was deleted at the end of the session that created these repos, as
-> instructed, so this file cannot list every repo. Re-list them from a logged-in shell with
-> `python3 -c "from huggingface_hub import HfApi; a=HfApi(); [print(d.id) for d in a.list_datasets(author=a.whoami()['name'])]"`.
+| repo | settings page |
+|---|---|
+| `armwaheed/go2-peer-detection` (dataset) | `https://huggingface.co/datasets/armwaheed/go2-peer-detection/settings` |
+| `armwaheed/go2-peer-detector` (model) | `https://huggingface.co/armwaheed/go2-peer-detector/settings` |
+| `armwaheed/mappo-quadruped-nav` (model) | `https://huggingface.co/armwaheed/mappo-quadruped-nav/settings` |
+
+All three are **private** and must stay private: the corpus is Arm office footage
+containing an identifiable person. The account also owns two public
+`stable-diffusion-3.5-medium-onnx` models, which are unrelated to this project and are not
+where any of this data goes.
+
+Re-derive the list any time from a logged-in shell:
+
+```bash
+python3 -c "from huggingface_hub import HfApi; a=HfApi(); n=a.whoami()['name']; \
+  [print(d.id) for d in a.list_datasets(author=n)]; [print(m.id) for m in a.list_models(author=n)]"
+```

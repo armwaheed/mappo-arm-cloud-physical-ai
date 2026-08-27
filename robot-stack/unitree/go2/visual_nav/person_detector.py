@@ -159,6 +159,21 @@ _SSD_MEAN = 127.5
 # sane stop radius, so the planner halts rather than trusting a number it cannot get.
 FILLS_FRAME_RANGE_M = 0.8
 
+#: Range ``source`` strings that are NOT a measurement of where the object is.
+#:
+#: Each of these is a stand-in the pipeline emits when the geometry it needs has left
+#: the frame, and each has already cost a live run. ``frame-fill`` is
+#: :data:`FILLS_FRAME_RANGE_M`, a constant. ``width-capped`` is ``object_fit_range``'s
+#: cap, which read 0.719 m to three decimals for five seconds on 2026-08-19 while the
+#: bearing swung 12 deg, and deadlocked the robot. ``ground-clipped`` and
+#: ``ground-horizon`` are :class:`GroundRanger`'s near-wall and junk refusals.
+#:
+#: ``ground-far`` is deliberately NOT here. It is the accuracy ceiling declining to
+#: report a DISTANT object, which is the opposite situation: there is no hazard behind
+#: it, and counting it would fire this on 22 of 59 ticks of the 2026-08-25 hero run
+#: rather than on 1.
+UNRANGEABLE_SOURCES = ("frame-fill", "width-capped", "ground-clipped", "ground-horizon")
+
 # Deliberately below the customary 0.5, because the two errors are not symmetric: a
 # false positive costs a needless stop, a miss costs walking into someone. Two
 # measurements back it. On hard footage (pedestrians ~45 px tall in the network's
@@ -621,24 +636,117 @@ class GroundRanger:
 
 def range_detections(detections: list[Detection], camera: FisheyeCamera,
                      prior: SizePrior = PERSON_PRIOR, *,
-                     ranger: GroundRanger | None = None) -> list[RangedDetection]:
+                     ranger: GroundRanger | None = None,
+                     refused: list | None = None) -> list[RangedDetection]:
     """Locate each detection in polar body coordinates, dropping unusable ones.
 
     ``ranger`` replaces the size-prior estimator for these detections and ignores
     ``prior``. ``None`` — the default — is the behaviour this function has always had,
     so passing nothing changes nothing.
+
+    ``refused`` collects ``(detection, source)`` for every detection dropped, and exists
+    because the drop is otherwise invisible: an obstacle that could not be ranged leaves
+    NOTHING behind, and an empty obstacle list is what the planner reads as an open
+    world (``avoidance.DynamicWindowPlanner.is_feasible`` returns True unconditionally
+    when there is nothing to check). A caller that wants to notice a saturated frame
+    needs the boxes ranging threw away.
     """
     ranged = []
     for detection in detections:
         range_m, source = (estimate_range(detection, camera, prior) if ranger is None
                            else ranger(detection))
         if not math.isfinite(range_m):
+            if refused is not None:
+                refused.append((detection, source))
             continue
         centre_x, centre_y = detection.centre
         bearing, _ = camera.bearing_elevation(centre_x, centre_y)
         ranged.append(RangedDetection(detection=detection, range_m=range_m,
                                       bearing_rad=float(bearing), source=source))
     return ranged
+
+
+def widest_open_bearing_rad(detections, camera: FisheyeCamera) -> float:
+    """Widest arc of the horizontal field of view that no box in ``detections`` covers.
+
+    ``inf`` for an empty list — nothing is covered, so the question does not arise, and
+    a caller comparing against a floor must not be told "zero" when it was told nothing.
+
+    ⚠️ THE FIELD-OF-VIEW EDGE COUNTS AS COVERED, NOT AS OPEN. This robot has ~85 deg of
+    camera and no rear or lateral sensing, so what lies outside the cone is UNKNOWN, and
+    the repository's own README names reading it as clear as the optimistic direction
+    and the one that gets someone hit. A gap that runs off the edge of the frame is
+    therefore measured only as far as the frame goes.
+
+    Pure box geometry through :meth:`FisheyeCamera.bearing_elevation`, so it needs no
+    range, no size prior and no class — which is the point: it is answerable exactly
+    when ranging is not. Bearings are taken on the image centre-line because azimuth
+    under the equidistant model varies with row by well under the bearing noise (see
+    ``camera_model``'s note on pitch and azimuth).
+    """
+    boxes = list(detections)
+    if not boxes:
+        return math.inf
+    half_fov = math.radians(camera.hfov_deg) / 2.0
+    spans = []
+    for detection in boxes:
+        left, _ = camera.bearing_elevation(float(detection.x1), camera.cy)
+        right, _ = camera.bearing_elevation(float(detection.x2), camera.cy)
+        spans.append((min(float(left), float(right)), max(float(left), float(right))))
+    # A SWEEP, and no merge pass before it. An earlier cut of this merged overlapping
+    # spans first; `cursor` already takes the running maximum, so the merge could be
+    # deleted without changing a single answer, which a mutation of it duly proved. The
+    # overlap it was there to handle is real — the same peer arrives as several boxes,
+    # labelled `motorbike`, `chair` and `aeroplane` on consecutive frames of the
+    # 2026-08-24 corpus — and the sort plus the running maximum is the whole of it.
+    spans.sort()
+    widest = 0.0
+    cursor = -half_fov
+    for low, high in spans:
+        widest = max(widest, low - cursor)
+        cursor = max(cursor, high)
+    return max(widest, half_fov - cursor)
+
+
+def steerable_bearing_rad(camera: FisheyeCamera, robot_radius_m: float) -> float:
+    """Narrowest arc that is still a bearing this robot could steer at, in radians.
+
+    THE FLOOR UNDER "no open bearing exists" (issue #72). An obstacle the pipeline
+    cannot range is, by the same geometry that makes it unrangeable, nearer than the
+    NEAR WALL — the range at which the floor contact point leaves the bottom of the
+    frame, ``camera.ground_range`` at the bottom corner, 0.806 m on this unit. At that
+    range the robot's own radius subtends ``asin(robot_radius / near_wall)``, and a gap
+    narrower than that is not somewhere the robot's centre could be put.
+
+    ONE RADIUS, NOT TWO, AND THE CHOICE IS ARGUABLE. ``2*asin(...)`` is the arc the whole
+    robot needs to pass through and is the stricter, more obviously correct test. It is
+    not the one used, because it is stricter than the claim being made: this is asking
+    whether a steerable bearing EXISTS, not whether the robot fits through it, and the
+    planner's own feasibility check already answers the second for anything it can
+    range. Measured over the two live runs of ``evidence/2026-08-25-peer-runs/``, the
+    one-radius floor (29.7 deg at the shipped ``robot_radius_m`` of 0.40 m) fires on 4
+    of the 16 ticks that carry an unrangeable sighting and separates them from the rest
+    by 1.1x; the two-radius floor (59.5 deg) fires on 11 of 16, including three ticks of
+    the hero run's successful approach. The band between them is real and undecided by
+    any measurement, and it is not tuning: pass a different ``robot_radius_m`` and the
+    floor follows it.
+
+    Refuses when the camera states no lens height — there is no near wall without one,
+    and both alternatives fail open.
+    """
+    if not (math.isfinite(robot_radius_m) and robot_radius_m > 0.0):
+        raise ValueError(f"robot_radius_m must be positive, got {robot_radius_m}")
+    camera.require_height_m("the near wall cannot be computed")
+    near_wall = camera.ground_range(camera.width - 1.0, camera.height - 1.0)
+    if near_wall is None:
+        raise ValueError("the camera's bottom corner pixel does not meet the floor")
+    if robot_radius_m >= near_wall:
+        # The robot is wider than the distance at which it stops being able to range,
+        # so NO gap inside the field of view is one it could steer at. Saturating at the
+        # full field of view says that, where `asin` of an argument above 1 would raise
+        # and a clamp to pi/2 would quietly under-report.
+        return math.radians(camera.hfov_deg)
+    return math.asin(robot_radius_m / near_wall)
 
 
 class PersonDetector:

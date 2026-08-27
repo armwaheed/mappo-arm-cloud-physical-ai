@@ -18,6 +18,7 @@ from __future__ import annotations
 import math
 import os
 import sys
+from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
@@ -38,6 +39,7 @@ from person_detector import (
     STATIC_CLASSES,
     STATIC_MAX_AREA_FRAC,
     STATIC_MIN_AREA_FRAC,
+    UNRANGEABLE_SOURCES,
     Detection,
     GroundRanger,
     RangedDetection,
@@ -47,6 +49,8 @@ from person_detector import (
     prototxt_with_floor,
     range_detections,
     static_shaped,
+    steerable_bearing_rad,
+    widest_open_bearing_rad,
 )
 
 WIDTH, HEIGHT = 1920, 1080
@@ -723,6 +727,167 @@ def test_a_box_that_does_not_reach_the_floor_reads_far_and_nothing_here_catches_
     assert source == "ground"
     assert optimistic > honest * 1.3, (honest, optimistic)
     assert ranger.implied_height_m(lifted) > 0.5, "the diagnostic is what would catch it"
+
+
+# ── The saturation geometry: issue #72's limit, made testable ───────────────
+# `GO2` is the MEASURED lens (85.27 deg from `calibrate_camera.py --spin`), not `MODEL`'s
+# nominal 120 deg, because every number in this block is a statement about the unit the
+# collision of 2026-08-25 happened on.
+
+
+def _spanning(x1: float, x2: float, label: str = "peer") -> Detection:
+    """A box covering ``x1``..``x2`` horizontally. Rows are irrelevant to the azimuth."""
+    return Detection(x1=x1, y1=0.0, x2=x2, y2=HEIGHT - 1.0, score=0.3, label=label)
+
+
+def test_nothing_detected_is_not_the_same_as_nothing_open():
+    """`inf`, not the field of view and certainly not zero.
+
+    A caller comparing this against a floor has to be able to tell "no detection was
+    refused" from "a detection covered everything". Returning the full field of view
+    would conflate the first with a clear frame, which happens to be right; returning
+    zero would conflate it with the second and stop the robot on every empty frame,
+    which is how a gate gets deleted rather than fixed."""
+    assert widest_open_bearing_rad([], GO2) == math.inf
+
+
+def test_a_box_across_the_whole_frame_leaves_no_open_bearing():
+    """The r_blind case of issue #72, from the box alone and with no range in it."""
+    covered = widest_open_bearing_rad([_spanning(0.0, WIDTH - 1.0)], GO2)
+    assert math.degrees(covered) < 0.1, math.degrees(covered)
+    assert covered < steerable_bearing_rad(GO2, 0.40), "and it must trip the floor"
+
+
+def test_the_gap_between_two_boxes_is_found_and_the_boxes_are_merged():
+    """Two overlapping boxes on the left and one on the right: the answer is the middle.
+
+    The merge matters because the same peer arrives as several boxes — the 2026-08-24
+    corpus has the identical robot labelled `motorbike`, `chair` and `aeroplane` on
+    consecutive frames — and treating overlapping boxes as separate obstacles would
+    report the overlap as an open bearing."""
+    left = [_spanning(0.0, 700.0), _spanning(500.0, 860.0)]
+    right = [_spanning(1060.0, WIDTH - 1.0)]
+    gap = widest_open_bearing_rad(left + right, GO2)
+    expected = (GO2.bearing_elevation(1060.0, GO2.cy)[0]
+                - GO2.bearing_elevation(860.0, GO2.cy)[0])
+    assert abs(gap - abs(float(expected))) < 1e-9, (gap, expected)
+
+
+def test_the_edge_of_the_field_of_view_is_not_counted_as_open():
+    """A box covering all but the last few pixels leaves almost nothing, not half a cone.
+
+    This robot has no rear or lateral sensing, so what is outside the cone is UNKNOWN.
+    Measuring the gap past the frame edge would read unknown as clear, which is the
+    optimistic direction the README names as the one that gets someone hit."""
+    nearly = widest_open_bearing_rad([_spanning(0.0, WIDTH - 20.0)], GO2)
+    assert math.degrees(nearly) < 1.5, math.degrees(nearly)
+    half = widest_open_bearing_rad([_spanning(0.0, WIDTH / 2.0)], GO2)
+    assert math.degrees(half) > 40.0, "while a genuinely half-covered frame is open"
+
+
+def test_the_steerable_floor_is_the_lens_and_the_robot_and_nothing_else():
+    """It follows both inputs rather than being a constant beside them.
+
+    0.806 m is the near wall at the bottom CORNER — `ground_range` at the shallowest ray
+    in the frame — and the floor is `asin(radius / 0.806)`."""
+    near_wall = GO2.ground_range(GO2.width - 1.0, GO2.height - 1.0)
+    assert abs(near_wall - 0.806) < 0.002, near_wall
+    for radius, degrees in ((0.40, 29.75), (0.25, 18.07)):
+        got = math.degrees(steerable_bearing_rad(GO2, radius))
+        assert abs(got - degrees) < 0.05, (radius, got)
+    # A LOWER lens shortens the near wall, which widens the arc the same robot needs.
+    lower = FisheyeCamera.from_hfov(WIDTH, HEIGHT, 85.27, height_m=0.10)
+    assert steerable_bearing_rad(lower, 0.40) > steerable_bearing_rad(GO2, 0.40)
+
+
+def test_the_steerable_floor_refuses_rather_than_returning_a_number_it_cannot_have():
+    """No lens height, no near wall. `asin` of a domain error is not the failure mode."""
+    with pytest.raises(ValueError):
+        steerable_bearing_rad(FisheyeCamera.from_hfov(WIDTH, HEIGHT, 85.27), 0.40)
+    with pytest.raises(ValueError):
+        steerable_bearing_rad(GO2, 0.0)
+
+
+def test_a_robot_wider_than_the_near_wall_has_no_steerable_bearing_at_all():
+    """Saturate at the full cone rather than raising out of `asin`, or clamping quietly.
+
+    A clamp to pi/2 would UNDER-report the floor for the one platform where the
+    geometry has failed completely, which is a gate weakening exactly where it matters."""
+    floor = steerable_bearing_rad(GO2, 2.0)
+    assert floor == math.radians(GO2.hfov_deg)
+    assert widest_open_bearing_rad([_spanning(600.0, 700.0)], GO2) < floor, \
+        "so every frame with an unrangeable box is refused, which is the honest answer"
+
+
+def test_range_detections_hands_back_the_boxes_it_dropped():
+    """The drop is otherwise invisible, and an invisible drop reads as an empty world."""
+    ranger = _ranger()
+    inside = _standing(1.0, 0.5)
+    too_close = Detection(x1=800.0, y1=200.0, x2=1100.0, y2=HEIGHT - 1.0,
+                          score=0.3, label="chair")
+    refused: list = []
+    kept = range_detections([inside, too_close], GO2, ranger=ranger, refused=refused)
+    assert [item.detection for item in kept] == [inside]
+    assert refused == [(too_close, "ground-clipped")]
+    # And the default is unchanged: nothing is collected unless a list is offered.
+    assert len(range_detections([inside, too_close], GO2, ranger=ranger)) == 1
+
+
+def test_every_unrangeable_source_is_a_source_something_actually_returns():
+    """A constant in this tuple that no estimator emits is a gate that cannot fire.
+
+    Each name is produced here, from a detection built to produce it, rather than being
+    read back out of the module that declares it."""
+    ranger = _ranger()
+    produced = set()
+    fills = Detection(x1=0.0, y1=0.0, x2=WIDTH - 1.0, y2=HEIGHT - 1.0,
+                      score=0.3, label="chair")
+    produced.add(estimate_range(fills, GO2, PERSON_PRIOR)[1])
+    # A short, wide, vertically clipped box: the width prior over-reads and the fit cap
+    # binds, which is the 2026-08-19 deadlock.
+    capped = Detection(x1=700.0, y1=0.0, x2=760.0, y2=HEIGHT - 1.0,
+                       score=0.3, label="chair")
+    produced.add(estimate_range(capped, GO2, SizePrior(height_m=0.30, width_m=0.27))[1])
+    produced.add(ranger(fills)[1])
+    above = Detection(x1=800.0, y1=100.0, x2=900.0, y2=300.0, score=0.3, label="chair")
+    produced.add(ranger(above)[1])
+    assert set(UNRANGEABLE_SOURCES) == produced, sorted(produced)
+
+
+def test_the_saturation_floor_fires_on_a_recorded_run_and_not_on_the_rest_of_it():
+    """The threshold against real boxes, from the two runs committed to `evidence/`.
+
+    ASKING WHAT WOULD MAKE THIS FAIL. Both halves are asserted: raising the floor until
+    it fires on every unrangeable tick, or lowering it until it fires on none, breaks
+    this test. The separation is what is being pinned — the ticks it fires on leave
+    1.1-23.0 deg of the cone, the ticks it passes leave 32.8-65.2 deg — and the margin on
+    the near side is 1.1x, which is thin and is the reason the number is written down.
+
+    `open` here counts only sources that are NOT a measurement. `ground-far` is excluded
+    from `UNRANGEABLE_SOURCES` for the same reason: it refuses a DISTANT object, and
+    counting it would fire this on 22 of the hero run's 59 ticks instead of 1."""
+    import json
+
+    evidence = (Path(os.path.abspath(__file__)).parents[4]
+                / "evidence" / "2026-08-25-peer-runs")
+    floor = steerable_bearing_rad(GO2, 0.40)
+    fired, passed = [], []
+    for name in ("hero", "contrast"):
+        with open(evidence / f"{name}-run-telemetry.jsonl") as handle:
+            for line in handle:
+                tick = json.loads(line)
+                if tick.get("type") != "tick":
+                    continue
+                boxes = [_spanning(s["box"][0], s["box"][2])
+                         for s in tick.get("sightings") or ()
+                         if s["source"] in UNRANGEABLE_SOURCES]
+                if not boxes:
+                    continue
+                open_rad = widest_open_bearing_rad(boxes, GO2)
+                (fired if open_rad < floor else passed).append(math.degrees(open_rad))
+    assert len(fired) == 4, sorted(round(v, 2) for v in fired)
+    assert len(passed) == 12, sorted(round(v, 2) for v in passed)
+    assert max(fired) < 23.0 and min(passed) > 32.7, (max(fired), min(passed))
 
 
 if __name__ == "__main__":
