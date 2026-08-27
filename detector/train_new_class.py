@@ -66,6 +66,10 @@ import numpy as np
 
 from add_class import VOC_CLASSES, grow_weights, rewrite_prototxt
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "robot-stack" / "unitree"
+                       / "go2" / "visual_nav"))
+import inference_profile
+
 #: ``(feature layer, conf-head prefix, priors per cell)`` for each of the six sources.
 #:
 #: ⚠️ THE FEATURE LAYER IS THE ReLU, NOT THE CONVOLUTION, and the difference is not
@@ -86,12 +90,26 @@ CONF_SOURCES = (("conv11/relu", "conv11", 3),
                 ("conv16_2/relu", "conv16_2", 6),
                 ("conv17_2/relu", "conv17_2", 6))
 
-#: Square network input. Must match what the robot runs, or the frozen features are a
-#: different distribution from the ones the trained head will meet.
-INPUT_SIZE = 300
+#: THE TRAINING SQUARE, from ``inference_profile.MOBILENET_SSD_TRAINED``, so that it is a
+#: named role rather than an anonymous 300 -- the anonymous 300 in five files is what issue
+#: #129 is about.
+#:
+#: 300 is correct HERE: these weights were fitted at 300 and a head trained on features from
+#: a different square would be fitted to a distribution the backbone never produced.
+#:
+#: ⚠️ This comment used to say the square "must match what the robot runs". There is no such
+#: thing: the robot runs 300 under run-smoke/berth/chair and 224 under
+#: ``deploy/run-peer-supervised.sh``. So a fine-tune from this trainer matches three
+#: launchers and is train/serve-skewed against the fourth -- and the measurement is stark:
+#: fine-tuned checkpoints emit no box at all at 224 (best score 0.000) while the same
+#: weights fire at 0.55-0.66 at 300. Anything trained here is unusable by
+#: ``run-peer-supervised.sh`` SPECIFICALLY, which is narrower and more actionable than
+#: "unusable by the robot".
+INPUT_SIZE = inference_profile.MOBILENET_SSD_TRAINED.input_size
 
-#: Preprocessing baked into the published weights.
-SSD_SCALE, SSD_MEAN = 1.0 / 127.5, 127.5
+#: Preprocessing baked into the published weights, from the same object.
+SSD_SCALE = inference_profile.MOBILENET_SSD_TRAINED.scale
+SSD_MEAN = inference_profile.MOBILENET_SSD_TRAINED.mean
 
 #: A prior counts as a positive example when it overlaps the box by at least this. 0.5 is
 #: SSD's own matching threshold; using anything else here would train the head against a

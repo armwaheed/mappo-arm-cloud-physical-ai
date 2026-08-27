@@ -58,6 +58,15 @@ import os
 import statistics
 import sys
 import time
+from pathlib import Path
+
+# The detector's preprocessing is NOT declared in this file. It comes from
+# robot-stack/unitree/go2/visual_nav/inference_profile.py, which is the same object
+# deploy/run-peer-supervised.sh takes the robot's own --input-size and --confidence from.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "robot-stack" / "unitree"
+                       / "go2" / "visual_nav"))
+import inference_profile
+from inference_profile import PreprocessingMismatch
 
 # ── The corpus's own bookkeeping ────────────────────────────────────────────
 # Segments whose frames carry NO peer label but DO contain the peer. Both are named in
@@ -127,9 +136,27 @@ def cmd_cache(args) -> None:
     """
     import cv2
 
+    try:
+        profile, reason = inference_profile.resolve(args)
+    except PreprocessingMismatch as refusal:
+        raise SystemExit(f"\nREFUSED\n{refusal}\n") from None
+    # NOT assert_prototxt_floor, and that is deliberate. This command exists to run a
+    # prototxt whose DetectionOutput floor has been LOWERED, so a check that the floor
+    # equals the profile's 0.25 would forbid the measurement the file is for. What is not
+    # optional is recording which floor was applied: the profile's `confidence` is a
+    # Python-side threshold and the layer's is what decides which boxes exist, so a cache
+    # stamped 0.25 that was taken through a 0.05 prototxt would be a file lying about
+    # itself in exactly the way issue #129 is about.
+    effective_floor = inference_profile.prototxt_floor(
+        Path(args.prototxt).read_text())
     net = cv2.dnn.readNetFromCaffe(args.prototxt, args.weights)
     frames = sorted(f for f in os.listdir(args.frames) if f.endswith(".jpg"))
-    print(f"{len(frames)} frames, prototxt={args.prototxt}", flush=True)
+    print(f"{len(frames)} frames, prototxt={args.prototxt}, "
+          f"preprocessing={profile.name} at {profile.input_size} px, "
+          f"DetectionOutput floor {effective_floor}"
+          + (" (the profile's own)" if effective_floor == profile.confidence
+             else f" — LOWERED from the profile's {profile.confidence}")
+          + ("" if profile.is_deployed else f" — RUN BY NO LAUNCHER: {reason}"), flush=True)
 
     cache = {}
     started = time.time()
@@ -138,9 +165,11 @@ def cmd_cache(args) -> None:
         if image is None:
             continue
         height, width = image.shape[:2]
-        # Exactly the robot's own preprocessing: person_detector.PersonDetector.detect
-        # hands the full frame to blobFromImage and lets it do the resize.
-        blob = cv2.dnn.blobFromImage(image, 1.0 / 127.5, (300, 300), 127.5)
+        # The robot's own preprocessing, from the object the robot's launcher reads.
+        # This line used to say "exactly the robot's own preprocessing" beside a literal
+        # (300, 300), and the robot has never run 300 in a peer run -- issue #129.
+        blob = cv2.dnn.blobFromImage(image, profile.scale, profile.blob_size,
+                                     profile.mean, swapRB=profile.swap_rb)
         net.setInput(blob)
         raw = net.forward()
         rows = []
@@ -157,8 +186,10 @@ def cmd_cache(args) -> None:
             print(f"  {index}/{len(frames)}", flush=True)
 
     with open(args.out, "w") as handle:
-        json.dump({"prototxt": args.prototxt, "frames": len(cache), "dets": cache},
-                  handle)
+        stamp = inference_profile.stamp(profile, reason)
+        stamp["detection_output_floor"] = effective_floor
+        json.dump({"prototxt": args.prototxt, "frames": len(cache), "dets": cache,
+                   "preprocessing": stamp}, handle)
     print(f"wrote {args.out} in {time.time() - started:.0f}s", flush=True)
 
 
@@ -412,7 +443,28 @@ def cmd_score(args) -> None:
     prior = person_detector.SizePrior(height_m=args.peer_height,
                                       width_m=args.peer_width)
 
-    dets = load_json(args.cache)["dets"]
+    cache = load_json(args.cache)
+    dets = cache["dets"]
+    # WHOSE PREPROCESSING PRODUCED THESE BOXES. `cache` and `score` are separate
+    # invocations and the file between them carries no pixels, so a cache built at one
+    # square scores identically to one built at another and reads as a model difference.
+    # Caches written before issue #129 carry no stamp at all, and every one of them is a
+    # 300 px cache -- which is not what any peer run executed.
+    stamp = cache.get("preprocessing")
+    if stamp is None:
+        print("⚠️  this cache predates the inference-profile stamp, so it was built at "
+              "300 px -- NOT what deploy/run-peer-supervised.sh runs. Rebuild it with "
+              "`peer_recall.py cache` before quoting anything below. See issue #129.")
+    elif not stamp.get("production"):
+        print(f"⚠️  this cache is NOT production preprocessing: {stamp['profile']} at "
+              f"{stamp['input_size']} px, taken because: {stamp.get('mismatch_reason')}")
+    else:
+        floor = stamp.get("detection_output_floor", stamp["confidence"])
+        print(f"cache preprocessing: {stamp['profile']} at {stamp['input_size']} px, "
+              f"DetectionOutput floor {floor} — production"
+              + ("" if floor == stamp["confidence"]
+                 else f" preprocessing, but the prototxt floor was LOWERED from "
+                      f"{stamp['confidence']}, which is what this command is for"))
     gt = {r["image"]: r["box"] for r in load_json(args.labels)["records"]}
 
     all_frames = sorted(dets)
@@ -629,6 +681,7 @@ def main() -> None:
     cache.add_argument("--weights", required=True)
     cache.add_argument("--frames", required=True)
     cache.add_argument("--out", required=True)
+    inference_profile.add_arguments(cache)
     cache.set_defaults(func=cmd_cache)
 
     verify = sub.add_parser("verify", help="prove the low prototxt only ADDS boxes")
