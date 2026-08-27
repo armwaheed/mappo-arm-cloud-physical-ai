@@ -1,0 +1,9037 @@
+{
+ "detector": "google/owlv2-base-patch16-ensemble",
+ "segmenter": "facebook/sam2.1-hiera-large",
+ "owl_threshold": 0.1,
+ "distinct_method": {
+  "step": 5,
+  "threshold_mean_grey": 3.0,
+  "thumbnail": [
+   160,
+   90
+  ],
+  "compared_against": "last kept frame"
+ },
+ "stats": {
+  "dim-box-in-different-distance-and-angle": {
+   "keyframes": 97,
+   "owl_boxes": 64,
+   "labels": 64,
+   "by_class": {
+    "person": 64
+   }
+  },
+  "dim-lite3-in-difference-distance-and-angle": {
+   "keyframes": 78,
+   "owl_boxes": 71,
+   "labels": 71,
+   "by_class": {
+    "lite3": 71
+   }
+  },
+  "dim-people-walk-around": {
+   "keyframes": 59,
+   "owl_boxes": 45,
+   "labels": 44,
+   "by_class": {
+    "person": 44
+   }
+  },
+  "light-box-in-different-distance-and-angle": {
+   "keyframes": 52,
+   "owl_boxes": 50,
+   "labels": 50,
+   "by_class": {
+    "person": 50
+   }
+  },
+  "light-lite3-in-difference-distance-and-angle": {
+   "keyframes": 60,
+   "owl_boxes": 60,
+   "labels": 60,
+   "by_class": {
+    "lite3": 60
+   }
+  },
+  "light-people-walkaround": {
+   "keyframes": 110,
+   "owl_boxes": 101,
+   "labels": 101,
+   "by_class": {
+    "person": 101
+   }
+  }
+ },
+ "count": 390,
+ "records": [
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00000.jpg",
+   "label": "person",
+   "box": [
+    425,
+    35,
+    681,
+    720
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 0,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2865,
+   "owl_box": [
+    427.2,
+    38.9,
+    677.0,
+    720.3
+   ],
+   "sam_score": 0.9748,
+   "area_frac": 0.1903,
+   "aspect": 2.676
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00025.jpg",
+   "label": "person",
+   "box": [
+    463,
+    62,
+    680,
+    668
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 25,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2343,
+   "owl_box": [
+    471.3,
+    63.6,
+    675.9,
+    670.2
+   ],
+   "sam_score": 0.9736,
+   "area_frac": 0.1427,
+   "aspect": 2.793
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00070.jpg",
+   "label": "person",
+   "box": [
+    464,
+    86,
+    662,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 70,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2284,
+   "owl_box": [
+    464.2,
+    89.2,
+    658.0,
+    662.3
+   ],
+   "sam_score": 0.9765,
+   "area_frac": 0.1231,
+   "aspect": 2.894
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00075.jpg",
+   "label": "person",
+   "box": [
+    464,
+    95,
+    658,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 75,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2381,
+   "owl_box": [
+    459.7,
+    97.4,
+    655.1,
+    661.6
+   ],
+   "sam_score": 0.9775,
+   "area_frac": 0.1187,
+   "aspect": 2.907
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00085.jpg",
+   "label": "person",
+   "box": [
+    464,
+    85,
+    666,
+    658
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 85,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2359,
+   "owl_box": [
+    466.7,
+    85.4,
+    664.9,
+    659.3
+   ],
+   "sam_score": 0.9719,
+   "area_frac": 0.1256,
+   "aspect": 2.837
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00090.jpg",
+   "label": "person",
+   "box": [
+    464,
+    102,
+    705,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 90,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2312,
+   "owl_box": [
+    471.0,
+    104.8,
+    703.1,
+    666.0
+   ],
+   "sam_score": 0.9761,
+   "area_frac": 0.1457,
+   "aspect": 2.311
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00100.jpg",
+   "label": "person",
+   "box": [
+    464,
+    105,
+    696,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 100,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2321,
+   "owl_box": [
+    468.4,
+    102.2,
+    690.4,
+    662.7
+   ],
+   "sam_score": 0.9729,
+   "area_frac": 0.1395,
+   "aspect": 2.388
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00110.jpg",
+   "label": "person",
+   "box": [
+    464,
+    76,
+    674,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 110,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2506,
+   "owl_box": [
+    465.5,
+    78.3,
+    665.5,
+    663.9
+   ],
+   "sam_score": 0.9721,
+   "area_frac": 0.1328,
+   "aspect": 2.776
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00115.jpg",
+   "label": "person",
+   "box": [
+    464,
+    88,
+    664,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 115,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2453,
+   "owl_box": [
+    460.9,
+    93.0,
+    658.4,
+    662.8
+   ],
+   "sam_score": 0.978,
+   "area_frac": 0.1239,
+   "aspect": 2.855
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00130.jpg",
+   "label": "person",
+   "box": [
+    464,
+    79,
+    717,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 130,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2482,
+   "owl_box": [
+    466.2,
+    80.7,
+    715.9,
+    665.9
+   ],
+   "sam_score": 0.9748,
+   "area_frac": 0.1592,
+   "aspect": 2.292
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00135.jpg",
+   "label": "person",
+   "box": [
+    464,
+    104,
+    702,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 135,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2561,
+   "owl_box": [
+    463.8,
+    103.1,
+    706.2,
+    666.2
+   ],
+   "sam_score": 0.9713,
+   "area_frac": 0.1433,
+   "aspect": 2.332
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00140.jpg",
+   "label": "person",
+   "box": [
+    464,
+    97,
+    709,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 140,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2358,
+   "owl_box": [
+    464.7,
+    98.6,
+    701.8,
+    666.2
+   ],
+   "sam_score": 0.9755,
+   "area_frac": 0.1494,
+   "aspect": 2.294
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00145.jpg",
+   "label": "person",
+   "box": [
+    464,
+    100,
+    703,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 145,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2359,
+   "owl_box": [
+    466.9,
+    99.7,
+    697.4,
+    665.6
+   ],
+   "sam_score": 0.9751,
+   "area_frac": 0.145,
+   "aspect": 2.339
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00155.jpg",
+   "label": "person",
+   "box": [
+    464,
+    71,
+    663,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 155,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2353,
+   "owl_box": [
+    463.9,
+    72.4,
+    660.0,
+    664.6
+   ],
+   "sam_score": 0.9738,
+   "area_frac": 0.127,
+   "aspect": 2.955
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00160.jpg",
+   "label": "person",
+   "box": [
+    464,
+    89,
+    655,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 160,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2429,
+   "owl_box": [
+    460.3,
+    91.4,
+    652.4,
+    663.4
+   ],
+   "sam_score": 0.9777,
+   "area_frac": 0.1181,
+   "aspect": 2.984
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00170.jpg",
+   "label": "person",
+   "box": [
+    464,
+    78,
+    658,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 170,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2383,
+   "owl_box": [
+    460.8,
+    80.5,
+    654.8,
+    663.7
+   ],
+   "sam_score": 0.9746,
+   "area_frac": 0.1223,
+   "aspect": 2.995
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00175.jpg",
+   "label": "person",
+   "box": [
+    463,
+    79,
+    695,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 175,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2233,
+   "owl_box": [
+    462.5,
+    81.1,
+    690.9,
+    663.6
+   ],
+   "sam_score": 0.9738,
+   "area_frac": 0.146,
+   "aspect": 2.5
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00180.jpg",
+   "label": "person",
+   "box": [
+    464,
+    99,
+    697,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 180,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2456,
+   "owl_box": [
+    461.5,
+    100.4,
+    692.0,
+    664.5
+   ],
+   "sam_score": 0.9749,
+   "area_frac": 0.1416,
+   "aspect": 2.403
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00185.jpg",
+   "label": "person",
+   "box": [
+    464,
+    95,
+    707,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 185,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2324,
+   "owl_box": [
+    460.2,
+    96.3,
+    700.9,
+    665.1
+   ],
+   "sam_score": 0.9762,
+   "area_frac": 0.1487,
+   "aspect": 2.321
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00200.jpg",
+   "label": "person",
+   "box": [
+    464,
+    76,
+    672,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 200,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2308,
+   "owl_box": [
+    464.4,
+    79.0,
+    667.0,
+    662.9
+   ],
+   "sam_score": 0.9752,
+   "area_frac": 0.1316,
+   "aspect": 2.803
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00205.jpg",
+   "label": "person",
+   "box": [
+    464,
+    85,
+    656,
+    659
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 205,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2357,
+   "owl_box": [
+    459.8,
+    86.8,
+    652.8,
+    662.3
+   ],
+   "sam_score": 0.977,
+   "area_frac": 0.1196,
+   "aspect": 2.99
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00220.jpg",
+   "label": "person",
+   "box": [
+    372,
+    91,
+    616,
+    665
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 220,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2377,
+   "owl_box": [
+    389.1,
+    93.3,
+    615.1,
+    664.6
+   ],
+   "sam_score": 0.9694,
+   "area_frac": 0.152,
+   "aspect": 2.352
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00225.jpg",
+   "label": "person",
+   "box": [
+    202,
+    86,
+    596,
+    668
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 225,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2361,
+   "owl_box": [
+    200.4,
+    83.7,
+    600.4,
+    667.4
+   ],
+   "sam_score": 0.9697,
+   "area_frac": 0.2488,
+   "aspect": 1.477
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00230.jpg",
+   "label": "person",
+   "box": [
+    201,
+    93,
+    596,
+    668
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 230,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2391,
+   "owl_box": [
+    195.9,
+    94.3,
+    597.3,
+    668.8
+   ],
+   "sam_score": 0.9666,
+   "area_frac": 0.2464,
+   "aspect": 1.456
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00235.jpg",
+   "label": "person",
+   "box": [
+    350,
+    91,
+    596,
+    660
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 235,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2379,
+   "owl_box": [
+    363.2,
+    92.6,
+    596.8,
+    667.3
+   ],
+   "sam_score": 0.9692,
+   "area_frac": 0.1519,
+   "aspect": 2.313
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00240.jpg",
+   "label": "person",
+   "box": [
+    351,
+    94,
+    596,
+    667
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 240,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2414,
+   "owl_box": [
+    362.0,
+    93.2,
+    595.7,
+    667.2
+   ],
+   "sam_score": 0.9783,
+   "area_frac": 0.1523,
+   "aspect": 2.339
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00260.jpg",
+   "label": "person",
+   "box": [
+    287,
+    70,
+    595,
+    660
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 260,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2203,
+   "owl_box": [
+    284.4,
+    72.2,
+    594.4,
+    667.5
+   ],
+   "sam_score": 0.9473,
+   "area_frac": 0.1972,
+   "aspect": 1.916
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00265.jpg",
+   "label": "person",
+   "box": [
+    275,
+    60,
+    603,
+    662
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 265,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2544,
+   "owl_box": [
+    276.2,
+    60.7,
+    605.8,
+    667.7
+   ],
+   "sam_score": 0.9532,
+   "area_frac": 0.2143,
+   "aspect": 1.835
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00270.jpg",
+   "label": "person",
+   "box": [
+    406,
+    66,
+    643,
+    658
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 270,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2316,
+   "owl_box": [
+    394.9,
+    64.4,
+    637.4,
+    660.2
+   ],
+   "sam_score": 0.9712,
+   "area_frac": 0.1522,
+   "aspect": 2.498
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00275.jpg",
+   "label": "person",
+   "box": [
+    457,
+    66,
+    650,
+    661
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 275,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2283,
+   "owl_box": [
+    459.0,
+    67.9,
+    647.1,
+    664.6
+   ],
+   "sam_score": 0.9715,
+   "area_frac": 0.1246,
+   "aspect": 3.083
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00280.jpg",
+   "label": "person",
+   "box": [
+    445,
+    71,
+    675,
+    660
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 280,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2278,
+   "owl_box": [
+    444.9,
+    72.9,
+    669.9,
+    666.0
+   ],
+   "sam_score": 0.9686,
+   "area_frac": 0.147,
+   "aspect": 2.561
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00315.jpg",
+   "label": "person",
+   "box": [
+    482,
+    170,
+    668,
+    623
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 315,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2285,
+   "owl_box": [
+    485.3,
+    170.8,
+    664.6,
+    625.7
+   ],
+   "sam_score": 0.9642,
+   "area_frac": 0.0914,
+   "aspect": 2.435
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00320.jpg",
+   "label": "person",
+   "box": [
+    505,
+    204,
+    674,
+    608
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 320,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.232,
+   "owl_box": [
+    507.7,
+    208.3,
+    672.8,
+    608.6
+   ],
+   "sam_score": 0.9621,
+   "area_frac": 0.0741,
+   "aspect": 2.391
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00325.jpg",
+   "label": "person",
+   "box": [
+    526,
+    225,
+    667,
+    597
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 325,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2332,
+   "owl_box": [
+    529.2,
+    228.6,
+    666.1,
+    599.6
+   ],
+   "sam_score": 0.9639,
+   "area_frac": 0.0569,
+   "aspect": 2.638
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00350.jpg",
+   "label": "person",
+   "box": [
+    524,
+    227,
+    645,
+    597
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 350,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2367,
+   "owl_box": [
+    519.8,
+    230.1,
+    640.7,
+    598.8
+   ],
+   "sam_score": 0.9607,
+   "area_frac": 0.0486,
+   "aspect": 3.058
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00440.jpg",
+   "label": "person",
+   "box": [
+    529,
+    237,
+    648,
+    597
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 440,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2216,
+   "owl_box": [
+    527.1,
+    239.1,
+    646.5,
+    597.2
+   ],
+   "sam_score": 0.9631,
+   "area_frac": 0.0465,
+   "aspect": 3.025
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00450.jpg",
+   "label": "person",
+   "box": [
+    495,
+    207,
+    633,
+    609
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 450,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2524,
+   "owl_box": [
+    489.9,
+    209.2,
+    631.9,
+    609.0
+   ],
+   "sam_score": 0.9527,
+   "area_frac": 0.0602,
+   "aspect": 2.913
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00455.jpg",
+   "label": "person",
+   "box": [
+    463,
+    143,
+    630,
+    641
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 455,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2431,
+   "owl_box": [
+    457.5,
+    145.7,
+    628.1,
+    642.9
+   ],
+   "sam_score": 0.9601,
+   "area_frac": 0.0902,
+   "aspect": 2.982
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00460.jpg",
+   "label": "person",
+   "box": [
+    356,
+    57,
+    606,
+    720
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 460,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2533,
+   "owl_box": [
+    364.8,
+    61.2,
+    605.8,
+    722.5
+   ],
+   "sam_score": 0.9662,
+   "area_frac": 0.1799,
+   "aspect": 2.652
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00465.jpg",
+   "label": "person",
+   "box": [
+    347,
+    3,
+    580,
+    720
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 465,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2303,
+   "owl_box": [
+    343.7,
+    4.7,
+    579.7,
+    721.7
+   ],
+   "sam_score": 0.9745,
+   "area_frac": 0.1813,
+   "aspect": 3.077
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00470.jpg",
+   "label": "person",
+   "box": [
+    325,
+    0,
+    593,
+    720
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 470,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.234,
+   "owl_box": [
+    321.4,
+    7.0,
+    593.3,
+    721.8
+   ],
+   "sam_score": 0.9759,
+   "area_frac": 0.2094,
+   "aspect": 2.687
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00475.jpg",
+   "label": "person",
+   "box": [
+    357,
+    74,
+    591,
+    720
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 475,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2589,
+   "owl_box": [
+    363.8,
+    74.2,
+    595.6,
+    719.2
+   ],
+   "sam_score": 0.9681,
+   "area_frac": 0.164,
+   "aspect": 2.761
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00480.jpg",
+   "label": "person",
+   "box": [
+    368,
+    109,
+    603,
+    706
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 480,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2689,
+   "owl_box": [
+    375.0,
+    112.1,
+    603.5,
+    710.9
+   ],
+   "sam_score": 0.9664,
+   "area_frac": 0.1522,
+   "aspect": 2.54
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00485.jpg",
+   "label": "person",
+   "box": [
+    457,
+    135,
+    620,
+    657
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 485,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.243,
+   "owl_box": [
+    458.6,
+    133.5,
+    619.9,
+    656.7
+   ],
+   "sam_score": 0.9654,
+   "area_frac": 0.0923,
+   "aspect": 3.202
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00490.jpg",
+   "label": "person",
+   "box": [
+    498,
+    214,
+    654,
+    627
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 490,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2411,
+   "owl_box": [
+    504.0,
+    214.1,
+    654.9,
+    627.3
+   ],
+   "sam_score": 0.9572,
+   "area_frac": 0.0699,
+   "aspect": 2.647
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00495.jpg",
+   "label": "person",
+   "box": [
+    531,
+    275,
+    674,
+    592
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 495,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2284,
+   "owl_box": [
+    528.5,
+    275.6,
+    670.1,
+    591.5
+   ],
+   "sam_score": 0.96,
+   "area_frac": 0.0492,
+   "aspect": 2.217
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00500.jpg",
+   "label": "person",
+   "box": [
+    546,
+    291,
+    681,
+    589
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 500,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2295,
+   "owl_box": [
+    550.8,
+    293.2,
+    677.8,
+    586.1
+   ],
+   "sam_score": 0.9466,
+   "area_frac": 0.0437,
+   "aspect": 2.207
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00510.jpg",
+   "label": "person",
+   "box": [
+    565,
+    302,
+    684,
+    579
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 510,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2352,
+   "owl_box": [
+    567.2,
+    303.5,
+    677.9,
+    578.6
+   ],
+   "sam_score": 0.9536,
+   "area_frac": 0.0358,
+   "aspect": 2.328
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00515.jpg",
+   "label": "person",
+   "box": [
+    563,
+    328,
+    659,
+    567
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 515,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2298,
+   "owl_box": [
+    561.3,
+    327.4,
+    654.4,
+    569.3
+   ],
+   "sam_score": 0.9542,
+   "area_frac": 0.0249,
+   "aspect": 2.49
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00530.jpg",
+   "label": "person",
+   "box": [
+    484,
+    270,
+    639,
+    583
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 530,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2566,
+   "owl_box": [
+    484.7,
+    271.9,
+    641.7,
+    582.6
+   ],
+   "sam_score": 0.9483,
+   "area_frac": 0.0526,
+   "aspect": 2.019
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00535.jpg",
+   "label": "person",
+   "box": [
+    418,
+    244,
+    636,
+    603
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 535,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2509,
+   "owl_box": [
+    415.3,
+    245.6,
+    636.6,
+    601.5
+   ],
+   "sam_score": 0.9546,
+   "area_frac": 0.0849,
+   "aspect": 1.647
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00540.jpg",
+   "label": "person",
+   "box": [
+    404,
+    229,
+    620,
+    640
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 540,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.27,
+   "owl_box": [
+    409.3,
+    229.9,
+    620.8,
+    636.9
+   ],
+   "sam_score": 0.9573,
+   "area_frac": 0.0963,
+   "aspect": 1.903
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00545.jpg",
+   "label": "person",
+   "box": [
+    402,
+    222,
+    601,
+    642
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 545,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2807,
+   "owl_box": [
+    405.9,
+    224.1,
+    603.6,
+    644.5
+   ],
+   "sam_score": 0.9581,
+   "area_frac": 0.0907,
+   "aspect": 2.111
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00550.jpg",
+   "label": "person",
+   "box": [
+    497,
+    222,
+    604,
+    601
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 550,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2297,
+   "owl_box": [
+    489.9,
+    220.8,
+    608.6,
+    602.9
+   ],
+   "sam_score": 0.96,
+   "area_frac": 0.044,
+   "aspect": 3.542
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00555.jpg",
+   "label": "person",
+   "box": [
+    550,
+    255,
+    613,
+    598
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 555,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2363,
+   "owl_box": [
+    546.5,
+    252.2,
+    617.8,
+    594.8
+   ],
+   "sam_score": 0.9515,
+   "area_frac": 0.0234,
+   "aspect": 5.444
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00560.jpg",
+   "label": "person",
+   "box": [
+    554,
+    274,
+    617,
+    584
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 560,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.239,
+   "owl_box": [
+    551.0,
+    272.0,
+    619.2,
+    582.8
+   ],
+   "sam_score": 0.9593,
+   "area_frac": 0.0212,
+   "aspect": 4.921
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00590.jpg",
+   "label": "person",
+   "box": [
+    534,
+    309,
+    644,
+    567
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 590,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2274,
+   "owl_box": [
+    532.3,
+    309.6,
+    641.3,
+    567.3
+   ],
+   "sam_score": 0.9313,
+   "area_frac": 0.0308,
+   "aspect": 2.345
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00705.jpg",
+   "label": "person",
+   "box": [
+    543,
+    329,
+    647,
+    565
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 705,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2338,
+   "owl_box": [
+    543.6,
+    329.1,
+    646.2,
+    564.8
+   ],
+   "sam_score": 0.9464,
+   "area_frac": 0.0266,
+   "aspect": 2.269
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00730.jpg",
+   "label": "person",
+   "box": [
+    447,
+    252,
+    658,
+    598
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 730,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2451,
+   "owl_box": [
+    449.9,
+    253.6,
+    657.7,
+    590.3
+   ],
+   "sam_score": 0.945,
+   "area_frac": 0.0792,
+   "aspect": 1.64
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00735.jpg",
+   "label": "person",
+   "box": [
+    417,
+    186,
+    643,
+    623
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 735,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2293,
+   "owl_box": [
+    410.7,
+    186.2,
+    644.6,
+    624.2
+   ],
+   "sam_score": 0.9607,
+   "area_frac": 0.1072,
+   "aspect": 1.934
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00740.jpg",
+   "label": "person",
+   "box": [
+    362,
+    115,
+    658,
+    675
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 740,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2583,
+   "owl_box": [
+    351.1,
+    116.5,
+    662.2,
+    678.0
+   ],
+   "sam_score": 0.9544,
+   "area_frac": 0.1799,
+   "aspect": 1.892
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00745.jpg",
+   "label": "person",
+   "box": [
+    234,
+    0,
+    660,
+    720
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 745,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2602,
+   "owl_box": [
+    222.8,
+    0.1,
+    654.3,
+    714.0
+   ],
+   "sam_score": 0.9758,
+   "area_frac": 0.3328,
+   "aspect": 1.69
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00750.jpg",
+   "label": "person",
+   "box": [
+    178,
+    0,
+    623,
+    720
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 750,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3232,
+   "owl_box": [
+    178.8,
+    2.7,
+    596.5,
+    722.6
+   ],
+   "sam_score": 0.9763,
+   "area_frac": 0.3477,
+   "aspect": 1.618
+  },
+  {
+   "image": "dim-box-in-different-distance-and-angle/f00755.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    438,
+    720
+   ],
+   "scene": "dim-box-in-different-distance-and-angle",
+   "frame": 755,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2637,
+   "owl_box": [
+    -0.6,
+    1.5,
+    486.0,
+    720.2
+   ],
+   "sam_score": 0.928,
+   "area_frac": 0.3422,
+   "aspect": 1.644
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00000.jpg",
+   "label": "lite3",
+   "box": [
+    479,
+    413,
+    678,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 0,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5132,
+   "owl_box": [
+    470.2,
+    413.0,
+    682.8,
+    715.9
+   ],
+   "sam_score": 0.9029,
+   "area_frac": 0.0663,
+   "aspect": 1.543
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00010.jpg",
+   "label": "lite3",
+   "box": [
+    477,
+    424,
+    672,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 10,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5303,
+   "owl_box": [
+    471.8,
+    422.1,
+    676.6,
+    717.1
+   ],
+   "sam_score": 0.8948,
+   "area_frac": 0.0626,
+   "aspect": 1.518
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00015.jpg",
+   "label": "lite3",
+   "box": [
+    459,
+    403,
+    665,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 15,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4787,
+   "owl_box": [
+    457.6,
+    407.0,
+    663.8,
+    711.4
+   ],
+   "sam_score": 0.8979,
+   "area_frac": 0.0709,
+   "aspect": 1.539
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00020.jpg",
+   "label": "lite3",
+   "box": [
+    454,
+    466,
+    697,
+    718
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 20,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6789,
+   "owl_box": [
+    449.8,
+    458.5,
+    688.9,
+    718.2
+   ],
+   "sam_score": 0.8946,
+   "area_frac": 0.0664,
+   "aspect": 1.037
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00025.jpg",
+   "label": "lite3",
+   "box": [
+    455,
+    468,
+    723,
+    696
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 25,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6155,
+   "owl_box": [
+    453.7,
+    481.2,
+    721.2,
+    697.9
+   ],
+   "sam_score": 0.8915,
+   "area_frac": 0.0663,
+   "aspect": 0.851
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00030.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    467,
+    721,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 30,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5352,
+   "owl_box": [
+    454.0,
+    474.5,
+    717.7,
+    717.0
+   ],
+   "sam_score": 0.9193,
+   "area_frac": 0.0738,
+   "aspect": 0.941
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00035.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    468,
+    720,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 35,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6305,
+   "owl_box": [
+    449.7,
+    475.0,
+    717.1,
+    718.1
+   ],
+   "sam_score": 0.9213,
+   "area_frac": 0.0733,
+   "aspect": 0.94
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00040.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    470,
+    721,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 40,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5741,
+   "owl_box": [
+    451.0,
+    473.4,
+    721.0,
+    717.4
+   ],
+   "sam_score": 0.9249,
+   "area_frac": 0.073,
+   "aspect": 0.929
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00050.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    469,
+    722,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 50,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5951,
+   "owl_box": [
+    450.8,
+    479.2,
+    721.4,
+    717.4
+   ],
+   "sam_score": 0.9383,
+   "area_frac": 0.0735,
+   "aspect": 0.93
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00060.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    473,
+    722,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 60,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6399,
+   "owl_box": [
+    449.1,
+    482.4,
+    719.1,
+    719.7
+   ],
+   "sam_score": 0.9488,
+   "area_frac": 0.0724,
+   "aspect": 0.915
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00070.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    473,
+    722,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 70,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6429,
+   "owl_box": [
+    450.0,
+    482.3,
+    721.5,
+    718.6
+   ],
+   "sam_score": 0.9476,
+   "area_frac": 0.0724,
+   "aspect": 0.915
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00080.jpg",
+   "label": "lite3",
+   "box": [
+    464,
+    479,
+    766,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 80,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.577,
+   "owl_box": [
+    472.2,
+    477.3,
+    766.7,
+    720.0
+   ],
+   "sam_score": 0.9308,
+   "area_frac": 0.079,
+   "aspect": 0.798
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00085.jpg",
+   "label": "lite3",
+   "box": [
+    467,
+    472,
+    765,
+    705
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 85,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5445,
+   "owl_box": [
+    471.5,
+    481.0,
+    754.3,
+    701.7
+   ],
+   "sam_score": 0.9215,
+   "area_frac": 0.0753,
+   "aspect": 0.782
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00090.jpg",
+   "label": "lite3",
+   "box": [
+    498,
+    432,
+    750,
+    705
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 90,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3988,
+   "owl_box": [
+    497.9,
+    433.1,
+    751.5,
+    698.9
+   ],
+   "sam_score": 0.8843,
+   "area_frac": 0.0746,
+   "aspect": 1.083
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00095.jpg",
+   "label": "lite3",
+   "box": [
+    489,
+    432,
+    751,
+    626
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 95,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4837,
+   "owl_box": [
+    491.2,
+    431.1,
+    751.2,
+    635.3
+   ],
+   "sam_score": 0.9475,
+   "area_frac": 0.0552,
+   "aspect": 0.74
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00120.jpg",
+   "label": "lite3",
+   "box": [
+    471,
+    432,
+    757,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 120,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4378,
+   "owl_box": [
+    474.3,
+    431.0,
+    757.4,
+    713.0
+   ],
+   "sam_score": 0.8991,
+   "area_frac": 0.0894,
+   "aspect": 1.007
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00130.jpg",
+   "label": "lite3",
+   "box": [
+    485,
+    433,
+    769,
+    637
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 130,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5245,
+   "owl_box": [
+    504.3,
+    432.1,
+    769.7,
+    632.8
+   ],
+   "sam_score": 0.9362,
+   "area_frac": 0.0629,
+   "aspect": 0.718
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00150.jpg",
+   "label": "lite3",
+   "box": [
+    490,
+    468,
+    781,
+    682
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 150,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5038,
+   "owl_box": [
+    501.6,
+    450.0,
+    778.7,
+    671.7
+   ],
+   "sam_score": 0.9419,
+   "area_frac": 0.0676,
+   "aspect": 0.735
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00165.jpg",
+   "label": "lite3",
+   "box": [
+    511,
+    469,
+    766,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 165,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5464,
+   "owl_box": [
+    513.8,
+    477.3,
+    768.3,
+    719.0
+   ],
+   "sam_score": 0.9194,
+   "area_frac": 0.0694,
+   "aspect": 0.984
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00170.jpg",
+   "label": "lite3",
+   "box": [
+    501,
+    434,
+    736,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 170,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5399,
+   "owl_box": [
+    500.6,
+    448.4,
+    732.3,
+    717.5
+   ],
+   "sam_score": 0.8748,
+   "area_frac": 0.0729,
+   "aspect": 1.217
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00205.jpg",
+   "label": "lite3",
+   "box": [
+    454,
+    465,
+    694,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 205,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4611,
+   "owl_box": [
+    452.6,
+    453.7,
+    695.9,
+    715.8
+   ],
+   "sam_score": 0.8845,
+   "area_frac": 0.0664,
+   "aspect": 1.062
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00210.jpg",
+   "label": "lite3",
+   "box": [
+    411,
+    468,
+    708,
+    659
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 210,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5902,
+   "owl_box": [
+    410.4,
+    457.8,
+    709.0,
+    663.9
+   ],
+   "sam_score": 0.8915,
+   "area_frac": 0.0616,
+   "aspect": 0.643
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00220.jpg",
+   "label": "lite3",
+   "box": [
+    403,
+    436,
+    716,
+    656
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 220,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4976,
+   "owl_box": [
+    399.9,
+    420.4,
+    717.3,
+    660.7
+   ],
+   "sam_score": 0.9226,
+   "area_frac": 0.0747,
+   "aspect": 0.703
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00245.jpg",
+   "label": "lite3",
+   "box": [
+    390,
+    468,
+    718,
+    663
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 245,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5609,
+   "owl_box": [
+    390.8,
+    474.9,
+    720.5,
+    668.7
+   ],
+   "sam_score": 0.9302,
+   "area_frac": 0.0694,
+   "aspect": 0.595
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00250.jpg",
+   "label": "lite3",
+   "box": [
+    382,
+    467,
+    719,
+    651
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 250,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4329,
+   "owl_box": [
+    391.5,
+    470.2,
+    720.0,
+    662.6
+   ],
+   "sam_score": 0.9281,
+   "area_frac": 0.0673,
+   "aspect": 0.546
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00255.jpg",
+   "label": "lite3",
+   "box": [
+    384,
+    435,
+    712,
+    698
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 255,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4618,
+   "owl_box": [
+    379.5,
+    400.2,
+    713.1,
+    695.2
+   ],
+   "sam_score": 0.8235,
+   "area_frac": 0.0936,
+   "aspect": 0.802
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00265.jpg",
+   "label": "lite3",
+   "box": [
+    382,
+    434,
+    718,
+    630
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 265,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3931,
+   "owl_box": [
+    380.0,
+    383.9,
+    716.4,
+    655.5
+   ],
+   "sam_score": 0.9245,
+   "area_frac": 0.0715,
+   "aspect": 0.583
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00280.jpg",
+   "label": "lite3",
+   "box": [
+    378,
+    406,
+    711,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 280,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4324,
+   "owl_box": [
+    376.3,
+    385.1,
+    713.2,
+    716.3
+   ],
+   "sam_score": 0.9058,
+   "area_frac": 0.1135,
+   "aspect": 0.943
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00295.jpg",
+   "label": "lite3",
+   "box": [
+    364,
+    361,
+    706,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 295,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.395,
+   "owl_box": [
+    362.2,
+    371.3,
+    705.3,
+    716.1
+   ],
+   "sam_score": 0.9111,
+   "area_frac": 0.1332,
+   "aspect": 1.05
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00300.jpg",
+   "label": "lite3",
+   "box": [
+    405,
+    434,
+    698,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 300,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5348,
+   "owl_box": [
+    408.6,
+    446.6,
+    696.8,
+    708.4
+   ],
+   "sam_score": 0.9133,
+   "area_frac": 0.0909,
+   "aspect": 0.976
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00305.jpg",
+   "label": "lite3",
+   "box": [
+    406,
+    464,
+    698,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 305,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5695,
+   "owl_box": [
+    409.8,
+    465.1,
+    697.8,
+    717.1
+   ],
+   "sam_score": 0.8964,
+   "area_frac": 0.0811,
+   "aspect": 0.877
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00315.jpg",
+   "label": "lite3",
+   "box": [
+    405,
+    467,
+    694,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 315,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5517,
+   "owl_box": [
+    408.1,
+    471.1,
+    694.2,
+    717.6
+   ],
+   "sam_score": 0.9297,
+   "area_frac": 0.0793,
+   "aspect": 0.875
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00325.jpg",
+   "label": "lite3",
+   "box": [
+    405,
+    468,
+    693,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 325,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4502,
+   "owl_box": [
+    406.6,
+    475.4,
+    692.6,
+    716.1
+   ],
+   "sam_score": 0.9344,
+   "area_frac": 0.0788,
+   "aspect": 0.875
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00330.jpg",
+   "label": "lite3",
+   "box": [
+    414,
+    467,
+    692,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 330,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6397,
+   "owl_box": [
+    412.9,
+    467.3,
+    691.8,
+    714.3
+   ],
+   "sam_score": 0.94,
+   "area_frac": 0.0763,
+   "aspect": 0.91
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00335.jpg",
+   "label": "lite3",
+   "box": [
+    436,
+    401,
+    691,
+    706
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 335,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4738,
+   "owl_box": [
+    428.1,
+    403.0,
+    693.0,
+    703.5
+   ],
+   "sam_score": 0.8939,
+   "area_frac": 0.0844,
+   "aspect": 1.196
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00340.jpg",
+   "label": "lite3",
+   "box": [
+    462,
+    434,
+    686,
+    713
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 340,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5135,
+   "owl_box": [
+    467.7,
+    436.6,
+    685.4,
+    709.6
+   ],
+   "sam_score": 0.8847,
+   "area_frac": 0.0678,
+   "aspect": 1.246
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00350.jpg",
+   "label": "lite3",
+   "box": [
+    436,
+    401,
+    683,
+    720
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 350,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5287,
+   "owl_box": [
+    433.2,
+    402.6,
+    683.0,
+    710.2
+   ],
+   "sam_score": 0.9013,
+   "area_frac": 0.0855,
+   "aspect": 1.291
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00365.jpg",
+   "label": "lite3",
+   "box": [
+    436,
+    469,
+    680,
+    616
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 365,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4477,
+   "owl_box": [
+    452.4,
+    463.0,
+    680.5,
+    616.3
+   ],
+   "sam_score": 0.9329,
+   "area_frac": 0.0389,
+   "aspect": 0.602
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00375.jpg",
+   "label": "lite3",
+   "box": [
+    456,
+    432,
+    674,
+    680
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 375,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3761,
+   "owl_box": [
+    473.5,
+    432.2,
+    675.8,
+    689.4
+   ],
+   "sam_score": 0.8399,
+   "area_frac": 0.0587,
+   "aspect": 1.138
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00380.jpg",
+   "label": "lite3",
+   "box": [
+    464,
+    432,
+    653,
+    708
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 380,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4401,
+   "owl_box": [
+    462.9,
+    444.1,
+    652.7,
+    701.7
+   ],
+   "sam_score": 0.8818,
+   "area_frac": 0.0566,
+   "aspect": 1.46
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00390.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    432,
+    643,
+    717
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 390,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4798,
+   "owl_box": [
+    457.8,
+    441.0,
+    648.8,
+    716.7
+   ],
+   "sam_score": 0.9102,
+   "area_frac": 0.0591,
+   "aspect": 1.492
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00400.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    433,
+    644,
+    717
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 400,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5118,
+   "owl_box": [
+    455.0,
+    440.2,
+    648.3,
+    717.7
+   ],
+   "sam_score": 0.903,
+   "area_frac": 0.0592,
+   "aspect": 1.479
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00415.jpg",
+   "label": "lite3",
+   "box": [
+    459,
+    432,
+    641,
+    715
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 415,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3848,
+   "owl_box": [
+    461.0,
+    431.0,
+    646.0,
+    715.9
+   ],
+   "sam_score": 0.8952,
+   "area_frac": 0.0559,
+   "aspect": 1.555
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00430.jpg",
+   "label": "lite3",
+   "box": [
+    522,
+    432,
+    641,
+    634
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 430,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3156,
+   "owl_box": [
+    522.9,
+    431.1,
+    641.8,
+    631.3
+   ],
+   "sam_score": 0.9258,
+   "area_frac": 0.0261,
+   "aspect": 1.697
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00475.jpg",
+   "label": "lite3",
+   "box": [
+    513,
+    432,
+    683,
+    634
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 475,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3379,
+   "owl_box": [
+    518.9,
+    427.8,
+    682.3,
+    629.1
+   ],
+   "sam_score": 0.871,
+   "area_frac": 0.0373,
+   "aspect": 1.188
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00500.jpg",
+   "label": "lite3",
+   "box": [
+    517,
+    432,
+    682,
+    632
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 500,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3301,
+   "owl_box": [
+    517.8,
+    428.8,
+    683.8,
+    632.9
+   ],
+   "sam_score": 0.8588,
+   "area_frac": 0.0358,
+   "aspect": 1.212
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00530.jpg",
+   "label": "lite3",
+   "box": [
+    531,
+    432,
+    711,
+    632
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 530,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3282,
+   "owl_box": [
+    532.0,
+    429.3,
+    713.2,
+    630.2
+   ],
+   "sam_score": 0.9034,
+   "area_frac": 0.0391,
+   "aspect": 1.111
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00555.jpg",
+   "label": "lite3",
+   "box": [
+    535,
+    432,
+    717,
+    596
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 555,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3366,
+   "owl_box": [
+    538.6,
+    429.6,
+    716.6,
+    607.3
+   ],
+   "sam_score": 0.9037,
+   "area_frac": 0.0324,
+   "aspect": 0.901
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00570.jpg",
+   "label": "lite3",
+   "box": [
+    541,
+    432,
+    725,
+    576
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 570,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.405,
+   "owl_box": [
+    539.4,
+    430.6,
+    722.8,
+    594.1
+   ],
+   "sam_score": 0.9328,
+   "area_frac": 0.0288,
+   "aspect": 0.783
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00580.jpg",
+   "label": "lite3",
+   "box": [
+    547,
+    484,
+    708,
+    628
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 580,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5929,
+   "owl_box": [
+    551.4,
+    485.9,
+    708.5,
+    629.8
+   ],
+   "sam_score": 0.8774,
+   "area_frac": 0.0252,
+   "aspect": 0.894
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00585.jpg",
+   "label": "lite3",
+   "box": [
+    555,
+    482,
+    693,
+    639
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 585,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5746,
+   "owl_box": [
+    555.7,
+    491.4,
+    691.3,
+    633.7
+   ],
+   "sam_score": 0.8671,
+   "area_frac": 0.0235,
+   "aspect": 1.138
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00590.jpg",
+   "label": "lite3",
+   "box": [
+    558,
+    482,
+    695,
+    638
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 590,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5959,
+   "owl_box": [
+    559.1,
+    494.5,
+    695.8,
+    636.2
+   ],
+   "sam_score": 0.8297,
+   "area_frac": 0.0232,
+   "aspect": 1.139
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00635.jpg",
+   "label": "lite3",
+   "box": [
+    559,
+    484,
+    692,
+    606
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 635,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4778,
+   "owl_box": [
+    560.3,
+    496.8,
+    690.1,
+    599.8
+   ],
+   "sam_score": 0.8202,
+   "area_frac": 0.0176,
+   "aspect": 0.917
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00680.jpg",
+   "label": "lite3",
+   "box": [
+    501,
+    432,
+    687,
+    582
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 680,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.342,
+   "owl_box": [
+    506.9,
+    430.2,
+    688.8,
+    598.9
+   ],
+   "sam_score": 0.9084,
+   "area_frac": 0.0303,
+   "aspect": 0.806
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00710.jpg",
+   "label": "lite3",
+   "box": [
+    490,
+    432,
+    683,
+    630
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 710,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3565,
+   "owl_box": [
+    496.9,
+    429.9,
+    681.5,
+    627.2
+   ],
+   "sam_score": 0.8602,
+   "area_frac": 0.0415,
+   "aspect": 1.026
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00740.jpg",
+   "label": "lite3",
+   "box": [
+    489,
+    432,
+    669,
+    632
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 740,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4086,
+   "owl_box": [
+    496.0,
+    429.0,
+    668.6,
+    631.9
+   ],
+   "sam_score": 0.8222,
+   "area_frac": 0.0391,
+   "aspect": 1.111
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00780.jpg",
+   "label": "lite3",
+   "box": [
+    532,
+    432,
+    654,
+    621
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 780,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.2704,
+   "owl_box": [
+    535.1,
+    431.7,
+    655.9,
+    619.9
+   ],
+   "sam_score": 0.8925,
+   "area_frac": 0.025,
+   "aspect": 1.549
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00820.jpg",
+   "label": "lite3",
+   "box": [
+    547,
+    432,
+    651,
+    613
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 820,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.2241,
+   "owl_box": [
+    547.3,
+    431.8,
+    651.7,
+    610.9
+   ],
+   "sam_score": 0.9402,
+   "area_frac": 0.0204,
+   "aspect": 1.74
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00855.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    432,
+    657,
+    581
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 855,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3255,
+   "owl_box": [
+    550.4,
+    433.9,
+    655.1,
+    581.2
+   ],
+   "sam_score": 0.9066,
+   "area_frac": 0.0186,
+   "aspect": 1.296
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00860.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    432,
+    665,
+    582
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 860,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3029,
+   "owl_box": [
+    549.5,
+    431.4,
+    661.6,
+    583.0
+   ],
+   "sam_score": 0.9159,
+   "area_frac": 0.02,
+   "aspect": 1.22
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00865.jpg",
+   "label": "lite3",
+   "box": [
+    541,
+    432,
+    666,
+    582
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 865,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3696,
+   "owl_box": [
+    550.2,
+    432.8,
+    662.7,
+    582.6
+   ],
+   "sam_score": 0.8764,
+   "area_frac": 0.0203,
+   "aspect": 1.2
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00890.jpg",
+   "label": "lite3",
+   "box": [
+    541,
+    432,
+    661,
+    581
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 890,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.271,
+   "owl_box": [
+    546.7,
+    430.7,
+    656.5,
+    581.2
+   ],
+   "sam_score": 0.885,
+   "area_frac": 0.0194,
+   "aspect": 1.242
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00940.jpg",
+   "label": "lite3",
+   "box": [
+    541,
+    433,
+    703,
+    582
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 940,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.2657,
+   "owl_box": [
+    548.0,
+    431.7,
+    697.8,
+    582.1
+   ],
+   "sam_score": 0.8817,
+   "area_frac": 0.0262,
+   "aspect": 0.92
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00950.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    433,
+    703,
+    581
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 950,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3282,
+   "owl_box": [
+    555.6,
+    432.1,
+    695.5,
+    581.6
+   ],
+   "sam_score": 0.829,
+   "area_frac": 0.0259,
+   "aspect": 0.919
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00975.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    433,
+    708,
+    581
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 975,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.2781,
+   "owl_box": [
+    554.6,
+    432.1,
+    702.1,
+    580.8
+   ],
+   "sam_score": 0.8473,
+   "area_frac": 0.0267,
+   "aspect": 0.892
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00980.jpg",
+   "label": "lite3",
+   "box": [
+    592,
+    485,
+    708,
+    582
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 980,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5167,
+   "owl_box": [
+    586.3,
+    495.0,
+    704.7,
+    581.3
+   ],
+   "sam_score": 0.8763,
+   "area_frac": 0.0122,
+   "aspect": 0.836
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f00990.jpg",
+   "label": "lite3",
+   "box": [
+    617,
+    492,
+    701,
+    545
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 990,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3817,
+   "owl_box": [
+    620.5,
+    492.1,
+    700.1,
+    544.1
+   ],
+   "sam_score": 0.8104,
+   "area_frac": 0.0048,
+   "aspect": 0.631
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f01160.jpg",
+   "label": "lite3",
+   "box": [
+    586,
+    489,
+    681,
+    581
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 1160,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.307,
+   "owl_box": [
+    591.6,
+    493.3,
+    679.4,
+    577.7
+   ],
+   "sam_score": 0.8327,
+   "area_frac": 0.0095,
+   "aspect": 0.968
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f01165.jpg",
+   "label": "lite3",
+   "box": [
+    582,
+    490,
+    681,
+    578
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 1165,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3169,
+   "owl_box": [
+    584.2,
+    495.7,
+    679.9,
+    578.4
+   ],
+   "sam_score": 0.8296,
+   "area_frac": 0.0095,
+   "aspect": 0.889
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f01170.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    432,
+    681,
+    582
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 1170,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.2762,
+   "owl_box": [
+    551.0,
+    431.9,
+    676.0,
+    582.2
+   ],
+   "sam_score": 0.8871,
+   "area_frac": 0.0226,
+   "aspect": 1.079
+  },
+  {
+   "image": "dim-lite3-in-difference-distance-and-angle/f01190.jpg",
+   "label": "lite3",
+   "box": [
+    543,
+    432,
+    677,
+    580
+   ],
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 1190,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.2323,
+   "owl_box": [
+    551.4,
+    431.7,
+    674.9,
+    579.7
+   ],
+   "sam_score": 0.8684,
+   "area_frac": 0.0215,
+   "aspect": 1.104
+  },
+  {
+   "image": "dim-people-walk-around/f00020.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    565,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 20,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2747,
+   "owl_box": [
+    -0.1,
+    3.5,
+    553.3,
+    715.8
+   ],
+   "sam_score": 0.9576,
+   "area_frac": 0.4414,
+   "aspect": 1.274
+  },
+  {
+   "image": "dim-people-walk-around/f00025.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    598,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 25,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3098,
+   "owl_box": [
+    0.2,
+    1.0,
+    600.0,
+    724.2
+   ],
+   "sam_score": 0.9712,
+   "area_frac": 0.4672,
+   "aspect": 1.204
+  },
+  {
+   "image": "dim-people-walk-around/f00030.jpg",
+   "label": "person",
+   "box": [
+    228,
+    0,
+    642,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 30,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2754,
+   "owl_box": [
+    232.0,
+    -0.5,
+    636.9,
+    723.8
+   ],
+   "sam_score": 0.9832,
+   "area_frac": 0.3234,
+   "aspect": 1.739
+  },
+  {
+   "image": "dim-people-walk-around/f00035.jpg",
+   "label": "person",
+   "box": [
+    215,
+    0,
+    618,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 35,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2721,
+   "owl_box": [
+    218.0,
+    -0.2,
+    615.8,
+    723.0
+   ],
+   "sam_score": 0.9818,
+   "area_frac": 0.3148,
+   "aspect": 1.787
+  },
+  {
+   "image": "dim-people-walk-around/f00040.jpg",
+   "label": "person",
+   "box": [
+    245,
+    104,
+    612,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 40,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2685,
+   "owl_box": [
+    246.3,
+    101.2,
+    606.8,
+    721.0
+   ],
+   "sam_score": 0.973,
+   "area_frac": 0.2453,
+   "aspect": 1.678
+  },
+  {
+   "image": "dim-people-walk-around/f00045.jpg",
+   "label": "person",
+   "box": [
+    388,
+    145,
+    605,
+    663
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 45,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2469,
+   "owl_box": [
+    378.9,
+    144.9,
+    602.2,
+    661.2
+   ],
+   "sam_score": 0.9683,
+   "area_frac": 0.122,
+   "aspect": 2.387
+  },
+  {
+   "image": "dim-people-walk-around/f00050.jpg",
+   "label": "person",
+   "box": [
+    438,
+    179,
+    601,
+    647
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 50,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2435,
+   "owl_box": [
+    435.1,
+    179.9,
+    599.1,
+    649.5
+   ],
+   "sam_score": 0.9749,
+   "area_frac": 0.0828,
+   "aspect": 2.871
+  },
+  {
+   "image": "dim-people-walk-around/f00055.jpg",
+   "label": "person",
+   "box": [
+    458,
+    208,
+    598,
+    615
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 55,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2393,
+   "owl_box": [
+    454.4,
+    211.2,
+    598.2,
+    616.9
+   ],
+   "sam_score": 0.9668,
+   "area_frac": 0.0618,
+   "aspect": 2.907
+  },
+  {
+   "image": "dim-people-walk-around/f00060.jpg",
+   "label": "person",
+   "box": [
+    485,
+    245,
+    611,
+    606
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 60,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2351,
+   "owl_box": [
+    482.4,
+    246.2,
+    609.3,
+    607.8
+   ],
+   "sam_score": 0.9674,
+   "area_frac": 0.0494,
+   "aspect": 2.865
+  },
+  {
+   "image": "dim-people-walk-around/f00075.jpg",
+   "label": "person",
+   "box": [
+    522,
+    272,
+    628,
+    588
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 75,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2356,
+   "owl_box": [
+    521.7,
+    271.6,
+    628.3,
+    587.3
+   ],
+   "sam_score": 0.9554,
+   "area_frac": 0.0363,
+   "aspect": 2.981
+  },
+  {
+   "image": "dim-people-walk-around/f00085.jpg",
+   "label": "person",
+   "box": [
+    568,
+    318,
+    636,
+    569
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 85,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2636,
+   "owl_box": [
+    566.8,
+    319.0,
+    636.0,
+    569.5
+   ],
+   "sam_score": 0.9461,
+   "area_frac": 0.0185,
+   "aspect": 3.691
+  },
+  {
+   "image": "dim-people-walk-around/f00120.jpg",
+   "label": "person",
+   "box": [
+    631,
+    279,
+    731,
+    589
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 120,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2514,
+   "owl_box": [
+    627.7,
+    281.1,
+    731.8,
+    587.9
+   ],
+   "sam_score": 0.951,
+   "area_frac": 0.0336,
+   "aspect": 3.1
+  },
+  {
+   "image": "dim-people-walk-around/f00130.jpg",
+   "label": "person",
+   "box": [
+    620,
+    238,
+    749,
+    599
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 130,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2518,
+   "owl_box": [
+    616.8,
+    238.3,
+    742.8,
+    600.3
+   ],
+   "sam_score": 0.9582,
+   "area_frac": 0.0505,
+   "aspect": 2.798
+  },
+  {
+   "image": "dim-people-walk-around/f00135.jpg",
+   "label": "person",
+   "box": [
+    619,
+    215,
+    761,
+    623
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 135,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.278,
+   "owl_box": [
+    616.2,
+    217.5,
+    754.4,
+    618.5
+   ],
+   "sam_score": 0.9675,
+   "area_frac": 0.0629,
+   "aspect": 2.873
+  },
+  {
+   "image": "dim-people-walk-around/f00140.jpg",
+   "label": "person",
+   "box": [
+    621,
+    107,
+    812,
+    697
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 140,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2864,
+   "owl_box": [
+    616.9,
+    108.8,
+    809.7,
+    698.2
+   ],
+   "sam_score": 0.9762,
+   "area_frac": 0.1223,
+   "aspect": 3.089
+  },
+  {
+   "image": "dim-people-walk-around/f00145.jpg",
+   "label": "person",
+   "box": [
+    596,
+    0,
+    1007,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 145,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2809,
+   "owl_box": [
+    602.6,
+    0.5,
+    1005.5,
+    723.1
+   ],
+   "sam_score": 0.9827,
+   "area_frac": 0.3211,
+   "aspect": 1.752
+  },
+  {
+   "image": "dim-people-walk-around/f00150.jpg",
+   "label": "person",
+   "box": [
+    576,
+    0,
+    1280,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 150,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2667,
+   "owl_box": [
+    614.0,
+    -0.5,
+    1286.4,
+    718.6
+   ],
+   "sam_score": 0.9192,
+   "area_frac": 0.55,
+   "aspect": 1.023
+  },
+  {
+   "image": "dim-people-walk-around/f00155.jpg",
+   "label": "person",
+   "box": [
+    751,
+    0,
+    1159,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 155,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2402,
+   "owl_box": [
+    731.0,
+    1.9,
+    1193.2,
+    718.2
+   ],
+   "sam_score": 0.8907,
+   "area_frac": 0.3187,
+   "aspect": 1.765
+  },
+  {
+   "image": "dim-people-walk-around/f00165.jpg",
+   "label": "person",
+   "box": [
+    170,
+    0,
+    793,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 165,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2761,
+   "owl_box": [
+    151.8,
+    4.2,
+    814.3,
+    723.8
+   ],
+   "sam_score": 0.9214,
+   "area_frac": 0.4867,
+   "aspect": 1.156
+  },
+  {
+   "image": "dim-people-walk-around/f00285.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    234,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 285,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2304,
+   "owl_box": [
+    -0.2,
+    -1.4,
+    240.1,
+    717.0
+   ],
+   "sam_score": 0.9474,
+   "area_frac": 0.1828,
+   "aspect": 3.077
+  },
+  {
+   "image": "dim-people-walk-around/f00290.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    454,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 290,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3081,
+   "owl_box": [
+    5.2,
+    -3.1,
+    418.6,
+    717.5
+   ],
+   "sam_score": 0.9789,
+   "area_frac": 0.3547,
+   "aspect": 1.586
+  },
+  {
+   "image": "dim-people-walk-around/f00295.jpg",
+   "label": "person",
+   "box": [
+    114,
+    0,
+    517,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 295,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2936,
+   "owl_box": [
+    96.3,
+    -1.5,
+    518.4,
+    724.6
+   ],
+   "sam_score": 0.9847,
+   "area_frac": 0.3148,
+   "aspect": 1.787
+  },
+  {
+   "image": "dim-people-walk-around/f00300.jpg",
+   "label": "person",
+   "box": [
+    144,
+    0,
+    531,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 300,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2916,
+   "owl_box": [
+    113.6,
+    -1.7,
+    530.6,
+    721.9
+   ],
+   "sam_score": 0.9855,
+   "area_frac": 0.3023,
+   "aspect": 1.86
+  },
+  {
+   "image": "dim-people-walk-around/f00305.jpg",
+   "label": "person",
+   "box": [
+    131,
+    0,
+    539,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 305,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.309,
+   "owl_box": [
+    142.3,
+    0.1,
+    536.9,
+    723.8
+   ],
+   "sam_score": 0.9821,
+   "area_frac": 0.3187,
+   "aspect": 1.765
+  },
+  {
+   "image": "dim-people-walk-around/f00310.jpg",
+   "label": "person",
+   "box": [
+    312,
+    0,
+    563,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 310,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2961,
+   "owl_box": [
+    304.1,
+    1.3,
+    563.3,
+    717.5
+   ],
+   "sam_score": 0.9793,
+   "area_frac": 0.1961,
+   "aspect": 2.869
+  },
+  {
+   "image": "dim-people-walk-around/f00315.jpg",
+   "label": "person",
+   "box": [
+    418,
+    89,
+    609,
+    662
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 315,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2648,
+   "owl_box": [
+    420.6,
+    87.5,
+    610.9,
+    663.5
+   ],
+   "sam_score": 0.9768,
+   "area_frac": 0.1188,
+   "aspect": 3.0
+  },
+  {
+   "image": "dim-people-walk-around/f00320.jpg",
+   "label": "person",
+   "box": [
+    445,
+    122,
+    607,
+    658
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 320,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2564,
+   "owl_box": [
+    442.9,
+    117.2,
+    608.7,
+    655.7
+   ],
+   "sam_score": 0.9758,
+   "area_frac": 0.0942,
+   "aspect": 3.309
+  },
+  {
+   "image": "dim-people-walk-around/f00325.jpg",
+   "label": "person",
+   "box": [
+    499,
+    230,
+    607,
+    607
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 325,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2663,
+   "owl_box": [
+    494.8,
+    227.2,
+    607.0,
+    603.4
+   ],
+   "sam_score": 0.9669,
+   "area_frac": 0.0442,
+   "aspect": 3.491
+  },
+  {
+   "image": "dim-people-walk-around/f00330.jpg",
+   "label": "person",
+   "box": [
+    514,
+    257,
+    612,
+    593
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 330,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2722,
+   "owl_box": [
+    514.1,
+    256.0,
+    613.6,
+    592.0
+   ],
+   "sam_score": 0.9626,
+   "area_frac": 0.0357,
+   "aspect": 3.429
+  },
+  {
+   "image": "dim-people-walk-around/f00340.jpg",
+   "label": "person",
+   "box": [
+    524,
+    290,
+    616,
+    578
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 340,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2431,
+   "owl_box": [
+    523.3,
+    291.0,
+    616.7,
+    573.6
+   ],
+   "sam_score": 0.9585,
+   "area_frac": 0.0288,
+   "aspect": 3.13
+  },
+  {
+   "image": "dim-people-walk-around/f00355.jpg",
+   "label": "person",
+   "box": [
+    556,
+    303,
+    661,
+    576
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 355,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2421,
+   "owl_box": [
+    559.9,
+    304.2,
+    660.9,
+    574.4
+   ],
+   "sam_score": 0.9487,
+   "area_frac": 0.0311,
+   "aspect": 2.6
+  },
+  {
+   "image": "dim-people-walk-around/f00375.jpg",
+   "label": "person",
+   "box": [
+    656,
+    276,
+    729,
+    591
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 375,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2584,
+   "owl_box": [
+    653.1,
+    276.4,
+    738.1,
+    590.2
+   ],
+   "sam_score": 0.9358,
+   "area_frac": 0.025,
+   "aspect": 4.315
+  },
+  {
+   "image": "dim-people-walk-around/f00385.jpg",
+   "label": "person",
+   "box": [
+    631,
+    237,
+    753,
+    606
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 385,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2543,
+   "owl_box": [
+    628.0,
+    239.0,
+    751.4,
+    607.7
+   ],
+   "sam_score": 0.9549,
+   "area_frac": 0.0488,
+   "aspect": 3.025
+  },
+  {
+   "image": "dim-people-walk-around/f00395.jpg",
+   "label": "person",
+   "box": [
+    634,
+    178,
+    773,
+    642
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 395,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2734,
+   "owl_box": [
+    628.9,
+    182.6,
+    772.0,
+    645.4
+   ],
+   "sam_score": 0.9608,
+   "area_frac": 0.07,
+   "aspect": 3.338
+  },
+  {
+   "image": "dim-people-walk-around/f00400.jpg",
+   "label": "person",
+   "box": [
+    618,
+    107,
+    875,
+    675
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 400,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2539,
+   "owl_box": [
+    615.2,
+    107.0,
+    882.0,
+    670.2
+   ],
+   "sam_score": 0.9637,
+   "area_frac": 0.1584,
+   "aspect": 2.21
+  },
+  {
+   "image": "dim-people-walk-around/f00405.jpg",
+   "label": "person",
+   "box": [
+    629,
+    65,
+    885,
+    703
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 405,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.231,
+   "owl_box": [
+    623.0,
+    63.4,
+    886.7,
+    708.1
+   ],
+   "sam_score": 0.9647,
+   "area_frac": 0.1772,
+   "aspect": 2.492
+  },
+  {
+   "image": "dim-people-walk-around/f00410.jpg",
+   "label": "person",
+   "box": [
+    631,
+    37,
+    886,
+    705
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 410,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2378,
+   "owl_box": [
+    629.6,
+    34.5,
+    889.0,
+    704.4
+   ],
+   "sam_score": 0.9664,
+   "area_frac": 0.1848,
+   "aspect": 2.62
+  },
+  {
+   "image": "dim-people-walk-around/f00415.jpg",
+   "label": "person",
+   "box": [
+    572,
+    16,
+    834,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 415,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2615,
+   "owl_box": [
+    567.8,
+    15.6,
+    831.8,
+    723.0
+   ],
+   "sam_score": 0.965,
+   "area_frac": 0.2001,
+   "aspect": 2.687
+  },
+  {
+   "image": "dim-people-walk-around/f00420.jpg",
+   "label": "person",
+   "box": [
+    317,
+    0,
+    751,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 420,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2741,
+   "owl_box": [
+    327.0,
+    0.8,
+    755.2,
+    722.3
+   ],
+   "sam_score": 0.9777,
+   "area_frac": 0.3391,
+   "aspect": 1.659
+  },
+  {
+   "image": "dim-people-walk-around/f00425.jpg",
+   "label": "person",
+   "box": [
+    327,
+    0,
+    578,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 425,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2879,
+   "owl_box": [
+    323.7,
+    0.9,
+    578.7,
+    718.4
+   ],
+   "sam_score": 0.976,
+   "area_frac": 0.1961,
+   "aspect": 2.869
+  },
+  {
+   "image": "dim-people-walk-around/f00430.jpg",
+   "label": "person",
+   "box": [
+    328,
+    54,
+    567,
+    720
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 430,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2792,
+   "owl_box": [
+    326.3,
+    49.7,
+    562.9,
+    719.8
+   ],
+   "sam_score": 0.9743,
+   "area_frac": 0.1727,
+   "aspect": 2.787
+  },
+  {
+   "image": "dim-people-walk-around/f00435.jpg",
+   "label": "person",
+   "box": [
+    393,
+    117,
+    612,
+    656
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 435,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2617,
+   "owl_box": [
+    398.5,
+    119.4,
+    608.0,
+    663.0
+   ],
+   "sam_score": 0.9722,
+   "area_frac": 0.1281,
+   "aspect": 2.461
+  },
+  {
+   "image": "dim-people-walk-around/f00440.jpg",
+   "label": "person",
+   "box": [
+    498,
+    141,
+    651,
+    652
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 440,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2526,
+   "owl_box": [
+    497.8,
+    144.7,
+    648.1,
+    654.4
+   ],
+   "sam_score": 0.9747,
+   "area_frac": 0.0848,
+   "aspect": 3.34
+  },
+  {
+   "image": "dim-people-walk-around/f00445.jpg",
+   "label": "person",
+   "box": [
+    529,
+    176,
+    718,
+    641
+   ],
+   "scene": "dim-people-walk-around",
+   "frame": 445,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.25,
+   "owl_box": [
+    535.5,
+    178.3,
+    719.0,
+    645.9
+   ],
+   "sam_score": 0.9646,
+   "area_frac": 0.0954,
+   "aspect": 2.46
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00015.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    93,
+    720
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 15,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2364,
+   "owl_box": [
+    1.4,
+    -4.7,
+    97.9,
+    710.4
+   ],
+   "sam_score": 0.9743,
+   "area_frac": 0.0727,
+   "aspect": 7.742
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00020.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    589,
+    720
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 20,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3023,
+   "owl_box": [
+    5.6,
+    -6.1,
+    568.2,
+    717.9
+   ],
+   "sam_score": 0.9802,
+   "area_frac": 0.4602,
+   "aspect": 1.222
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00025.jpg",
+   "label": "person",
+   "box": [
+    17,
+    0,
+    615,
+    720
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 25,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2905,
+   "owl_box": [
+    25.5,
+    -5.0,
+    616.3,
+    720.7
+   ],
+   "sam_score": 0.9866,
+   "area_frac": 0.4672,
+   "aspect": 1.204
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00030.jpg",
+   "label": "person",
+   "box": [
+    393,
+    0,
+    641,
+    720
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 30,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2769,
+   "owl_box": [
+    397.4,
+    0.3,
+    643.1,
+    724.6
+   ],
+   "sam_score": 0.9773,
+   "area_frac": 0.1938,
+   "aspect": 2.903
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00035.jpg",
+   "label": "person",
+   "box": [
+    417,
+    62,
+    643,
+    690
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 35,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2686,
+   "owl_box": [
+    418.0,
+    60.6,
+    647.5,
+    695.3
+   ],
+   "sam_score": 0.983,
+   "area_frac": 0.154,
+   "aspect": 2.779
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00040.jpg",
+   "label": "person",
+   "box": [
+    415,
+    83,
+    660,
+    668
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 40,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.263,
+   "owl_box": [
+    415.3,
+    83.1,
+    661.0,
+    673.2
+   ],
+   "sam_score": 0.9797,
+   "area_frac": 0.1555,
+   "aspect": 2.388
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00045.jpg",
+   "label": "person",
+   "box": [
+    435,
+    122,
+    678,
+    652
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 45,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2488,
+   "owl_box": [
+    446.9,
+    119.7,
+    677.0,
+    652.6
+   ],
+   "sam_score": 0.9733,
+   "area_frac": 0.1397,
+   "aspect": 2.181
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00050.jpg",
+   "label": "person",
+   "box": [
+    462,
+    142,
+    673,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 50,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2652,
+   "owl_box": [
+    467.6,
+    143.1,
+    666.0,
+    641.9
+   ],
+   "sam_score": 0.9722,
+   "area_frac": 0.1136,
+   "aspect": 2.351
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00055.jpg",
+   "label": "person",
+   "box": [
+    462,
+    154,
+    666,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 55,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2492,
+   "owl_box": [
+    473.8,
+    152.3,
+    662.3,
+    641.5
+   ],
+   "sam_score": 0.9719,
+   "area_frac": 0.1071,
+   "aspect": 2.373
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00065.jpg",
+   "label": "person",
+   "box": [
+    455,
+    127,
+    643,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 65,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2683,
+   "owl_box": [
+    464.4,
+    126.0,
+    640.6,
+    641.5
+   ],
+   "sam_score": 0.9715,
+   "area_frac": 0.1042,
+   "aspect": 2.718
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00070.jpg",
+   "label": "person",
+   "box": [
+    454,
+    128,
+    634,
+    639
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 70,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2755,
+   "owl_box": [
+    454.8,
+    131.0,
+    629.1,
+    642.9
+   ],
+   "sam_score": 0.9704,
+   "area_frac": 0.0998,
+   "aspect": 2.839
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00080.jpg",
+   "label": "person",
+   "box": [
+    454,
+    127,
+    632,
+    639
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 80,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2799,
+   "owl_box": [
+    455.6,
+    126.6,
+    632.5,
+    642.1
+   ],
+   "sam_score": 0.9718,
+   "area_frac": 0.0989,
+   "aspect": 2.876
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00085.jpg",
+   "label": "person",
+   "box": [
+    455,
+    140,
+    645,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 85,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2936,
+   "owl_box": [
+    456.9,
+    138.0,
+    641.9,
+    641.5
+   ],
+   "sam_score": 0.9701,
+   "area_frac": 0.1027,
+   "aspect": 2.621
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00095.jpg",
+   "label": "person",
+   "box": [
+    454,
+    155,
+    655,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 95,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2597,
+   "owl_box": [
+    461.6,
+    151.2,
+    654.0,
+    639.8
+   ],
+   "sam_score": 0.9743,
+   "area_frac": 0.1053,
+   "aspect": 2.403
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00105.jpg",
+   "label": "person",
+   "box": [
+    454,
+    158,
+    650,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 105,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2505,
+   "owl_box": [
+    462.9,
+    155.3,
+    647.3,
+    641.5
+   ],
+   "sam_score": 0.9747,
+   "area_frac": 0.1021,
+   "aspect": 2.449
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00110.jpg",
+   "label": "person",
+   "box": [
+    454,
+    134,
+    641,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 110,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2561,
+   "owl_box": [
+    460.7,
+    133.7,
+    641.0,
+    643.5
+   ],
+   "sam_score": 0.9722,
+   "area_frac": 0.1023,
+   "aspect": 2.695
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00115.jpg",
+   "label": "person",
+   "box": [
+    454,
+    134,
+    635,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 115,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2781,
+   "owl_box": [
+    455.0,
+    136.6,
+    626.4,
+    644.1
+   ],
+   "sam_score": 0.9725,
+   "area_frac": 0.099,
+   "aspect": 2.785
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00120.jpg",
+   "label": "person",
+   "box": [
+    454,
+    141,
+    630,
+    639
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 120,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2852,
+   "owl_box": [
+    451.5,
+    145.1,
+    630.6,
+    644.3
+   ],
+   "sam_score": 0.9701,
+   "area_frac": 0.0951,
+   "aspect": 2.83
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00130.jpg",
+   "label": "person",
+   "box": [
+    455,
+    134,
+    634,
+    639
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 130,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2763,
+   "owl_box": [
+    453.8,
+    136.2,
+    632.7,
+    641.8
+   ],
+   "sam_score": 0.97,
+   "area_frac": 0.0981,
+   "aspect": 2.821
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00135.jpg",
+   "label": "person",
+   "box": [
+    455,
+    140,
+    656,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 135,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.27,
+   "owl_box": [
+    460.0,
+    137.1,
+    655.6,
+    641.9
+   ],
+   "sam_score": 0.9731,
+   "area_frac": 0.1086,
+   "aspect": 2.478
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00140.jpg",
+   "label": "person",
+   "box": [
+    455,
+    162,
+    656,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 140,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2502,
+   "owl_box": [
+    460.7,
+    157.6,
+    653.7,
+    640.4
+   ],
+   "sam_score": 0.9753,
+   "area_frac": 0.1038,
+   "aspect": 2.368
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00145.jpg",
+   "label": "person",
+   "box": [
+    455,
+    160,
+    668,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 145,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2473,
+   "owl_box": [
+    460.9,
+    158.5,
+    665.0,
+    641.4
+   ],
+   "sam_score": 0.9733,
+   "area_frac": 0.1105,
+   "aspect": 2.244
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00155.jpg",
+   "label": "person",
+   "box": [
+    455,
+    141,
+    658,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 155,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2397,
+   "owl_box": [
+    462.5,
+    139.2,
+    657.7,
+    640.4
+   ],
+   "sam_score": 0.9726,
+   "area_frac": 0.1095,
+   "aspect": 2.448
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00160.jpg",
+   "label": "person",
+   "box": [
+    454,
+    125,
+    635,
+    639
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 160,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2777,
+   "owl_box": [
+    454.0,
+    125.5,
+    631.3,
+    641.3
+   ],
+   "sam_score": 0.9731,
+   "area_frac": 0.1009,
+   "aspect": 2.84
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00165.jpg",
+   "label": "person",
+   "box": [
+    444,
+    128,
+    628,
+    639
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 165,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2857,
+   "owl_box": [
+    442.6,
+    130.2,
+    625.9,
+    643.2
+   ],
+   "sam_score": 0.9722,
+   "area_frac": 0.102,
+   "aspect": 2.777
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00180.jpg",
+   "label": "person",
+   "box": [
+    453,
+    129,
+    627,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 180,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2735,
+   "owl_box": [
+    448.7,
+    129.1,
+    628.4,
+    642.6
+   ],
+   "sam_score": 0.972,
+   "area_frac": 0.0961,
+   "aspect": 2.925
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00190.jpg",
+   "label": "person",
+   "box": [
+    455,
+    169,
+    662,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 190,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2458,
+   "owl_box": [
+    458.9,
+    165.4,
+    662.1,
+    640.6
+   ],
+   "sam_score": 0.9735,
+   "area_frac": 0.1053,
+   "aspect": 2.266
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00195.jpg",
+   "label": "person",
+   "box": [
+    455,
+    165,
+    670,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 195,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2456,
+   "owl_box": [
+    461.5,
+    161.5,
+    668.6,
+    640.2
+   ],
+   "sam_score": 0.9727,
+   "area_frac": 0.1103,
+   "aspect": 2.2
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00200.jpg",
+   "label": "person",
+   "box": [
+    455,
+    170,
+    663,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 200,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2353,
+   "owl_box": [
+    460.5,
+    168.1,
+    659.7,
+    640.8
+   ],
+   "sam_score": 0.9734,
+   "area_frac": 0.1056,
+   "aspect": 2.25
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00210.jpg",
+   "label": "person",
+   "box": [
+    455,
+    146,
+    655,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 210,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2392,
+   "owl_box": [
+    460.0,
+    144.5,
+    654.2,
+    641.6
+   ],
+   "sam_score": 0.9735,
+   "area_frac": 0.1068,
+   "aspect": 2.46
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00220.jpg",
+   "label": "person",
+   "box": [
+    454,
+    133,
+    636,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 220,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2715,
+   "owl_box": [
+    455.1,
+    133.4,
+    633.8,
+    640.6
+   ],
+   "sam_score": 0.9682,
+   "area_frac": 0.0997,
+   "aspect": 2.775
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00230.jpg",
+   "label": "person",
+   "box": [
+    455,
+    151,
+    657,
+    638
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 230,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2647,
+   "owl_box": [
+    465.9,
+    152.6,
+    650.2,
+    641.1
+   ],
+   "sam_score": 0.9694,
+   "area_frac": 0.1067,
+   "aspect": 2.411
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00240.jpg",
+   "label": "person",
+   "box": [
+    487,
+    199,
+    654,
+    635
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 240,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2622,
+   "owl_box": [
+    484.5,
+    197.9,
+    651.3,
+    635.9
+   ],
+   "sam_score": 0.9712,
+   "area_frac": 0.079,
+   "aspect": 2.611
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00245.jpg",
+   "label": "person",
+   "box": [
+    487,
+    209,
+    654,
+    624
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 245,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2696,
+   "owl_box": [
+    485.1,
+    210.4,
+    647.6,
+    620.1
+   ],
+   "sam_score": 0.9678,
+   "area_frac": 0.0752,
+   "aspect": 2.485
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00250.jpg",
+   "label": "person",
+   "box": [
+    490,
+    213,
+    651,
+    611
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 250,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2584,
+   "owl_box": [
+    489.5,
+    213.3,
+    646.1,
+    614.3
+   ],
+   "sam_score": 0.9641,
+   "area_frac": 0.0695,
+   "aspect": 2.472
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00255.jpg",
+   "label": "person",
+   "box": [
+    508,
+    239,
+    651,
+    604
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 255,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2733,
+   "owl_box": [
+    507.9,
+    239.7,
+    648.9,
+    603.4
+   ],
+   "sam_score": 0.9653,
+   "area_frac": 0.0566,
+   "aspect": 2.552
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00260.jpg",
+   "label": "person",
+   "box": [
+    532,
+    264,
+    657,
+    584
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 260,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2531,
+   "owl_box": [
+    531.8,
+    265.6,
+    655.6,
+    587.9
+   ],
+   "sam_score": 0.958,
+   "area_frac": 0.0434,
+   "aspect": 2.56
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00265.jpg",
+   "label": "person",
+   "box": [
+    532,
+    281,
+    650,
+    585
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 265,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2483,
+   "owl_box": [
+    529.4,
+    281.0,
+    651.5,
+    585.5
+   ],
+   "sam_score": 0.961,
+   "area_frac": 0.0389,
+   "aspect": 2.576
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00385.jpg",
+   "label": "person",
+   "box": [
+    531,
+    262,
+    638,
+    585
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 385,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2661,
+   "owl_box": [
+    528.7,
+    263.9,
+    636.9,
+    584.3
+   ],
+   "sam_score": 0.968,
+   "area_frac": 0.0375,
+   "aspect": 3.019
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00435.jpg",
+   "label": "person",
+   "box": [
+    534,
+    294,
+    655,
+    585
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 435,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2334,
+   "owl_box": [
+    532.5,
+    293.4,
+    656.1,
+    584.8
+   ],
+   "sam_score": 0.9572,
+   "area_frac": 0.0382,
+   "aspect": 2.405
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00475.jpg",
+   "label": "person",
+   "box": [
+    542,
+    298,
+    651,
+    583
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 475,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.253,
+   "owl_box": [
+    539.6,
+    295.8,
+    648.8,
+    585.1
+   ],
+   "sam_score": 0.957,
+   "area_frac": 0.0337,
+   "aspect": 2.615
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00485.jpg",
+   "label": "person",
+   "box": [
+    559,
+    314,
+    653,
+    569
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 485,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.238,
+   "owl_box": [
+    555.0,
+    312.6,
+    648.6,
+    567.9
+   ],
+   "sam_score": 0.9586,
+   "area_frac": 0.026,
+   "aspect": 2.713
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00760.jpg",
+   "label": "person",
+   "box": [
+    542,
+    290,
+    652,
+    577
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 760,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2604,
+   "owl_box": [
+    543.4,
+    291.9,
+    652.5,
+    578.2
+   ],
+   "sam_score": 0.9606,
+   "area_frac": 0.0343,
+   "aspect": 2.609
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00770.jpg",
+   "label": "person",
+   "box": [
+    523,
+    241,
+    659,
+    598
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 770,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2705,
+   "owl_box": [
+    522.6,
+    242.0,
+    656.8,
+    600.5
+   ],
+   "sam_score": 0.9615,
+   "area_frac": 0.0527,
+   "aspect": 2.625
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00775.jpg",
+   "label": "person",
+   "box": [
+    498,
+    186,
+    672,
+    635
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 775,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2764,
+   "owl_box": [
+    495.7,
+    187.8,
+    670.2,
+    636.7
+   ],
+   "sam_score": 0.967,
+   "area_frac": 0.0848,
+   "aspect": 2.58
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00780.jpg",
+   "label": "person",
+   "box": [
+    430,
+    85,
+    670,
+    707
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 780,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2949,
+   "owl_box": [
+    430.8,
+    84.1,
+    669.6,
+    707.4
+   ],
+   "sam_score": 0.9757,
+   "area_frac": 0.162,
+   "aspect": 2.592
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00785.jpg",
+   "label": "person",
+   "box": [
+    419,
+    63,
+    668,
+    720
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 785,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2892,
+   "owl_box": [
+    418.4,
+    60.9,
+    663.8,
+    717.2
+   ],
+   "sam_score": 0.9756,
+   "area_frac": 0.1775,
+   "aspect": 2.639
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00790.jpg",
+   "label": "person",
+   "box": [
+    401,
+    22,
+    674,
+    720
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 790,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2686,
+   "owl_box": [
+    403.8,
+    20.7,
+    665.4,
+    721.8
+   ],
+   "sam_score": 0.9736,
+   "area_frac": 0.2068,
+   "aspect": 2.557
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00795.jpg",
+   "label": "person",
+   "box": [
+    235,
+    0,
+    643,
+    720
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 795,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2935,
+   "owl_box": [
+    215.9,
+    -2.5,
+    639.6,
+    721.2
+   ],
+   "sam_score": 0.9694,
+   "area_frac": 0.3187,
+   "aspect": 1.765
+  },
+  {
+   "image": "light-box-in-different-distance-and-angle/f00800.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    417,
+    720
+   ],
+   "scene": "light-box-in-different-distance-and-angle",
+   "frame": 800,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2552,
+   "owl_box": [
+    4.8,
+    0.5,
+    420.2,
+    720.0
+   ],
+   "sam_score": 0.8186,
+   "area_frac": 0.3258,
+   "aspect": 1.727
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00000.jpg",
+   "label": "lite3",
+   "box": [
+    480,
+    459,
+    786,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 0,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.589,
+   "owl_box": [
+    482.8,
+    457.8,
+    782.2,
+    714.6
+   ],
+   "sam_score": 0.9333,
+   "area_frac": 0.0867,
+   "aspect": 0.853
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00005.jpg",
+   "label": "lite3",
+   "box": [
+    481,
+    460,
+    792,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 5,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.542,
+   "owl_box": [
+    492.2,
+    460.0,
+    793.1,
+    715.2
+   ],
+   "sam_score": 0.9247,
+   "area_frac": 0.0877,
+   "aspect": 0.836
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00010.jpg",
+   "label": "lite3",
+   "box": [
+    480,
+    460,
+    786,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 10,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6103,
+   "owl_box": [
+    485.5,
+    469.5,
+    784.7,
+    720.1
+   ],
+   "sam_score": 0.9348,
+   "area_frac": 0.0863,
+   "aspect": 0.85
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00020.jpg",
+   "label": "lite3",
+   "box": [
+    482,
+    434,
+    788,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 20,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.627,
+   "owl_box": [
+    483.8,
+    442.7,
+    783.8,
+    720.9
+   ],
+   "sam_score": 0.9392,
+   "area_frac": 0.095,
+   "aspect": 0.935
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00030.jpg",
+   "label": "lite3",
+   "box": [
+    495,
+    458,
+    806,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 30,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5402,
+   "owl_box": [
+    491.4,
+    452.8,
+    803.5,
+    719.4
+   ],
+   "sam_score": 0.9415,
+   "area_frac": 0.0884,
+   "aspect": 0.842
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00035.jpg",
+   "label": "lite3",
+   "box": [
+    493,
+    461,
+    845,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 35,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5655,
+   "owl_box": [
+    506.1,
+    469.1,
+    843.5,
+    719.5
+   ],
+   "sam_score": 0.9212,
+   "area_frac": 0.0989,
+   "aspect": 0.736
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00040.jpg",
+   "label": "lite3",
+   "box": [
+    494,
+    460,
+    852,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 40,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6142,
+   "owl_box": [
+    509.2,
+    453.4,
+    845.2,
+    716.9
+   ],
+   "sam_score": 0.9573,
+   "area_frac": 0.101,
+   "aspect": 0.726
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00045.jpg",
+   "label": "lite3",
+   "box": [
+    495,
+    460,
+    842,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 45,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4404,
+   "owl_box": [
+    503.6,
+    466.7,
+    844.9,
+    718.4
+   ],
+   "sam_score": 0.9544,
+   "area_frac": 0.0979,
+   "aspect": 0.749
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00055.jpg",
+   "label": "lite3",
+   "box": [
+    500,
+    461,
+    845,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 55,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.517,
+   "owl_box": [
+    511.8,
+    464.1,
+    863.6,
+    716.3
+   ],
+   "sam_score": 0.9391,
+   "area_frac": 0.097,
+   "aspect": 0.751
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00070.jpg",
+   "label": "lite3",
+   "box": [
+    506,
+    461,
+    867,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 70,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5468,
+   "owl_box": [
+    527.4,
+    462.4,
+    861.7,
+    716.0
+   ],
+   "sam_score": 0.9544,
+   "area_frac": 0.1015,
+   "aspect": 0.717
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00075.jpg",
+   "label": "lite3",
+   "box": [
+    511,
+    462,
+    864,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 75,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5105,
+   "owl_box": [
+    498.6,
+    456.4,
+    875.2,
+    714.3
+   ],
+   "sam_score": 0.9494,
+   "area_frac": 0.0988,
+   "aspect": 0.731
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00080.jpg",
+   "label": "lite3",
+   "box": [
+    513,
+    460,
+    864,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 80,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6396,
+   "owl_box": [
+    520.3,
+    459.1,
+    865.2,
+    712.5
+   ],
+   "sam_score": 0.9444,
+   "area_frac": 0.099,
+   "aspect": 0.741
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00085.jpg",
+   "label": "lite3",
+   "box": [
+    519,
+    462,
+    863,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 85,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6618,
+   "owl_box": [
+    522.4,
+    466.4,
+    863.4,
+    718.8
+   ],
+   "sam_score": 0.9551,
+   "area_frac": 0.0963,
+   "aspect": 0.75
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00090.jpg",
+   "label": "lite3",
+   "box": [
+    522,
+    450,
+    871,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 90,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6131,
+   "owl_box": [
+    523.2,
+    451.7,
+    869.0,
+    716.5
+   ],
+   "sam_score": 0.9439,
+   "area_frac": 0.1022,
+   "aspect": 0.774
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00095.jpg",
+   "label": "lite3",
+   "box": [
+    525,
+    463,
+    874,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 95,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.62,
+   "owl_box": [
+    529.2,
+    457.6,
+    883.2,
+    717.3
+   ],
+   "sam_score": 0.9503,
+   "area_frac": 0.0973,
+   "aspect": 0.736
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00100.jpg",
+   "label": "lite3",
+   "box": [
+    529,
+    464,
+    879,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 100,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6259,
+   "owl_box": [
+    533.6,
+    465.1,
+    882.5,
+    718.8
+   ],
+   "sam_score": 0.9478,
+   "area_frac": 0.0972,
+   "aspect": 0.731
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00115.jpg",
+   "label": "lite3",
+   "box": [
+    538,
+    463,
+    899,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 115,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6454,
+   "owl_box": [
+    544.2,
+    467.1,
+    901.1,
+    720.5
+   ],
+   "sam_score": 0.9633,
+   "area_frac": 0.1007,
+   "aspect": 0.712
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00120.jpg",
+   "label": "lite3",
+   "box": [
+    554,
+    462,
+    867,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 120,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6287,
+   "owl_box": [
+    568.4,
+    463.4,
+    882.4,
+    718.4
+   ],
+   "sam_score": 0.9281,
+   "area_frac": 0.0876,
+   "aspect": 0.824
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00125.jpg",
+   "label": "lite3",
+   "box": [
+    544,
+    462,
+    818,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 125,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6303,
+   "owl_box": [
+    544.1,
+    462.6,
+    812.5,
+    720.1
+   ],
+   "sam_score": 0.9589,
+   "area_frac": 0.0767,
+   "aspect": 0.942
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00130.jpg",
+   "label": "lite3",
+   "box": [
+    543,
+    461,
+    813,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 130,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6546,
+   "owl_box": [
+    542.4,
+    462.1,
+    809.4,
+    717.6
+   ],
+   "sam_score": 0.9446,
+   "area_frac": 0.0759,
+   "aspect": 0.959
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00135.jpg",
+   "label": "lite3",
+   "box": [
+    548,
+    461,
+    823,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 135,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6335,
+   "owl_box": [
+    562.6,
+    459.5,
+    823.2,
+    718.3
+   ],
+   "sam_score": 0.9451,
+   "area_frac": 0.0773,
+   "aspect": 0.942
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00155.jpg",
+   "label": "lite3",
+   "box": [
+    533,
+    461,
+    809,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 155,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6734,
+   "owl_box": [
+    534.4,
+    455.7,
+    806.5,
+    717.1
+   ],
+   "sam_score": 0.9403,
+   "area_frac": 0.0776,
+   "aspect": 0.938
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00160.jpg",
+   "label": "lite3",
+   "box": [
+    496,
+    460,
+    776,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 160,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5958,
+   "owl_box": [
+    495.7,
+    453.2,
+    770.3,
+    716.1
+   ],
+   "sam_score": 0.9335,
+   "area_frac": 0.079,
+   "aspect": 0.929
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00165.jpg",
+   "label": "lite3",
+   "box": [
+    451,
+    462,
+    793,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 165,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6386,
+   "owl_box": [
+    448.4,
+    448.7,
+    780.4,
+    718.1
+   ],
+   "sam_score": 0.9298,
+   "area_frac": 0.0957,
+   "aspect": 0.754
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00170.jpg",
+   "label": "lite3",
+   "box": [
+    435,
+    461,
+    813,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 170,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.579,
+   "owl_box": [
+    451.9,
+    458.5,
+    813.0,
+    720.4
+   ],
+   "sam_score": 0.9638,
+   "area_frac": 0.1062,
+   "aspect": 0.685
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00180.jpg",
+   "label": "lite3",
+   "box": [
+    459,
+    460,
+    820,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 180,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6625,
+   "owl_box": [
+    465.5,
+    452.1,
+    810.2,
+    718.1
+   ],
+   "sam_score": 0.9704,
+   "area_frac": 0.1018,
+   "aspect": 0.72
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00190.jpg",
+   "label": "lite3",
+   "box": [
+    455,
+    460,
+    817,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 190,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6244,
+   "owl_box": [
+    459.8,
+    455.2,
+    808.0,
+    718.7
+   ],
+   "sam_score": 0.973,
+   "area_frac": 0.1021,
+   "aspect": 0.718
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00200.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    459,
+    813,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 200,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5796,
+   "owl_box": [
+    456.5,
+    460.3,
+    804.8,
+    719.6
+   ],
+   "sam_score": 0.9602,
+   "area_frac": 0.1022,
+   "aspect": 0.723
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00205.jpg",
+   "label": "lite3",
+   "box": [
+    452,
+    461,
+    807,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 205,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5676,
+   "owl_box": [
+    452.3,
+    461.5,
+    791.3,
+    711.3
+   ],
+   "sam_score": 0.9514,
+   "area_frac": 0.0998,
+   "aspect": 0.73
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00210.jpg",
+   "label": "lite3",
+   "box": [
+    441,
+    461,
+    799,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 210,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5432,
+   "owl_box": [
+    450.6,
+    466.2,
+    793.1,
+    723.0
+   ],
+   "sam_score": 0.9491,
+   "area_frac": 0.1006,
+   "aspect": 0.723
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00215.jpg",
+   "label": "lite3",
+   "box": [
+    423,
+    459,
+    800,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 215,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5071,
+   "owl_box": [
+    443.7,
+    462.0,
+    807.2,
+    721.1
+   ],
+   "sam_score": 0.9473,
+   "area_frac": 0.1068,
+   "aspect": 0.692
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00220.jpg",
+   "label": "lite3",
+   "box": [
+    442,
+    460,
+    801,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 220,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5225,
+   "owl_box": [
+    451.8,
+    465.5,
+    796.0,
+    721.4
+   ],
+   "sam_score": 0.934,
+   "area_frac": 0.1013,
+   "aspect": 0.724
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00230.jpg",
+   "label": "lite3",
+   "box": [
+    434,
+    460,
+    791,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 230,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5305,
+   "owl_box": [
+    446.1,
+    466.0,
+    790.6,
+    721.6
+   ],
+   "sam_score": 0.9399,
+   "area_frac": 0.1007,
+   "aspect": 0.728
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00245.jpg",
+   "label": "lite3",
+   "box": [
+    430,
+    462,
+    788,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 245,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5461,
+   "owl_box": [
+    437.3,
+    459.2,
+    787.2,
+    721.0
+   ],
+   "sam_score": 0.8942,
+   "area_frac": 0.1002,
+   "aspect": 0.721
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00250.jpg",
+   "label": "lite3",
+   "box": [
+    442,
+    462,
+    783,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 250,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5925,
+   "owl_box": [
+    449.5,
+    462.6,
+    783.3,
+    721.8
+   ],
+   "sam_score": 0.8869,
+   "area_frac": 0.0955,
+   "aspect": 0.757
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00255.jpg",
+   "label": "lite3",
+   "box": [
+    464,
+    462,
+    783,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 255,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.575,
+   "owl_box": [
+    473.0,
+    460.6,
+    781.0,
+    720.1
+   ],
+   "sam_score": 0.9012,
+   "area_frac": 0.0893,
+   "aspect": 0.809
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00260.jpg",
+   "label": "lite3",
+   "box": [
+    457,
+    461,
+    783,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 260,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5634,
+   "owl_box": [
+    458.4,
+    452.7,
+    769.1,
+    709.4
+   ],
+   "sam_score": 0.9226,
+   "area_frac": 0.0916,
+   "aspect": 0.794
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00270.jpg",
+   "label": "lite3",
+   "box": [
+    466,
+    462,
+    784,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 270,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6238,
+   "owl_box": [
+    471.3,
+    464.5,
+    777.1,
+    720.2
+   ],
+   "sam_score": 0.929,
+   "area_frac": 0.089,
+   "aspect": 0.811
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00305.jpg",
+   "label": "lite3",
+   "box": [
+    487,
+    459,
+    774,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 305,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.654,
+   "owl_box": [
+    499.4,
+    453.6,
+    775.0,
+    716.9
+   ],
+   "sam_score": 0.9347,
+   "area_frac": 0.0813,
+   "aspect": 0.909
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00310.jpg",
+   "label": "lite3",
+   "box": [
+    503,
+    458,
+    773,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 310,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6143,
+   "owl_box": [
+    510.7,
+    451.1,
+    768.0,
+    717.9
+   ],
+   "sam_score": 0.8928,
+   "area_frac": 0.0768,
+   "aspect": 0.97
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00315.jpg",
+   "label": "lite3",
+   "box": [
+    539,
+    459,
+    760,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 315,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5945,
+   "owl_box": [
+    542.9,
+    452.5,
+    765.4,
+    719.2
+   ],
+   "sam_score": 0.9397,
+   "area_frac": 0.0626,
+   "aspect": 1.181
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00320.jpg",
+   "label": "lite3",
+   "box": [
+    536,
+    460,
+    759,
+    720
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 320,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6228,
+   "owl_box": [
+    540.0,
+    455.7,
+    763.5,
+    721.9
+   ],
+   "sam_score": 0.9488,
+   "area_frac": 0.0629,
+   "aspect": 1.166
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00340.jpg",
+   "label": "lite3",
+   "box": [
+    540,
+    431,
+    732,
+    716
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 340,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5858,
+   "owl_box": [
+    547.1,
+    443.1,
+    736.5,
+    716.3
+   ],
+   "sam_score": 0.9347,
+   "area_frac": 0.0594,
+   "aspect": 1.484
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00350.jpg",
+   "label": "lite3",
+   "box": [
+    547,
+    477,
+    684,
+    658
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 350,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4576,
+   "owl_box": [
+    546.4,
+    489.5,
+    680.9,
+    656.2
+   ],
+   "sam_score": 0.8414,
+   "area_frac": 0.0269,
+   "aspect": 1.321
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00380.jpg",
+   "label": "lite3",
+   "box": [
+    530,
+    477,
+    686,
+    643
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 380,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4952,
+   "owl_box": [
+    532.9,
+    488.2,
+    681.0,
+    642.4
+   ],
+   "sam_score": 0.8344,
+   "area_frac": 0.0281,
+   "aspect": 1.064
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00385.jpg",
+   "label": "lite3",
+   "box": [
+    528,
+    479,
+    714,
+    645
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 385,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5166,
+   "owl_box": [
+    539.0,
+    489.0,
+    715.5,
+    647.6
+   ],
+   "sam_score": 0.9006,
+   "area_frac": 0.0335,
+   "aspect": 0.892
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00450.jpg",
+   "label": "lite3",
+   "box": [
+    540,
+    431,
+    735,
+    635
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 450,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4099,
+   "owl_box": [
+    550.1,
+    435.7,
+    730.7,
+    634.3
+   ],
+   "sam_score": 0.8771,
+   "area_frac": 0.0432,
+   "aspect": 1.046
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00485.jpg",
+   "label": "lite3",
+   "box": [
+    551,
+    453,
+    751,
+    645
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 485,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.614,
+   "owl_box": [
+    560.5,
+    457.2,
+    751.8,
+    645.4
+   ],
+   "sam_score": 0.8614,
+   "area_frac": 0.0417,
+   "aspect": 0.96
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00510.jpg",
+   "label": "lite3",
+   "box": [
+    556,
+    475,
+    757,
+    649
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 510,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.5448,
+   "owl_box": [
+    571.7,
+    461.5,
+    760.7,
+    652.2
+   ],
+   "sam_score": 0.8976,
+   "area_frac": 0.0379,
+   "aspect": 0.866
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00520.jpg",
+   "label": "lite3",
+   "box": [
+    581,
+    465,
+    725,
+    647
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 520,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4655,
+   "owl_box": [
+    584.1,
+    441.4,
+    726.7,
+    647.3
+   ],
+   "sam_score": 0.9021,
+   "area_frac": 0.0284,
+   "aspect": 1.264
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00565.jpg",
+   "label": "lite3",
+   "box": [
+    525,
+    487,
+    722,
+    654
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 565,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4939,
+   "owl_box": [
+    529.9,
+    488.7,
+    725.2,
+    654.8
+   ],
+   "sam_score": 0.9225,
+   "area_frac": 0.0357,
+   "aspect": 0.848
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00595.jpg",
+   "label": "lite3",
+   "box": [
+    507,
+    477,
+    723,
+    655
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 595,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4595,
+   "owl_box": [
+    529.5,
+    480.6,
+    721.0,
+    647.8
+   ],
+   "sam_score": 0.8906,
+   "area_frac": 0.0417,
+   "aspect": 0.824
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00600.jpg",
+   "label": "lite3",
+   "box": [
+    517,
+    431,
+    718,
+    637
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 600,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4485,
+   "owl_box": [
+    513.8,
+    437.1,
+    712.3,
+    636.8
+   ],
+   "sam_score": 0.8969,
+   "area_frac": 0.0449,
+   "aspect": 1.025
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00635.jpg",
+   "label": "lite3",
+   "box": [
+    507,
+    431,
+    715,
+    642
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 635,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3052,
+   "owl_box": [
+    511.8,
+    430.2,
+    710.2,
+    640.3
+   ],
+   "sam_score": 0.924,
+   "area_frac": 0.0476,
+   "aspect": 1.014
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00670.jpg",
+   "label": "lite3",
+   "box": [
+    602,
+    488,
+    699,
+    646
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 670,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3807,
+   "owl_box": [
+    580.2,
+    490.0,
+    704.9,
+    643.8
+   ],
+   "sam_score": 0.8724,
+   "area_frac": 0.0166,
+   "aspect": 1.629
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00675.jpg",
+   "label": "lite3",
+   "box": [
+    509,
+    477,
+    701,
+    649
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 675,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.6051,
+   "owl_box": [
+    529.4,
+    484.6,
+    705.9,
+    650.5
+   ],
+   "sam_score": 0.8927,
+   "area_frac": 0.0358,
+   "aspect": 0.896
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00695.jpg",
+   "label": "lite3",
+   "box": [
+    574,
+    477,
+    700,
+    649
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 695,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3899,
+   "owl_box": [
+    564.5,
+    478.4,
+    701.5,
+    648.0
+   ],
+   "sam_score": 0.9177,
+   "area_frac": 0.0235,
+   "aspect": 1.365
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00720.jpg",
+   "label": "lite3",
+   "box": [
+    552,
+    476,
+    676,
+    641
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 720,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3551,
+   "owl_box": [
+    559.5,
+    479.0,
+    680.3,
+    642.7
+   ],
+   "sam_score": 0.9188,
+   "area_frac": 0.0222,
+   "aspect": 1.331
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f00775.jpg",
+   "label": "lite3",
+   "box": [
+    585,
+    496,
+    673,
+    599
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 775,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.3599,
+   "owl_box": [
+    585.9,
+    498.5,
+    673.7,
+    600.9
+   ],
+   "sam_score": 0.7658,
+   "area_frac": 0.0098,
+   "aspect": 1.17
+  },
+  {
+   "image": "light-lite3-in-difference-distance-and-angle/f01345.jpg",
+   "label": "lite3",
+   "box": [
+    560,
+    476,
+    682,
+    646
+   ],
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 1345,
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "owl_score": 0.4005,
+   "owl_box": [
+    559.7,
+    494.6,
+    685.3,
+    645.1
+   ],
+   "sam_score": 0.7654,
+   "area_frac": 0.0225,
+   "aspect": 1.393
+  },
+  {
+   "image": "light-people-walkaround/f00025.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    618,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 25,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3003,
+   "owl_box": [
+    4.8,
+    -2.0,
+    597.8,
+    716.8
+   ],
+   "sam_score": 0.9908,
+   "area_frac": 0.4828,
+   "aspect": 1.165
+  },
+  {
+   "image": "light-people-walkaround/f00030.jpg",
+   "label": "person",
+   "box": [
+    210,
+    0,
+    627,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 30,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2955,
+   "owl_box": [
+    183.2,
+    -1.5,
+    621.9,
+    724.7
+   ],
+   "sam_score": 0.9868,
+   "area_frac": 0.3258,
+   "aspect": 1.727
+  },
+  {
+   "image": "light-people-walkaround/f00035.jpg",
+   "label": "person",
+   "box": [
+    335,
+    0,
+    607,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 35,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2872,
+   "owl_box": [
+    327.2,
+    2.9,
+    606.1,
+    722.9
+   ],
+   "sam_score": 0.9852,
+   "area_frac": 0.2125,
+   "aspect": 2.647
+  },
+  {
+   "image": "light-people-walkaround/f00040.jpg",
+   "label": "person",
+   "box": [
+    336,
+    64,
+    620,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 40,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2798,
+   "owl_box": [
+    338.4,
+    58.9,
+    622.1,
+    716.3
+   ],
+   "sam_score": 0.9801,
+   "area_frac": 0.2022,
+   "aspect": 2.31
+  },
+  {
+   "image": "light-people-walkaround/f00045.jpg",
+   "label": "person",
+   "box": [
+    457,
+    140,
+    633,
+    661
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 45,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2519,
+   "owl_box": [
+    459.8,
+    137.1,
+    633.8,
+    661.0
+   ],
+   "sam_score": 0.9784,
+   "area_frac": 0.0995,
+   "aspect": 2.96
+  },
+  {
+   "image": "light-people-walkaround/f00050.jpg",
+   "label": "person",
+   "box": [
+    482,
+    193,
+    623,
+    616
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 50,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2761,
+   "owl_box": [
+    480.4,
+    190.3,
+    622.3,
+    617.5
+   ],
+   "sam_score": 0.9715,
+   "area_frac": 0.0647,
+   "aspect": 3.0
+  },
+  {
+   "image": "light-people-walkaround/f00055.jpg",
+   "label": "person",
+   "box": [
+    501,
+    231,
+    626,
+    615
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 55,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2656,
+   "owl_box": [
+    501.7,
+    228.6,
+    627.3,
+    612.8
+   ],
+   "sam_score": 0.9698,
+   "area_frac": 0.0521,
+   "aspect": 3.072
+  },
+  {
+   "image": "light-people-walkaround/f00060.jpg",
+   "label": "person",
+   "box": [
+    524,
+    254,
+    638,
+    591
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 60,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2473,
+   "owl_box": [
+    525.3,
+    253.1,
+    641.2,
+    592.6
+   ],
+   "sam_score": 0.966,
+   "area_frac": 0.0417,
+   "aspect": 2.956
+  },
+  {
+   "image": "light-people-walkaround/f00070.jpg",
+   "label": "person",
+   "box": [
+    540,
+    292,
+    632,
+    579
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 70,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.256,
+   "owl_box": [
+    541.0,
+    290.7,
+    632.7,
+    578.7
+   ],
+   "sam_score": 0.9617,
+   "area_frac": 0.0287,
+   "aspect": 3.12
+  },
+  {
+   "image": "light-people-walkaround/f00075.jpg",
+   "label": "person",
+   "box": [
+    551,
+    308,
+    647,
+    575
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 75,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2578,
+   "owl_box": [
+    556.1,
+    307.3,
+    643.4,
+    570.3
+   ],
+   "sam_score": 0.9596,
+   "area_frac": 0.0278,
+   "aspect": 2.781
+  },
+  {
+   "image": "light-people-walkaround/f00085.jpg",
+   "label": "person",
+   "box": [
+    600,
+    322,
+    672,
+    566
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 85,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2758,
+   "owl_box": [
+    603.8,
+    318.8,
+    668.9,
+    563.4
+   ],
+   "sam_score": 0.9558,
+   "area_frac": 0.0191,
+   "aspect": 3.389
+  },
+  {
+   "image": "light-people-walkaround/f00120.jpg",
+   "label": "person",
+   "box": [
+    620,
+    279,
+    727,
+    586
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 120,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2703,
+   "owl_box": [
+    616.5,
+    281.7,
+    719.2,
+    587.9
+   ],
+   "sam_score": 0.9673,
+   "area_frac": 0.0356,
+   "aspect": 2.869
+  },
+  {
+   "image": "light-people-walkaround/f00130.jpg",
+   "label": "person",
+   "box": [
+    611,
+    224,
+    750,
+    616
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 130,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2636,
+   "owl_box": [
+    606.0,
+    223.1,
+    740.7,
+    613.3
+   ],
+   "sam_score": 0.9666,
+   "area_frac": 0.0591,
+   "aspect": 2.82
+  },
+  {
+   "image": "light-people-walkaround/f00135.jpg",
+   "label": "person",
+   "box": [
+    619,
+    173,
+    776,
+    622
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 135,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2681,
+   "owl_box": [
+    612.5,
+    175.7,
+    766.9,
+    625.5
+   ],
+   "sam_score": 0.9706,
+   "area_frac": 0.0765,
+   "aspect": 2.86
+  },
+  {
+   "image": "light-people-walkaround/f00140.jpg",
+   "label": "person",
+   "box": [
+    607,
+    115,
+    800,
+    676
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 140,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2869,
+   "owl_box": [
+    598.0,
+    117.0,
+    783.9,
+    681.9
+   ],
+   "sam_score": 0.9765,
+   "area_frac": 0.1175,
+   "aspect": 2.907
+  },
+  {
+   "image": "light-people-walkaround/f00145.jpg",
+   "label": "person",
+   "box": [
+    593,
+    27,
+    879,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 145,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2673,
+   "owl_box": [
+    588.3,
+    25.4,
+    882.5,
+    720.6
+   ],
+   "sam_score": 0.979,
+   "area_frac": 0.2151,
+   "aspect": 2.423
+  },
+  {
+   "image": "light-people-walkaround/f00150.jpg",
+   "label": "person",
+   "box": [
+    604,
+    0,
+    902,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 150,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2598,
+   "owl_box": [
+    603.7,
+    1.9,
+    884.8,
+    721.7
+   ],
+   "sam_score": 0.982,
+   "area_frac": 0.2328,
+   "aspect": 2.416
+  },
+  {
+   "image": "light-people-walkaround/f00155.jpg",
+   "label": "person",
+   "box": [
+    612,
+    0,
+    1084,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 155,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2921,
+   "owl_box": [
+    613.9,
+    -6.8,
+    1061.6,
+    720.7
+   ],
+   "sam_score": 0.9882,
+   "area_frac": 0.3688,
+   "aspect": 1.525
+  },
+  {
+   "image": "light-people-walkaround/f00160.jpg",
+   "label": "person",
+   "box": [
+    681,
+    0,
+    1280,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 160,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3045,
+   "owl_box": [
+    696.1,
+    -5.2,
+    1278.2,
+    716.1
+   ],
+   "sam_score": 0.9805,
+   "area_frac": 0.468,
+   "aspect": 1.202
+  },
+  {
+   "image": "light-people-walkaround/f00255.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    339,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 255,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2622,
+   "owl_box": [
+    0.5,
+    -1.9,
+    345.2,
+    718.4
+   ],
+   "sam_score": 0.9918,
+   "area_frac": 0.2648,
+   "aspect": 2.124
+  },
+  {
+   "image": "light-people-walkaround/f00260.jpg",
+   "label": "person",
+   "box": [
+    3,
+    0,
+    574,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 260,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3326,
+   "owl_box": [
+    8.4,
+    -6.0,
+    563.2,
+    719.5
+   ],
+   "sam_score": 0.9902,
+   "area_frac": 0.4461,
+   "aspect": 1.261
+  },
+  {
+   "image": "light-people-walkaround/f00265.jpg",
+   "label": "person",
+   "box": [
+    130,
+    0,
+    566,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 265,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2881,
+   "owl_box": [
+    144.3,
+    -2.0,
+    561.0,
+    721.7
+   ],
+   "sam_score": 0.9882,
+   "area_frac": 0.3406,
+   "aspect": 1.651
+  },
+  {
+   "image": "light-people-walkaround/f00270.jpg",
+   "label": "person",
+   "box": [
+    264,
+    0,
+    579,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 270,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2876,
+   "owl_box": [
+    262.4,
+    -2.3,
+    576.5,
+    719.8
+   ],
+   "sam_score": 0.9831,
+   "area_frac": 0.2461,
+   "aspect": 2.286
+  },
+  {
+   "image": "light-people-walkaround/f00275.jpg",
+   "label": "person",
+   "box": [
+    343,
+    43,
+    608,
+    695
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 275,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2666,
+   "owl_box": [
+    354.8,
+    38.0,
+    604.7,
+    700.6
+   ],
+   "sam_score": 0.9815,
+   "area_frac": 0.1875,
+   "aspect": 2.46
+  },
+  {
+   "image": "light-people-walkaround/f00280.jpg",
+   "label": "person",
+   "box": [
+    404,
+    80,
+    623,
+    693
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 280,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2878,
+   "owl_box": [
+    416.1,
+    77.3,
+    620.6,
+    697.3
+   ],
+   "sam_score": 0.9797,
+   "area_frac": 0.1457,
+   "aspect": 2.799
+  },
+  {
+   "image": "light-people-walkaround/f00285.jpg",
+   "label": "person",
+   "box": [
+    482,
+    105,
+    641,
+    654
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 285,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2542,
+   "owl_box": [
+    487.2,
+    103.3,
+    645.6,
+    655.8
+   ],
+   "sam_score": 0.9768,
+   "area_frac": 0.0947,
+   "aspect": 3.453
+  },
+  {
+   "image": "light-people-walkaround/f00290.jpg",
+   "label": "person",
+   "box": [
+    485,
+    100,
+    775,
+    675
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 290,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2637,
+   "owl_box": [
+    491.8,
+    98.7,
+    783.8,
+    677.3
+   ],
+   "sam_score": 0.9781,
+   "area_frac": 0.1809,
+   "aspect": 1.983
+  },
+  {
+   "image": "light-people-walkaround/f00295.jpg",
+   "label": "person",
+   "box": [
+    616,
+    80,
+    776,
+    676
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 295,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2636,
+   "owl_box": [
+    609.1,
+    82.6,
+    764.5,
+    677.8
+   ],
+   "sam_score": 0.9807,
+   "area_frac": 0.1035,
+   "aspect": 3.725
+  },
+  {
+   "image": "light-people-walkaround/f00300.jpg",
+   "label": "person",
+   "box": [
+    662,
+    94,
+    826,
+    675
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 300,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2813,
+   "owl_box": [
+    656.3,
+    99.6,
+    805.0,
+    675.8
+   ],
+   "sam_score": 0.9821,
+   "area_frac": 0.1034,
+   "aspect": 3.543
+  },
+  {
+   "image": "light-people-walkaround/f00305.jpg",
+   "label": "person",
+   "box": [
+    672,
+    97,
+    836,
+    689
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 305,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.285,
+   "owl_box": [
+    637.4,
+    100.4,
+    817.3,
+    694.0
+   ],
+   "sam_score": 0.8289,
+   "area_frac": 0.1053,
+   "aspect": 3.61
+  },
+  {
+   "image": "light-people-walkaround/f00310.jpg",
+   "label": "person",
+   "box": [
+    653,
+    93,
+    868,
+    691
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 310,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2583,
+   "owl_box": [
+    665.3,
+    94.5,
+    868.6,
+    689.5
+   ],
+   "sam_score": 0.9798,
+   "area_frac": 0.1395,
+   "aspect": 2.781
+  },
+  {
+   "image": "light-people-walkaround/f00315.jpg",
+   "label": "person",
+   "box": [
+    613,
+    87,
+    842,
+    689
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 315,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2535,
+   "owl_box": [
+    609.1,
+    85.2,
+    843.9,
+    688.6
+   ],
+   "sam_score": 0.9825,
+   "area_frac": 0.1496,
+   "aspect": 2.629
+  },
+  {
+   "image": "light-people-walkaround/f00320.jpg",
+   "label": "person",
+   "box": [
+    566,
+    86,
+    739,
+    677
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 320,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2635,
+   "owl_box": [
+    569.6,
+    83.9,
+    741.4,
+    678.9
+   ],
+   "sam_score": 0.9778,
+   "area_frac": 0.1109,
+   "aspect": 3.416
+  },
+  {
+   "image": "light-people-walkaround/f00325.jpg",
+   "label": "person",
+   "box": [
+    499,
+    111,
+    736,
+    673
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 325,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2521,
+   "owl_box": [
+    502.0,
+    110.3,
+    728.7,
+    678.1
+   ],
+   "sam_score": 0.9803,
+   "area_frac": 0.1445,
+   "aspect": 2.371
+  },
+  {
+   "image": "light-people-walkaround/f00330.jpg",
+   "label": "person",
+   "box": [
+    456,
+    134,
+    622,
+    650
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 330,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.283,
+   "owl_box": [
+    459.1,
+    133.4,
+    619.7,
+    656.5
+   ],
+   "sam_score": 0.9762,
+   "area_frac": 0.0929,
+   "aspect": 3.108
+  },
+  {
+   "image": "light-people-walkaround/f00335.jpg",
+   "label": "person",
+   "box": [
+    432,
+    156,
+    600,
+    639
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 335,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2768,
+   "owl_box": [
+    434.4,
+    156.2,
+    602.7,
+    641.9
+   ],
+   "sam_score": 0.9795,
+   "area_frac": 0.088,
+   "aspect": 2.875
+  },
+  {
+   "image": "light-people-walkaround/f00340.jpg",
+   "label": "person",
+   "box": [
+    433,
+    170,
+    603,
+    637
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 340,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2729,
+   "owl_box": [
+    427.5,
+    167.3,
+    603.2,
+    634.3
+   ],
+   "sam_score": 0.9761,
+   "area_frac": 0.0861,
+   "aspect": 2.747
+  },
+  {
+   "image": "light-people-walkaround/f00345.jpg",
+   "label": "person",
+   "box": [
+    472,
+    213,
+    633,
+    608
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 345,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.267,
+   "owl_box": [
+    476.3,
+    209.6,
+    630.1,
+    607.6
+   ],
+   "sam_score": 0.9683,
+   "area_frac": 0.069,
+   "aspect": 2.453
+  },
+  {
+   "image": "light-people-walkaround/f00350.jpg",
+   "label": "person",
+   "box": [
+    519,
+    229,
+    644,
+    607
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 350,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2632,
+   "owl_box": [
+    525.7,
+    227.4,
+    638.7,
+    606.8
+   ],
+   "sam_score": 0.9702,
+   "area_frac": 0.0513,
+   "aspect": 3.024
+  },
+  {
+   "image": "light-people-walkaround/f00360.jpg",
+   "label": "person",
+   "box": [
+    564,
+    247,
+    711,
+    593
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 360,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2707,
+   "owl_box": [
+    567.1,
+    248.1,
+    710.6,
+    592.1
+   ],
+   "sam_score": 0.9676,
+   "area_frac": 0.0552,
+   "aspect": 2.354
+  },
+  {
+   "image": "light-people-walkaround/f00365.jpg",
+   "label": "person",
+   "box": [
+    651,
+    247,
+    737,
+    594
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 365,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2833,
+   "owl_box": [
+    646.4,
+    247.6,
+    740.2,
+    596.0
+   ],
+   "sam_score": 0.9727,
+   "area_frac": 0.0324,
+   "aspect": 4.035
+  },
+  {
+   "image": "light-people-walkaround/f00370.jpg",
+   "label": "person",
+   "box": [
+    666,
+    256,
+    751,
+    594
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 370,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2714,
+   "owl_box": [
+    650.8,
+    253.6,
+    740.8,
+    592.1
+   ],
+   "sam_score": 0.973,
+   "area_frac": 0.0312,
+   "aspect": 3.976
+  },
+  {
+   "image": "light-people-walkaround/f00380.jpg",
+   "label": "person",
+   "box": [
+    622,
+    264,
+    751,
+    597
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 380,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2494,
+   "owl_box": [
+    625.5,
+    263.3,
+    750.1,
+    592.6
+   ],
+   "sam_score": 0.9708,
+   "area_frac": 0.0466,
+   "aspect": 2.581
+  },
+  {
+   "image": "light-people-walkaround/f00385.jpg",
+   "label": "person",
+   "box": [
+    602,
+    269,
+    726,
+    587
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 385,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.28,
+   "owl_box": [
+    601.2,
+    269.4,
+    728.2,
+    590.6
+   ],
+   "sam_score": 0.9706,
+   "area_frac": 0.0428,
+   "aspect": 2.565
+  },
+  {
+   "image": "light-people-walkaround/f00395.jpg",
+   "label": "person",
+   "box": [
+    560,
+    283,
+    638,
+    579
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 395,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2488,
+   "owl_box": [
+    559.9,
+    280.7,
+    639.6,
+    575.4
+   ],
+   "sam_score": 0.9651,
+   "area_frac": 0.0251,
+   "aspect": 3.795
+  },
+  {
+   "image": "light-people-walkaround/f00405.jpg",
+   "label": "person",
+   "box": [
+    536,
+    300,
+    633,
+    577
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 405,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2521,
+   "owl_box": [
+    538.5,
+    296.8,
+    636.4,
+    576.9
+   ],
+   "sam_score": 0.9587,
+   "area_frac": 0.0292,
+   "aspect": 2.856
+  },
+  {
+   "image": "light-people-walkaround/f00420.jpg",
+   "label": "person",
+   "box": [
+    605,
+    318,
+    689,
+    565
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 420,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2701,
+   "owl_box": [
+    607.9,
+    316.5,
+    690.7,
+    563.0
+   ],
+   "sam_score": 0.953,
+   "area_frac": 0.0225,
+   "aspect": 2.94
+  },
+  {
+   "image": "light-people-walkaround/f00445.jpg",
+   "label": "person",
+   "box": [
+    640,
+    299,
+    728,
+    573
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 445,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2668,
+   "owl_box": [
+    631.8,
+    298.3,
+    720.1,
+    570.6
+   ],
+   "sam_score": 0.9658,
+   "area_frac": 0.0262,
+   "aspect": 3.114
+  },
+  {
+   "image": "light-people-walkaround/f00450.jpg",
+   "label": "person",
+   "box": [
+    622,
+    250,
+    753,
+    604
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 450,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2677,
+   "owl_box": [
+    614.3,
+    250.6,
+    745.9,
+    600.5
+   ],
+   "sam_score": 0.966,
+   "area_frac": 0.0503,
+   "aspect": 2.702
+  },
+  {
+   "image": "light-people-walkaround/f00455.jpg",
+   "label": "person",
+   "box": [
+    633,
+    219,
+    761,
+    605
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 455,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2664,
+   "owl_box": [
+    628.7,
+    221.3,
+    756.2,
+    605.5
+   ],
+   "sam_score": 0.9732,
+   "area_frac": 0.0536,
+   "aspect": 3.016
+  },
+  {
+   "image": "light-people-walkaround/f00460.jpg",
+   "label": "person",
+   "box": [
+    628,
+    200,
+    771,
+    620
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 460,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2756,
+   "owl_box": [
+    621.4,
+    201.6,
+    755.0,
+    620.7
+   ],
+   "sam_score": 0.9696,
+   "area_frac": 0.0652,
+   "aspect": 2.937
+  },
+  {
+   "image": "light-people-walkaround/f00465.jpg",
+   "label": "person",
+   "box": [
+    611,
+    105,
+    837,
+    674
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 465,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.275,
+   "owl_box": [
+    596.4,
+    108.2,
+    830.8,
+    674.3
+   ],
+   "sam_score": 0.976,
+   "area_frac": 0.1395,
+   "aspect": 2.518
+  },
+  {
+   "image": "light-people-walkaround/f00470.jpg",
+   "label": "person",
+   "box": [
+    623,
+    75,
+    835,
+    700
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 470,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.288,
+   "owl_box": [
+    618.3,
+    73.8,
+    833.1,
+    702.0
+   ],
+   "sam_score": 0.9813,
+   "area_frac": 0.1438,
+   "aspect": 2.948
+  },
+  {
+   "image": "light-people-walkaround/f00475.jpg",
+   "label": "person",
+   "box": [
+    622,
+    0,
+    919,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 475,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3044,
+   "owl_box": [
+    627.9,
+    1.3,
+    899.2,
+    722.7
+   ],
+   "sam_score": 0.9839,
+   "area_frac": 0.232,
+   "aspect": 2.424
+  },
+  {
+   "image": "light-people-walkaround/f00480.jpg",
+   "label": "person",
+   "box": [
+    617,
+    0,
+    1131,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 480,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.303,
+   "owl_box": [
+    647.3,
+    -5.0,
+    1135.2,
+    720.7
+   ],
+   "sam_score": 0.9627,
+   "area_frac": 0.4016,
+   "aspect": 1.401
+  },
+  {
+   "image": "light-people-walkaround/f00485.jpg",
+   "label": "person",
+   "box": [
+    617,
+    0,
+    1188,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 485,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2787,
+   "owl_box": [
+    670.6,
+    -4.9,
+    1208.6,
+    717.0
+   ],
+   "sam_score": 0.8794,
+   "area_frac": 0.4461,
+   "aspect": 1.261
+  },
+  {
+   "image": "light-people-walkaround/f00490.jpg",
+   "label": "person",
+   "box": [
+    626,
+    0,
+    1220,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 490,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3038,
+   "owl_box": [
+    653.5,
+    -6.7,
+    1215.1,
+    720.1
+   ],
+   "sam_score": 0.9865,
+   "area_frac": 0.4641,
+   "aspect": 1.212
+  },
+  {
+   "image": "light-people-walkaround/f00495.jpg",
+   "label": "person",
+   "box": [
+    654,
+    0,
+    1239,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 495,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2982,
+   "owl_box": [
+    676.1,
+    -5.1,
+    1243.9,
+    715.2
+   ],
+   "sam_score": 0.9855,
+   "area_frac": 0.457,
+   "aspect": 1.231
+  },
+  {
+   "image": "light-people-walkaround/f00500.jpg",
+   "label": "person",
+   "box": [
+    696,
+    0,
+    1249,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 500,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2764,
+   "owl_box": [
+    683.4,
+    -1.7,
+    1252.0,
+    716.4
+   ],
+   "sam_score": 0.9907,
+   "area_frac": 0.432,
+   "aspect": 1.302
+  },
+  {
+   "image": "light-people-walkaround/f00505.jpg",
+   "label": "person",
+   "box": [
+    674,
+    0,
+    1230,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 505,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2811,
+   "owl_box": [
+    673.3,
+    -5.5,
+    1235.1,
+    721.3
+   ],
+   "sam_score": 0.992,
+   "area_frac": 0.4344,
+   "aspect": 1.295
+  },
+  {
+   "image": "light-people-walkaround/f00510.jpg",
+   "label": "person",
+   "box": [
+    351,
+    0,
+    850,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 510,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3202,
+   "owl_box": [
+    351.4,
+    -1.9,
+    840.3,
+    717.4
+   ],
+   "sam_score": 0.9916,
+   "area_frac": 0.3898,
+   "aspect": 1.443
+  },
+  {
+   "image": "light-people-walkaround/f00515.jpg",
+   "label": "person",
+   "box": [
+    126,
+    0,
+    779,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 515,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3302,
+   "owl_box": [
+    109.6,
+    1.4,
+    803.8,
+    719.6
+   ],
+   "sam_score": 0.992,
+   "area_frac": 0.5102,
+   "aspect": 1.103
+  },
+  {
+   "image": "light-people-walkaround/f00520.jpg",
+   "label": "person",
+   "box": [
+    74,
+    0,
+    734,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 520,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2675,
+   "owl_box": [
+    68.6,
+    0.0,
+    700.8,
+    721.6
+   ],
+   "sam_score": 0.9927,
+   "area_frac": 0.5156,
+   "aspect": 1.091
+  },
+  {
+   "image": "light-people-walkaround/f00525.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    451,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 525,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2838,
+   "owl_box": [
+    4.0,
+    -2.0,
+    455.0,
+    716.8
+   ],
+   "sam_score": 0.9948,
+   "area_frac": 0.3523,
+   "aspect": 1.596
+  },
+  {
+   "image": "light-people-walkaround/f00555.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    330,
+    570
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 555,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2664,
+   "owl_box": [
+    1.6,
+    0.2,
+    330.7,
+    566.8
+   ],
+   "sam_score": 0.9832,
+   "area_frac": 0.2041,
+   "aspect": 1.727
+  },
+  {
+   "image": "light-people-walkaround/f00560.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    518,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 560,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3271,
+   "owl_box": [
+    1.8,
+    -2.8,
+    526.7,
+    719.2
+   ],
+   "sam_score": 0.9881,
+   "area_frac": 0.4047,
+   "aspect": 1.39
+  },
+  {
+   "image": "light-people-walkaround/f00565.jpg",
+   "label": "person",
+   "box": [
+    527,
+    0,
+    1129,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 565,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.268,
+   "owl_box": [
+    506.4,
+    -2.2,
+    1132.1,
+    721.1
+   ],
+   "sam_score": 0.9919,
+   "area_frac": 0.4703,
+   "aspect": 1.196
+  },
+  {
+   "image": "light-people-walkaround/f00570.jpg",
+   "label": "person",
+   "box": [
+    652,
+    0,
+    1280,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 570,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2419,
+   "owl_box": [
+    607.4,
+    -1.1,
+    1249.5,
+    724.3
+   ],
+   "sam_score": 0.9862,
+   "area_frac": 0.4906,
+   "aspect": 1.146
+  },
+  {
+   "image": "light-people-walkaround/f00575.jpg",
+   "label": "person",
+   "box": [
+    650,
+    0,
+    1280,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 575,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2784,
+   "owl_box": [
+    632.2,
+    -4.7,
+    1268.7,
+    724.3
+   ],
+   "sam_score": 0.9902,
+   "area_frac": 0.4922,
+   "aspect": 1.143
+  },
+  {
+   "image": "light-people-walkaround/f00580.jpg",
+   "label": "person",
+   "box": [
+    653,
+    0,
+    1280,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 580,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2647,
+   "owl_box": [
+    675.0,
+    -8.6,
+    1278.1,
+    715.5
+   ],
+   "sam_score": 0.9814,
+   "area_frac": 0.4898,
+   "aspect": 1.148
+  },
+  {
+   "image": "light-people-walkaround/f00590.jpg",
+   "label": "person",
+   "box": [
+    617,
+    0,
+    1158,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 590,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2477,
+   "owl_box": [
+    640.1,
+    -6.5,
+    1166.8,
+    713.3
+   ],
+   "sam_score": 0.9854,
+   "area_frac": 0.4227,
+   "aspect": 1.331
+  },
+  {
+   "image": "light-people-walkaround/f00595.jpg",
+   "label": "person",
+   "box": [
+    613,
+    0,
+    985,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 595,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.263,
+   "owl_box": [
+    615.7,
+    -2.9,
+    988.2,
+    717.5
+   ],
+   "sam_score": 0.9865,
+   "area_frac": 0.2906,
+   "aspect": 1.935
+  },
+  {
+   "image": "light-people-walkaround/f00600.jpg",
+   "label": "person",
+   "box": [
+    572,
+    0,
+    828,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 600,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2916,
+   "owl_box": [
+    572.6,
+    0.9,
+    833.0,
+    720.9
+   ],
+   "sam_score": 0.9839,
+   "area_frac": 0.2,
+   "aspect": 2.812
+  },
+  {
+   "image": "light-people-walkaround/f00605.jpg",
+   "label": "person",
+   "box": [
+    462,
+    0,
+    826,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 605,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2528,
+   "owl_box": [
+    459.2,
+    2.4,
+    823.9,
+    722.6
+   ],
+   "sam_score": 0.9833,
+   "area_frac": 0.2844,
+   "aspect": 1.978
+  },
+  {
+   "image": "light-people-walkaround/f00610.jpg",
+   "label": "person",
+   "box": [
+    381,
+    0,
+    643,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 610,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3244,
+   "owl_box": [
+    374.8,
+    0.3,
+    642.0,
+    720.4
+   ],
+   "sam_score": 0.9858,
+   "area_frac": 0.2047,
+   "aspect": 2.748
+  },
+  {
+   "image": "light-people-walkaround/f00615.jpg",
+   "label": "person",
+   "box": [
+    352,
+    24,
+    635,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 615,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2762,
+   "owl_box": [
+    357.8,
+    20.4,
+    636.6,
+    721.6
+   ],
+   "sam_score": 0.9823,
+   "area_frac": 0.2137,
+   "aspect": 2.459
+  },
+  {
+   "image": "light-people-walkaround/f00620.jpg",
+   "label": "person",
+   "box": [
+    378,
+    50,
+    632,
+    710
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 620,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2653,
+   "owl_box": [
+    378.2,
+    45.7,
+    625.9,
+    711.9
+   ],
+   "sam_score": 0.9829,
+   "area_frac": 0.1819,
+   "aspect": 2.598
+  },
+  {
+   "image": "light-people-walkaround/f00625.jpg",
+   "label": "person",
+   "box": [
+    414,
+    103,
+    623,
+    703
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 625,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2517,
+   "owl_box": [
+    410.4,
+    96.9,
+    616.0,
+    708.5
+   ],
+   "sam_score": 0.9779,
+   "area_frac": 0.1361,
+   "aspect": 2.871
+  },
+  {
+   "image": "light-people-walkaround/f00630.jpg",
+   "label": "person",
+   "box": [
+    415,
+    145,
+    612,
+    643
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 630,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.275,
+   "owl_box": [
+    418.5,
+    144.9,
+    610.2,
+    642.4
+   ],
+   "sam_score": 0.9773,
+   "area_frac": 0.1065,
+   "aspect": 2.528
+  },
+  {
+   "image": "light-people-walkaround/f00635.jpg",
+   "label": "person",
+   "box": [
+    531,
+    162,
+    687,
+    634
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 635,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2591,
+   "owl_box": [
+    538.2,
+    163.9,
+    680.1,
+    637.5
+   ],
+   "sam_score": 0.9741,
+   "area_frac": 0.0799,
+   "aspect": 3.026
+  },
+  {
+   "image": "light-people-walkaround/f00640.jpg",
+   "label": "person",
+   "box": [
+    624,
+    185,
+    746,
+    627
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 640,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2929,
+   "owl_box": [
+    630.7,
+    184.2,
+    757.8,
+    627.9
+   ],
+   "sam_score": 0.9771,
+   "area_frac": 0.0585,
+   "aspect": 3.623
+  },
+  {
+   "image": "light-people-walkaround/f00645.jpg",
+   "label": "person",
+   "box": [
+    636,
+    246,
+    762,
+    602
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 645,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2635,
+   "owl_box": [
+    635.7,
+    244.8,
+    759.1,
+    600.7
+   ],
+   "sam_score": 0.9708,
+   "area_frac": 0.0487,
+   "aspect": 2.825
+  },
+  {
+   "image": "light-people-walkaround/f00650.jpg",
+   "label": "person",
+   "box": [
+    642,
+    292,
+    739,
+    584
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 650,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2463,
+   "owl_box": [
+    635.1,
+    290.9,
+    734.8,
+    584.1
+   ],
+   "sam_score": 0.9675,
+   "area_frac": 0.0307,
+   "aspect": 3.01
+  },
+  {
+   "image": "light-people-walkaround/f00660.jpg",
+   "label": "person",
+   "box": [
+    641,
+    336,
+    718,
+    561
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 660,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2546,
+   "owl_box": [
+    633.8,
+    332.5,
+    710.4,
+    559.8
+   ],
+   "sam_score": 0.9617,
+   "area_frac": 0.0188,
+   "aspect": 2.922
+  },
+  {
+   "image": "light-people-walkaround/f00790.jpg",
+   "label": "person",
+   "box": [
+    594,
+    295,
+    695,
+    582
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 790,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2494,
+   "owl_box": [
+    594.9,
+    294.4,
+    692.9,
+    582.5
+   ],
+   "sam_score": 0.9679,
+   "area_frac": 0.0315,
+   "aspect": 2.842
+  },
+  {
+   "image": "light-people-walkaround/f00795.jpg",
+   "label": "person",
+   "box": [
+    577,
+    262,
+    696,
+    592
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 795,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2826,
+   "owl_box": [
+    578.9,
+    262.5,
+    690.9,
+    589.4
+   ],
+   "sam_score": 0.9671,
+   "area_frac": 0.0426,
+   "aspect": 2.773
+  },
+  {
+   "image": "light-people-walkaround/f00800.jpg",
+   "label": "person",
+   "box": [
+    544,
+    218,
+    682,
+    605
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 800,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2815,
+   "owl_box": [
+    547.2,
+    213.5,
+    679.7,
+    602.7
+   ],
+   "sam_score": 0.9669,
+   "area_frac": 0.0579,
+   "aspect": 2.804
+  },
+  {
+   "image": "light-people-walkaround/f00805.jpg",
+   "label": "person",
+   "box": [
+    516,
+    158,
+    690,
+    648
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 805,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2926,
+   "owl_box": [
+    518.9,
+    159.0,
+    684.6,
+    652.6
+   ],
+   "sam_score": 0.9715,
+   "area_frac": 0.0925,
+   "aspect": 2.816
+  },
+  {
+   "image": "light-people-walkaround/f00810.jpg",
+   "label": "person",
+   "box": [
+    464,
+    91,
+    700,
+    681
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 810,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2808,
+   "owl_box": [
+    469.6,
+    91.5,
+    691.8,
+    685.3
+   ],
+   "sam_score": 0.9748,
+   "area_frac": 0.1511,
+   "aspect": 2.5
+  },
+  {
+   "image": "light-people-walkaround/f00815.jpg",
+   "label": "person",
+   "box": [
+    464,
+    56,
+    697,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 815,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.273,
+   "owl_box": [
+    462.9,
+    54.7,
+    690.3,
+    720.9
+   ],
+   "sam_score": 0.9791,
+   "area_frac": 0.1679,
+   "aspect": 2.85
+  },
+  {
+   "image": "light-people-walkaround/f00820.jpg",
+   "label": "person",
+   "box": [
+    455,
+    31,
+    691,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 820,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.277,
+   "owl_box": [
+    450.1,
+    31.9,
+    681.3,
+    722.5
+   ],
+   "sam_score": 0.9802,
+   "area_frac": 0.1764,
+   "aspect": 2.919
+  },
+  {
+   "image": "light-people-walkaround/f00825.jpg",
+   "label": "person",
+   "box": [
+    437,
+    4,
+    687,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 825,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2677,
+   "owl_box": [
+    439.6,
+    3.3,
+    681.2,
+    721.9
+   ],
+   "sam_score": 0.9799,
+   "area_frac": 0.1942,
+   "aspect": 2.864
+  },
+  {
+   "image": "light-people-walkaround/f00830.jpg",
+   "label": "person",
+   "box": [
+    345,
+    0,
+    689,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 830,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3128,
+   "owl_box": [
+    349.0,
+    2.4,
+    682.3,
+    723.9
+   ],
+   "sam_score": 0.9828,
+   "area_frac": 0.2687,
+   "aspect": 2.093
+  },
+  {
+   "image": "light-people-walkaround/f00835.jpg",
+   "label": "person",
+   "box": [
+    328,
+    0,
+    688,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 835,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3043,
+   "owl_box": [
+    327.2,
+    -1.6,
+    677.6,
+    722.6
+   ],
+   "sam_score": 0.9824,
+   "area_frac": 0.2812,
+   "aspect": 2.0
+  },
+  {
+   "image": "light-people-walkaround/f00840.jpg",
+   "label": "person",
+   "box": [
+    288,
+    0,
+    688,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 840,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2912,
+   "owl_box": [
+    290.6,
+    -0.4,
+    673.6,
+    721.0
+   ],
+   "sam_score": 0.9798,
+   "area_frac": 0.3125,
+   "aspect": 1.8
+  },
+  {
+   "image": "light-people-walkaround/f00845.jpg",
+   "label": "person",
+   "box": [
+    47,
+    0,
+    657,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 845,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.3117,
+   "owl_box": [
+    47.4,
+    -1.0,
+    646.9,
+    720.5
+   ],
+   "sam_score": 0.9777,
+   "area_frac": 0.4766,
+   "aspect": 1.18
+  },
+  {
+   "image": "light-people-walkaround/f00880.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    218,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 880,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2371,
+   "owl_box": [
+    0.8,
+    -3.6,
+    222.8,
+    715.5
+   ],
+   "sam_score": 0.9822,
+   "area_frac": 0.1703,
+   "aspect": 3.303
+  },
+  {
+   "image": "light-people-walkaround/f00885.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    383,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 885,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2854,
+   "owl_box": [
+    0.8,
+    -2.7,
+    379.4,
+    717.5
+   ],
+   "sam_score": 0.9912,
+   "area_frac": 0.2992,
+   "aspect": 1.88
+  },
+  {
+   "image": "light-people-walkaround/f00890.jpg",
+   "label": "person",
+   "box": [
+    12,
+    0,
+    521,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 890,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2956,
+   "owl_box": [
+    2.6,
+    -1.9,
+    510.2,
+    721.2
+   ],
+   "sam_score": 0.9905,
+   "area_frac": 0.3977,
+   "aspect": 1.415
+  },
+  {
+   "image": "light-people-walkaround/f00895.jpg",
+   "label": "person",
+   "box": [
+    0,
+    0,
+    575,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 895,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2979,
+   "owl_box": [
+    3.7,
+    -3.5,
+    572.8,
+    722.3
+   ],
+   "sam_score": 0.9849,
+   "area_frac": 0.4492,
+   "aspect": 1.252
+  },
+  {
+   "image": "light-people-walkaround/f00900.jpg",
+   "label": "person",
+   "box": [
+    475,
+    0,
+    968,
+    720
+   ],
+   "scene": "light-people-walkaround",
+   "frame": 900,
+   "derivation": "owlv2+sam2:a person",
+   "owl_score": 0.2909,
+   "owl_box": [
+    515.4,
+    -8.3,
+    938.0,
+    718.0
+   ],
+   "sam_score": 0.955,
+   "area_frac": 0.3852,
+   "aspect": 1.46
+  }
+ ]
+}

@@ -1,0 +1,827 @@
+{
+ "threshold": 0.02,
+ "phrases": [
+  "a robot dog",
+  "a robot",
+  "a quadruped robot",
+  "a four-legged robot",
+  "a robotic dog",
+  "a white robot",
+  "a mechanical animal",
+  "a toy dog",
+  "a dog",
+  "a machine on four legs",
+  "a legged robot",
+  "a small white four-legged machine"
+ ],
+ "model": "google/owlv2-base-patch16-ensemble",
+ "scenes": {
+  "dim-lite3-in-difference-distance-and-angle": {
+   "a robot dog": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a robot": [
+    {
+     "score": 0.1688,
+     "box": [
+      500,
+      330,
+      521,
+      343
+     ]
+    },
+    {
+     "score": 0.0684,
+     "box": [
+      499,
+      329,
+      522,
+      344
+     ]
+    },
+    {
+     "score": 0.1009,
+     "box": [
+      499,
+      329,
+      522,
+      344
+     ]
+    },
+    {
+     "score": 0.1388,
+     "box": [
+      499,
+      327,
+      522,
+      343
+     ]
+    },
+    {
+     "score": 0.167,
+     "box": [
+      500,
+      329,
+      522,
+      344
+     ]
+    }
+   ],
+   "a quadruped robot": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0362,
+     "box": [
+      534,
+      485,
+      587,
+      501
+     ]
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a four-legged robot": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.1681,
+     "box": [
+      651,
+      492,
+      720,
+      612
+     ]
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.1185,
+     "box": [
+      626,
+      498,
+      658,
+      538
+     ]
+    }
+   ],
+   "a robotic dog": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a white robot": [
+    {
+     "score": 0.0292,
+     "box": [
+      255,
+      492,
+      274,
+      512
+     ]
+    },
+    {
+     "score": 0.0611,
+     "box": [
+      580,
+      466,
+      638,
+      485
+     ]
+    },
+    {
+     "score": 0.0468,
+     "box": [
+      388,
+      103,
+      434,
+      136
+     ]
+    },
+    {
+     "score": 0.0388,
+     "box": [
+      599,
+      483,
+      631,
+      493
+     ]
+    },
+    {
+     "score": 0.0534,
+     "box": [
+      387,
+      101,
+      434,
+      135
+     ]
+    }
+   ],
+   "a mechanical animal": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a toy dog": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a dog": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a machine on four legs": [
+    {
+     "score": 0.0648,
+     "box": [
+      531,
+      589,
+      615,
+      719
+     ]
+    },
+    {
+     "score": 0.0718,
+     "box": [
+      580,
+      479,
+      685,
+      542
+     ]
+    },
+    {
+     "score": 0.156,
+     "box": [
+      465,
+      490,
+      593,
+      716
+     ]
+    },
+    {
+     "score": 0.4761,
+     "box": [
+      550,
+      432,
+      691,
+      615
+     ]
+    },
+    {
+     "score": 0.0926,
+     "box": [
+      0,
+      5,
+      245,
+      687
+     ]
+    }
+   ],
+   "a legged robot": [
+    {
+     "score": 0.0201,
+     "box": [
+      460,
+      414,
+      477,
+      429
+     ]
+    },
+    {
+     "score": 0.0386,
+     "box": [
+      352,
+      502,
+      374,
+      558
+     ]
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0433,
+     "box": [
+      651,
+      528,
+      661,
+      556
+     ]
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a small white four-legged machine": [
+    {
+     "score": 0.5741,
+     "box": [
+      451,
+      473,
+      721,
+      717
+     ]
+    },
+    {
+     "score": 0.5609,
+     "box": [
+      391,
+      475,
+      721,
+      669
+     ]
+    },
+    {
+     "score": 0.3761,
+     "box": [
+      473,
+      432,
+      676,
+      689
+     ]
+    },
+    {
+     "score": 0.4778,
+     "box": [
+      560,
+      497,
+      690,
+      600
+     ]
+    },
+    {
+     "score": 0.3817,
+     "box": [
+      621,
+      492,
+      700,
+      544
+     ]
+    }
+   ]
+  },
+  "light-lite3-in-difference-distance-and-angle": {
+   "a robot dog": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a robot": [
+    {
+     "score": 0.1417,
+     "box": [
+      506,
+      328,
+      528,
+      342
+     ]
+    },
+    {
+     "score": 0.1123,
+     "box": [
+      504,
+      384,
+      548,
+      435
+     ]
+    },
+    {
+     "score": 0.1376,
+     "box": [
+      506,
+      328,
+      530,
+      342
+     ]
+    },
+    {
+     "score": 0.1566,
+     "box": [
+      506,
+      328,
+      529,
+      342
+     ]
+    },
+    {
+     "score": 0.1167,
+     "box": [
+      506,
+      328,
+      529,
+      342
+     ]
+    }
+   ],
+   "a quadruped robot": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a four-legged robot": [
+    {
+     "score": 0.0369,
+     "box": [
+      344,
+      522,
+      377,
+      554
+     ]
+    },
+    {
+     "score": 0.0245,
+     "box": [
+      345,
+      523,
+      377,
+      556
+     ]
+    },
+    {
+     "score": 0.0277,
+     "box": [
+      343,
+      524,
+      377,
+      556
+     ]
+    },
+    {
+     "score": 0.0345,
+     "box": [
+      344,
+      524,
+      378,
+      555
+     ]
+    },
+    {
+     "score": 0.027,
+     "box": [
+      343,
+      523,
+      377,
+      556
+     ]
+    }
+   ],
+   "a robotic dog": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a white robot": [
+    {
+     "score": 0.0858,
+     "box": [
+      429,
+      387,
+      449,
+      412
+     ]
+    },
+    {
+     "score": 0.1126,
+     "box": [
+      429,
+      387,
+      449,
+      412
+     ]
+    },
+    {
+     "score": 0.0735,
+     "box": [
+      429,
+      387,
+      440,
+      410
+     ]
+    },
+    {
+     "score": 0.091,
+     "box": [
+      428,
+      387,
+      440,
+      410
+     ]
+    },
+    {
+     "score": 0.0709,
+     "box": [
+      524,
+      397,
+      548,
+      447
+     ]
+    }
+   ],
+   "a mechanical animal": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a toy dog": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a dog": [
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a machine on four legs": [
+    {
+     "score": 0.0682,
+     "box": [
+      659,
+      568,
+      736,
+      678
+     ]
+    },
+    {
+     "score": 0.0878,
+     "box": [
+      688,
+      567,
+      741,
+      686
+     ]
+    },
+    {
+     "score": 0.115,
+     "box": [
+      666,
+      585,
+      783,
+      716
+     ]
+    },
+    {
+     "score": 0.1071,
+     "box": [
+      5,
+      529,
+      396,
+      713
+     ]
+    },
+    {
+     "score": 0.0835,
+     "box": [
+      510,
+      553,
+      568,
+      640
+     ]
+    }
+   ],
+   "a legged robot": [
+    {
+     "score": 0.1015,
+     "box": [
+      519,
+      401,
+      550,
+      478
+     ]
+    },
+    {
+     "score": 0.0308,
+     "box": [
+      535,
+      408,
+      547,
+      443
+     ]
+    },
+    {
+     "score": 0.0634,
+     "box": [
+      517,
+      401,
+      549,
+      477
+     ]
+    },
+    {
+     "score": 0.0746,
+     "box": [
+      633,
+      547,
+      642,
+      559
+     ]
+    },
+    {
+     "score": 0.0,
+     "box": null
+    }
+   ],
+   "a small white four-legged machine": [
+    {
+     "score": 0.5655,
+     "box": [
+      506,
+      469,
+      843,
+      720
+     ]
+    },
+    {
+     "score": 0.6287,
+     "box": [
+      568,
+      463,
+      882,
+      718
+     ]
+    },
+    {
+     "score": 0.5432,
+     "box": [
+      451,
+      466,
+      793,
+      723
+     ]
+    },
+    {
+     "score": 0.6228,
+     "box": [
+      540,
+      456,
+      764,
+      722
+     ]
+    },
+    {
+     "score": 0.3052,
+     "box": [
+      512,
+      430,
+      710,
+      640
+     ]
+    }
+   ]
+  }
+ }
+}

@@ -1,0 +1,91 @@
+{
+ "what": "What to prompt for in each scene, and what class the result carries. SAM is class-agnostic -- it returns a mask and never a name -- so every `label` below comes from the scene FOLDER NAME plus the object that was prompted, and never from a model. A wrong class here is a wrong line in this file, which is why it is committed beside the labels.",
+ "why_text_prompts": "The folder name names the SUBJECT, not the only object. Timo is in the *-box-* scenes (which is why the shipped detector emitted 421 and 490 `person` boxes there) and may be in the *-lite3-* ones. Prompting each object separately is what keeps a person out of the `lite3` class and a robot out of `person`.",
+ "detector": "google/owlv2-base-patch16-ensemble",
+ "segmenter": "facebook/sam2.1-hiera-large",
+ "scenes": {
+  "dim-lite3-in-difference-distance-and-angle": {
+   "expect": "one Lite3 quadruped walking. No person was visible in 10 frames sampled across the clip.",
+   "queries": [
+    {
+     "text": "a small white four-legged machine",
+     "label": "lite3",
+     "max_instances": 1,
+     "threshold": 0.22
+    }
+   ]
+  },
+  "light-lite3-in-difference-distance-and-angle": {
+   "expect": "one Lite3 quadruped walking. No person was visible in 10 frames sampled across the clip.",
+   "queries": [
+    {
+     "text": "a small white four-legged machine",
+     "label": "lite3",
+     "max_instances": 1,
+     "threshold": 0.22
+    }
+   ]
+  },
+  "dim-box-in-different-distance-and-angle": {
+   "expect": "a person carrying and positioning a cardboard box. Both are present; only the person is labelled, because there is no box class in a 22-class net whose one new class is `lite3`.",
+   "queries": [
+    {
+     "text": "a person",
+     "label": "person",
+     "max_instances": 2,
+     "threshold": 0.22
+    }
+   ]
+  },
+  "light-box-in-different-distance-and-angle": {
+   "expect": "a person carrying and positioning a cardboard box.",
+   "queries": [
+    {
+     "text": "a person",
+     "label": "person",
+     "max_instances": 2,
+     "threshold": 0.22
+    }
+   ]
+  },
+  "dim-people-walk-around": {
+   "expect": "people walking, often truncated by the frame edge at close range.",
+   "queries": [
+    {
+     "text": "a person",
+     "label": "person",
+     "max_instances": 3,
+     "threshold": 0.22
+    }
+   ]
+  },
+  "light-people-walkaround": {
+   "expect": "people walking, often truncated by the frame edge at close range.",
+   "queries": [
+    {
+     "text": "a person",
+     "label": "person",
+     "max_instances": 3,
+     "threshold": 0.22
+    }
+   ]
+  }
+ },
+ "phrase_sweep": {
+  "what": "OWLv2 is extremely sensitive to wording, and the natural phrase is the worst one. Twelve phrases were scored on 5 keyframes of each quadruped scene at threshold 0.02; `probe_queries.py` is the sweep and `phrase_sweep.json` is its output.",
+  "measured": {
+   "a robot dog": "0.000 on all 10 frames \u2014 the phrase anyone would try first",
+   "a robotic dog": "0.000 on all 10",
+   "a quadruped robot": "0.000 on 9 of 10",
+   "a dog": "0.000 on all 10",
+   "a robot": "0.068-0.169, and the box is on a ceiling fitting",
+   "a small white four-legged machine": "0.305-0.629 light, 0.376-0.574 dim \u2014 the one that works"
+  },
+  "lesson": "A phrase that reads like the object's NAME loses to a phrase that reads like its DESCRIPTION. This was measured, not guessed, and it is the difference between 0 and 60 labelled frames in the light quadruped scene."
+ },
+ "thresholds": {
+  "what": "Per-query OWLv2 score floor. Both are 0.22, set from a 28-frame hand-check and NOT from the score distribution.",
+  "why": "At the first pass's global 0.12 the hand-check scored lite3 23/24 but person only 9/16, and every person failure sat at 0.12-0.20 while every success sat at 0.21+. The floor is where the hand-check turned, which is why the sheets are committed.",
+  "cost": "0.22 keeps 95% of lite3 (131/138) and 51% of person (259/505). Half the person boxes are discarded to buy precision, because a wrong box poisons a training set and a missing one only makes it smaller."
+ }
+}

@@ -1,0 +1,516 @@
+{
+ "label": "lite3",
+ "source": {
+  "what": "held-out TIME BLOCK, same session",
+  "supervision": "owlv2 phrase -> box, sam2 box -> mask, mask extent -> label; class from the scene folder name and the phrase prompted",
+  "geometry": "none \u2014 no range_m, focal_px, height_m or hfov_deg is read",
+  "split": "TEMPORAL and SAME-SESSION; see the module docstring"
+ },
+ "count": 36,
+ "records": [
+  {
+   "image": "dimlite3_f00680.jpg",
+   "label": "lite3",
+   "box": [
+    501,
+    432,
+    687,
+    582
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 680,
+   "owl_score": 0.342
+  },
+  {
+   "image": "dimlite3_f00710.jpg",
+   "label": "lite3",
+   "box": [
+    490,
+    432,
+    683,
+    630
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 710,
+   "owl_score": 0.3565
+  },
+  {
+   "image": "dimlite3_f00740.jpg",
+   "label": "lite3",
+   "box": [
+    489,
+    432,
+    669,
+    632
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 740,
+   "owl_score": 0.4086
+  },
+  {
+   "image": "dimlite3_f00780.jpg",
+   "label": "lite3",
+   "box": [
+    532,
+    432,
+    654,
+    621
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 780,
+   "owl_score": 0.2704
+  },
+  {
+   "image": "dimlite3_f00820.jpg",
+   "label": "lite3",
+   "box": [
+    547,
+    432,
+    651,
+    613
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 820,
+   "owl_score": 0.2241
+  },
+  {
+   "image": "dimlite3_f00855.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    432,
+    657,
+    581
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 855,
+   "owl_score": 0.3255
+  },
+  {
+   "image": "dimlite3_f00860.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    432,
+    665,
+    582
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 860,
+   "owl_score": 0.3029
+  },
+  {
+   "image": "dimlite3_f00865.jpg",
+   "label": "lite3",
+   "box": [
+    541,
+    432,
+    666,
+    582
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 865,
+   "owl_score": 0.3696
+  },
+  {
+   "image": "dimlite3_f00890.jpg",
+   "label": "lite3",
+   "box": [
+    541,
+    432,
+    661,
+    581
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 890,
+   "owl_score": 0.271
+  },
+  {
+   "image": "dimlite3_f00940.jpg",
+   "label": "lite3",
+   "box": [
+    541,
+    433,
+    703,
+    582
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 940,
+   "owl_score": 0.2657
+  },
+  {
+   "image": "dimlite3_f00950.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    433,
+    703,
+    581
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 950,
+   "owl_score": 0.3282
+  },
+  {
+   "image": "dimlite3_f00975.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    433,
+    708,
+    581
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 975,
+   "owl_score": 0.2781
+  },
+  {
+   "image": "dimlite3_f00980.jpg",
+   "label": "lite3",
+   "box": [
+    592,
+    485,
+    708,
+    582
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 980,
+   "owl_score": 0.5167
+  },
+  {
+   "image": "dimlite3_f00990.jpg",
+   "label": "lite3",
+   "box": [
+    617,
+    492,
+    701,
+    545
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 990,
+   "owl_score": 0.3817
+  },
+  {
+   "image": "dimlite3_f01160.jpg",
+   "label": "lite3",
+   "box": [
+    586,
+    489,
+    681,
+    581
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 1160,
+   "owl_score": 0.307
+  },
+  {
+   "image": "dimlite3_f01165.jpg",
+   "label": "lite3",
+   "box": [
+    582,
+    490,
+    681,
+    578
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 1165,
+   "owl_score": 0.3169
+  },
+  {
+   "image": "dimlite3_f01170.jpg",
+   "label": "lite3",
+   "box": [
+    542,
+    432,
+    681,
+    582
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 1170,
+   "owl_score": 0.2762
+  },
+  {
+   "image": "dimlite3_f01190.jpg",
+   "label": "lite3",
+   "box": [
+    543,
+    432,
+    677,
+    580
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "dim-lite3-in-difference-distance-and-angle",
+   "frame": 1190,
+   "owl_score": 0.2323
+  },
+  {
+   "image": "litlite3_f00340.jpg",
+   "label": "lite3",
+   "box": [
+    540,
+    431,
+    732,
+    716
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 340,
+   "owl_score": 0.5858
+  },
+  {
+   "image": "litlite3_f00350.jpg",
+   "label": "lite3",
+   "box": [
+    547,
+    477,
+    684,
+    658
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 350,
+   "owl_score": 0.4576
+  },
+  {
+   "image": "litlite3_f00380.jpg",
+   "label": "lite3",
+   "box": [
+    530,
+    477,
+    686,
+    643
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 380,
+   "owl_score": 0.4952
+  },
+  {
+   "image": "litlite3_f00385.jpg",
+   "label": "lite3",
+   "box": [
+    528,
+    479,
+    714,
+    645
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 385,
+   "owl_score": 0.5166
+  },
+  {
+   "image": "litlite3_f00450.jpg",
+   "label": "lite3",
+   "box": [
+    540,
+    431,
+    735,
+    635
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 450,
+   "owl_score": 0.4099
+  },
+  {
+   "image": "litlite3_f00485.jpg",
+   "label": "lite3",
+   "box": [
+    551,
+    453,
+    751,
+    645
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 485,
+   "owl_score": 0.614
+  },
+  {
+   "image": "litlite3_f00510.jpg",
+   "label": "lite3",
+   "box": [
+    556,
+    475,
+    757,
+    649
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 510,
+   "owl_score": 0.5448
+  },
+  {
+   "image": "litlite3_f00520.jpg",
+   "label": "lite3",
+   "box": [
+    581,
+    465,
+    725,
+    647
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 520,
+   "owl_score": 0.4655
+  },
+  {
+   "image": "litlite3_f00565.jpg",
+   "label": "lite3",
+   "box": [
+    525,
+    487,
+    722,
+    654
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 565,
+   "owl_score": 0.4939
+  },
+  {
+   "image": "litlite3_f00595.jpg",
+   "label": "lite3",
+   "box": [
+    507,
+    477,
+    723,
+    655
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 595,
+   "owl_score": 0.4595
+  },
+  {
+   "image": "litlite3_f00600.jpg",
+   "label": "lite3",
+   "box": [
+    517,
+    431,
+    718,
+    637
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 600,
+   "owl_score": 0.4485
+  },
+  {
+   "image": "litlite3_f00635.jpg",
+   "label": "lite3",
+   "box": [
+    507,
+    431,
+    715,
+    642
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 635,
+   "owl_score": 0.3052
+  },
+  {
+   "image": "litlite3_f00670.jpg",
+   "label": "lite3",
+   "box": [
+    602,
+    488,
+    699,
+    646
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 670,
+   "owl_score": 0.3807
+  },
+  {
+   "image": "litlite3_f00675.jpg",
+   "label": "lite3",
+   "box": [
+    509,
+    477,
+    701,
+    649
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 675,
+   "owl_score": 0.6051
+  },
+  {
+   "image": "litlite3_f00695.jpg",
+   "label": "lite3",
+   "box": [
+    574,
+    477,
+    700,
+    649
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 695,
+   "owl_score": 0.3899
+  },
+  {
+   "image": "litlite3_f00720.jpg",
+   "label": "lite3",
+   "box": [
+    552,
+    476,
+    676,
+    641
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 720,
+   "owl_score": 0.3551
+  },
+  {
+   "image": "litlite3_f00775.jpg",
+   "label": "lite3",
+   "box": [
+    585,
+    496,
+    673,
+    599
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 775,
+   "owl_score": 0.3599
+  },
+  {
+   "image": "litlite3_f01345.jpg",
+   "label": "lite3",
+   "box": [
+    560,
+    476,
+    682,
+    646
+   ],
+   "derivation": "owlv2+sam2:a small white four-legged machine",
+   "scene": "light-lite3-in-difference-distance-and-angle",
+   "frame": 1345,
+   "owl_score": 0.4005
+  }
+ ]
+}
