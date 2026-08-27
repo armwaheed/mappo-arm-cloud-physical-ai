@@ -14,13 +14,13 @@
 dashboard	215
 detector/labels	50
 detector/labels/pipeline	14
-integration	243
+integration	265
 policy	37
 robot-stack/deep_robotics/lite3/commissioning	238
-robot-stack/deep_robotics/lite3/locomotion	71
+robot-stack/deep_robotics/lite3/locomotion	73
 robot-stack/deep_robotics/lite3/visual_nav	81
 robot-stack/preflight	58
 robot-stack/unitree/go2/controller	6
 robot-stack/unitree/go2/d1_arm	15
 robot-stack/unitree/go2/lidar_sight	7
-robot-stack/unitree/go2/visual_nav	522
+robot-stack/unitree/go2/visual_nav	527

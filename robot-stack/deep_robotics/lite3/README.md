@@ -30,7 +30,7 @@ fails closed when any of them is absent.
 | actuator gain | required as `--actuator-gain` | not measured — same; the commanded magnitude the ratio divides by never reaches the wire |
 | axis primitive speeds | `measured_m_s` in the axis profile; the envelope gate reads it, and since #145 so does the planner's feasibility rollout — a live run refuses without it | not measured. `commissioning/axis_primitive_probe.py` is the tool |
 | axis primitive yaw rate | `measured_rad_s`; **undeclared on every profile**, so the planner will not combine a turn with a step | not measured, and the primitive probe deliberately does not measure it while the `Segment.yaw_change_deg` unwrap bug stands |
-| loaded planning radius | required as `--robot-radius` | not measured |
+| loaded planning radius | required as `--robot-radius` | measured, but ⛔ **0.40 or 0.33 — the SOP and `LIVE-RUN-RUNBOOK.md` disagree, and 0.33 implies a 3.30 policy scale rather than 4.0**. See [`robot-stack/CHASSIS-GEOMETRY.md`](../../CHASSIS-GEOMETRY.md) |
 | focal length / HFOV | Lite3-tagged calibration JSON required live | not measured |
 | battery | documented legacy `RobotState` UDP field | 21% after the 2026-08-21 vendor-service restart |
 | motor temperatures | absent from the high-level interface | vendor question, still open |

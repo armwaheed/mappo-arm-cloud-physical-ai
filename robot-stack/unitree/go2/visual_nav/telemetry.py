@@ -272,13 +272,24 @@ class TelemetryWriter:
                    goal_crop: float | None = None, profile: dict | None = None,
                    cycle_ms: float | None = None, wait_ms: float | None = None,
                    pass_ms: dict | None = None,
-                   hold_reason: str | None = None) -> None:
+                   hold_reason: str | None = None,
+                   decision: dict | None = None,
+                   transport: dict | None = None) -> None:
         """One control tick, whether or not it commanded motion.
 
         EVERY tick is written, including holds, stale-perception skips and the
         goal-search phase. A learning agent needs the gaps as much as the motion — "the
         robot stood still for 1.4 s" is a training signal, and a file that only contains
         the interesting ticks silently re-times the whole episode.
+
+        ``decision`` and ``transport`` are ABSENT when absent, never null. ``decision``
+        is the policy drive path's per-tick record (raw action, envelope, gait floor,
+        supervisor, final command, axis preview), present only on ticks that actually
+        invoked the planner — a stale or goal-less tick carries no decision rather than
+        inheriting the previous tick's. ``transport`` is the raw axes the locomotion
+        backend accepted THIS tick, present only when the backend can say (the Lite3
+        simple-axis transport can; the mapping is sign-only, so these are the numbers
+        that actually reached the wire).
         """
         self._emit({
             "type": "tick",
@@ -416,6 +427,8 @@ class TelemetryWriter:
             "health": (None if health is None else {
                 "motor_temp_c": _finite(getattr(health, "max_motor_temp_c", None)),
                 "battery_pct": _finite(getattr(health, "battery_soc_pct", None))}),
+            **({} if decision is None else {"decision": decision}),
+            **({} if transport is None else {"transport": transport}),
         })
 
     def write_outcome(self, outcome: str, **extra) -> None:

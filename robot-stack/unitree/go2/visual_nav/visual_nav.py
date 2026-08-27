@@ -636,6 +636,12 @@ class VisualNavigator:
         self._progress: deque = deque()
         self._last_command = (0.0, 0.0, 0.0)
         self._last_reason = "goal"
+        #: The raw transport axes accepted with THIS tick's command, when the
+        #: locomotion backend can say (the Lite3 simple-axis transport can, and the
+        #: mapping is sign-only, so these are the numbers that reached the wire).
+        #: Written by ``_command`` — which EVERY telemetry-bearing path through the
+        #: loop calls first — so a tick can never inherit the previous tick's axes.
+        self._last_transport: dict | None = None
         self._tracker_time = time.monotonic()
         self._consumed_seq = 0
         self._recorded_seq = 0
@@ -888,6 +894,12 @@ class VisualNavigator:
                                              obstacles, control_dt=control_dt,
                                              last_reason=self._last_reason)
             self._last_reason = command.reason
+            # The policy drive path's per-tick layer record, or None on a planner that
+            # does not keep one (the vendored DynamicWindowPlanner does not). Fetched
+            # HERE, on the only path that calls plan(), so a stale, goal-less or
+            # stand-switch tick carries no decision rather than the previous tick's.
+            decision_reader = getattr(self._planner, "decision_record", None)
+            decision = decision_reader() if callable(decision_reader) else None
 
             # Rest the legs whenever the way stays blocked — the arm makes standing
             # expensive, so a long hold is spent lying down rather than braced. What
@@ -916,7 +928,8 @@ class VisualNavigator:
                     self._command((0.0, 0.0, 0.0))
                     frame = self._record(result, pose, None, obstacles)
                     self._telemetry_tick(elapsed, pose, goal_xy, distance, obstacles,
-                                         frame_age, result, video_frame=frame)
+                                         frame_age, result, video_frame=frame,
+                                         decision=decision)
                     continue
 
             self._command((command.vx, command.vy, command.wz)
@@ -945,7 +958,7 @@ class VisualNavigator:
             frame = self._record(result, pose, command, obstacles)
             self._telemetry_tick(elapsed, pose, goal_xy, distance, obstacles,
                                  frame_age, result, command=command,
-                                 video_frame=frame)
+                                 video_frame=frame, decision=decision)
 
             self._sleep_out_the_period(tick_start, period)
 
@@ -1096,7 +1109,8 @@ class VisualNavigator:
                         obstacles: Sequence[Obstacle], frame_age: float,
                         result: PerceptionResult, command=None,
                         video_frame: int | None = None, stale: bool = False,
-                        hold_reason: str | None = None) -> None:
+                        hold_reason: str | None = None,
+                        decision: dict | None = None) -> None:
         """Record one tick for a machine, whether or not it commanded motion.
 
         Separate from ``_log``, which is for a person reading a console. The two have
@@ -1104,6 +1118,11 @@ class VisualNavigator:
         legible (``people=0`` became ``obst=[binx1,personx1]`` the week a mapped bin
         stopped being distinguishable from a ghost), while this one is a versioned
         contract someone else parses.
+
+        ``decision`` arrives from the caller rather than being read off the planner
+        here, so it can only ever describe the tick that produced it. The transport
+        axes are this object's own state, refreshed by ``_command`` on every path that
+        reaches this method.
         """
         if self._telemetry is None:
             return
@@ -1121,7 +1140,8 @@ class VisualNavigator:
             measured=self._measured_velocity(), health=self._health.latest(),
             sightings=result.ranged, goal_crop=self._goal_crop(),
             profile=self._profiler.snapshot(), cycle_ms=result.cycle_ms,
-            wait_ms=result.wait_ms, pass_ms=result.pass_ms)
+            wait_ms=result.wait_ms, pass_ms=result.pass_ms,
+            decision=decision, transport=self._last_transport)
         self._profiler.wrote((time.monotonic() - started) * 1000.0)
 
     def _saturation_floor_rad(self) -> float:
@@ -1188,8 +1208,15 @@ class VisualNavigator:
         # something, including the ones that command a stop, and a stage wired in at four
         # of five places reads as a cheap transport.
         with self._profiler.stage("command"):
+            # Reset FIRST: the transport record belongs to the tick that commanded it,
+            # and a dry tick or a backend that cannot report its axes leaves nothing
+            # rather than replaying whatever the last live tick sent.
+            self._last_transport = None
             if self._config.live and self._standing:
                 self._loco.set_velocity(*velocity)
+                report = getattr(self._loco, "transport_axes", None)
+                if callable(report):
+                    self._last_transport = report()
         self._last_command = velocity
 
     def _log(self, elapsed: float, command, distance: float,

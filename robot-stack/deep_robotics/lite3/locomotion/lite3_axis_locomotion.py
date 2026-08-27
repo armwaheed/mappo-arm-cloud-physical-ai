@@ -797,6 +797,24 @@ class Lite3AxisLocomotion(Lite3UdpLocomotion):
         self._command_ttl_s = command_ttl_s
         self._streamer_factory = streamer_factory
         self._streamer: AxisStreamSender | None = None
+        #: The raw axes the most recent ``set_velocity`` mapped to — what the transport
+        #: actually accepted, after the sign-only profile mapping has discarded the
+        #: commanded magnitudes. ``None`` until the first call. Read by the shared
+        #: navigator's telemetry, which otherwise records the requested velocity and
+        #: can never show what reached the wire.
+        self._last_axes: AxisValues | None = None
+
+    def transport_axes(self) -> dict | None:
+        """The raw axes the last accepted command mapped to, or ``None`` before it.
+
+        A method rather than an attribute so a caller on a DIFFERENT backend can
+        ``getattr`` for it without an attribute-error dance — the Go2 transport has no
+        such notion, and telemetry must never be the thing that ends a run.
+        """
+        axes = self._last_axes
+        if axes is None:
+            return None
+        return {"forward": axes.forward, "lateral": axes.lateral, "yaw": axes.yaw}
 
     def connect(self) -> None:
         """Connect the inherited state reader without retaining a legacy command socket."""
@@ -811,6 +829,10 @@ class Lite3AxisLocomotion(Lite3UdpLocomotion):
         if profile is None:
             raise AxisProfileError("a local axis profile is required before axis commands")
         axes = profile.map_velocity(vx, vy, vyaw)
+        # Recorded BEFORE the early return, so a zero command is as visible in the
+        # telemetry as a moving one — the record is of what the backend ACCEPTED, and
+        # it accepted a stop.
+        self._last_axes = axes
         if axes.is_zero and self._streamer is None:
             return
         if not axes.is_zero:

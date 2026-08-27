@@ -30,6 +30,7 @@ import tempfile
 import textwrap
 import time
 from pathlib import Path
+from typing import ClassVar
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
@@ -2384,6 +2385,96 @@ def test_the_saturation_floor_is_the_planners_radius_and_not_a_constant_here():
         tracker=ObstacleTracker(), goal_source=_FakeGoal(), health=_FakeHealth(4),
         config=NavConfig(live=True, control_hz=100.0))
     assert wider._saturation_floor_rad() > navigator._saturation_floor_rad()
+
+
+# ── The decision and transport layers on the telemetry line ─────────────────
+class _DecisionPlanner(_FakePlanner):
+    """A planner that keeps a per-tick decision record, as ``MappoPlanner`` now does."""
+
+    DECISION: ClassVar[dict] = {"policy_raw": {"vx": 0.30, "vy": 0.0, "wz": 0.0},
+                                "after_limits": {"vx": 0.30, "vy": 0.0, "wz": 0.0},
+                                "final": {"vx": 0.30, "vy": 0.0, "wz": 0.0,
+                                          "reason": "policy"}}
+
+    def decision_record(self):
+        return dict(self.DECISION)
+
+
+class _AxisLoco(_FakeLoco):
+    """A locomotion backend that can say which raw axes accepted the command."""
+
+    AXES: ClassVar[dict] = {"forward": 32767, "lateral": 0, "yaw": 0}
+
+    def transport_axes(self):
+        return dict(self.AXES)
+
+
+def _telemetry_run(directory, *, planner=None, loco=None, perception=None, live=True,
+                   ticks=4):
+    """``_profiled_run`` with a caller-supplied loco and live flag."""
+    path = os.path.join(directory, "run.jsonl")
+    writer = TelemetryWriter(path)
+    writer.write_header(control_hz=100.0)
+    navigator = VisualNavigator(
+        loco=loco or _FakeLoco(), perception=perception or _ImagePerception(),
+        planner=planner or _FakePlanner(), tracker=ObstacleTracker(),
+        goal_source=_FakeGoal(), health=_FakeHealth(ticks),
+        config=NavConfig(live=live, control_hz=100.0), telemetry=writer)
+    with contextlib.redirect_stdout(io.StringIO()):
+        navigator.run()
+    writer.close()
+    with open(path, encoding="utf-8") as handle:
+        return [json.loads(line) for line in handle
+                if line.strip() and json.loads(line)["type"] == "tick"]
+
+
+def test_a_planned_tick_carries_the_planners_decision_record():
+    """The wiring, not the writer — same reasoning as the `pass_ms` test above. A
+    planner that records its decision must see it on the planned ticks; one that
+    does not (the plain fake, the un-wrapped DWA planner) must leave the key ABSENT,
+    so a consumer never mistakes a layer that did not run for one that did."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _telemetry_run(directory, planner=_DecisionPlanner())
+    planned = [t for t in ticks if t["command"] is not None]
+    assert planned, ticks
+    for tick in planned:
+        assert tick["decision"] == _DecisionPlanner.DECISION, tick
+
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _telemetry_run(directory, planner=_FakePlanner())
+    assert ticks and all("decision" not in t for t in ticks), ticks
+
+
+def test_the_transport_axes_reach_the_line_only_when_the_backend_can_say():
+    """Live with an axis-reporting backend: the ticks that commanded motion carry the
+    axes that accepted it. Dry run: no command left, so no axes — and a backend
+    without the method leaves no key either. ``transport`` is evidence about the
+    wire, and a fabricated wire is worse than none."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _telemetry_run(directory, loco=_AxisLoco(), live=True)
+    carrying = [t for t in ticks if "transport" in t]
+    assert carrying, "a live run on an axis backend recorded no transport"
+    for tick in carrying:
+        assert tick["transport"] == _AxisLoco.AXES, tick
+
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _telemetry_run(directory, loco=_AxisLoco(), live=False)
+    assert ticks and all("transport" not in t for t in ticks), ticks
+
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _telemetry_run(directory, loco=_FakeLoco(), live=True)
+    assert ticks and all("transport" not in t for t in ticks), ticks
+
+
+def test_a_stale_tick_inherits_no_decision():
+    """The stale branch returns before the planner runs; its tick must carry NO
+    decision, not the previous tick's. Inheriting one would make a blind hold read
+    as a planned move — the exact misread this record exists to prevent."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _telemetry_run(directory, planner=_DecisionPlanner(),
+                               perception=_ImagePerception(age_s=5.0))
+    assert ticks and all(t["perception"]["stale"] for t in ticks), ticks
+    assert all("decision" not in t for t in ticks), ticks
 
 
 if __name__ == "__main__":

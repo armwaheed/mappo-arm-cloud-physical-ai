@@ -175,6 +175,10 @@ GHOST_BASELINE = {
     "2026-08-27-gait-floor-freeze/run-20260827T012702Z-00652ea.jsonl": (86, 0, None),
     "2026-08-25-peer-runs/contrast-run-telemetry.jsonl": (91, 44, 0.000),
     "2026-08-25-peer-runs/hero-run-telemetry.jsonl": (59, 32, 0.000),
+    # The Lite3 shadow run the turn-drive supervisor was validated against. Zero
+    # ghosts: its bin landmark was confirmed from repeated sightings, never withheld.
+    "2026-08-27-lite3-executable-avoidance/shadow-marker-fixed-20260827T023516Z.jsonl":
+        (188, 0, None),
     "live_run_telemetry.jsonl": (122, 5, 0.720),
     "sample_telemetry.jsonl": (122, 5, 0.720),
 }
