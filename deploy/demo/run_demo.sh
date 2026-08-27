@@ -58,7 +58,17 @@ FLEET=(
 # the store actually holds — a hard-coded filename here is a demo that breaks silently the
 # first time somebody swaps the checkpoints out.
 newest_model() {
-  ls -t "$1"/*.npz 2>/dev/null | head -1 | xargs -r basename
+  # A glob and -nt, not `ls -t`: ls output cannot be parsed safely for a filename with a
+  # newline in it, and this string is written into a config the dashboard then loads.
+  # find -printf would also work but is GNU-only, and this file is read on macOS too.
+  local newest="" candidate
+  for candidate in "$1"/*.npz; do
+    [ -e "$candidate" ] || continue          # the glob itself when nothing matches
+    if [ -z "$newest" ] || [ "$candidate" -nt "$newest" ]; then
+      newest="$candidate"
+    fi
+  done
+  [ -n "$newest" ] && basename "$newest"
 }
 
 write_sources() {

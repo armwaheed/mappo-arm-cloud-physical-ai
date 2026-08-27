@@ -60,6 +60,8 @@ TAG="${2:-peer}"
 TREE="${TREE:-/home/unitree/mappo-run}"
 SECS="${SECS:-40}"
 
+# Only exists on a robot with the stack installed; not resolvable at lint time.
+# shellcheck disable=SC1091
 source "${TREE}/robot-stack/unitree/go2/install/setup_env.sh"
 export PYTHONPATH=/home/unitree/deps:/home/unitree/unitree_sdk2_python
 cd "${TREE}/integration"

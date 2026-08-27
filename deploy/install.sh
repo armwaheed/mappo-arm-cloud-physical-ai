@@ -175,6 +175,10 @@ if [ "$VERIFY" = 1 ] && [ "$POLICY_ONLY" != 1 ]; then
     # only if a frame arrives. No motion.
     # shellcheck disable=SC1091
     source "$ENV_DIR/bin/activate"
+    # SC2097/SC2098: deliberate, and verified. A prefix assignment does not affect the
+    # expansion of the command word, so the path below uses the ORIGINAL $REPO_ROOT while
+    # verify.sh receives the robot-stack one. That is exactly what is wanted here.
+    # shellcheck disable=SC2097,SC2098
     IFACE="$IFACE" REPO_ROOT="$REPO_ROOT/robot-stack" \
         "$REPO_ROOT/robot-stack/unitree/go2/install/verify.sh" \
         || fail "the robot's DDS is not visible from here — check the cable, the iface

@@ -216,32 +216,59 @@ jobs:
       - name: Install ruff
         run: python -m pip install --disable-pip-version-check --quiet "ruff==0.15.21"
 
-      - name: Shellcheck the scripts this workflow runs
-        # .github/measure-suites.sh is the single implementation of "run every suite and
-        # count the `  ok  ` lines" — the copy CI runs and the copy a person runs are the
-        # same file, which is the whole reason the generated inventory is trustworthy. It
-        # is also the only file here that no ruff.toml can cover, so it gets the linter for
-        # its own language rather than none.
+      - name: Shellcheck every shell script in the repository
+        # SCOPED TO `.github/*.sh` UNTIL 2026-08-27, WHICH MEANT NINE OF TEN WENT UNREAD.
+        # The step was written for measure-suites.sh, and the glob that expressed "the
+        # script this workflow runs" silently also expressed "and no other". By the time
+        # it was noticed the unchecked set was deploy/install.sh, deploy/uninstall.sh,
+        # deploy/run-peer-supervised.sh, deploy/demo/{install_demo,run_demo}.sh,
+        # robot-stack/unitree/go2/install/{install,setup_env,verify}.sh and
+        # dashboard/start-dashboard.sh — every script that installs or launches anything
+        # on the robot. They carried five findings, one of them an error: setup_env.sh had
+        # no shebang and no `shell=` directive, so shellcheck could not have checked it
+        # even if it had been asked to.
+        #
+        # This is the same shape as the ruff discovery bug two steps down: a guard derived
+        # from the set it polices cannot see outside that set. So discovery is now
+        # `git ls-files`, and the count of scripts found is asserted against the count
+        # tracked. A new .sh anywhere in the tree is checked the moment it is committed,
+        # and one that somehow escapes the list makes this step red rather than quiet.
         #
         # PINNED, for the reason ruff is pinned: a new shellcheck adds checks and reddens
         # an unrelated pull request. Installed from PyPI rather than used from the runner
         # image so that the version is stated here and not inherited from ubuntu-22.04.
         #
         # DEFAULT SEVERITY, not `-o all`. The optional checks want ${braces} and [[ ]]
-        # everywhere, which would put the script in a different style from every `run:`
+        # everywhere, which would put the scripts in a different style from every `run:`
         # block in this file. Clean at default severity with shellcheck 0.11.0.
         run: |
+          set -uo pipefail
           python -m pip install --disable-pip-version-check --quiet "shellcheck-py==0.11.0.1"
-          # find, not ls: a glob that matches nothing would be passed through literally and
-          # shellcheck would fail on a filename — a red tick for the wrong reason. This
-          # counts first, so "no scripts" is reported as "this step checked nothing".
-          n="$(find .github -maxdepth 1 -name '*.sh' | wc -l | tr -d ' ')"
+
+          # git ls-files, not find: it is the tracked set, so a stray .sh left in the
+          # working tree by a build step cannot redden the run, and a committed one
+          # cannot escape it. -z/-d handles a path with a space or a newline in it.
+          mapfile -t -d '' scripts < <(git ls-files -z '*.sh')
+          n="${#scripts[@]}"
           if [ "$n" -eq 0 ]; then
-            echo "::error::no .sh found under .github/ — this step is checking nothing"
+            echo "::error::no tracked .sh found — this step is checking nothing"
             exit 1
           fi
-          shellcheck .github/*.sh
-          echo "shellcheck: $n script(s) clean"
+
+          # THE STEP MUST BE ABLE TO FAIL. A bug in the discovery above that returned an
+          # empty-but-nonzero list, or a shellcheck that silently exits 0 on a file it
+          # could not read, would leave a green tick over a check that had stopped
+          # checking — which is exactly how the nine scripts stayed unread. So: prove the
+          # linter reports on a file that is known bad, before trusting it on real ones.
+          canary="$(mktemp -d)/canary.sh"
+          printf '#!/bin/sh\nfoo=1\necho $bar\n[ $foo == 1 ]\n' > "$canary"
+          if shellcheck "$canary" >/dev/null 2>&1; then
+            echo "::error::shellcheck passed a file with known findings — it is not checking"
+            exit 1
+          fi
+
+          shellcheck "${scripts[@]}"
+          echo "shellcheck: $n tracked script(s) clean"
 
       - name: Lint each directory from inside itself, against its own config
         # THE DISCOVERY IS THE FIX. A PR reported "ruff clean" after running
