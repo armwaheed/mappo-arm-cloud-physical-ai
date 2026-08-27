@@ -314,7 +314,15 @@ class TelemetryWriter:
                 # without it is any other stop. Those were the same bytes until issue
                 # #26, which is why 90% of the 2026-08-27 run read as ordinary.
                 **({} if command.floor_reach_m_s is None else
-                   {"floor_reach_m_s": _finite(command.floor_reach_m_s)})}),
+                   {"floor_reach_m_s": _finite(command.floor_reach_m_s)}),
+                # Same conditional presence, same argument, one subsystem along (issue
+                # #145). Its presence separates a stop the ROOM caused from a stop the
+                # LEGS caused: a sign-only transport has no slow, so a planner that
+                # wanted to creep gets a hold, and the sentence carries the speed it
+                # asked for beside the speed the legs would have produced. `getattr`
+                # because this writer is handed whatever `planner_factory` returned.
+                **({} if not getattr(command, "transport_refusal", None) else
+                   {"transport_refusal": command.transport_refusal})}),
             # Positions and radii, not just a count: a consumer building an occupancy or
             # range vector needs the geometry. `kind` separates a mapped static prop
             # from a tracked mover and `label` does NOT — label is a class name, and it

@@ -28,7 +28,8 @@ fails closed when any of them is absent.
 | RGB capture | explicit V4L2 index, RTSP URI, or GStreamer pipeline | endpoint not yet supplied |
 | gait floor | required as `--gait-floor` | not measured — **and not measurable on the axis transport**, where the mapping is sign-only. See below |
 | actuator gain | required as `--actuator-gain` | not measured — same; the commanded magnitude the ratio divides by never reaches the wire |
-| axis primitive speeds | `measured_m_s` in the axis profile; the envelope gate reads it | not measured. `commissioning/axis_primitive_probe.py` is the tool |
+| axis primitive speeds | `measured_m_s` in the axis profile; the envelope gate reads it, and since #145 so does the planner's feasibility rollout — a live run refuses without it | not measured. `commissioning/axis_primitive_probe.py` is the tool |
+| axis primitive yaw rate | `measured_rad_s`; **undeclared on every profile**, so the planner will not combine a turn with a step | not measured, and the primitive probe deliberately does not measure it while the `Segment.yaw_change_deg` unwrap bug stands |
 | loaded planning radius | required as `--robot-radius` | not measured |
 | focal length / HFOV | Lite3-tagged calibration JSON required live | not measured |
 | battery | documented legacy `RobotState` UDP field | 21% after the 2026-08-21 vendor-service restart |
@@ -245,9 +246,12 @@ each primitive was measured to produce:
 `--live` preflight then **refuses the run** when a declared speed exceeds `--max-vx × --derate`
 (or the `--max-vy` / `--max-wz` equivalent), so `--derate 0.2` against a primitive measured at
 0.729 m/s stops at the gate rather than walking 3.6× faster than the safety veto planned for.
-A primitive with no declared speed prints an unverified-envelope warning: it is not a claim that
-the envelope holds, only a record that nobody checked. Both fields are optional and both land in
-the run's telemetry alongside the profile's SHA-256.
+`measured_m_s` is **required** for every enabled linear direction, and a `--live` run refuses
+without it (issue #145). It stopped being an optional envelope cross-check when the planner
+started reading it: on this transport the speed the legs produce *is* that number, so with the
+field absent nothing above the transport can say how fast the robot will go, and the planner
+refuses every command rather than guessing. `measured_rad_s` still prints a warning instead —
+see below. Both fields land in the run's telemetry alongside the profile's SHA-256.
 
 ⚠️ **`--max-vx` / `--max-vy` / `--max-wz` have no default on this platform, and a `--live` run
 refuses without them.** They are the right-hand side of the gate above, and until 2026-08-26 they
@@ -292,6 +296,48 @@ per-axis gates and emit nothing; it now emits both primitives at full scale. Bec
 is sign-only, `input_deadband.linear_m_s` is not a small-command filter: it is **the commanded
 magnitude at which a full-speed primitive fires**. Set it from that, not from what looks like a
 negligible velocity.
+
+#### ⚠️ The planner validates what the legs will receive, not what it typed (issue #145)
+
+The paragraphs above describe the transport. This is what changed one level up, because a
+sign-only mapping breaks a premise the shared planner never stated: it samples velocities,
+rolls each one forward and refuses the ones that end inside something, and every one of
+those rollouts assumed the legs receive the velocity that was sampled. Here they do not.
+Replayed at the range of the 2026-08-27 Go2 freeze — 0.72 m from a bin — a policy creeping
+at 0.05 m/s had `is_feasible` validate 0.125 m of travel while the legs took 0.75 m.
+
+`avoidance.Limits.transport` is where a platform now states what its legs do with a
+command; `Lite3Bindings.transport_model` answers `SignOnlyAxisTransport` on this transport
+and `PROPORTIONAL` everywhere else, so a Go2 run and a Lite3 UDP run are unchanged to the
+bit. Everything downstream of it — the gaps, the feasibility test, the stopping-distance
+cap, the cost and the gait-floor guard — is asked about the **executed** velocity. Nothing
+clamps a magnitude, because there is no magnitude to clamp: GO and STOP is the entire
+vocabulary, which is the same conclusion #26's guard reached from the planner side.
+
+Four consequences worth knowing before a run:
+
+* **The robot commits `primitive speed × horizon` every time it steps** — 0.75 m at
+  0.30 m/s and the default 2.5 s. It decides that far out, where a Go2 slows down and keeps
+  its options open, so it holds earlier and further from an obstacle. That is correct
+  rather than over-cautious: it has one gear.
+* **A hold that the transport caused says so.** `Command.transport_refusal` carries one
+  sentence with both numbers in it — what was asked, and what the legs would have received
+  — and it ends the run rather than leaving the robot standing there, which is the trap the
+  gait-floor stop already had to solve.
+* **The gait-floor guard now judges the executed speed.** A robot whose primitive is at or
+  above its `--gait-floor` can never produce a sub-floor tick, so the guard is silent — that
+  is the honest answer, not the guard being off. One whose primitive is *below* the stated
+  floor trips it after two seconds of covering no ground.
+* **Yaw is the same defect and is not fixed.** `input_deadband.yaw_rad_s` is the rate at
+  which the yaw primitive fires at full scale, and nothing has measured that rate: the
+  primitive probe deliberately does not time yaw while `Segment.yaw_change_deg` can report a
+  turn through π backwards. So the planner will not combine a turn with a step — an arc
+  whose rate is unknown ends somewhere nobody can name — and turns in place instead. A
+  measured `measured_rad_s` lifts that automatically.
+
+⚠️ **No Lite3 has run any of this.** It is read off the transport's own code and a probe of
+it. The numbers a real robot produces depend on its own `measured_m_s`; the shape of the
+argument does not.
 
 Nonzero axes also require `error_state=0`, documented force-control `basic_state=6`,
 `policy_state=0`, a profile-allowed documented gait state, and `motion_state` 0 or 1. The

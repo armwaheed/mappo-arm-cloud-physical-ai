@@ -28,8 +28,10 @@ from avoidance import (
     GO2_MAX_WZ_RAD_S,
     MIN_GAIT_COMMAND_M_S,
     PLANNER_REASONS,
+    PROPORTIONAL,
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
+    SUB_FLOOR_WINDOW_S,
     Command,
     DynamicWindowPlanner,
     Limits,
@@ -761,7 +763,12 @@ def test_every_branch_that_returns_a_command_states_its_search():
     # which is a claim, not an absence. The branch that would have dropped it is the
     # veto, which re-emits the planner's own velocity, and 37 of the 38 planner-issued
     # ticks of the 2026-08-27 run came out of exactly that branch.
-    required = {"feasible", "evaluated", "floor_reach_m_s"}
+    # `transport_refusal` joined them in issue #145 and fails the same way: it describes
+    # this tick's verdict, it defaults to `None`, and `None` reads as "the transport had
+    # nothing to say" — which is a claim. The branch that would drop it is the same veto
+    # branch, which re-emits the planner's own command and would strip the one sentence
+    # separating "this robot has no slow" from "this room is too tight".
+    required = {"feasible", "evaluated", "floor_reach_m_s", "transport_refusal"}
     missing = [(path, line, sorted(required - keywords))
                for path, line, keywords in sites if required - keywords]
     assert not missing, "\n".join(
@@ -1286,6 +1293,289 @@ def test_the_arriving_runs_on_record_do_not_trip_the_guard():
     assert checked >= 4, f"only {checked} arriving runs on record; the control is thin"
     assert not arrived, (
         "the guard fired on runs that reached their goal:\n  " + "\n  ".join(arrived))
+
+
+# ── A transport that does not honour the magnitude (issue #145) ─────────────
+class _SignOnlyTransport:
+    """The Lite3 simple-axis transport's SHAPE, with none of its code.
+
+    Two values per axis — ``{0, one measured speed}`` — gated on the magnitude of the
+    linear pair, which is what ``AxisProfile.map_velocity`` does. Written here rather
+    than imported so this suite still tests the PLANNER's contract when the Lite3 tree
+    is not on the path, and so that a change to the real profile loader cannot make
+    these tests pass or fail for a reason that has nothing to do with the planner. The
+    real one is pinned against real numbers in
+    ``deep_robotics/lite3/locomotion/test_lite3_axis_locomotion.py`` and wired to this
+    seam in ``deep_robotics/lite3/visual_nav/test_robot_bindings.py``.
+    """
+
+    is_proportional = False
+
+    def __init__(self, forward=0.30, lateral=0.12, yaw=0.60,
+                 deadband=0.05, yaw_deadband=0.10, yaw_measured=True):
+        self.forward, self.lateral, self.yaw = forward, lateral, yaw
+        self.deadband, self.yaw_deadband = deadband, yaw_deadband
+        self.yaw_measured = yaw_measured
+
+    def executed(self, commands):
+        rows, known = [], []
+        for vx, vy, wz in commands:
+            moving = math.hypot(vx, vy) >= self.deadband
+            ex = (self.forward * (1 if vx > 0 else -1) if moving and vx else 0.0)
+            ey = (self.lateral * (1 if vy > 0 else -1) if moving and vy else 0.0)
+            turning = abs(wz) >= self.yaw_deadband
+            if turning and not self.yaw_measured and (ex or ey):
+                # Translating on an arc whose rate nobody has timed: no rollout exists.
+                rows.append((0.0, 0.0, 0.0))
+                known.append(False)
+                continue
+            if turning:
+                ez = (wz if not self.yaw_measured
+                      else self.yaw * (1 if wz > 0 else -1))
+            else:
+                ez = 0.0
+            rows.append((ex, ey, ez))
+            known.append(True)
+        return rows, known
+
+    def describe(self):
+        return f"sign-only test transport: forward is 0 or {self.forward:.3f} m/s"
+
+
+#: The geometry of the freeze this issue was split out of. A 0.20 m bin 0.72 m from the
+#: robot's centre — `evidence/2026-08-27-gait-floor-freeze/`'s last 3.4 s — with the
+#: 0.25 m radius every recorded run passes.
+def _bin_at(distance, radius_m=0.20):
+    return Obstacle(x=distance, y=0.0, vx=0.0, vy=0.0, radius_m=radius_m,
+                    label="bin", person_shaped=False, kind="static",
+                    soft_gap_m=STATIC_SOFT_GAP_M, hard_gap_m=STATIC_HARD_GAP_M)
+
+
+def _lite3_like(transport=None, **overrides):
+    """A planner shaped like the deployment SOP's Lite3 run, on a stated transport."""
+    limits = Limits(max_vx=0.55, max_vy=0.0, max_wz=0.90, gait_floor=0.30,
+                    transport=transport or _SignOnlyTransport(), **overrides)
+    return DynamicWindowPlanner(limits=limits,
+                                config=PlannerConfig(robot_radius_m=0.25))
+
+
+def test_a_veto_on_a_sign_only_transport_rolls_out_the_speed_the_legs_will_get():
+    """⚠️ ISSUE #145. THE CRAWL AND THE LUNGE ARE THE SAME COMMAND HERE.
+
+    ``is_feasible`` is the supervisory veto: ``mappo_drive`` asks it whether the policy's
+    proposed velocity, held from this pose, keeps every obstacle's hard gap. On a
+    transport that honours magnitudes, asking about 0.05 m/s is asking about 0.125 m of
+    travel over the 2.5 s horizon and the answer is yes at any sane range.
+
+    On a sign-only transport 0.05 m/s IS 0.30 m/s — 0.75 m of travel — and the veto used
+    to answer about the 0.125 m. Replayed at the range the Go2 froze at on 2026-08-27,
+    0.72 m from a bin: the proportional planner says the crawl is safe, and it is; the
+    sign-only planner says it is not, because what leaves is a full-speed walk into the
+    bin the planner was creeping past.
+
+    THE COMPLEMENT IS THE OTHER HALF OF THE TEST. A veto that refuses everything is a
+    brake, not a veto (this file's own words, one screen up). At 2.5 m the same command
+    on the same transport is feasible, so the refusal is about the geometry rather than
+    about the transport being present.
+    """
+    lunge = _SignOnlyTransport()
+    for distance, proportional_says, sign_only_says in ((0.72, True, False),
+                                                        (1.00, True, False),
+                                                        (2.50, True, True)):
+        scene = [_bin_at(distance)]
+        assert _lite3_like(PROPORTIONAL).is_feasible(
+            ORIGIN, (0.05, 0.0, 0.0), scene) is proportional_says, distance
+        assert _lite3_like(lunge).is_feasible(
+            ORIGIN, (0.05, 0.0, 0.0), scene) is sign_only_says, distance
+
+    # And the sign-only answer does not depend on the number that was asked for, which
+    # is the whole property: 0.05 and 0.55 are the same legs, so they are one verdict.
+    scene = [_bin_at(0.72)]
+    planner = _lite3_like(lunge)
+    verdicts = {planner.is_feasible(ORIGIN, (asked, 0.0, 0.0), scene)
+                for asked in (0.05, 0.10, 0.20, 0.34, 0.55)}
+    assert verdicts == {False}, verdicts
+
+
+def test_the_planner_refuses_the_crawl_rather_than_executing_it_as_a_lunge():
+    """The guard, made to fire, and the record it leaves naming both numbers.
+
+    The planner's feasibility now runs on what the legs receive, so a command whose
+    EXECUTION ends inside the bin is never chosen and the tick falls through to the hold
+    it has always had. ``transport_refusal`` is what stops that hold reading like a robot
+    boxed in by furniture: it names the crawl that was available and the primitive speed
+    that would have gone out instead.
+    """
+    # ``last_command`` is 0.10 m/s because that is the state the recorded freeze was in:
+    # `evidence/2026-08-27-gait-floor-freeze/`'s last 3.4 s alternate 0.052, 0.103,
+    # 0.050, 0.101 — a planner that has already slowed down and is creeping. The window
+    # from there is [0.05, 0.15], so a 0.05 m/s crawl is available and is what the
+    # planner would have taken.
+    planner = _lite3_like()
+    command = planner.plan(ORIGIN, (4.0, 0.0), (0.10, 0.0, 0.0), [_bin_at(0.72)],
+                           control_dt=0.1, now=0.0)
+    assert command.is_stop, command
+    assert command.reason == "hold", command.reason
+    assert command.transport_refusal is not None, "the hold does not say it was the legs"
+    said = command.transport_refusal
+    assert "0.300 m/s" in said, said              # what the legs would have received
+    assert "sign-only" in said, said
+    assert said.index("asked for") < said.index("the legs would receive"), said
+    # The asked-for speed is a real number off this tick's window, not a constant.
+    asked = float(said.split("asked for ")[1].split(" m/s")[0])
+    assert 0.0 < asked < 0.30, said
+
+
+def test_the_transport_refusal_is_silent_when_the_command_is_executable():
+    """The complement, and it has to hold in both of the ways it could fail.
+
+    A guard that fires on every tick near an obstacle is a guard nobody reads, and a
+    guard that blames the transport for a robot boxed in by furniture sends the operator
+    to measure a primitive instead of widening a lane.
+    """
+    planner = _lite3_like()
+    # Open room: the full-speed primitive is exactly what the planner wants.
+    clear = planner.plan(ORIGIN, (4.0, 0.0), STOPPED, [], control_dt=0.1, now=0.0)
+    assert clear.transport_refusal is None, clear.transport_refusal
+    assert clear.vx > 0.0 and not clear.is_stop, clear
+
+    # Far enough out that 0.75 m of committed travel still clears the bin.
+    approaching = _lite3_like().plan(ORIGIN, (4.0, 0.0), STOPPED, [_bin_at(2.5)],
+                                     control_dt=0.1, now=0.0)
+    assert approaching.transport_refusal is None, approaching.transport_refusal
+    assert not approaching.is_stop, approaching
+
+    # Boxed in: nothing this transport does would help, so it must not be blamed. From a
+    # 0.30 m/s cruise the whole reachable window is [0.25, 0.35], every command in it
+    # ends inside the bin AS ASKED FOR, and a robot that honoured magnitudes perfectly
+    # would hold on exactly this tick. Blaming the transport here would send the
+    # operator to measure a primitive instead of to widen a lane.
+    wedged = _lite3_like().plan(ORIGIN, (4.0, 0.0), CRUISING, [_bin_at(0.72)],
+                                control_dt=0.1, now=0.0)
+    assert wedged.is_stop and wedged.reason == "hold", wedged
+    assert wedged.transport_refusal is None, (
+        "a robot that would have held on any transport was told the legs did it: "
+        + str(wedged.transport_refusal))
+    assert not _lite3_like(PROPORTIONAL).plan(
+        ORIGIN, (4.0, 0.0), CRUISING, [_bin_at(0.72)], control_dt=0.1, now=0.0
+    ).vx, "the control for that claim: a proportional robot holds on this tick too"
+
+
+def test_a_command_with_no_nameable_executed_velocity_is_refused_not_guessed():
+    """An undeclared primitive speed is an absence, and an absence is not a green light.
+
+    The Lite3's ``measured_rad_s`` is undeclared on every profile in this repository —
+    ``axis_primitive_probe.py`` refuses to time yaw while the unwrap bug in
+    ``Segment.yaw_change_deg`` stands — so a turn combined with a step has no rollout
+    anyone can compute. Fail closed. The pure TURN survives, because a rollout that does
+    not translate is a point and its positions do not depend on the rate at all; without
+    that carve-out this rule would leave a robot that can only walk in a straight line.
+    """
+    blind = _SignOnlyTransport(yaw_measured=False)
+    planner = _lite3_like(blind)
+    scene = [_bin_at(1.2, radius_m=0.35)]
+    assert not planner.is_feasible(ORIGIN, (0.30, 0.0, 0.5), scene), \
+        "a step on an unmeasured arc was validated"
+    assert planner.is_feasible(ORIGIN, (0.0, 0.0, 0.5), scene), \
+        "a turn in place cannot move the robot into anything, and must stay available"
+    # Sub-deadband yaw does not fire the primitive, so nothing is unknown about it.
+    assert planner.is_feasible(ORIGIN, (0.30, 0.0, 0.05), [_bin_at(2.5)])
+
+
+def test_a_window_that_moves_nothing_says_so_instead_of_standing_there():
+    """⚠️ THE LIMIT CASE, AND IT IS SILENT WITHOUT THIS.
+
+    The dynamic window is ``accel * control_dt`` wide, so from a standstill the fastest
+    command available is ``accel_x * control_dt``. On a sign-only transport that has to
+    clear the linear deadband IN ONE TICK or every candidate in the window emits nothing
+    — the robot stands still while the log records a velocity, and no gate anywhere
+    notices, because the planner believes it commanded 0.025 m/s and the stall gate's
+    ``commanded <= PROGRESS_MIN_COMMAND_M_S`` branch declines to judge it.
+
+    Reachable by running the control loop faster than 10 Hz: ``control_interval_s``
+    floors ``control_dt`` at the loop period, and 0.5 m/s^2 x 0.05 s is 0.025 m/s
+    against the shipped 0.05 m/s deadband.
+    """
+    planner = _lite3_like()
+    command = planner.plan(ORIGIN, (4.0, 0.0), STOPPED, [], control_dt=0.05, now=0.0)
+    assert command.is_stop and command.reason == "hold", command
+    assert command.transport_refusal is not None
+    assert "moves the robot" in command.transport_refusal, command.transport_refusal
+    assert "deadband" in command.transport_refusal, command.transport_refusal
+
+    # One tick of headroom is all it takes, and then it is silent again.
+    ok = _lite3_like().plan(ORIGIN, (4.0, 0.0), STOPPED, [], control_dt=0.1, now=0.0)
+    assert ok.transport_refusal is None and not ok.is_stop, ok
+
+
+def test_the_gait_floor_guard_judges_what_the_legs_get_not_what_was_typed():
+    """Issue #145 completing #26 rather than contradicting it.
+
+    ``_gait_floor_stop`` asks "is this robot being told to move and not moving?". On a
+    sign-only transport the commanded number answers neither half of that. Two
+    consequences, and only one of them looks like the guard working:
+
+    * A primitive at or above the stated floor can never produce a sub-floor tick, so
+      the guard never fires. Correct — such a robot walks at the primitive's speed or
+      stands still, and a commanded-and-stationary robot is the stall gate's business.
+    * A primitive BELOW the stated floor is sub-floor on every moving tick, and the
+      guard fires after two seconds of covering no ground.
+
+    Judged against the commanded number instead, the first case would fire on every tick
+    of every run — the planner asks for 0.05 and the floor is 0.30 — including runs where
+    the robot walked the whole way.
+    """
+    walking = _lite3_like(_SignOnlyTransport(forward=0.30))    # floor 0.30, primitive 0.30
+    pose = (0.0, 0.0, 0.0)
+    for tick in range(60):                                     # six seconds, going nowhere
+        command = walking.plan(pose, (4.0, 0.0), (0.05, 0.0, 0.0), [],
+                               control_dt=0.1, now=tick * 0.1)
+        assert command.floor_reach_m_s is None, (
+            f"tick {tick}: the guard judged the commanded {command.vx:.3f} m/s rather "
+            f"than the 0.30 m/s the legs receive")
+
+    # A robot whose one gear is under its stated floor is a different finding, and the
+    # guard has to keep making it. Same commands, same stationary pose.
+    crawling = _lite3_like(_SignOnlyTransport(forward=0.12))    # floor 0.30, primitive 0.12
+    fired = None
+    for tick in range(60):
+        command = crawling.plan(pose, (4.0, 0.0), (0.05, 0.0, 0.0), [],
+                                control_dt=0.1, now=tick * 0.1)
+        if command.floor_reach_m_s is not None and fired is None:
+            fired = tick * 0.1
+    assert fired is not None, "a primitive below the stated floor never tripped the guard"
+    assert abs(fired - SUB_FLOOR_WINDOW_S) < 0.5, fired
+    assert abs(crawling._floor_stalled - 0.12) < 1e-9, (
+        f"the guard recorded {crawling._floor_stalled}, which is not the executed speed")
+
+
+def test_a_proportional_transport_changes_nothing_the_go2_ever_measured():
+    """⚠️ ANTI-REGRESSION FOR EVERY RECORDED RUN IN ``evidence/``.
+
+    The Go2's numbers are what this planner was tuned and measured against, and issue
+    #145's fix is for a different robot. ``PROPORTIONAL`` is identity and
+    ``_executed`` returns the caller's own array, so the arithmetic is not merely
+    equivalent — it is the same operations on the same objects.
+
+    Asserted as EQUAL COMMANDS across a scene that exercises all four branches out of
+    ``plan``, rather than by inspecting ``_executed``: the claim is about behaviour, and
+    a test of the short-circuit would keep passing if a later edit reintroduced the
+    conversion somewhere else.
+    """
+    scenes = ([], [_bin_at(2.5)], [_bin_at(1.2, radius_m=0.35)], [_bin_at(0.30)],
+              [Obstacle(x=1.5, y=1.5, vx=0.0, vy=-0.6, radius_m=0.35)])
+    for scene in scenes:
+        for last in (STOPPED, CRUISING, (0.10, -0.05, 0.20)):
+            default = DynamicWindowPlanner(limits=Limits(), config=PlannerConfig())
+            stated = DynamicWindowPlanner(
+                limits=Limits(transport=PROPORTIONAL), config=PlannerConfig())
+            a = default.plan(ORIGIN, (3.0, 0.5), last, list(scene), now=0.0)
+            b = stated.plan(ORIGIN, (3.0, 0.5), last, list(scene), now=0.0)
+            assert a == b, (scene, last, a, b)
+            assert a.transport_refusal is None, a
+    assert Limits().transport is PROPORTIONAL
+    assert Limits().scaled(0.6).transport is PROPORTIONAL, \
+        "a derate dropped the transport model, so the planner silently became optimistic"
 
 
 if __name__ == "__main__":

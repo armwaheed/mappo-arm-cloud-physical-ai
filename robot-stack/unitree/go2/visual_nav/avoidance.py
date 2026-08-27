@@ -52,6 +52,27 @@ method, all measured and all worse than the stall — and it triggers on a fact 
 on the floor's value, because that value is a guess this repository's own evidence
 contradicts.
 
+AND A FOURTH, WHICH IS NOT ABOUT WHAT THE ROBOT SHOULD DO OR CAN DO BUT ABOUT WHETHER
+THIS FILE'S ARITHMETIC IS ABOUT THE RIGHT ROBOT. Every rollout above assumes the legs
+receive the velocity that was sampled. On the Go2 they do. On the Lite3's profile-gated
+simple-axis transport they do not, and the difference is not a lag: that mapping is
+SIGN-ONLY, so its executable set on each axis is ``{0, one evidenced speed}`` and a
+sampled 0.05 m/s crawl and a sampled 0.55 m/s sprint are the same legs. A planner
+creeping past a bin 0.72 m away therefore walked into it at full speed while
+``is_feasible`` validated the crawl — issue #145, the inverse of the freeze above on the
+same command.
+
+:class:`ProportionalTransport` is that assumption written down and
+:attr:`Limits.transport` is where a platform states its own. Everything downstream —
+gaps, feasibility, the stopping-distance cap, the cost, the gait-floor guard — is asked
+about the EXECUTED velocity, so on a Go2 nothing changed and on a Lite3 the geometry
+checked is the geometry that happens. A command whose execution the transport cannot
+name is infeasible rather than optimistic, and when a hold is the transport's doing
+rather than the room's, :meth:`DynamicWindowPlanner._transport_refusal` says so with
+both numbers in it. Note what is NOT here: nothing clamps a magnitude, because on a
+sign-only transport there is no magnitude to clamp — GO and STOP is the whole vocabulary,
+which is why #26's guard was already shaped as a stop rather than a slower command.
+
 Body frame ``+x`` forward / ``+y`` left; planning frame is the estimator's odom frame.
 Pure numpy, no robot needed — ``python3 test_avoidance.py``.
 """
@@ -62,6 +83,7 @@ import math
 import time
 from collections import deque
 from dataclasses import dataclass
+from typing import ClassVar, Protocol
 
 import numpy as np
 
@@ -208,6 +230,82 @@ def base_reason(reason: str) -> str:
     return tail if separator and tail in PLANNER_REASONS else reason
 
 
+class TransportModel(Protocol):
+    """What a platform must be able to answer about its own legs. Issue #145.
+
+    A PROTOCOL RATHER THAN A BASE CLASS, because the only implementation that is not
+    :class:`ProportionalTransport` lives in another robot's package
+    (``deep_robotics.lite3.locomotion.lite3_axis_locomotion.SignOnlyAxisTransport``) and
+    must not have to import this file to be one. The three members are the whole
+    contract and each is argued for in :class:`ProportionalTransport`.
+    """
+
+    #: ``True`` only for a transport that honours magnitudes on EVERY axis. Read rather
+    #: than inferred: "executed == commanded for the commands I tried" is a weaker claim
+    #: and does not license the planner to skip the conversion.
+    is_proportional: bool
+
+    def executed(self, commands) -> tuple[list, list]:
+        """``(rows, known)`` for a sequence of ``(vx, vy, wz)`` commands.
+
+        ``rows[i]`` is what the legs will receive. ``known[i]`` is ``False`` when no
+        executed velocity can be named for that command, which the planner treats as
+        infeasible rather than as a guess.
+        """
+
+    def describe(self) -> str:
+        """One line for the top of a run log, naming the executable set."""
+
+
+@dataclass(frozen=True)
+class ProportionalTransport:
+    """A transport that delivers the magnitude it is given. The default, and the Go2's.
+
+    ⚠️ **THE ASSUMPTION EVERY ROLLOUT IN THIS FILE USED TO MAKE WITHOUT SAYING SO.**
+    Sampling a velocity, predicting where it takes the robot and refusing the ones that
+    end inside something is only a safety argument if the legs receive the velocity that
+    was sampled. On the Go2 they do, within the vendor controller's tracking lag, which
+    is what :meth:`DynamicWindowPlanner._window` already accounts for by planning from
+    the last COMMANDED velocity.
+
+    On the Lite3's simple-axis transport they do not, and the gap is not a lag. That
+    mapping is sign-only: its executable set on each axis is ``{0, one evidenced
+    speed}``, so a sampled 0.05 m/s and a sampled 0.55 m/s are the same legs. Issue #145
+    is what happens next — a planner creeping past a bin at 0.05 m/s walks into it at
+    0.30, with ``is_feasible`` having validated the 0.05. The fix is not to clamp a
+    magnitude, because there is no magnitude to clamp; it is for the planner to ask what
+    the legs will do before it predicts where the robot will be.
+
+    So this class exists to make the assumption a STATEMENT rather than a silence. It is
+    the default on :attr:`Limits.transport`, it is identity, and the planner
+    short-circuits on :attr:`is_proportional` so a Go2 run does not compute, allocate or
+    round anything it did not before. A platform whose transport is not proportional
+    supplies its own; ``deep_robotics.lite3.locomotion.lite3_axis_locomotion
+    .SignOnlyAxisTransport`` is the one this repository ships.
+
+    The contract is :class:`TransportModel`, three members and no more. The last of
+    them earns its place: a transport that substitutes magnitudes and never says so is
+    the defect, not the mitigation.
+    """
+
+    #: ``ClassVar``, not a field: a per-instance flag would let a caller construct a
+    #: ``ProportionalTransport(is_proportional=False)`` — or, worse, a sign-only one
+    #: claiming to be proportional, which switches the whole of issue #145's fix off
+    #: with a keyword argument. It also keeps this dataclass field-free, so every
+    #: instance compares equal and ``Limits()`` equality is unaffected.
+    is_proportional: ClassVar[bool] = True
+
+    def executed(self, commands) -> tuple[list, list]:
+        return list(commands), [True] * len(commands)
+
+    def describe(self) -> str:
+        return "proportional transport: the legs receive the commanded velocity"
+
+
+#: The default transport model: what this planner assumed, now written down.
+PROPORTIONAL = ProportionalTransport()
+
+
 @dataclass(frozen=True)
 class Limits:
     """Velocity and acceleration envelope the planner may command.
@@ -261,6 +359,25 @@ class Limits:
     #: floor, which is a real configuration and is why nothing here may assume ordering.
     gait_floor: float = MIN_GAIT_COMMAND_M_S
 
+    #: WHAT THE LEGS DO WITH A COMMAND, which until issue #145 nothing anywhere stated.
+    #: :data:`PROPORTIONAL` — the default, and the Go2's — means they receive it. The
+    #: Lite3's simple-axis transport does not: it is sign-only, its executable set per
+    #: axis is ``{0, one evidenced speed}``, and a 0.05 m/s crawl leaves as a full-speed
+    #: primitive. See :class:`ProportionalTransport` for the contract.
+    #:
+    #: IT SITS BESIDE ``gait_floor`` FOR THE SAME REASON ``gait_floor`` SITS HERE, and
+    #: it is the more general form of the same question. The envelope above says what
+    #: the planner is ALLOWED to command; both of these say what the robot is ABLE to
+    #: execute. ``gait_floor`` answers it with one number, which is exactly the shape
+    #: issue #42 says cannot hold two floors that differ by 2x — and on this transport
+    #: cannot hold a floor that is also the ceiling. A transport model answers it with
+    #: the set.
+    #:
+    #: NOT SCALED BY :meth:`scaled`, like ``gait_floor`` and for the same reason: a
+    #: derate is an instruction to the planner to ask for less, and it does not reach
+    #: the legs of a robot that discards the magnitude anyway.
+    transport: TransportModel = PROPORTIONAL
+
     def scaled(self, factor: float) -> Limits:
         """A uniformly derated envelope (the arm-fitted conservative profile).
 
@@ -274,7 +391,7 @@ class Limits:
         return Limits(max_vx=self.max_vx * factor, max_vy=self.max_vy * factor,
                       max_wz=self.max_wz * factor, accel_x=self.accel_x * factor,
                       accel_y=self.accel_y * factor, accel_wz=self.accel_wz * factor,
-                      gait_floor=self.gait_floor)
+                      gait_floor=self.gait_floor, transport=self.transport)
 
 
 @dataclass(frozen=True)
@@ -408,6 +525,13 @@ class Command:
     #: sub-floor speed the robot was measured not to walk at
     #: (:meth:`DynamicWindowPlanner._gait_floor_stop`).
     #:
+    #: THE SPEED THE LEGS WERE GIVEN, which on a proportional transport is the speed
+    #: that was commanded and on a sign-only one is not (issue #145). The banners that
+    #: print it — ``visual_nav._blocked_reason`` and ``mappo_drive._announce_sub_floor``
+    #: — say "commanded", which is exact on the Go2 that produced every recorded run and
+    #: is the number a Lite3 reader wants either way: it is the speed that failed to
+    #: move the robot.
+    #:
     #: Three states a reader could not tell apart before issue #26, all of which leave a
     #: stationary robot in the record and one of which is an alarm:
     #:
@@ -425,6 +549,23 @@ class Command:
     #: ``test_avoidance.test_every_branch_that_returns_a_command_states_its_search``
     #: fails on a branch that does not.
     floor_reach_m_s: float | None = None
+    #: WHY A STOP IS THE TRANSPORT'S FAULT RATHER THAN THE ROOM'S. ``None`` on every
+    #: ordinary tick and on every ordinary hold. Set only when the planner had a command
+    #: it would have been happy to issue and the LEGS' version of it is the one that
+    #: ends inside something — the issue #145 case, where a sign-only transport turns a
+    #: crawl into a full-speed primitive.
+    #:
+    #: A sentence rather than a number, and both numbers are in it: what was asked and
+    #: what would have happened. One number cannot say this. "0.05" is not a finding;
+    #: "asked for 0.05 m/s, the legs would receive 0.30 m/s, which ends 0.18 m inside
+    #: the bin's hard gap" is, and it is the sentence that stops the next reader
+    #: concluding the planner is over-cautious and raising a ceiling.
+    #:
+    #: Forwarded by any wrapper that returns a command of its own, exactly as
+    #: :attr:`floor_reach_m_s` and the two counts are, and
+    #: ``test_avoidance.test_every_branch_that_returns_a_command_states_its_search``
+    #: fails on a branch that drops it.
+    transport_refusal: str | None = None
 
     @property
     def is_stop(self) -> bool:
@@ -605,6 +746,148 @@ class DynamicWindowPlanner:
         self._floor_stalled = float(speed)
         return self._floor_stalled
 
+    # ── What the legs will actually do ─────────────────────────────────
+    def _executed(self, commands: np.ndarray) -> tuple[np.ndarray, np.ndarray | None]:
+        """``(what the legs receive, which of those can be named)`` for these commands.
+
+        ⚠️ **EVERY ROLLOUT IN THIS PLANNER GOES THROUGH HERE, AND THAT IS ISSUE #145.**
+        Sampling a velocity and predicting where it takes the robot is a safety argument
+        only if the legs receive the velocity that was sampled. The Lite3's simple-axis
+        transport discards the magnitude — its executable set per axis is ``{0, one
+        evidenced speed}`` — so a sampled 0.05 m/s crawl past a bin and a sampled
+        0.55 m/s sprint are the same legs, and a rollout of the 0.05 describes a robot
+        that is not in the room.
+
+        ``known`` is ``None`` for a proportional transport and the array itself is the
+        input, unconverted and uncopied: a Go2 run allocates nothing, rounds nothing and
+        produces bit-identical numbers to the version before this method existed. That
+        is deliberate rather than an optimisation — the Go2's behaviour is what every
+        recorded run in ``evidence/`` measured, and a fix for another robot that moves
+        those numbers is a fix that has to be re-argued against all of them.
+        """
+        transport = self.limits.transport
+        if transport.is_proportional:
+            return commands, None
+        rows, known = transport.executed(commands.tolist())
+        return (np.asarray(rows, dtype=float).reshape(-1, 3),
+                np.asarray(known, dtype=bool))
+
+    def executed_velocity(self, command: tuple[float, float, float]
+                          ) -> tuple[float, float, float] | None:
+        """What the legs will receive for ONE command, or ``None`` if nobody can say.
+
+        The single-command form of :meth:`_executed`, public because a consumer outside
+        this file needs it and reaching into ``limits.transport`` from there would make
+        every such caller responsible for the ``is_proportional`` short-circuit and the
+        ``known`` mask. ``integration/mappo_drive.MappoPlanner._note_sub_floor`` is the
+        caller: it judges the emitted command against the robot's gait floor, and on a
+        sign-only transport the emitted NUMBER is not what the floor is about — the same
+        category error issue #145 is, in the half of #26 that only reports.
+        """
+        rows, known = self._executed(np.asarray([list(command)], dtype=float))
+        if known is not None and not bool(known[0]):
+            return None
+        row = rows[0]
+        return float(row[0]), float(row[1]), float(row[2])
+
+    def _hard_gap_mask(self, rows: np.ndarray, pose: tuple[float, float, float],
+                       obstacles: list[Obstacle], margin: float) -> np.ndarray:
+        """Which of these velocities keep every obstacle's hard gap over the horizon."""
+        if not obstacles:
+            return np.ones(rows.shape[0], dtype=bool)
+        xy, _ = self._rollout(rows, pose)
+        required = self._hard_gaps(obstacles)[None, :] + margin
+        return (self._gaps(xy, obstacles) >= required).all(axis=1)
+
+    def _transport_refusal(self, candidates: np.ndarray, executed: np.ndarray,
+                           known: np.ndarray | None, moves: np.ndarray | None,
+                           pose: tuple[float, float, float],
+                           obstacles: list[Obstacle], margin: float) -> str | None:
+        """Why this hold is the TRANSPORT's doing rather than the room's, or ``None``.
+
+        ⚠️ **THE GUARD FOR ISSUE #145, AND IT IS A SENTENCE RATHER THAN A DECISION.**
+        The decision was already taken above: feasibility is computed on what the legs
+        will receive, so a command whose EXECUTION ends inside an obstacle is never
+        chosen and the planner holds through the branch it has always held through. What
+        is missing at that point is the reason, and without it the record of a Lite3
+        holding 1.4 m from a bin is indistinguishable from the record of one boxed in.
+        A reader who cannot tell those apart raises a ceiling, which is the wrong fix —
+        on this transport a ceiling reaches no leg at all.
+
+        Three answers, in this order, because the second is only interesting when the
+        first does not hold:
+
+        1. **Nothing this window can command moves the robot.** Every candidate executes
+           as a standstill, which on a sign-only transport means the whole reachable
+           window sits under the linear deadband. That is a fact about the loop rate and
+           the acceleration limit — the window is ``accel * control_dt``, and it has to
+           clear the deadband in ONE tick — and it is a robot that will never start.
+           Silent before this: sub-deadband commands emit nothing, so the robot stood
+           still while the log recorded a velocity.
+        2. **The planner had a command and the LEGS' version of it is the one that ends
+           inside something.** The issue #145 case. Named with both numbers.
+        3. **Neither.** The robot is boxed in, this returns ``None``, and the hold is the
+           room's fault rather than the transport's.
+
+        Costs one extra rollout, on hold ticks only, on a non-proportional transport
+        only. A Go2 never reaches the second line.
+
+        NOT A DECISION, DELIBERATELY. Nothing here may make a command executable, and
+        nothing here may refuse one the geometry accepted — a guard that can override
+        the choice is a second planner, and this repository has measured what happens
+        when the two disagree (``_gait_floor_stop``, four reverted attempts).
+        """
+        transport = self.limits.transport
+        if transport.is_proportional or moves is None:
+            return None
+        if not moves.any():
+            fastest = float(np.hypot(candidates[:, 0], candidates[:, 1]).max())
+            return (f"no command in this tick's reachable window moves the robot: the "
+                    f"fastest it could ask for is {fastest:.3f} m/s and every command "
+                    f"in it executes as a standstill. The acceleration-limited window "
+                    f"is accel x control_dt and has to clear the transport's deadband "
+                    f"in one tick — {transport.describe()}")
+        # The counterfactual: would a command in this window have kept every hard gap
+        # if the transport honoured its magnitude? Restricted to candidates that DO move
+        # the legs, because a standstill is trivially feasible and naming one would
+        # report "asked for 0.000 m/s" on a tick where the planner wanted to walk.
+        #
+        # The stopping-distance cap is deliberately not part of it. That cap bounds a
+        # REAL speed, and a slower requested speed passes it by construction, so folding
+        # it in could only ever widen the blame — a robot held by its own stopping
+        # distance would start reporting the transport as the cause.
+        as_commanded = self._hard_gap_mask(candidates, pose, obstacles, margin) & moves
+        wanted = np.flatnonzero(as_commanded)
+        if wanted.size == 0:
+            return None                   # boxed in whatever the transport does
+        # The SLOWEST command the planner could have issued, because that is the one the
+        # substitution is worst for and the one a reader has to see. Naming the fastest
+        # instead would quote an asked-for speed close to the primitive's and make a 6x
+        # amplification read as a rounding.
+        speeds = np.hypot(candidates[wanted, 0], candidates[wanted, 1])
+        pick = int(wanted[int(np.argmin(speeds))])
+        asked = float(np.hypot(candidates[pick, 0], candidates[pick, 1]))
+        if known is not None and not bool(known[pick]):
+            return (f"asked for {asked:.3f} m/s and no executed velocity can be named "
+                    f"for it, so it cannot be rolled out and is refused rather than "
+                    f"sent at a speed nothing has timed — {transport.describe()}")
+        delivered = float(np.hypot(executed[pick, 0], executed[pick, 1]))
+        # WHICH of the planner's two refusals removed it. Derived rather than passed in,
+        # so the sentence cannot drift from the branch that produced it. The second
+        # branch — the stopping-distance cap — is defensive rather than observed: with
+        # `decel_for_stopping_m_s2` at 0.5 the cap is `sqrt(gap - hard)`, so an executed
+        # speed `v` outruns it only when `gap < v^2 + hard`, while surviving the branch
+        # above needs `gap >= v * horizon_s + hard`. Both hold together only for
+        # `v > horizon_s` — 2.5 m/s — which no quadruped in this repository approaches.
+        clears = bool(self._hard_gap_mask(executed[pick:pick + 1], pose, obstacles,
+                                          margin)[0])
+        failed = ("outruns the distance this robot can stop in inside the space it can "
+                  "see to be clear" if clears else
+                  "ends inside an obstacle's hard gap")
+        return (f"asked for {asked:.3f} m/s and the legs would receive "
+                f"{delivered:.3f} m/s, whose own rollout {failed}; refused rather than "
+                f"executed at a speed nothing validated — {transport.describe()}")
+
     # ── Sampling ───────────────────────────────────────────────────────
     def _window(self, current: tuple[float, float, float], control_dt: float
                 ) -> np.ndarray:
@@ -773,10 +1056,33 @@ class DynamicWindowPlanner:
         intervenes late lets the robot get closer, where it then has to intervene more.
         The parameter is here so that argument can be re-run, not so it can be tuned
         casually.
+
+        ⚠️ **IT ROLLS OUT WHAT THE LEGS WILL RECEIVE, NOT WHAT WAS ASKED FOR** — issue
+        #145. On a proportional transport those are the same tuple and nothing about
+        this method changed. On the Lite3's sign-only simple-axis transport they are
+        not: a supervisory veto that validated 0.05 m/s over 2.5 s while the legs got
+        0.30 m/s examined a sixth of the travel the robot was about to make, and said
+        yes to a lunge at the bin the policy was creeping past.
+
+        A command whose executed velocity cannot be NAMED is infeasible. That is the
+        fail-closed answer and it is not the same as a slow one: an unmeasured primitive
+        moves the robot at a speed nobody has timed, so there is no rollout to judge,
+        and "no rollout" must not resolve to "no objection". See
+        :meth:`DynamicWindowPlanner._executed`.
+
+        The empty-obstacle early return stays FIRST and stays unconditional, including
+        for an unnameable execution. It is this planner's documented optimism about a
+        world it cannot see (``evidence/2026-08-26-no-open-bearing/``), it is what every
+        dry run and offline suite depends on, and making it depend on a transport
+        measurement would turn one platform's missing field into a repository-wide
+        refusal to plan.
         """
         if not obstacles:
             return True
-        xy, _ = self._rollout(np.asarray([list(command)], dtype=float), pose)
+        rows, known = self._executed(np.asarray([list(command)], dtype=float))
+        if known is not None and not bool(known[0]):
+            return False
+        xy, _ = self._rollout(rows, pose)
         if horizon_s is not None:
             # Truncating the path is equivalent to re-rolling with a shorter horizon and
             # cheaper: _gaps derives its per-step obstacle prediction times from
@@ -811,7 +1117,16 @@ class DynamicWindowPlanner:
         cfg = self.config
         clock = time.monotonic() if now is None else now
         candidates = self._window(last_command, control_dt)
-        xy, yaws = self._rollout(candidates, pose)
+        # EVERYTHING BELOW SCORES `executed`, NOT `candidates` — issue #145. The window
+        # is still sampled in commanded velocities, because that is what the vendor
+        # controller is handed and what the acceleration limit is about, but the gaps,
+        # the feasibility, the stopping-distance cap, the cost and the gait-floor guard
+        # are all questions about where the ROBOT goes. On a proportional transport
+        # these are the same array. On a sign-only one they are not, and scoring the
+        # commanded velocity is how a 0.05 m/s crawl came to be validated as safe and
+        # executed as a 0.30 m/s walk into the obstacle it was creeping past.
+        executed, known = self._executed(candidates)
+        xy, yaws = self._rollout(executed, pose)
         per_obstacle_gaps = self._gaps(xy, obstacles)
         gaps = self._worst_gap(per_obstacle_gaps)
 
@@ -832,6 +1147,38 @@ class DynamicWindowPlanner:
             feasible = (per_obstacle_gaps >= required).all(axis=1)
         else:
             feasible = np.ones(gaps.shape[0], dtype=bool)
+        moves = None
+        if known is not None:
+            # A command whose executed velocity cannot be named is not a slow command
+            # and not a safe one — it is a command with no rollout, and "no rollout"
+            # must not resolve to "no objection". Applied HERE, once, where feasibility
+            # is decided, rather than at each branch that reads it: a mask that has to
+            # be remembered is a mask that gets dropped, and this repository has shipped
+            # that exact shape (`veto-hold != hold`, five reads in three files).
+            #
+            # AND A COMMAND THE LEGS EXECUTE AS A STANDSTILL IS NOT A CANDIDATE, which
+            # is `_window`'s own rule arriving one layer down. That comment removed an
+            # appended stop row because "a stationary rollout never approaches anything,
+            # so its clearance term is zero by construction while every real command
+            # pays" — measured at 1.317 against 1.393 on the staged scene, and the
+            # planner returned `reason="goal"` with `v=(0,0,0)`. On a sign-only
+            # transport that hazard is much larger than one row: EVERY command under the
+            # linear deadband executes as a standstill, so a whole family of free
+            # lunches is in the window. Measured while writing this, with the shipped
+            # 0.05 m/s deadband and a bin 1.32 m ahead: 310 of 330 candidates were
+            # feasible, a moving command was available and validated, and the planner
+            # chose a commanded 0.000 m/s and labelled it `avoid`. That is worse than a
+            # hold for the reason `_window` gives — the word is not `hold`, so
+            # `visual_nav.blocked_stop` and the rest-after-blocked timer never start.
+            #
+            # Removing them can empty the feasible set, and that is the intended
+            # outcome rather than a side effect: it means nothing this window can
+            # command would move the robot, which is a fact about the configuration
+            # (the accel-limited window has to reach the deadband in ONE tick) and is
+            # reported by `_transport_refusal` instead of being stood through in
+            # silence. A pure TURN is not a standstill and survives this mask.
+            moves = np.any(executed != 0.0, axis=1)
+            feasible = feasible & known & moves
         if not feasible.any():
             # Swerve early, stop late — see the module docstring.
             # The guard sees this stop too. Not for the verdict — a hold is not evidence
@@ -845,7 +1192,10 @@ class DynamicWindowPlanner:
                            gap_m=float(gaps.max()), feasible=0,
                            evaluated=int(candidates.shape[0]),
                            floor_reach_m_s=self._gait_floor_stop(
-                               (0.0, 0.0, 0.0), pose, clock))
+                               (0.0, 0.0, 0.0), pose, clock),
+                           transport_refusal=self._transport_refusal(
+                               candidates, executed, known, moves, pose, obstacles,
+                               margin))
 
         # Never commit to a speed that outruns the space known to be clear. The margin
         # is NOT added here: this cap is about stopping distance, a physical quantity,
@@ -856,19 +1206,29 @@ class DynamicWindowPlanner:
                             else cfg.hard_gap_m)
         stopping_cap = math.sqrt(max(0.0, 2.0 * cfg.decel_for_stopping_m_s2
                                      * max(0.0, current_gap - nearest_hard_gap)))
-        feasible &= candidates[:, 0] <= max(stopping_cap, 1e-6)
+        # `executed`, not `candidates`. "Never outrun the stopping distance" is a claim
+        # about the robot's speed, and on a sign-only transport the commanded number is
+        # not it: a 0.05 m/s command clears any cap this expression can produce and
+        # still leaves at the primitive's speed. This was the second place issue #145's
+        # substitution went unnoticed, and unlike the rollout it is a scalar comparison
+        # that reads as though it had already been checked.
+        feasible &= executed[:, 0] <= max(stopping_cap, 1e-6)
         if not feasible.any():
             return Command(0.0, 0.0, 0.0, reason="hold", gap_m=float(current_gap),
                            feasible=0, evaluated=int(candidates.shape[0]),
                            floor_reach_m_s=self._gait_floor_stop(
-                               (0.0, 0.0, 0.0), pose, clock))
+                               (0.0, 0.0, 0.0), pose, clock),
+                           transport_refusal=self._transport_refusal(
+                               candidates, executed, known, moves, pose, obstacles,
+                               margin))
 
         # Built once and shared: the clearance cost and the avoid decision are two
         # views of the same quantity, and deriving the soft gaps twice invites them to
         # drift apart under a later edit.
         soft_gaps = self._soft_gaps(obstacles)
         clearance = self._clearance_cost(per_obstacle_gaps, soft_gaps)
-        cost = self._cost(candidates, xy, yaws, clearance, goal, pose, last_command)
+        cost = self._cost(executed, candidates, xy, yaws, clearance, goal, pose,
+                          last_command)
         cost = np.where(feasible, cost, np.inf)
         best = int(np.argmin(cost))
 
@@ -888,7 +1248,26 @@ class DynamicWindowPlanner:
         # lunge nor win on cost.
         chosen = (float(candidates[best, 0]), float(candidates[best, 1]),
                   float(candidates[best, 2]))
-        stalled = self._gait_floor_stop(chosen, pose, clock)
+        # THE GUARD JUDGES THE EXECUTED SPEED, not the commanded one — issue #145
+        # completing #26 rather than contradicting it. `_gait_floor_stop` asks "is this
+        # robot being told to move and not moving?", and on a sign-only transport the
+        # commanded number answers neither half: it is not what the legs get, so it is
+        # not what a floor should be compared against. Two consequences worth stating,
+        # because both look like the guard being switched off and neither is:
+        #
+        #   * A Lite3 whose primitive is at or above its `--gait-floor` can never
+        #     produce a sub-floor tick, so the guard never fires there. That is correct.
+        #     Such a robot walks at the primitive's speed or stands still; if it is
+        #     commanded and stationary, the cause is not a gait floor and the stack's own
+        #     stall gate is the thing that should say so.
+        #   * A Lite3 whose primitive is BELOW its stated floor is sub-floor on every
+        #     moving tick, and the guard fires after two seconds of covering no ground —
+        #     which is exactly the finding an operator needs, and which comparing the
+        #     commanded 0.05 against a 0.30 floor would have reported on every tick of
+        #     every run regardless of whether the robot moved.
+        stalled = self._gait_floor_stop(
+            (float(executed[best, 0]), float(executed[best, 1]),
+             float(executed[best, 2])), pose, clock)
         if stalled is not None:
             # `hold`, not this tick's `avoid`/`goal` label. A stop IS a hold in this
             # vocabulary, and `hold` is the word `visual_nav.blocked_stop` reads to put
@@ -898,13 +1277,21 @@ class DynamicWindowPlanner:
             return Command(0.0, 0.0, 0.0, reason="hold", gap_m=float(gaps[best]),
                            feasible=int(feasible.sum()),
                            evaluated=int(candidates.shape[0]),
-                           floor_reach_m_s=stalled)
+                           floor_reach_m_s=stalled, transport_refusal=None)
 
+        # `transport_refusal=None` on the one branch that issues a velocity, and it is a
+        # statement rather than a default: reaching this line means the command's
+        # EXECUTION was rolled out, cleared every hard gap and cleared the stopping
+        # cap. The magnitude may still have been substituted — on a sign-only transport
+        # it almost always is — and that substitution is a property of the run rather
+        # than of the tick, which is why the transport says it once at the top of the
+        # log (`ProportionalTransport.describe`) instead of on every command.
         return Command(
             vx=chosen[0], vy=chosen[1], wz=chosen[2],
             reason="avoid" if gaps[best] < avoid_threshold else "goal",
             gap_m=float(gaps[best]), feasible=int(feasible.sum()),
-            evaluated=int(candidates.shape[0]), floor_reach_m_s=None)
+            evaluated=int(candidates.shape[0]), floor_reach_m_s=None,
+            transport_refusal=None)
 
     @staticmethod
     def _clearance_cost(per_obstacle_gaps: np.ndarray,
@@ -924,14 +1311,23 @@ class DynamicWindowPlanner:
         crowding = np.clip((soft - per_obstacle_gaps) / soft, 0.0, 1.0)
         return crowding.max(axis=1)
 
-    def _cost(self, candidates: np.ndarray, xy: np.ndarray, yaws: np.ndarray,
-              clearance_cost: np.ndarray, goal: tuple[float, float],
-              pose: tuple[float, float, float],
+    def _cost(self, executed: np.ndarray, commanded: np.ndarray, xy: np.ndarray,
+              yaws: np.ndarray, clearance_cost: np.ndarray,
+              goal: tuple[float, float], pose: tuple[float, float, float],
               last_command: tuple[float, float, float]) -> np.ndarray:
         """Total cost per candidate. Every term is normalised to ~0..1 first.
 
         ``clearance_cost`` arrives already normalised from :meth:`_clearance_cost`,
         which is the one term that needs per-obstacle knowledge.
+
+        TWO ARRAYS BECAUSE TWO OF THESE TERMS ARE ABOUT DIFFERENT THINGS — issue #145.
+        ``executed`` is what the legs will do and is what ``xy``/``yaws`` were rolled
+        from, so every term about WHERE THE ROBOT ENDS UP reads it. ``commanded`` is
+        what the vendor controller is handed, and ``smooth_cost`` — which exists to stop
+        the planner dithering between two equal swerves and to keep the target a gait
+        controller can track — is about the command changing, so it reads that. On a
+        proportional transport they are the same array and this distinction costs
+        nothing.
         """
         cfg, lim = self.config, self.limits
         goal_xy = np.asarray(goal, dtype=float)
@@ -951,14 +1347,20 @@ class DynamicWindowPlanner:
                                      goal_xy[0] - end_xy[:, 0])
         heading_cost = np.abs(wrap_pi(bearing_to_goal - yaws[:, -1])) / math.pi
 
-        speed_cost = (lim.max_vx - candidates[:, 0]) / max(lim.max_vx, 1e-6)
+        # `executed`: "prefer going faster" is a preference about the robot, and on a
+        # sign-only transport every command that fires the primitive is equally fast.
+        # Reading the commanded number instead would rank a 0.05 m/s command above a
+        # 0.30 m/s one that the legs execute identically, and the tie-break would then
+        # decide which number the vendor controller is handed on every tick — see
+        # `_window`, which anchors the next tick's sampling on exactly that number.
+        speed_cost = (lim.max_vx - executed[:, 0]) / max(lim.max_vx, 1e-6)
 
         # Penalise jerky command changes — the vendor gait tracks a smooth target far
         # better, and it stops the planner dithering between two equal-cost swerves.
         smooth_cost = (
-            np.abs(candidates[:, 0] - last_command[0]) / max(lim.max_vx, 1e-6)
-            + np.abs(candidates[:, 1] - last_command[1]) / max(lim.max_vy, 1e-6)
-            + np.abs(candidates[:, 2] - last_command[2]) / max(lim.max_wz, 1e-6)
+            np.abs(commanded[:, 0] - last_command[0]) / max(lim.max_vx, 1e-6)
+            + np.abs(commanded[:, 1] - last_command[1]) / max(lim.max_vy, 1e-6)
+            + np.abs(commanded[:, 2] - last_command[2]) / max(lim.max_wz, 1e-6)
         ) / 3.0
 
         return (cfg.weight_goal * goal_cost

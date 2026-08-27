@@ -6,7 +6,7 @@
 
 from __future__ import annotations
 
-from avoidance import MIN_GAIT_COMMAND_M_S
+from avoidance import MIN_GAIT_COMMAND_M_S, PROPORTIONAL
 from camera import Go2Camera
 from safety import (
     LATCH_DRIFT_TOLERANCE_DEG,
@@ -154,6 +154,19 @@ class Go2Bindings:
 
     def gait_floor(self, _args) -> float:
         return MIN_GAIT_COMMAND_M_S
+
+    def transport_model(self, _args):
+        """The Go2's legs receive the velocity they are commanded.
+
+        Stated rather than left to the planner's default, because it is a CLAIM about
+        this robot and issue #145 is what happens when the claim is a silence. The Go2's
+        ``SportClient`` takes a body-frame velocity and tracks it; the lag is real and
+        the planner already handles it by sampling from the last commanded velocity
+        rather than the measured one. That is a different thing from the Lite3's
+        simple-axis transport, which discards the magnitude entirely and has an
+        executable set of two values per axis.
+        """
+        return PROPORTIONAL
 
     def robot_radius(self, args, default: float) -> float:
         return default if args.robot_radius is None else args.robot_radius

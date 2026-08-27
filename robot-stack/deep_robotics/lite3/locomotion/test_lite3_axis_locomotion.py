@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import math
 import socket
 import struct
 import sys
@@ -26,7 +27,9 @@ from deep_robotics.lite3.locomotion.lite3_axis_locomotion import (
     AxisProfileError,
     AxisStreamSender,
     AxisValues,
+    ExecutedVelocity,
     Lite3AxisLocomotion,
+    SignOnlyAxisTransport,
 )
 from deep_robotics.lite3.locomotion.lite3_axis_udp import (
     FORWARD_AXIS_CODE,
@@ -637,6 +640,181 @@ def test_the_only_two_forward_speeds_this_transport_has_are_zero_and_the_primiti
         raw = profile.map_velocity(vx, 0.0, 0.0).forward
         speeds.add(0.0 if raw == 0 else profile.measured_speeds["forward_positive"])
     assert speeds == {0.0, 0.30}, speeds
+
+
+def test_executed_velocity_answers_in_metres_per_second_what_map_velocity_answers_in_bytes():
+    """⚠️ ISSUE #145. THE NUMBER NOTHING BETWEEN THE PLANNER AND THE LEGS EVER COMPUTED.
+
+    ``map_velocity`` says which raw value goes on the wire, and the wire carries no
+    magnitude. Nobody converted it back, so a stopping-distance cap, a feasibility
+    rollout and a gait floor were each applied to the number the planner typed. This is
+    the conversion, and the table it pins is the issue's own probe.
+    """
+    profile = _load_profile(_profile_data(
+        measured_m_s={"forward_positive": 0.30, "forward_negative": 0.22,
+                      "lateral_positive": 0.14, "lateral_negative": 0.12},
+        measured_rad_s={"yaw_positive": 0.55, "yaw_negative": 0.61}))
+
+    # Under the linear deadband: nothing. This is the only slow this transport has.
+    for crawl in (0.0, 0.02, 0.049):
+        assert profile.executed_velocity(crawl, 0.0, 0.0) == ExecutedVelocity(0.0, 0.0, 0.0)
+
+    # At and above it: one speed, whatever was asked for. The whole finding in one line.
+    executed = {profile.executed_velocity(vx, 0.0, 0.0).vx
+                for vx in (0.05, 0.10, 0.20, 0.34, 0.35, 0.55, 5.0)}
+    assert executed == {0.30}, executed
+
+    # Yaw has the SAME CLIFF one axis along: its own deadband, then one rate.
+    rates = {profile.executed_velocity(0.0, 0.0, wz).yaw
+             for wz in (0.10, 0.30, 0.90, 4.0)}
+    assert rates == {0.61}, rates
+    assert profile.executed_velocity(0.0, 0.0, 0.09).yaw == 0.0
+
+    # A refused direction refuses here too, and for the same reason it refuses there: a
+    # command this transport cannot express has no executed velocity either.
+    bare = _load_profile(_profile_data(forward_negative=None, measured_m_s={}))
+    try:
+        bare.executed_velocity(-1.0, 0.0, 0.0)
+    except AxisProfileError as error:
+        assert "negative forward" in str(error), error
+    else:
+        raise AssertionError("named an executed velocity for a direction with no primitive")
+
+
+def test_the_executed_left_speed_comes_from_the_primitive_that_delivers_left():
+    """⚠️ TWO OF THE SIX ROWS CROSS, AND READING THEM OFF THE NAMES INVERTS THE ROBOT.
+
+    The shared navigator's ``+y`` and ``+yaw`` are LEFT; the vendor's positive raw value
+    is RIGHT. ``map_velocity`` already inverts those two axes, so the primitive that
+    delivers a LEFT step is the one called ``lateral_negative`` and its ``measured_m_s``
+    entry is a left-step speed. A table built from the names instead puts this robot's
+    measured left speed on its right-hand strafe, and a profile whose two sides happen
+    to be measured equal — which is what an operator will paste in first — hides it
+    completely. Asymmetric numbers here on purpose.
+    """
+    profile = _load_profile(_profile_data(
+        measured_m_s={"lateral_positive": 0.14, "lateral_negative": 0.12},
+        measured_rad_s={"yaw_positive": 0.55, "yaw_negative": 0.61}))
+
+    left = profile.executed_velocity(0.0, 0.20, 0.0)
+    right = profile.executed_velocity(0.0, -0.20, 0.0)
+    assert left.vy == 0.12, left        # lateral_negative delivers left
+    assert right.vy == -0.14, right     # lateral_positive delivers right
+    assert profile.map_velocity(0.0, 0.20, 0.0).lateral == -13000, "left is negative raw"
+
+    assert profile.executed_velocity(0.0, 0.0, 0.5).yaw == 0.61   # yaw_negative is left
+    assert profile.executed_velocity(0.0, 0.0, -0.5).yaw == -0.55
+
+
+def test_an_undeclared_primitive_speed_is_an_absence_and_not_a_zero():
+    """``0.0`` would read as "this axis stays still", which is the one thing it will not.
+
+    ``nan`` plus the name, so a consumer that ignores ``unmeasured`` gets an answer that
+    fails every comparison rather than one that reads as a stop. The Lite3's
+    ``measured_rad_s`` is undeclared on every profile in this repository — deliberately;
+    ``commissioning/axis_primitive_probe.py`` refuses to time yaw while
+    ``Segment.yaw_change_deg`` can report a turn through pi backwards — so this is the
+    state a real robot is in today.
+    """
+    profile = _load_profile(_profile_data(measured_m_s={"forward_positive": 0.30}))
+
+    turning = profile.executed_velocity(0.30, 0.0, 0.5)
+    assert turning.vx == 0.30
+    assert math.isnan(turning.yaw), turning
+    assert turning.unmeasured == ("yaw_negative",), turning
+    assert not turning.is_known and turning.translates
+
+    blind = _load_profile(_profile_data())          # nothing measured at all
+    walking = blind.executed_velocity(0.30, 0.0, 0.0)
+    assert math.isnan(walking.vx), walking
+    assert walking.unmeasured == ("forward_positive",), walking
+    assert not walking.is_known
+
+    # A stop names nothing, because nothing fires.
+    assert blind.executed_velocity(0.0, 0.0, 0.0) == ExecutedVelocity(0.0, 0.0, 0.0)
+
+
+def test_the_sign_only_transport_refuses_a_step_on_an_arc_nobody_has_timed():
+    """The planner seam, and the one carve-out in it.
+
+    ``SignOnlyAxisTransport.executed`` is what ``avoidance.DynamicWindowPlanner`` asks
+    before it rolls anything forward. ``known=False`` means "no executed velocity can be
+    named", which the planner treats as infeasible — fail closed.
+
+    A PURE TURN with an unmeasured rate survives, and that is load bearing rather than a
+    convenience: ``measured_rad_s`` is empty on every profile here and the deployment SOP
+    runs at ``--max-wz 0.90``, so refusing every turn would leave a robot that can only
+    walk in a straight line. A pure turn's rollout is a POINT — ``_rollout`` holds ``x``
+    and ``y`` constant when ``vx`` and ``vy`` are zero — so its positions do not depend
+    on the rate, and the rate reaches only the heading cost.
+    """
+    transport = SignOnlyAxisTransport(_load_profile(_profile_data(
+        measured_m_s={"forward_positive": 0.30})))
+    assert not transport.is_proportional
+
+    rows, known = transport.executed([
+        (0.05, 0.0, 0.0),      # crawl: the primitive, straight
+        (0.55, 0.0, 0.0),      # sprint: the same primitive, same speed
+        (0.02, 0.0, 0.0),      # under the deadband: a stop
+        (0.30, 0.0, 0.5),      # step AND turn on an unmeasured arc: unnameable
+        (0.0, 0.0, 0.5),       # turn in place on the same arc: allowed
+        (0.30, 0.0, 0.05),     # sub-deadband yaw never fires, so nothing is unknown
+    ])
+    assert known == [True, True, True, False, True, True], known
+    assert rows[0] == rows[1] == (0.30, 0.0, 0.0), rows
+    assert rows[2] == (0.0, 0.0, 0.0)
+    assert rows[3] == (0.0, 0.0, 0.0), "an unnameable row must be inert, not nan"
+    assert rows[4] == (0.0, 0.0, 0.5), "the requested rate, for cost only"
+    assert rows[5] == (0.30, 0.0, 0.0)
+
+    # A direction the profile cannot express at all is an ANSWER here and an ERROR at
+    # `set_velocity`, and the difference is which question is being asked. The planner
+    # asks a hypothetical about 330 sampled velocities and must not have its control
+    # loop aborted by one of them; a real command that this transport cannot send has to
+    # raise. Deleting the guard leaves this suite green and the run loop crashing on the
+    # first tick that samples a turn.
+    no_yaw = SignOnlyAxisTransport(_load_profile(_profile_data(
+        yaw_positive=None, yaw_negative=None,
+        measured_m_s={"forward_positive": 0.30})))
+    rows, known = no_yaw.executed([(0.30, 0.0, 0.5), (0.30, 0.0, 0.0)])
+    assert known == [False, True], known
+    assert rows == [(0.0, 0.0, 0.0), (0.30, 0.0, 0.0)], rows
+    try:
+        no_yaw.profile.map_velocity(0.30, 0.0, 0.5)
+    except AxisProfileError as error:
+        assert "yaw" in str(error), error
+    else:
+        raise AssertionError("a real command with no yaw primitive was sent anyway")
+
+    # With the rate declared the carve-out is not needed and the step-and-turn is named.
+    timed = SignOnlyAxisTransport(_load_profile(_profile_data(
+        measured_m_s={"forward_positive": 0.30},
+        measured_rad_s={"yaw_positive": 0.55, "yaw_negative": 0.61})))
+    rows, known = timed.executed([(0.30, 0.0, 0.5)])
+    assert known == [True] and rows == [(0.30, 0.0, 0.61)], (rows, known)
+
+
+def test_the_transport_describes_the_executable_set_rather_than_a_floor():
+    """``--gait-floor`` is one number and a reader assumes it names the bottom of a range.
+
+    It does not: there is no range. This sentence is what a run log gets instead, and
+    issue #42 is the other half of the same confusion — one field cannot hold a forward
+    floor and a lateral one that differ by 2x, and neither can it hold a floor that is
+    also the ceiling.
+    """
+    measured = SignOnlyAxisTransport(_load_profile(_profile_data(
+        measured_m_s={"forward_positive": 0.30, "lateral_negative": 0.12},
+        measured_rad_s={"yaw_positive": 0.55, "yaw_negative": 0.61})))
+    said = measured.describe()
+    assert "{0, 0.300} m/s" in said, said
+    assert "TWO VALUES, not a range" in said, said
+    assert "left strafe 0.120 m/s" in said, said
+    assert "NOT MEASURED" not in said, said
+
+    blind = SignOnlyAxisTransport(_load_profile(_profile_data(
+        measured_m_s={"forward_positive": 0.30})))
+    assert "yaw rate NOT MEASURED" in blind.describe(), blind.describe()
+    assert "never combined with a step" in blind.describe(), blind.describe()
 
 
 if __name__ == "__main__":

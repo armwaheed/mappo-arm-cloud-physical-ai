@@ -163,13 +163,19 @@ def test_live_axis_transport_requires_primitives_for_enabled_axes():
         else:
             raise AssertionError("accepted a live axis run with unsupported directions")
 
+        # `measured_m_s` declared for the second half, which is a live run that must be
+        # ACCEPTED. Since issue #145 a fired primitive with no measured speed is a
+        # refusal in its own right — see
+        # `test_an_unmeasured_linear_primitive_refuses_the_run_rather_than_warning` —
+        # so without it this half would pass for the wrong reason.
+        _axis_profile(profile, measured_m_s={"forward_positive": 0.30})
         args = _live_args(
             "--locomotion-transport", "axis",
             "--axis-profile", str(profile),
             "--max-vy", "0",
             "--max-wz", "0",
         )
-        binding.preflight_navigation(args, None, _Health())
+        Lite3Bindings().preflight_navigation(args, None, _Health())
 
 
 def test_live_axis_transport_refuses_protocol_rate_and_ttl_violations():
@@ -225,21 +231,123 @@ def test_a_primitive_measured_above_the_derated_envelope_is_refused_at_preflight
             _live_args(*common, "--max-vx", "0.80", "--derate", "1.0"), None, _Health())
 
 
-def test_an_unmeasured_axis_primitive_says_the_envelope_was_never_checked():
-    """Silence here would read as "checked and fine". The measurement is optional; the
-    admission that there isn't one is not."""
+def test_an_unmeasured_linear_primitive_refuses_the_run_rather_than_warning():
+    """⚠️ WAS A WARNING UNTIL ISSUE #145, AND THE WARNING WAS THE WHOLE GAP.
+
+    An undeclared ``measured_m_s`` used to mean only that ``--max-vx`` had nothing to
+    compare against — a check nobody may have wanted. It means more than that now. The
+    mapping is sign-only, so the speed the legs produce IS the primitive's measured
+    speed; with the field absent, ``avoidance.DynamicWindowPlanner`` cannot roll out
+    what the robot will do, marks every candidate unnameable, and holds for the whole
+    run. A refusal in the operator's face before a leg moves is the same outcome,
+    findable.
+
+    Made to fail by putting the number back: the second half of this test is the same
+    profile with ``measured_m_s`` declared, and it walks through.
+    """
     binding = Lite3Bindings()
     with tempfile.TemporaryDirectory() as directory:
         profile = Path(directory) / "axis-profile.json"
         _axis_profile(profile)
         args = _live_args("--locomotion-transport", "axis", "--axis-profile", str(profile),
                           "--max-vy", "0", "--max-wz", "0")
+        try:
+            binding.preflight_navigation(args, None, _Health())
+        except SystemExit as error:
+            message = str(error)
+            assert "forward_positive" in message, message
+            assert "sign-only" in message, message
+            assert "axis_primitive_probe" in message, message
+        else:
+            raise AssertionError(
+                "accepted a linear primitive whose delivered speed nobody has timed")
+
+        _axis_profile(profile, measured_m_s={"forward_positive": 0.30})
+        Lite3Bindings().preflight_navigation(
+            _live_args("--locomotion-transport", "axis", "--axis-profile", str(profile),
+                       "--max-vy", "0", "--max-wz", "0"), None, _Health())
+
+
+def test_an_unmeasured_yaw_rate_warns_and_names_what_the_planner_will_not_do():
+    """The SAME defect one axis along, and deliberately not a refusal. Issue #145.
+
+    ``input_deadband.yaw_rad_s`` is the rate at which the yaw primitive fires at full
+    scale, exactly as ``linear_m_s`` is for forward, so ``--max-wz`` never reaches the
+    wire either. It cannot be fixed the same way because nothing has measured it:
+    ``commissioning/axis_primitive_probe.py`` refuses to time yaw while
+    ``Segment.yaw_change_deg`` can report a turn through pi backwards, so
+    ``measured_rad_s`` is empty on every profile in this repository and the deployment
+    SOP's live command runs at ``--max-wz 0.90``. Refusing would leave a robot that
+    cannot turn at all, which is a worse failure than the one being fixed.
+
+    What is enforced instead is that the cost is SAID: the planner will not combine a
+    turn with a step, because a rollout that translates on an unknown arc ends somewhere
+    nobody can name.
+    """
+    binding = Lite3Bindings()
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(
+            profile,
+            evidence={"forward_positive": "e", "yaw_positive": "e", "yaw_negative": "e"},
+            primitives={"forward_positive": 7000, "forward_negative": None,
+                        "lateral_positive": None, "lateral_negative": None,
+                        "yaw_positive": 10000, "yaw_negative": -10000},
+            measured_m_s={"forward_positive": 0.30},
+        )
+        args = _live_args("--locomotion-transport", "axis", "--axis-profile", str(profile),
+                          "--max-vy", "0", "--max-wz", "0.90")
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             binding.preflight_navigation(args, None, _Health())
         printed = stdout.getvalue()
-        assert "AXIS SPEEDS ARE NOT VERIFIED AGAINST THE ENVELOPE" in printed
-        assert "forward_positive" in printed
+        assert "THE EXECUTED YAW RATE IS NOT MEASURED" in printed, printed
+        assert "yaw_positive" in printed and "yaw_negative" in printed, printed
+        assert "WILL NOT TURN AND STEP AT THE SAME TIME" in printed, printed
+
+        # And it goes quiet once the rate is declared — the complement, without which
+        # this test would pass against a binding that printed the banner unconditionally.
+        _axis_profile(
+            profile,
+            evidence={"forward_positive": "e", "yaw_positive": "e", "yaw_negative": "e"},
+            primitives={"forward_positive": 7000, "forward_negative": None,
+                        "lateral_positive": None, "lateral_negative": None,
+                        "yaw_positive": 10000, "yaw_negative": -10000},
+            measured_m_s={"forward_positive": 0.30},
+            measured_rad_s={"yaw_positive": 0.60, "yaw_negative": 0.60},
+        )
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            Lite3Bindings().preflight_navigation(args, None, _Health())
+        assert "THE EXECUTED YAW RATE IS NOT MEASURED" not in stdout.getvalue()
+
+
+def test_the_bindings_hand_the_planner_a_sign_only_transport_only_on_the_axis_path():
+    """The seam issue #145's fix travels through, and the one place it is chosen.
+
+    ``visual_nav.main`` asks the bindings for a transport model and puts it on
+    ``Limits``. Getting this wrong in either direction is silent: a Lite3 answering
+    ``PROPORTIONAL`` on the axis transport is the bug, and a UDP run answering
+    ``SignOnlyAxisTransport`` would refuse commands the vendor's complex-velocity sender
+    honours perfectly well.
+    """
+    from avoidance import PROPORTIONAL
+    from deep_robotics.lite3.locomotion.lite3_axis_locomotion import SignOnlyAxisTransport
+
+    binding = Lite3Bindings()
+    assert binding.transport_model(_args()) is PROPORTIONAL, "the UDP transport scales"
+    assert binding.transport_model(_args("--locomotion-transport", "ros2")) is PROPORTIONAL
+
+    with tempfile.TemporaryDirectory() as directory:
+        profile = Path(directory) / "axis-profile.json"
+        _axis_profile(profile, measured_m_s={"forward_positive": 0.30})
+        args = _args("--locomotion-transport", "axis", "--axis-profile", str(profile))
+        model = Lite3Bindings().transport_model(args)
+        assert isinstance(model, SignOnlyAxisTransport), model
+        assert not model.is_proportional
+        rows, known = model.executed([(0.05, 0.0, 0.0), (0.55, 0.0, 0.0)])
+        assert rows[0] == rows[1] == (0.30, 0.0, 0.0), rows
+        assert known == [True, True]
 
 
 def test_prepare_motion_checks_the_vendor_state_before_the_axis_transport_moves():
@@ -812,6 +920,85 @@ def test_an_offline_run_never_reaches_the_virtualenv_guard():
     finally:
         module.require_virtualenv = original
     assert calls == []
+
+
+def test_a_lite3_crawl_past_a_bin_is_refused_rather_than_walked_at_full_speed():
+    """⚠️ ISSUE #145 END TO END: the real profile, the real planner, the real geometry.
+
+    The two halves are pinned separately — ``AxisProfile.executed_velocity`` in
+    ``locomotion/test_lite3_axis_locomotion.py``, the planner's contract in
+    ``unitree/go2/visual_nav/test_avoidance.py`` — and each could pass while the wire
+    between them was missing. ``visual_nav.main`` is the wire: it asks the bindings for a
+    transport model and puts it on ``Limits``. Nothing else does.
+
+    The scene is the one the issue replays. On 2026-08-27 a Go2 stood 0.72 m from a bin
+    while its planner commanded 0.052, 0.103, 0.050, 0.101 m/s, and froze. The same
+    commands on this transport are all above ``input_deadband.linear_m_s``, so every one
+    of them fires the forward primitive: the crawl leaves as a 0.30 m/s walk at the bin,
+    and it used to be validated as a 0.05 m/s one.
+    """
+    from avoidance import (
+        PROPORTIONAL,
+        STATIC_HARD_GAP_M,
+        STATIC_SOFT_GAP_M,
+        DynamicWindowPlanner,
+        Limits,
+        Obstacle,
+        PlannerConfig,
+    )
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "axis-profile.json"
+        _axis_profile(path, measured_m_s={"forward_positive": 0.30})
+        args = _args("--locomotion-transport", "axis", "--axis-profile", str(path))
+        transport = Lite3Bindings().transport_model(args)
+
+    bin_072 = Obstacle(x=0.72, y=0.0, vx=0.0, vy=0.0, radius_m=0.20, label="bin",
+                       person_shaped=False, kind="static",
+                       soft_gap_m=STATIC_SOFT_GAP_M, hard_gap_m=STATIC_HARD_GAP_M)
+    config = PlannerConfig(robot_radius_m=0.25)
+
+    def planner(model):
+        # The deployment SOP's live envelope, and the transport is the ONLY difference.
+        return DynamicWindowPlanner(
+            limits=Limits(max_vx=0.55, max_vy=0.0, max_wz=0.90, gait_floor=0.30,
+                          transport=model),
+            config=config)
+
+    # The veto, on the four speeds that run actually commanded. NONE of them is safe as
+    # executed, and on this transport all four ARE the same command.
+    for asked in (0.050, 0.052, 0.101, 0.103):
+        assert not planner(transport).is_feasible(
+            (0.0, 0.0, 0.0), (asked, 0.0, 0.0), [bin_072]), (
+                f"a {asked:.3f} m/s crawl was validated on a robot that will walk it at "
+                f"0.30 m/s")
+    # The control, and it is not all four: at 0.72 m a proportional robot's own veto
+    # already refuses 0.101 and 0.103, because 0.25 m of travel leaves 0.018 m of a
+    # 0.12 m hard gap. The two the crawl was actually made of clear it comfortably —
+    # which is the whole point. The transport is what turns those two into a refusal,
+    # not the geometry, and a test that asserted all four would have proved nothing
+    # about the two that matter.
+    for safe in (0.050, 0.052):
+        assert planner(PROPORTIONAL).is_feasible(
+            (0.0, 0.0, 0.0), (safe, 0.0, 0.0), [bin_072]), safe
+    for refused_anyway in (0.101, 0.103):
+        assert not planner(PROPORTIONAL).is_feasible(
+            (0.0, 0.0, 0.0), (refused_anyway, 0.0, 0.0), [bin_072]), refused_anyway
+
+    # And the planner's own command, from the state that run was in: a hold that says
+    # which of the two kinds of hold it is.
+    command = planner(transport).plan((0.0, 0.0, 0.0), (4.0, 0.0), (0.10, 0.0, 0.0),
+                                      [bin_072], control_dt=0.1, now=0.0)
+    assert command.is_stop and command.reason == "hold", command
+    assert command.transport_refusal is not None, command
+    assert "0.300 m/s" in command.transport_refusal, command.transport_refusal
+    assert "{0, 0.300} m/s" in command.transport_refusal, command.transport_refusal
+
+    # The control: the same tick on a transport that honours the magnitude walks.
+    proportional = planner(PROPORTIONAL).plan((0.0, 0.0, 0.0), (4.0, 0.0),
+                                              (0.10, 0.0, 0.0), [bin_072],
+                                              control_dt=0.1, now=0.0)
+    assert proportional.vx > 0.0 and proportional.transport_refusal is None, proportional
 
 
 if __name__ == "__main__":

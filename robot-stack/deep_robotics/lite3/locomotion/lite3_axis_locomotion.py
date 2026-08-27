@@ -21,7 +21,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 from deep_robotics.lite3.locomotion.lite3_axis_udp import (
     AXIS_LIMIT,
@@ -51,18 +51,94 @@ LATERAL_DEAD_ZONE = 12553
 YAW_DEAD_ZONE = 9553
 ALLOWED_MOVING_GAIT_STATES = frozenset((0, 2, 4, 5, 6, 13))
 
-_LINEAR_PRIMITIVES = ("forward_positive", "forward_negative",
-                      "lateral_positive", "lateral_negative")
-_YAW_PRIMITIVES = ("yaw_positive", "yaw_negative")
+#: The four primitives that move the robot's POSITION, and the two that move only its
+#: heading. Public because the split is a safety distinction rather than a detail: an
+#: undeclared LINEAR speed leaves the robot travelling at a rate nobody has timed, and
+#: an undeclared YAW rate leaves a pure turn — whose rollout is a single point — merely
+#: unpredictable in heading. ``Lite3Bindings`` refuses a live run for the first and
+#: warns for the second, and it has to be able to tell them apart by name.
+LINEAR_PRIMITIVES = ("forward_positive", "forward_negative",
+                     "lateral_positive", "lateral_negative")
+YAW_PRIMITIVES = ("yaw_positive", "yaw_negative")
 
 #: The eight (forward, lateral) sign pairs this mapping can express, indexed by the
 #: commanded bearing in units of 45 degrees counter-clockwise from straight ahead.
 _LINEAR_DIRECTIONS = ((1, 0), (1, 1), (0, 1), (-1, 1),
                       (-1, 0), (-1, -1), (0, -1), (1, -1))
 
+#: Which evidenced primitive delivers each ``(axis, navigator sign)``, and therefore
+#: which ``measured_m_s``/``measured_rad_s`` entry names the speed the legs will produce.
+#:
+#: ⚠️ **MAPPED BY ROLE, NOT BY NAME.** The shared navigator's ``+y`` and ``+yaw`` are
+#: LEFT and the vendor's positive raw value is RIGHT, so two of these six rows cross:
+#: a navigator command to go left is delivered by the primitive called
+#: ``lateral_negative``, whose ``measured_m_s`` entry is therefore the speed of a LEFT
+#: step. Reading the table off the names instead would put the robot's measured left
+#: speed on its right-hand strafe and vice versa, and no test that only ever measures
+#: one side would notice. The one thing that keeps this honest is that
+#: :meth:`AxisProfile.map_velocity` and :meth:`AxisProfile.executed_velocity` derive
+#: their signs from the same :meth:`AxisProfile._signs`, so a raw value and a speed
+#: cannot come from different rows.
+_DELIVERING_PRIMITIVE = {
+    ("forward", 1): "forward_positive",
+    ("forward", -1): "forward_negative",
+    ("lateral", 1): "lateral_negative",
+    ("lateral", -1): "lateral_positive",
+    ("yaw", 1): "yaw_negative",
+    ("yaw", -1): "yaw_positive",
+}
+
 
 class AxisProfileError(ValueError):
     """An axis profile cannot safely convert a requested navigation component."""
+
+
+@dataclass(frozen=True)
+class ExecutedVelocity:
+    """The velocity the LEGS will receive for one commanded velocity.
+
+    Same frame and same units as the command it answers about — the shared navigator's
+    body frame, ``+x`` forward, ``+y`` left, ``+yaw`` left, m/s and rad/s — because the
+    whole point is that a caller asked for a velocity and this says which velocity it
+    is going to get instead. An axis whose primitive does not fire is exactly ``0.0``.
+
+    ⚠️ **THE COMMANDED MAGNITUDE IS NOT IN HERE, AND THAT IS THE FINDING.**
+    :meth:`AxisProfile.map_velocity` is sign-only, so this transport's executable set on
+    each axis is TWO VALUES — ``{0, the primitive's evidenced speed}``. Asking for
+    0.05 m/s and asking for 0.55 m/s produce the same bytes on the wire and the same
+    object here. Anything upstream that reasons about a commanded speed — a
+    stopping-distance cap, a feasibility rollout, a gait floor — is reasoning about a
+    number that never reaches the legs unless it reads this first.
+
+    ``unmeasured`` names every primitive that WILL fire and whose delivered speed the
+    profile does not declare in ``measured_m_s``/``measured_rad_s``. That axis's number
+    is ``nan``, not ``0.0``: an undeclared speed is an absence, and ``0.0`` would read
+    as "this axis stays still", which is the one thing it is guaranteed not to do. A
+    consumer must branch on ``unmeasured`` rather than on the numbers.
+    """
+
+    vx: float
+    vy: float
+    yaw: float
+    unmeasured: tuple[str, ...] = ()
+
+    @property
+    def is_known(self) -> bool:
+        """Whether every primitive that will fire has a declared speed."""
+        return not self.unmeasured
+
+    @property
+    def translates(self) -> bool:
+        """Whether the legs will move the robot's POSITION, as opposed to its heading.
+
+        ``False`` for a pure turn and for a stop. The distinction is what lets a
+        consumer tolerate an unmeasured YAW rate — a rollout of a pure turn is a point,
+        so its positions do not depend on the rate — while refusing an unmeasured
+        forward or lateral one, which moves the robot somewhere nobody can name.
+        Answers ``False`` on a ``nan`` axis only when that axis is not in
+        ``unmeasured``, which cannot happen; ``nan != 0.0`` is True.
+        """
+        return self.vx != 0.0 or self.vy != 0.0
 
 
 @dataclass(frozen=True)
@@ -127,8 +203,8 @@ class AxisProfile:
             self._validate_primitive(name, value, dead_zone, evidence)
         self._validate_deadband("linear_m_s", self.linear_deadband_m_s)
         self._validate_deadband("yaw_rad_s", self.yaw_deadband_rad_s)
-        self._validate_measured("measured_m_s", self.measured_m_s, _LINEAR_PRIMITIVES)
-        self._validate_measured("measured_rad_s", self.measured_rad_s, _YAW_PRIMITIVES)
+        self._validate_measured("measured_m_s", self.measured_m_s, LINEAR_PRIMITIVES)
+        self._validate_measured("measured_rad_s", self.measured_rad_s, YAW_PRIMITIVES)
         if not self.allowed_gait_states:
             raise AxisProfileError("axis profile requires at least one allowed moving gait state")
         for gait_state in self.allowed_gait_states:
@@ -281,11 +357,7 @@ class AxisProfile:
         The shared navigator uses positive lateral velocity and positive yaw for left. The
         vendor moving-mode axes use positive raw values for right, so those two axes invert.
         """
-        for name, value in (("forward", vx), ("lateral", vy), ("yaw", yaw)):
-            if not math.isfinite(value):
-                raise AxisProfileError(f"{name} navigation component must be finite")
-        forward_sign, lateral_sign = self._linear_direction(vx, vy)
-        yaw_sign = 0 if abs(yaw) < self.yaw_deadband_rad_s else (1 if yaw > 0.0 else -1)
+        forward_sign, lateral_sign, yaw_sign = self._signs(vx, vy, yaw)
         return AxisValues(
             forward=self._primitive(
                 forward_sign, self.forward_positive, self.forward_negative, "forward",
@@ -297,6 +369,83 @@ class AxisProfile:
                 yaw_sign, self.yaw_negative, self.yaw_positive, "yaw",
             ),
         )
+
+    def executed_velocity(self, vx: float, vy: float, yaw: float) -> ExecutedVelocity:
+        """The velocity the LEGS will receive for this command, in the command's units.
+
+        ⚠️ **THIS IS THE QUESTION EVERY SAFETY CHECK ABOVE THIS TRANSPORT WAS ASKING
+        THE WRONG WAY.** :meth:`map_velocity` answers "which bytes go on the wire", and
+        the bytes carry no magnitude. Nothing between the planner and the legs converted
+        those bytes back into metres per second, so a stopping-distance cap, a
+        feasibility rollout and a gait floor were each applied to the number the planner
+        typed rather than to the speed the robot would produce. Probed against the
+        shipped example profile — 0.05 m/s linear deadband, a forward primitive
+        evidenced at 0.30 m/s — 0.049 m/s emits nothing and 0.050 m/s walks at 0.30, as
+        do 0.10, 0.20, 0.34 and 0.55. A crawl and a lunge are the same command here.
+
+        Derived from the SAME :meth:`_signs` as :meth:`map_velocity`, so the speed and
+        the raw value can never come from different primitives; see
+        :data:`_DELIVERING_PRIMITIVE` for the two rows that cross, and why.
+
+        Raises the same :class:`AxisProfileError` :meth:`map_velocity` does for a
+        direction with no evidenced primitive, because a command this transport cannot
+        express has no executed velocity to report either.
+
+        A primitive that fires with no ``measured_m_s``/``measured_rad_s`` entry gives
+        ``nan`` on its axis and its name in
+        :attr:`ExecutedVelocity.unmeasured`. That is not a failure of this method: the
+        profile genuinely does not say, ``axis_primitive_probe.py`` is what makes it
+        say, and reporting a plausible number instead is how a measurement becomes a
+        preference. ``measured_rad_s`` is undeclared on every profile in this repository
+        today and deliberately so — that probe refuses to time yaw while
+        ``Segment.yaw_change_deg`` can report a turn through pi backwards — so the yaw
+        axis reaches this branch on a real robot and the forward axis should not.
+        """
+        forward_sign, lateral_sign, yaw_sign = self._signs(vx, vy, yaw)
+        speeds = self.measured_speeds
+        executed = []
+        unmeasured = []
+        for axis, sign, positive, negative in (
+            ("forward", forward_sign, self.forward_positive, self.forward_negative),
+            ("lateral", lateral_sign, self.lateral_negative, self.lateral_positive),
+            ("yaw", yaw_sign, self.yaw_negative, self.yaw_positive),
+        ):
+            # Called for its refusal, not its value: a direction with no evidenced
+            # primitive must fail here exactly as it fails in `map_velocity`, or a
+            # caller could validate a command the transport will then refuse to send.
+            self._primitive(sign, positive, negative, axis)
+            if sign == 0:
+                executed.append(0.0)
+                continue
+            name = _DELIVERING_PRIMITIVE[(axis, sign)]
+            speed = speeds.get(name)
+            if speed is None:
+                unmeasured.append(name)
+                executed.append(math.nan)
+            else:
+                # `sign * speed`, and it is the sign of the NAVIGATOR's axis: every
+                # `measured_*` entry is a positive magnitude (`_validate_measured`
+                # refuses anything else), and `_DELIVERING_PRIMITIVE` has already
+                # resolved which side's magnitude this is.
+                executed.append(sign * float(speed))
+        return ExecutedVelocity(executed[0], executed[1], executed[2],
+                                tuple(unmeasured))
+
+    def _signs(self, vx: float, vy: float, yaw: float) -> tuple[int, int, int]:
+        """The three navigator-frame signs this command reduces to, and nothing else.
+
+        Shared by :meth:`map_velocity` and :meth:`executed_velocity` so that the raw
+        value sent and the speed predicted are two readings of one decision. Deriving
+        them twice is how they would come to disagree about a boundary case — the
+        octant snap and the two deadbands each have one — and a disagreement there is a
+        safety check validating a different direction from the one the legs take.
+        """
+        for name, value in (("forward", vx), ("lateral", vy), ("yaw", yaw)):
+            if not math.isfinite(value):
+                raise AxisProfileError(f"{name} navigation component must be finite")
+        forward_sign, lateral_sign = self._linear_direction(vx, vy)
+        yaw_sign = 0 if abs(yaw) < self.yaw_deadband_rad_s else (1 if yaw > 0.0 else -1)
+        return forward_sign, lateral_sign, yaw_sign
 
     def _linear_direction(self, vx: float, vy: float) -> tuple[int, int]:
         """Gate the linear pair on its magnitude, then snap it to the nearest of eight."""
@@ -321,6 +470,137 @@ class AxisProfile:
                 f"axis profile has no physically evidenced {direction} {name} primitive"
             )
         return primitive
+
+
+@dataclass(frozen=True)
+class SignOnlyAxisTransport:
+    """What the planner has to know about this transport, and nothing about this robot.
+
+    ⚠️ **THE PLANNER'S SEAM FOR ISSUE #145.** ``avoidance.DynamicWindowPlanner`` samples
+    velocities, rolls each one forward and refuses the ones that end inside something.
+    Every one of those rollouts is of a velocity this transport does not execute: the
+    mapping is sign-only, so a sampled 0.05 m/s and a sampled 0.55 m/s are the same
+    0.30 m/s of legs. The planner therefore validated a robot that does not exist —
+    a 0.05 m/s crawl past a bin 0.72 m away is a full-speed walk into it, and
+    ``is_feasible`` said yes.
+
+    This object is the answer to the only question that fixes that: **given this
+    command, what will the legs do?** The planner asks it before it rolls anything
+    forward, so the geometry it checks is the geometry that happens. On a robot whose
+    transport honours magnitudes the answer is "the command" and the planner's
+    behaviour is unchanged to the bit — see ``avoidance.PROPORTIONAL``.
+
+    Sequences in, sequences out, and no numpy import: this module is imported on the
+    robot beside a vendor SDK and has never needed one. The planner converts.
+
+    :attr:`is_proportional` is ``False`` and is read rather than inferred, because
+    "executed == commanded for every command I happened to try" is not the same claim
+    as "this transport honours magnitudes", and only the second one licenses the
+    planner to skip the work.
+    """
+
+    profile: AxisProfile
+    #: ``ClassVar``, not a field. As a field it would be a keyword argument that turns
+    #: issue #145's whole fix off — a sign-only transport claiming to be proportional
+    #: puts the planner straight back to rolling out velocities the legs never receive.
+    is_proportional: ClassVar[bool] = False
+
+    def executed(self, commands) -> tuple[list, list]:
+        """``(executed rows, known flags)`` for a sequence of ``(vx, vy, wz)`` commands.
+
+        A ``False`` flag means this command has no executed velocity anyone can name,
+        so the planner must not choose it. Two ways to get one, and they are different
+        failures:
+
+        * **A LINEAR primitive fires with no ``measured_m_s``.** The robot will move,
+          at a speed nobody has timed, and no rollout of it means anything.
+          ``Lite3Bindings`` refuses a live run in this state rather than leaving it to
+          be discovered here — ``axis_primitive_probe.py`` exists to produce exactly
+          that field, and the deployment SOP tells the operator to paste it in.
+        * **The YAW primitive fires with no ``measured_rad_s`` WHILE THE ROBOT IS ALSO
+          TRANSLATING.** Then the arc's shape is unknown and so is where it ends.
+
+        A pure turn with an unmeasured rate is allowed, and that carve-out is load
+        bearing rather than a convenience: ``measured_rad_s`` is undeclared on every
+        profile in this repository, deliberately (``axis_primitive_probe.py`` refuses to
+        time yaw while ``Segment.yaw_change_deg`` can report a turn through pi
+        backwards), and the deployment SOP's live command runs at ``--max-wz 0.90``.
+        Refusing every command that turns would leave a robot that can only walk in a
+        straight line, which is a worse failure than the one being fixed. A pure turn's
+        rollout is a POINT — ``_rollout`` holds ``x`` and ``y`` constant when ``vx`` and
+        ``vy`` are zero — so its positions do not depend on the rate at all, and the
+        rate reaches only the heading cost. The rule that generalises: **an unmeasured
+        axis may influence cost, never geometry.**
+
+        The requested ``wz`` is what such a row carries, because the cost function needs
+        a number and this one is at least the operator's intent. It is not a prediction
+        and nothing safety-bearing reads it.
+
+        An unknown row is returned as a stop rather than as ``nan``. ``nan`` would
+        poison ``gap_m`` reporting for every candidate through ``gaps.max()``, and a
+        stop is a rollout the geometry can actually evaluate; the ``known`` flag is what
+        makes the row unreachable, and it is applied where feasibility is computed so it
+        cannot be forgotten one branch at a time.
+        """
+        rows = []
+        known = []
+        for vx, vy, wz in commands:
+            try:
+                result = self.profile.executed_velocity(vx, vy, wz)
+            except AxisProfileError:
+                # A DIRECTION THIS PROFILE CANNOT EXPRESS, e.g. a turn on a profile with
+                # no evidenced yaw primitive. `set_velocity` raises for that and must:
+                # there the command is real and the caller has to be told. Here the
+                # caller is a planner asking a hypothetical about 330 sampled
+                # velocities, and "this transport has no such command" is an answer
+                # rather than an error. Raising would abort the control loop on a tick
+                # where the right outcome is simply not to choose that candidate.
+                #
+                # `Lite3Bindings._validate_axis_profile_for_envelope` already refuses a
+                # live run whose envelope enables an axis the profile cannot drive, so
+                # this is the second line rather than the first — but the first one is a
+                # pre-flight, and a pre-flight that is ever bypassed must not leave the
+                # loop able to crash.
+                rows.append((0.0, 0.0, 0.0))
+                known.append(False)
+                continue
+            turning_blind = bool(result.unmeasured) and (
+                result.translates or not self._only_yaw(result.unmeasured))
+            if turning_blind:
+                rows.append((0.0, 0.0, 0.0))
+                known.append(False)
+                continue
+            rows.append((result.vx, result.vy,
+                         wz if result.unmeasured else result.yaw))
+            known.append(True)
+        return rows, known
+
+    @staticmethod
+    def _only_yaw(unmeasured: tuple[str, ...]) -> bool:
+        return all(name in YAW_PRIMITIVES for name in unmeasured)
+
+    def describe(self) -> str:
+        """One line naming the executable set, for the top of a run log.
+
+        A run that never says this leaves ``--gait-floor`` looking like the bottom of a
+        range. On this transport there is no range — see issue #42, which is the same
+        confusion one field along.
+        """
+        speeds = self.profile.measured_speeds
+        forward = speeds.get("forward_positive")
+        parts = ["sign-only transport: the executable forward set is "
+                 + ("{0} and one UNMEASURED primitive speed" if forward is None
+                    else f"{{0, {forward:.3f}}} m/s — TWO VALUES, not a range")]
+        # Named by the direction the ROBOT goes, not by the primitive's name: nav +y is
+        # left and the primitive that delivers it is `lateral_negative`. Both sides are
+        # reported when both are measured, because a profile may have one and not the
+        # other and an omitted line reads as an axis that does not exist.
+        for side, name in (("left", "lateral_negative"), ("right", "lateral_positive")):
+            if name in speeds:
+                parts.append(f"{side} strafe {speeds[name]:.3f} m/s")
+        if not any(name in speeds for name in YAW_PRIMITIVES):
+            parts.append("yaw rate NOT MEASURED, so a turn is never combined with a step")
+        return "; ".join(parts)
 
 
 @dataclass(frozen=True)

@@ -251,7 +251,7 @@ class MappoPlanner(DynamicWindowPlanner):
                              "velocity_unavailable": 0, "speed_raised": 0,
                              "peer_held": 0, "floor_unreachable": 0,
                              "raised_below_floor": 0, "sub_floor": 0,
-                             "sub_floor_stalled": 0}
+                             "sub_floor_stalled": 0, "transport_refused": 0}
         #: Commanded speeds below this are scaled up, direction preserved — see
         #: :meth:`_at_least_walking_pace`. Zero disables it. This is
         #: ``--policy-gait-floor``: an OPT-IN override of what the policy asked for, and
@@ -271,6 +271,10 @@ class MappoPlanner(DynamicWindowPlanner):
         self._sub_floor: list | None = None
         #: The banner is printed once per run; the COUNT keeps rising after it.
         self._sub_floor_announced = False
+        #: The same, for the planner's transport refusal. A SEPARATE latch, not a shared
+        #: one: the two say different things about different subsystems, and the first
+        #: to fire would otherwise silence the other for the rest of the run.
+        self._transport_refusal_announced = False
         self._check_radius_calibration(refusal_log)
         self._announce_floor_against_envelope()
 
@@ -436,6 +440,7 @@ class MappoPlanner(DynamicWindowPlanner):
         command = self._choose(pose, goal, last_command, obstacles,
                                control_dt=control_dt, last_reason=last_reason)
         self._note_sub_floor(command, pose, time.monotonic())
+        self._note_transport_refusal(command)
         return command
 
     def _choose(self, pose, goal, last_command, obstacles, control_dt: float = 0.1,
@@ -495,14 +500,16 @@ class MappoPlanner(DynamicWindowPlanner):
             self.counts["peer_held"] += 1
             return Command(0.0, 0.0, 0.0, reason="hold", gap_m=planned.gap_m,
                            feasible=planned.feasible, evaluated=planned.evaluated,
-                           floor_reach_m_s=planned.floor_reach_m_s)
+                           floor_reach_m_s=planned.floor_reach_m_s,
+                           transport_refusal=planned.transport_refusal)
 
         if step.status != "COMMAND":
             self.counts["stopped"] += 1
             return Command(0.0, 0.0, 0.0, reason=_STOP_REASONS.get(step.status, "hold"),
                            gap_m=planned.gap_m,
                            feasible=planned.feasible, evaluated=planned.evaluated,
-                           floor_reach_m_s=planned.floor_reach_m_s)
+                           floor_reach_m_s=planned.floor_reach_m_s,
+                           transport_refusal=planned.transport_refusal)
 
         # Clamp to the STACK's envelope, which may be derated below the policy config's
         # own ceilings by --derate or --max-vx. The policy does not know about those and
@@ -544,7 +551,8 @@ class MappoPlanner(DynamicWindowPlanner):
             return Command(planned.vx, planned.vy, planned.wz,
                            reason=f"veto-{planned.reason}", gap_m=planned.gap_m,
                            feasible=planned.feasible, evaluated=planned.evaluated,
-                           floor_reach_m_s=planned.floor_reach_m_s)
+                           floor_reach_m_s=planned.floor_reach_m_s,
+                           transport_refusal=planned.transport_refusal)
 
         self.counts["policy"] += 1
         # `feasible`/`evaluated` describe the PLANNER's search, which ran on this tick
@@ -557,10 +565,52 @@ class MappoPlanner(DynamicWindowPlanner):
         return Command(proposed[0], proposed[1], proposed[2], reason="policy",
                        gap_m=planned.gap_m,
                        feasible=planned.feasible, evaluated=planned.evaluated,
-                       floor_reach_m_s=planned.floor_reach_m_s)
+                       floor_reach_m_s=planned.floor_reach_m_s,
+                       transport_refusal=planned.transport_refusal)
+
+    def _note_transport_refusal(self, command: Command) -> None:
+        """Say, once, that the TRANSPORT stopped the robot rather than the room.
+
+        ``avoidance.DynamicWindowPlanner`` already refused the command — its feasibility
+        is computed on what the legs will receive, so a command whose EXECUTION ends
+        inside an obstacle is never chosen (issue #145). What that leaves in the log is
+        a `hold`, and a `hold` is what a robot boxed in by furniture also writes. The
+        two want opposite responses: one wants a wider lane, and this one wants the
+        operator to know the robot has one forward gear and the geometry does not fit it.
+
+        Counted every tick and printed once, the shape ``_announce_sub_floor`` uses and
+        for the same reason: a banner per tick at 10 Hz is a banner nobody reads.
+        """
+        if command.transport_refusal is None:
+            return
+        self.counts["transport_refused"] += 1
+        if self._transport_refusal_announced:
+            return
+        self._transport_refusal_announced = True
+        print("!" * 78)
+        print("[mappo_drive] ⚠️  THE TRANSPORT REFUSED THIS COMMAND — IT IS NOT THE "
+              "ROOM AND NOT THE TETHER")
+        print(f"    {command.transport_refusal}")
+        print("    This robot's transport is sign-only: it has no slow. Raising a "
+              "ceiling will not help,")
+        print("    and lowering one will not either — the executable set does not "
+              "change with --max-vx or")
+        print("    --derate. What changes it is the geometry: more lane, a smaller "
+              "--robot-radius if the")
+        print("    loaded body measures smaller, or an approach that does not need a "
+              "crawl. See issue #145.")
+        print("!" * 78)
 
     def _at_least_walking_pace(self, proposed: tuple) -> tuple:
         """Scale a policy command up to the gait floor, KEEPING ITS DIRECTION.
+
+        ⚠️ **ON A SIGN-ONLY TRANSPORT THIS CHANGES NOTHING THE LEGS SEE**, and that is
+        worth knowing before reaching for ``--policy-gait-floor`` on a Lite3. Raising
+        0.05 m/s onto the floor ellipse produces a larger number with the same signs, and
+        the axis mapping keeps only the signs — both commands fire the same primitive at
+        the same speed. It is still applied, because it is applied before the veto and
+        the veto now rolls out the EXECUTION, so the two agree either way; it is simply
+        not a fix for anything on that robot. Issue #145.
 
         The delivered checkpoint is a holonomic VMAS agent: it can move at any speed in
         any direction, and it never saw a robot with a minimum speed. The Go2 has one —
@@ -809,9 +859,22 @@ class MappoPlanner(DynamicWindowPlanner):
         # `_floor_axes` — a clipped test reports `--derate 0.6` as fully compliant.
         floor_x, floor_y, _clipped = self._floor_axes(self._platform_floor_m_s,
                                                       clip=False)
-        speed = math.hypot(command.vx, command.vy)
-        reach = math.hypot(_axis_reach(command.vx, floor_x),
-                           _axis_reach(command.vy, floor_y))
+        # JUDGED ON WHAT THE LEGS RECEIVE, not on what was typed — issue #145, and the
+        # same category error one gate along. A gait floor is a fact about the legs, so
+        # comparing the commanded number against it is only the right question on a
+        # transport that delivers the commanded number. On the Lite3's sign-only axis
+        # mapping it is not: the planner asks for 0.05 m/s, the legs walk at the
+        # primitive's 0.30, and this would have counted every moving tick of every run
+        # as sub-floor and printed "COMMANDED BELOW THE GAIT FLOOR AND NOT MOVING" at an
+        # operator whose robot was walking. `None` means the transport cannot name an
+        # executed velocity for this command, and there is then nothing to judge.
+        executed = self.executed_velocity((command.vx, command.vy, command.wz))
+        if executed is None:
+            self._sub_floor = None
+            return
+        speed = math.hypot(executed[0], executed[1])
+        reach = math.hypot(_axis_reach(executed[0], floor_x),
+                           _axis_reach(executed[1], floor_y))
         if command.is_stop and command.floor_reach_m_s is not None:
             # A FLOOR STOP, which is a stop this file must not treat as one. The planner's
             # own guard has already measured two seconds of sub-floor commanding that
@@ -914,6 +977,9 @@ class MappoPlanner(DynamicWindowPlanner):
                    f"{'window' if counts['sub_floor_stalled'] == 1 else 'windows'} "
                    f"of it covering no ground — THE GAIT FLOOR, NOT THE TETHER)"
                    if counts["sub_floor_stalled"] else "")
+                + (f", {counts['transport_refused']} refused because the legs' version "
+                   f"of the command was not the one the planner validated"
+                   if counts["transport_refused"] else "")
                 + (f", {counts['peer_held']} held for a peer this robot could not locate"
                    if counts["peer_held"] else "")
                 + (f", {counts['velocity_unavailable']} with no measured velocity"

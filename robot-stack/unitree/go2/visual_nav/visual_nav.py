@@ -133,6 +133,7 @@ import contextlib
 
 import overlay
 from avoidance import (
+    PROPORTIONAL,
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
     SUB_FLOOR_WINDOW_S,
@@ -1055,6 +1056,25 @@ class VisualNavigator:
                     f"steer around something and slowing down is how it stops. Widen "
                     f"the lane, or pass a smaller --robot-radius so it never feels "
                     f"squeezed.")
+        # A TRANSPORT REFUSAL IS THE SECOND ZERO COMMAND THAT IS AN OUTCOME, and it is
+        # here for exactly the reason the floor stop above is: the planner zeroed this
+        # velocity on purpose, so `commanded` is 0.00 and the branch below returns
+        # `None` for the rest of the run. Without this the Lite3 fix of issue #145 would
+        # have replaced a robot that walked into a bin with a robot that stands in front
+        # of one until `--max-seconds`, saying nothing — which is the same defect this
+        # repository keeps finding, one subsystem along.
+        #
+        # It is NOT folded into the branch above. A floor stop and a transport refusal
+        # want opposite responses: one is "this robot cannot walk that slowly, so widen
+        # the lane or stop asking it to", and this one is "this robot has no slow at
+        # all". Sharing a sentence would send an operator to `--gait-floor`, which on a
+        # sign-only transport is a number the legs never see.
+        if command.is_stop and getattr(command, "transport_refusal", None):
+            return (f"stopped by the transport: {command.transport_refusal}. Raising or "
+                    f"lowering a speed ceiling cannot help — on this transport neither "
+                    f"--max-vx nor --derate reaches the wire. Give it geometry: more "
+                    f"lane, a --robot-radius that matches the measured loaded body, or "
+                    f"an approach that does not need a crawl.")
         commanded = math.hypot(command.vx, command.vy)
         if commanded <= PROGRESS_MIN_COMMAND_M_S:
             return None                       # not asking it to go anywhere
@@ -1838,11 +1858,24 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         #
         # Set AFTER `.scaled`, which does not touch it — a derate is an instruction to
         # the planner to ask for less and not a change to the robot. See `Limits.scaled`.
+        # AND THE TRANSPORT COMES FROM THE ROBOT TOO, for the reason the floor does and
+        # one more: a floor is a number this planner compares against, and a transport
+        # decides whether the number it compares is the one the legs receive at all.
+        # `Go2Bindings` answers `PROPORTIONAL` — the legs get the command — and that is
+        # what every rollout in `avoidance` assumed without saying so. `Lite3Bindings`
+        # answers with its axis profile when the simple-axis transport is selected,
+        # because that mapping is sign-only and a 0.05 m/s command leaves as a full-speed
+        # primitive (issue #145). `getattr` rather than a bare call: a binding written
+        # before this seam existed is a proportional robot, which is the safe reading
+        # and the one every such binding was already getting.
+        transport = getattr(bindings, "transport_model", lambda _args: PROPORTIONAL)(args)
         limits = Limits(max_vx=args.max_vx, max_vy=args.max_vy,
                         max_wz=args.max_wz,
-                        gait_floor=bindings.gait_floor(args) or 0.0).scaled(args.derate)
+                        gait_floor=bindings.gait_floor(args) or 0.0,
+                        transport=transport or PROPORTIONAL).scaled(args.derate)
         print(f"[visual_nav] envelope: vx<={limits.max_vx:.2f} vy<={limits.max_vy:.2f} "
               f"wz<={limits.max_wz:.2f}")
+        print(f"[visual_nav] {limits.transport.describe()}")
         print("[visual_nav] gait floor: "
               + (f"{limits.gait_floor:.2f} m/s — a command under it that covers no "
                  f"ground for {SUB_FLOOR_WINDOW_S:.0f}s is stopped, not continued"
