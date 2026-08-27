@@ -23,7 +23,8 @@ repository, and run exactly these commands:
         https://github.com/unitreerobotics/unitree_ros.git
     cd unitree_ros
     git sparse-checkout set robots/go2_description robots/go2w_description
-    cd ..
+    git sparse-checkout add LICENSE      # sparse mode excludes it, and it is the
+    cd ..                                # only place the copyright line is stated
 
     # Deep Robotics Lite3. BSD-3-Clause, (c) 2024, DeepRoboticsLab.
     # .gitattributes is present but empty -- nothing here is git-lfs, a plain clone
