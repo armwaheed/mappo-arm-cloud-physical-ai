@@ -88,7 +88,7 @@ own measured caveat inline, so the appendix deepens the argument rather than rev
 ## The system in one page
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph SENSING["THE ENTIRE SENSOR SUITE — no depth, no stereo, no LiDAR, no fiducial"]
       CAM[RGB camera]
     end
@@ -196,7 +196,7 @@ now validates the config against it rather than trusting either:
 | `training_lidar_range_vmas` | 0.35 | `training_agent_radius_vmas` | 0.1 |
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph OBS["ONE observation — 18 float32, run-local frame, every term divided by 2.5 m per VMAS unit"]
       STATE["6 state — x, y, vx, vy, x-gx, y-gy"]
       LIDAR[12 lidar]
@@ -534,7 +534,7 @@ than take this diagram's word for it. The record exists because the 2026-08-26 r
 not say whether a `hold` was the policy's, the envelope's or the transport's:
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph POL["The policy proposes"]
       ACTOR[MAPPO actor]
     end
@@ -924,7 +924,7 @@ in any of the six, so the set holds at most six viewpoints, and sampling for nov
 everything that follows.
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph SRC["The ceiling: one room, one morning, 13 minutes — and the camera never moves"]
       CLIPS["6 --record-raw clips"]
       VIEWS[distinct views]
@@ -1408,7 +1408,7 @@ be faked** — and a stick diagram is the better figure anyway, since it makes t
 freedom obvious where a render hides them. Every number below is read from that 5 KB file.
 
 ```mermaid
-flowchart LR
+flowchart TB
     BASE["base_link — the Go2 trunk mounting face"]
     L1[Link1]
     L2[Link2]
