@@ -77,9 +77,10 @@ own measured caveat inline, so the appendix deepens the argument rather than rev
 | [7](#7-an-ablated-control-for-every-run-and-a-closed-loop-before-the-legs-move) | An ablated control paired with every run, and a closed loop before the legs move | the checkpoint carries a 6–16° bias with no obstacle present |
 | [8](#8-a-deployed-tree-that-names-its-own-commit) | A deployed tree with no `.git` that recomputes and refuses on git's own tree id | 6 of 10 robot trees bit-perfect; the one in use spans 15 commits |
 | [9](#9-a-browser-dashboard-that-drives-a-real-fleet) | A browser fleet dashboard over a broker-less device mesh, with a hard stop | STOP 4.23 s → 0.06 s cross-robot |
-| [10](#10-peers-over-the-mesh-not-through-a-detector) | Peer robots avoided by published pose over the mesh, not by perception | a 0.40 m disc, dropped **and** held after 0.6 s |
-| [11](#11-test-runs-are-the-training-corpus) | Every test run also harvests CV training data, joined tick-to-frame; SAM labelling **pending** | 89 runs, 9,117 ticks, 4,624 detections harvested |
+| [10](#10-peers-over-the-mesh-not-through-a-detector) | A peer-avoidance path that takes pose from the mesh rather than a detector — designed and offline-tested; **MAPPO navigation itself ran on RGB** | a 0.40 m disc, dropped **and** held after 0.6 s; **0** two-robot hardware runs |
+| [11](#11-test-runs-are-the-training-corpus) | Every test run also harvests CV training data, joined tick-to-frame | 89 runs, 9,117 ticks, 4,624 detections harvested |
 | [12](#12-one-robot-four-detectors) | **Finding:** the inference configuration is a larger lever than the weights | same weights, same frames: 13% to 68% recall |
+| [13](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it) | **Negative result, published rather than dropped:** a labelling and fine-tuning pipeline that recommended nothing — and the phrase-choice finding that outlives it | `a robot dog` scores **0.000**; `a small white four-legged machine` scores **0.305–0.629** |
 | [14](#14-guards-proven-by-forcing-them-to-fail) | Guards are proven by breaking them, and surviving mutations are recorded too | 47 "Made to fail by …" records in test docstrings |
 
 ---
@@ -125,7 +126,7 @@ flowchart LR
     LITE -- "SIGN-ONLY: magnitude discarded, 0.05 m/s executes as 0.30" --> LEGS
     LEGS -- "measured, written beside command" --> TICK
     VETO --> TICK
-    TICK -- "246.4 ms/tick with --record against 100.6 ms without" --> CORPUS
+    TICK -- "recording costs 246.4 ms/tick against 100.6 ms without it" --> CORPUS
 ```
 
 *Read the edges, not the boxes. Two of them carry the whole argument of this paper: the
@@ -1032,20 +1033,20 @@ would have been caught at all.
 
 ### Nothing is recommended
 
-At 224 px, the size `deploy/run-peer-supervised.sh` actually launches, **no checkpoint from any
-of the three runs both detects the Lite3 and holds its people.** The best that detects anything
-at all keeps **7 of 284** people against the incumbent's 25. One bright corner exists and is
-worth naming precisely because it is small: `a_ws_real` epoch 026 at `go2-navigator-default`
-finds the Lite3 in 7 of 36 held-out frames while keeping 29 of 284 people against the
-incumbent's 24 — a checkpoint that learned a new class without paying for it in the old one.
-Three caveats make it unshippable anyway: the 7/36 is **same-session** and 19% recall besides;
-300 px / 0.40 is not what the peer-avoidance launcher passes; and +5 people on a base of 284
-sits only just outside this project's own ±1–3 run-to-run noise.
+At 224 px — the size `deploy/run-peer-supervised.sh` actually launches — **no checkpoint from
+any of the three runs both detects the Lite3 and holds its people**; the best that detects
+anything at all keeps **7 of 284** against the incumbent's 25. One bright corner is worth
+naming precisely because it is small: `a_ws_real` epoch 026 at `go2-navigator-default` finds
+the Lite3 in 7 of 36 frames while keeping 29 people against the incumbent's 24 — a checkpoint
+that learned a new class without paying for it in the old one. It is still unshippable: the
+7/36 is same-session and 19% recall besides, 300 px / 0.40 is not what the peer launcher
+passes, and +5 on a base of 284 sits only just outside this project's own ±1–3 run-to-run
+noise.
 
-**The 300-versus-224 split is the blocker, and this is the third wave to hit it**
-([§12](#12-one-robot-four-detectors) is why): `finetune_ssd.py` resizes every training image to
-300, the launcher opens at 224, and the class the training produces is weakest exactly where it
-has to run.
+**The 300-versus-224 split is the blocker, and this is the third wave to hit it**:
+`finetune_ssd.py` resizes every training image to 300, the launcher opens at 224, and the class
+the training produces is weakest exactly where it has to run — which is
+[§12](#12-one-robot-four-detectors) arriving a second time, by a different road.
 
 ## 14. Guards proven by forcing them to fail
 
@@ -1392,21 +1393,20 @@ incidental to the arm — `safety.py:64` states the reason in the code:
 > to stop on a trend, long before the motors' own protection would act — **with the arm fitted
 > there is no margin to spend.**"*
 
-It is why the robot rests prone and stands only to walk, why the envelope is derated, and why
-`safety.py` refuses a walk unless forward kinematics puts the jaw within **0.30 m** of the arm
-base *and* within **0.05 m** of the dorsal centreline — a compact fold that sits out over the
-flank passes the first test and still unbalances the gait. Not theoretical: a live run on
-2026-08-27 exited in about three seconds on the arm-not-stowed refusal, the arm having been
-knocked out of stow by an earlier collision. *(That run is an operator report; it is not
-committed as evidence in this repository, unlike every measurement in the table above.)*
+It is why the robot rests prone and stands only to walk, and why `safety.py` refuses a walk
+unless forward kinematics puts the jaw within **0.30 m** of the arm base *and* within
+**0.05 m** of the dorsal centreline — a compact fold that sits out over the flank passes the
+first test and still unbalances the gait. Not theoretical: a live run on 2026-08-27 exited in
+about three seconds on the arm-not-stowed refusal, the arm having been knocked out of stow by
+an earlier collision. *(That one is an operator report, not committed evidence, unlike every
+measurement in the table.)*
 
-### The figure is a kinematic chain, because the URDF has no meshes
-
-⚠️ `robot-stack/unitree/go2/d1_arm/urdf/d1_description.urdf` is **kinematics only** — joint
-origins, axes and travel, and no visual, collision, inertial or mesh element. Unitree's D1 STL
-meshes are not redistributed here, so a photoreal render is not available from it and **must
-not be faked**. A stick diagram is the better figure anyway: it makes the degrees of freedom
-obvious where a render hides them. Every number below is read from that 5 KB file.
+⚠️ The figure below is a **kinematic chain, not a render**:
+`robot-stack/unitree/go2/d1_arm/urdf/d1_description.urdf` is kinematics only — joint origins,
+axes and travel, with no visual, collision, inertial or mesh element, because Unitree's D1 STL
+meshes are not redistributed here. A photoreal render is therefore unavailable and **must not
+be faked** — and a stick diagram is the better figure anyway, since it makes the degrees of
+freedom obvious where a render hides them. Every number below is read from that 5 KB file.
 
 ```mermaid
 flowchart LR
