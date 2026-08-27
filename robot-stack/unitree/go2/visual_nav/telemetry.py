@@ -304,7 +304,17 @@ class TelemetryWriter:
                 "wz": _finite(command.wz), "reason": command.reason,
                 "gap_m": _finite(command.gap_m),
                 "feasible": int(command.feasible),
-                "evaluated": int(command.evaluated)}),
+                "evaluated": int(command.evaluated),
+                # Present only when the gait-floor guard fired, like `hold_reason` above
+                # and for the same two reasons: it says something on the ticks where
+                # there is something to say, and a run whose every tick carried
+                # `"floor_reach_m_s": null` would grow by the size of the field for
+                # nothing. Its presence IS the signal — a stop carrying it is a robot
+                # stopped on purpose because the speed named did not move it, and a stop
+                # without it is any other stop. Those were the same bytes until issue
+                # #26, which is why 90% of the 2026-08-27 run read as ordinary.
+                **({} if command.floor_reach_m_s is None else
+                   {"floor_reach_m_s": _finite(command.floor_reach_m_s)})}),
             # Positions and radii, not just a count: a consumer building an occupancy or
             # range vector needs the geometry. `kind` separates a mapped static prop
             # from a tracked mover and `label` does NOT — label is a class name, and it

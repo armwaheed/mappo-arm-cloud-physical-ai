@@ -834,6 +834,48 @@ def test_a_hold_the_planner_did_not_command_carries_its_own_reason():
     assert ticks[1]["perception"]["stale"] is False
 
 
+def test_a_floor_stop_is_separable_from_every_other_stop_in_the_record():
+    """⚠️ ISSUE #26'S SECOND ASK: tell a deliberate stop from a crawl that became one.
+
+    Three stationary robots, three different events, and until this they wrote nearly the
+    same line. `floor_reach_m_s` is ABSENT on every tick but the one it describes — the
+    same rule `hold_reason` follows above — so its presence is the signal and a consumer
+    scanning for floor stops finds only real ones.
+
+    On the 2026-08-27 run, 90% of commanded ticks were below the gait floor and none of
+    them said so; a reader had to know which platform the file came off and what that
+    platform's floor was. The header now carries the floor too.
+    """
+    with tempfile.TemporaryDirectory() as directory:
+        with _writer(directory) as writer:
+            writer.write_header(live=False)
+            # 1. a creep: still a command, still legitimate, and now legible as one
+            _tick(writer, command=Command(0.10, 0.0, 0.0, reason="avoid", gap_m=0.4,
+                                          feasible=300, evaluated=330))
+            # 2. an ordinary hold: nothing cleared the hard gap
+            _tick(writer, command=Command(0.0, 0.0, 0.0, reason="hold", gap_m=0.1,
+                                          feasible=0, evaluated=330))
+            # 3. a floor stop: the crawl was measured not to move this robot
+            _tick(writer, command=Command(0.0, 0.0, 0.0, reason="hold", gap_m=0.4,
+                                          feasible=300, evaluated=330,
+                                          floor_reach_m_s=0.10))
+        ticks = [r for r in _read(directory) if r["type"] == "tick"]
+
+    creep, held, floor_stop = (t["command"] for t in ticks)
+    assert "floor_reach_m_s" not in creep, creep
+    assert "floor_reach_m_s" not in held, held
+    assert floor_stop["floor_reach_m_s"] == 0.10, floor_stop
+
+    # The two stops are the same three zeros and the same word. One field separates them,
+    # and one of them is an alarm.
+    assert (held["vx"], held["vy"], held["wz"]) == (floor_stop["vx"], floor_stop["vy"],
+                                                    floor_stop["wz"])
+    assert held["reason"] == floor_stop["reason"] == "hold"
+    assert held != floor_stop, (
+        "a boxed-in hold and a gait-floor stop are the same bytes again; that is the "
+        "defect issue #26 was about")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

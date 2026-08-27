@@ -135,6 +135,7 @@ import overlay
 from avoidance import (
     STATIC_HARD_GAP_M,
     STATIC_SOFT_GAP_M,
+    SUB_FLOOR_WINDOW_S,
     DynamicWindowPlanner,
     Limits,
     Obstacle,
@@ -1001,6 +1002,24 @@ class VisualNavigator:
         """
         if not (self._config.live and self._standing):
             self._progress.clear()
+            # THE GAIT-FLOOR GUARD IS CLEARED BY THE SAME CONDITION, and it has to be,
+            # for the same reason and by the same argument: a dry run's legs never move
+            # and a prone robot is stationary on purpose, so "commanded to move and not
+            # moving" is true of both by construction. Replayed against
+            # `evidence/2026-08-17-corridor-and-room-runs/`, the guard fired on 153 of
+            # 172 ticks of a `--live`-less scene check — a scan of every recorded run
+            # that this line takes to zero while leaving all 12 firings on the 2026-08-27
+            # live run, and all 6 arriving runs at zero.
+            #
+            # `getattr` because `planner` is a PLUG-IN POINT — `main` takes a
+            # `planner_factory` and this loop is meant to drive anything with a `plan`.
+            # A planner with no gait-floor guard has nothing to clear, and requiring the
+            # method would make this loop refuse planners it can otherwise run. The
+            # vacuity that buys is covered by asserting the call against the REAL planner
+            # rather than against a fake — see `test_visual_nav`'s dry-run guard tests.
+            reset = getattr(self._planner, "reset_gait_floor_guard", None)
+            if reset is not None:
+                reset()
             return None
 
         self._progress.append((now, pose[0], pose[1]))
@@ -1015,6 +1034,27 @@ class VisualNavigator:
         while len(self._progress) > 1 and now - self._progress[1][0] >= PROGRESS_WINDOW_S:
             self._progress.popleft()
 
+        # A FLOOR STOP IS THE ONE ZERO COMMAND THAT IS AN OUTCOME, and it has to be read
+        # BEFORE the branch below or it never is: the planner set this velocity to zero
+        # on purpose, so `commanded` is 0.00 and "not asking it to go anywhere" returns
+        # `None` for the rest of the run. That is the objection recorded against making
+        # this a stop at all — the run stops ENDING and stands there to `max_run_s` — and
+        # this is the answer to it. Two seconds of measurement have already happened
+        # inside `avoidance.DynamicWindowPlanner._gait_floor_stop`; nothing here is a
+        # second gate, it is the first one's verdict reaching the outcome line.
+        #
+        # It ends the run with the RIGHT sentence. The message below names the tether,
+        # and on 2026-08-27 that was what the operator read while the robot sat 0.72 m
+        # from a bin having been commanded 0.05 m/s for 3.4 s. The tether was fine.
+        if command.is_stop and command.floor_reach_m_s is not None:
+            return (f"stopped below the gait floor: commanded "
+                    f"{command.floor_reach_m_s:.2f} m/s for {SUB_FLOOR_WINDOW_S:.1f}s "
+                    f"and did not move. This robot produces no gait below about "
+                    f"{self._planner.limits.gait_floor:.2f} m/s and reports no fault "
+                    f"while it does — it is NOT the tether. The planner slowed down to "
+                    f"steer around something and slowing down is how it stops. Widen "
+                    f"the lane, or pass a smaller --robot-radius so it never feels "
+                    f"squeezed.")
         commanded = math.hypot(command.vx, command.vy)
         if commanded <= PROGRESS_MIN_COMMAND_M_S:
             return None                       # not asking it to go anywhere
@@ -1759,10 +1799,27 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
             static_map = StaticObstacleMap(
                 radii=radii, fov_rad=math.radians(camera_model.hfov_deg))
 
+        # THE FLOOR COMES FROM THE ROBOT'S BINDINGS, NOT FROM A CONSTANT IN THE PLANNER,
+        # which is the half of issue #26 that a flag could not fix. `Go2Bindings` answers
+        # `MIN_GAIT_COMMAND_M_S`; `Lite3Bindings` answers the operator's measured
+        # `--gait-floor`, which its own pre-flight already requires on a live run. `None`
+        # — a Lite3 dry run — becomes 0.0, and the guard then judges nothing: an
+        # unmeasured floor is an absence, not a floor of zero, and inventing 0.35 for a
+        # robot that never produced it is the mistake issues #83, #96, #101 and #103 have
+        # each been about.
+        #
+        # Set AFTER `.scaled`, which does not touch it — a derate is an instruction to
+        # the planner to ask for less and not a change to the robot. See `Limits.scaled`.
         limits = Limits(max_vx=args.max_vx, max_vy=args.max_vy,
-                        max_wz=args.max_wz).scaled(args.derate)
+                        max_wz=args.max_wz,
+                        gait_floor=bindings.gait_floor(args) or 0.0).scaled(args.derate)
         print(f"[visual_nav] envelope: vx<={limits.max_vx:.2f} vy<={limits.max_vy:.2f} "
               f"wz<={limits.max_wz:.2f}")
+        print("[visual_nav] gait floor: "
+              + (f"{limits.gait_floor:.2f} m/s — a command under it that covers no "
+                 f"ground for {SUB_FLOOR_WINDOW_S:.0f}s is stopped, not continued"
+                 if limits.gait_floor > 0.0 else
+                 "not measured for this robot, so no command is judged against one"))
         bindings.warn_if_below_gait_floor(limits.max_vx, args)
         robot_radius = bindings.robot_radius(args, PlannerConfig().robot_radius_m)
         planner_config = PlannerConfig(horizon_s=args.horizon,
@@ -1826,6 +1883,11 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                            "focal_px": camera_model.focal_px,
                            "hfov_deg": camera_model.hfov_deg,
                            "height_m": camera_model.height_m},
+                # The floor travels beside the ceilings so a recorded run is
+                # self-describing: "was this command under the floor?" is a question a
+                # reader of the file can now answer without knowing which robot it came
+                # off. Every run before issue #26 needs the platform looked up by hand.
+                "gait_floor": limits.gait_floor,
                 "envelope": {"max_vx": limits.max_vx, "max_vy": limits.max_vy,
                              "max_wz": limits.max_wz},
                 "planner": {"horizon_s": planner_config.horizon_s,

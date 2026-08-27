@@ -17,10 +17,10 @@ detector/labels/pipeline	14
 integration	241
 policy	37
 robot-stack/deep_robotics/lite3/commissioning	238
-robot-stack/deep_robotics/lite3/locomotion	64
+robot-stack/deep_robotics/lite3/locomotion	66
 robot-stack/deep_robotics/lite3/visual_nav	78
 robot-stack/preflight	58
 robot-stack/unitree/go2/controller	6
 robot-stack/unitree/go2/d1_arm	15
 robot-stack/unitree/go2/lidar_sight	7
-robot-stack/unitree/go2/visual_nav	471
+robot-stack/unitree/go2/visual_nav	484
