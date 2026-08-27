@@ -168,14 +168,23 @@ from person_detector import (
     DYNAMIC_CLASSES,
     PERSON_PRIOR,
     STATIC_CLASSES,
+    UNRANGEABLE_SOURCES,
+    GroundRanger,
     PersonDetector,
     SizePrior,
     range_detections,
+    steerable_bearing_rad,
+    widest_open_bearing_rad,
 )
 from robot_bindings import Go2Bindings, warn_if_below_go2_gait_floor
 from static_map import StaticObstacleMap
 from telemetry import TelemetryWriter, TickProfiler
-from tracker import PROCESS_ACCEL_SIGMA, ObstacleTracker, observation_from
+from tracker import (
+    PROCESS_ACCEL_SIGMA,
+    RANGE_SIGMA_FRACTION,
+    ObstacleTracker,
+    observation_from,
+)
 
 DEFAULT_MODEL_DIR = Path.home() / "go2_models"
 
@@ -257,6 +266,11 @@ class PerceptionResult:
     #: the tree reproduces, and those sum to 193 against this field's measured median of
     #: 194-202 — consistent, and not a substitute for measuring it.
     pass_ms: dict = field(default_factory=dict)
+    #: Widest arc of the field of view left open by every detection this cycle could NOT
+    #: range, in radians. ``inf`` means there were none, which is the ordinary case and
+    #: is NOT the same as zero. See :func:`person_detector.widest_open_bearing_rad` and
+    #: the saturation hold in :meth:`VisualNavigator.run`.
+    open_bearing_rad: float = math.inf
 
 
 class PerceptionWorker:
@@ -271,7 +285,8 @@ class PerceptionWorker:
                  pose_fn, prior: SizePrior = PERSON_PRIOR,
                  colour_detector: ColourBlobDetector | None = None,
                  static_prior: SizePrior | None = None,
-                 static_label: str = STATIC_DETECT_LABEL) -> None:
+                 static_label: str = STATIC_DETECT_LABEL,
+                 static_ranger: GroundRanger | None = None) -> None:
         self._camera = camera
         self._detector = detector
         self._model = camera_model
@@ -284,6 +299,13 @@ class PerceptionWorker:
         # size prior into metres — with no prior there is no defensible number to put in
         # the map, and inventing one puts a landmark at a range nothing measured.
         self._static_prior = static_prior
+        # RANGE FROM THE FLOOR CONTACT POINT INSTEAD, for the tier whose objects nobody
+        # measured. When this is set the tier needs no height and no width — that is the
+        # whole of issue #6 — and `_static_prior` is unused for ranging, so the CLI stops
+        # requiring it. It is still the tier's SIZE for nothing else: the plan-view
+        # radius comes from `--static-detect-radius`, because the contact point removes
+        # the prior from the range and not from the footprint.
+        self._static_ranger = static_ranger
         self._static_label = static_label
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
@@ -307,6 +329,17 @@ class PerceptionWorker:
     def latest(self) -> PerceptionResult | None:
         with self._lock:
             return self._result
+
+    @property
+    def camera_model(self) -> FisheyeCamera:
+        """The model this worker's detections are expressed in.
+
+        Read by the navigator to size the saturation floor. Exposed rather than passed
+        to ``VisualNavigator.__init__`` because ``integration/mappo_drive.py`` builds
+        that class through ``navigator_factory`` and its docstring forbids a new
+        positional argument.
+        """
+        return self._model
 
     @property
     def cycles(self) -> int:
@@ -381,7 +414,15 @@ class PerceptionWorker:
                    "detect": round((after_detect - after_goal) * 1000.0, 2),
                    "colour": round((finished - after_detect) * 1000.0, 2)}
 
-        ranged = range_detections(detections, self._model, self._prior)
+        # WHAT RANGING THREW AWAY, collected across all three passes. A detection with
+        # no usable range leaves nothing behind, and an empty obstacle list is exactly
+        # what the planner reads as an open world — `is_feasible` returns True
+        # unconditionally when there is nothing to check. Issue #72's collision is that
+        # failure open: the peer filled the frame, no bearing read clear, and the robot
+        # drove into it. These are the boxes that say so.
+        unrangeable: list = []
+        ranged = range_detections(detections, self._model, self._prior,
+                                  refused=unrangeable)
         # SHAPE RIDES ALONGSIDE THE LABEL, it does not replace it. What must stop the
         # robot is decided by `RangedDetection.person_shaped`, because this classifier
         # cannot tell a person from a robot — the peer came back as `person` on 12 of 12
@@ -400,7 +441,8 @@ class PerceptionWorker:
         # different things and a shared prior would scale one of them wrongly.
         static_ranged = ([] if self._colour is None else
                          range_detections(colour_detections, self._model,
-                                          self._colour.profile.prior))
+                                          self._colour.profile.prior,
+                                          refused=unrangeable))
         static_observations = [
             observation_from(item.bearing_rad, item.range_m, item.source,
                              item.label, pose)
@@ -427,14 +469,30 @@ class PerceptionWorker:
         #     detection this weak — and it is also why `static_shaped` must keep people
         #     out of this list, since a person in it would stop being held for.
         neural_ranged = []
-        if static_detections and self._static_prior is not None:
-            neural_ranged = range_detections(static_detections, self._model,
-                                             self._static_prior)
+        if static_detections and (self._static_prior is not None
+                                  or self._static_ranger is not None):
+            # `PERSON_PRIOR` is ignored whenever a ranger is set — `range_detections`
+            # takes one estimator or the other — and is only reached when the tier was
+            # configured with a measured prior instead.
+            neural_ranged = range_detections(
+                static_detections, self._model,
+                self._static_prior if self._static_prior is not None else PERSON_PRIOR,
+                ranger=self._static_ranger, refused=unrangeable)
             static_observations.extend(
                 observation_from(item.bearing_rad, item.range_m, item.source,
                                  self._static_label, pose)
                 for item in neural_ranged
             )
+
+        # A "range" that is a constant is not a measurement either, so the two sources
+        # `estimate_range` RETURNS for a frame-filling box join the ones it refused.
+        # Without them this would be dead in the shipped configuration, which never
+        # refuses anything: the size prior always answers, and answering with
+        # FILLS_FRAME_RANGE_M is the specific lie that ends in a collision.
+        blocking = [item.detection for item in ranged + static_ranged + neural_ranged
+                    if item.source in UNRANGEABLE_SOURCES]
+        blocking += [detection for detection, source in unrangeable
+                     if source in UNRANGEABLE_SOURCES]
 
         self._cycles += 1
         result = PerceptionResult(
@@ -443,6 +501,7 @@ class PerceptionWorker:
             ranged=ranged + static_ranged + neural_ranged,
             static_observations=static_observations, goal_fix=goal_fix,
             image=frame.image, detect_ms=detect_ms, wait_ms=wait_ms, pass_ms=pass_ms,
+            open_bearing_rad=widest_open_bearing_rad(blocking, self._model),
             cycle_ms=(time.monotonic() - cycle_started) * 1000.0)
         with self._lock:
             self._result = result
@@ -578,6 +637,10 @@ class VisualNavigator:
         self._tracker_time = time.monotonic()
         self._consumed_seq = 0
         self._recorded_seq = 0
+        #: Filled on first use by `_saturation_floor_rad`. Not computed here because the
+        #: camera model is reached through the perception worker, and a constructor that
+        #: touched it would make every test that injects a stub worker need one.
+        self._saturation_floor: float | None = None
 
     # ── Posture ─────────────────────────────────────────────────────────────
     @staticmethod
@@ -780,6 +843,23 @@ class VisualNavigator:
                 self._sleep_out_the_period(tick_start, period)
                 continue
 
+            # SATURATED, WHICH IS NOT STALE. The frame is current; it is the geometry
+            # that has run out. Held here — after staleness, before the goal — for the
+            # same reason staleness is held: everything below this point plans against
+            # an obstacle list that this frame is not entitled to have produced.
+            saturated = self._saturated_reason(result)
+            if saturated is not None:
+                self._command((0.0, 0.0, 0.0))
+                print(f"[visual_nav] {saturated} — holding")
+                latched = self._goal.goal_xy()
+                self._telemetry_tick(
+                    elapsed, pose, latched,
+                    None if latched is None else
+                    math.hypot(latched[0] - pose[0], latched[1] - pose[1]),
+                    obstacles, frame_age, result, hold_reason=saturated)
+                self._sleep_out_the_period(tick_start, period)
+                continue
+
             goal_xy = self._goal.goal_xy()
             if goal_xy is None:
                 if elapsed > config.goal_search_s:
@@ -955,7 +1035,8 @@ class VisualNavigator:
     def _telemetry_tick(self, elapsed: float, pose, goal_xy, distance,
                         obstacles: Sequence[Obstacle], frame_age: float,
                         result: PerceptionResult, command=None,
-                        video_frame: int | None = None, stale: bool = False) -> None:
+                        video_frame: int | None = None, stale: bool = False,
+                        hold_reason: str | None = None) -> None:
         """Record one tick for a machine, whether or not it commanded motion.
 
         Separate from ``_log``, which is for a person reading a console. The two have
@@ -976,11 +1057,48 @@ class VisualNavigator:
             frame_age_s=frame_age, perception_seq=result.seq,
             detect_ms=result.detect_ms, standing=self._standing,
             live=self._config.live, video_frame=video_frame, stale=stale,
+            hold_reason=hold_reason,
             measured=self._measured_velocity(), health=self._health.latest(),
             sightings=result.ranged, goal_crop=self._goal_crop(),
             profile=self._profiler.snapshot(), cycle_ms=result.cycle_ms,
             wait_ms=result.wait_ms, pass_ms=result.pass_ms)
         self._profiler.wrote((time.monotonic() - started) * 1000.0)
+
+    def _saturation_floor_rad(self) -> float:
+        """Narrowest arc that still counts as an open bearing, in radians.
+
+        Computed from the camera and the PLANNER'S OWN robot radius rather than being a
+        constant here, so it follows a re-calibration and a change of platform instead of
+        going stale beside them. Cached because it cannot change during a run and this is
+        read every tick.
+        """
+        if self._saturation_floor is None:
+            self._saturation_floor = steerable_bearing_rad(
+                self._perception.camera_model, self._planner.config.robot_radius_m)
+        return self._saturation_floor
+
+    def _saturated_reason(self, result: PerceptionResult) -> str | None:
+        """Why this frame has no bearing worth steering at, or ``None`` if it has one.
+
+        ISSUE #72, MADE OPERATIVE. Below the range at which an object's floor contact
+        leaves the frame, no estimator on this robot can say where that object is —
+        neither the size prior nor the ground plane — and what reaches the planner is
+        either a constant or nothing at all. Nothing at all is the worse of the two:
+        ``avoidance.DynamicWindowPlanner.is_feasible`` returns True when the obstacle
+        list is empty, so a frame the camera could not read is indistinguishable from an
+        empty arena, and the robot drives. On 2026-08-25 it drove into a peer and pushed
+        it the length of the corridor.
+
+        The test is pure box geometry and needs no range, which is what makes it
+        available exactly when ranging is not.
+        """
+        floor = self._saturation_floor_rad()
+        if result.open_bearing_rad >= floor:
+            return None
+        return (f"no open bearing: {math.degrees(result.open_bearing_rad):.1f} deg of "
+                f"{self._perception.camera_model.hfov_deg:.1f} deg is clear, below the "
+                f"{math.degrees(floor):.1f} deg a {self._planner.config.robot_radius_m:.2f} m "
+                f"robot needs at the near wall")
 
     def _goal_crop(self) -> float | None:
         """The crop the goal source used last, or ``None`` if it does not have one.
@@ -1180,8 +1298,11 @@ def static_profile(args) -> ColourProfile:
     return replace(profile, **changes) if changes else profile
 
 
-def static_detect_prior(args) -> tuple[SizePrior, float] | None:
+def static_detect_prior(args) -> tuple[SizePrior | None, float] | None:
     """``(prior, radius_m)`` for the neural static tier, or ``None`` when it is off.
+
+    ``prior`` is ``None`` under ``--static-detect-ground``, which ranges from the floor
+    contact point and therefore has no size in it at all.
 
     Split out of ``main`` for the reason ``static_profile`` and ``build_goal_source``
     are: this is where a flag combination is REFUSED, and a test should be able to check
@@ -1197,14 +1318,31 @@ def static_detect_prior(args) -> tuple[SizePrior, float] | None:
     """
     if not getattr(args, "static_detect", False):
         return None
-    missing = [name for name, value in (("--static-detect-height", args.static_detect_height),
-                                        ("--static-detect-width", args.static_detect_width))
-               if value is None]
-    if missing:
-        raise SystemExit(
-            f"[visual_nav] --static-detect needs {' and '.join(missing)}: the detector "
-            f"finds an object of unknown size and every range scales linearly on the "
-            f"prior it is given")
+    ground = bool(getattr(args, "static_detect_ground", False))
+    if ground:
+        # THE POINT OF --static-detect-ground: neither dimension is asked for, because
+        # the estimator has no size in it. What IS asked for is the radius — the contact
+        # point removes the prior from the range and not from the planning footprint,
+        # and `static_map.radius_for` still keys by label — and the pitch error, which
+        # has no default anywhere in this stack because nobody has recorded it.
+        missing = [name for name, value in
+                   (("--static-detect-radius", args.static_detect_radius),
+                    ("--static-detect-pitch-error-deg",
+                     args.static_detect_pitch_error_deg)) if value is None]
+        if missing:
+            raise SystemExit(
+                f"[visual_nav] --static-detect-ground needs {' and '.join(missing)}: "
+                f"ranging from the floor contact point costs no size prior, but it does "
+                f"not size the obstacle disc and its whole error budget is the pitch")
+    else:
+        missing = [name for name, value in (("--static-detect-height", args.static_detect_height),
+                                            ("--static-detect-width", args.static_detect_width))
+                   if value is None]
+        if missing:
+            raise SystemExit(
+                f"[visual_nav] --static-detect needs {' and '.join(missing)}: the detector "
+                f"finds an object of unknown size and every range scales linearly on the "
+                f"prior it is given")
     bad = [name for name, value in (("--static-detect-height", args.static_detect_height),
                                     ("--static-detect-width", args.static_detect_width),
                                     ("--static-detect-radius", args.static_detect_radius))
@@ -1212,6 +1350,17 @@ def static_detect_prior(args) -> tuple[SizePrior, float] | None:
     if bad:
         raise SystemExit(
             f"[visual_nav] {', '.join(bad)} must be a positive number of metres")
+    if ground:
+        for name, value in (("--static-detect-pitch-error-deg",
+                             args.static_detect_pitch_error_deg),
+                            ("--static-detect-max-range-error",
+                             args.static_detect_max_range_error)):
+            if not (math.isfinite(value) and value > 0.0):
+                raise SystemExit(f"[visual_nav] {name} must be a positive number")
+        # No prior at all, and `None` rather than a placeholder: a `SizePrior` here would
+        # be a number nothing measured, sitting in a field whose only job is to be
+        # measured, waiting for the next reader to divide by it.
+        return (None, float(args.static_detect_radius))
     radius = (args.static_detect_radius if args.static_detect_radius is not None
               else args.static_detect_width / 2.0)
     return (SizePrior(height_m=float(args.static_detect_height),
@@ -1376,6 +1525,30 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
         help="plan-view radius of the object, metres. Defaults to half the measured "
              "width, i.e. its own footprint with no clearance added — the planner adds "
              "its own and must not double-count")
+    detect_static.add_argument(
+        "--static-detect-ground", action="store_true",
+        help="range these detections from where they TOUCH THE FLOOR instead of from a "
+             "size prior, so --static-detect-height and --static-detect-width are no "
+             "longer needed and an object nobody measured becomes rangeable (issue #6). "
+             "--static-detect-radius becomes required instead: the contact point removes "
+             "the prior from the RANGE, not from the planning footprint. Refuses inside "
+             "0.81 m, where the contact point has left the frame")
+    detect_static.add_argument(
+        "--static-detect-pitch-error-deg", type=float, default=None, metavar="DEG",
+        help="how far the camera's pitch may be from its mounting value while the robot "
+             "walks. REQUIRED by --static-detect-ground and deliberately without a "
+             "default: nobody has recorded this robot's trunk pitch under gait. The "
+             "nearest thing to a measurement is an upper bound of 1.6 deg median / "
+             "4.5 deg p90, from 71 sightings of two recorded runs, and it is an upper "
+             "bound because the other estimator's noise is in it")
+    detect_static.add_argument(
+        "--static-detect-max-range-error", type=float,
+        default=RANGE_SIGMA_FRACTION, metavar="FRAC",
+        help="relative range error the map can absorb, which sets how far the ground "
+             "range is reported at all (default %(default)s, the fraction the tracker "
+             "already budgets for the source it trusts most). The pair refuses to "
+             "construct when it leaves no usable band rather than silently seeing "
+             "nothing")
     detect_static.add_argument(
         "--static-detect-classes", nargs="+", default=list(STATIC_CLASSES),
         metavar="VOC_CLASS",
@@ -1555,13 +1728,29 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
             radii[profile.label] = profile.radius_m
             print(f"[visual_nav] static prop: {profile.label} "
                   f"{profile.height_m:.4f} m tall, {profile.radius_m:.3f} m radius")
+        static_ranger = None
         if static_detect is not None:
             static_prior, static_radius = static_detect
             radii[STATIC_DETECT_LABEL] = static_radius
+            if static_prior is None:
+                # Constructed HERE and not inside the worker, so a pitch error that
+                # leaves no usable band fails at start-up with the arithmetic in the
+                # message, rather than as a tier that silently reports nothing on every
+                # frame for the whole run.
+                static_ranger = GroundRanger(
+                    camera_model,
+                    math.radians(args.static_detect_pitch_error_deg),
+                    args.static_detect_max_range_error)
+                sized = (f"floor contact, no size prior "
+                         f"(+/-{args.static_detect_pitch_error_deg:.2f} deg pitch, "
+                         f"{args.static_detect_max_range_error * 100:.0f}% error, usable "
+                         f"to {static_ranger.range_limit_m:.2f} m)")
+            else:
+                sized = (f"prior {static_prior.height_m:.3f} x "
+                         f"{static_prior.width_m:.3f} m")
             print(f"[visual_nav] static detections: floor "
                   f"{args.static_detect_confidence:.3f}, classes "
-                  f"{sorted(args.static_detect_classes)}, prior "
-                  f"{static_prior.height_m:.3f} x {static_prior.width_m:.3f} m, radius "
+                  f"{sorted(args.static_detect_classes)}, {sized}, radius "
                   f"{static_radius:.3f} m")
             print("[visual_nav] WARNING: --static-detect surfaces detections the shipped "
                   "prototxt suppresses. Its FALSE-ALARM cost is measured; its RECALL is "
@@ -1594,7 +1783,8 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         perception = PerceptionWorker(
             camera, detector, camera_model, goal_source, pose_tuple, prior,
             colour_detector,
-            static_prior=(None if static_detect is None else static_detect[0]))
+            static_prior=(None if static_detect is None else static_detect[0]),
+            static_ranger=static_ranger)
         perception.start()
 
         def open_recorder(path: str) -> cv2.VideoWriter:
