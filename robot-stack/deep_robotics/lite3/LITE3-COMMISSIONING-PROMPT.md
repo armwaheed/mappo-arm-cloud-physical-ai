@@ -61,7 +61,56 @@ extra cost in time.
 `--record-raw`。**一点改进建议**：六段都是三脚架固定拍摄，主体在变、相机不动，
 因此 5,854 帧只包含 **456 个不同视角**。在拍摄之间移动相机可以成倍增加视角数量，且不增加时间成本。
 
-## 5. One small ask / 一个小请求
+## 5. Two things only you can do, in priority order / 只有你能做的两件事（按优先级）
+
+### 5.1 Run the probe — it unblocks everything / 先跑标定探针
+
+Covered in §2 and §7. Until `measured_m_s` exists a live axis run **refuses**, so
+`--execution-supervisor turn-drive` cannot be exercised on hardware at all. **Twenty minutes,
+and every other workstream is downstream of it.**
+
+见 §2 与 §7。没有 `measured_m_s`，实机 axis 运行会被拒绝，避障路径根本无法在硬件上运行。
+**约二十分钟，其他所有工作都在等它。**
+
+### 5.2 Record training data in the demo venue, together, on Monday / 周一在演示现场一起采集训练数据
+
+**Waheed (GitHub `armwaheed`) will be in Shanghai from Monday 31 August 2026.** Let us record
+together, **in the actual demo venue — the MGM Shanghai West Bund hotel** — rather than in the
+office.
+
+**中文** —— **Waheed（GitHub `armwaheed`）将于 2026 年 8 月 31 日（周一）抵达上海。**
+我们一起录制，**地点就在实际演示场地 —— 上海西岸美高梅酒店**，而不是办公室。
+
+**Why the venue matters more than another office session / 为什么必须在演示现场：**
+
+Everything measured from the 2026-08-27 clips is **same-session** — 456 distinct views, one
+room, thirteen minutes, six tripod shots at 0.0–1.0 px camera displacement. The best detector
+this project has trained reaches **47% recall on the morning it trained on**, and at a day
+boundary it falls to **parity with the shipped model**. That is not a tuning problem. **The
+blocker was never the recipe; it is that there is one morning of data, from one room that is
+not the room.**
+
+目前所有测量都来自**同一场次**：一个房间、十三分钟、六段三脚架固定拍摄。
+最好的检测器在**训练当天的素材上召回率 47%**，跨天后**跌回与现有模型持平**。
+这不是调参问题 —— **问题在于只有一个上午、一个并非演示现场的房间的数据。**
+
+**What to capture, and it is not more of the same / 采集要点：**
+
+| | |
+|---|---|
+| **Move the camera between takes** | The subject varied last time; the viewpoint never did. This is the single biggest multiplier. 上次主体在变、相机没动 —— 移动相机是最大的增益。 |
+| **The venue's own light** | Stage lighting, spots, whatever the hall actually uses — including whatever is on during the demo slot. 现场实际灯光，包括演示时段的灯光。 |
+| **The venue's own floor and walls** | Carpet, reflections, glass, signage. The office carpet is not the hall's. 现场地面、反光、玻璃与指示牌。 |
+| **A second Lite3 at demo distances** | 1 m, 2 m, 3 m, and the eight orientations, at the spacing the demo actually uses. 第二台 Lite3，按演示实际间距。 |
+| **People moving as an audience would** | Crossing, approaching, standing in groups. 观众的实际走动方式。 |
+| **`--record-raw` on every take** | `--record` burns the HUD and detection boxes into the pixels and makes the file **useless as training data**. 必须加 `--record-raw`。 |
+| **Keep every `.jsonl`** | Raw frames, annotated frames and telemetry share a frame index via `perception.video_frame`, so your detections become labels for clean pixels. 保留遥测文件。 |
+
+**A second day is worth more than a second model.** With the demo on **Friday 4 September
+2026** — four days after Monday — venue footage is the last input that can still change the
+outcome. 距 9 月 4 日演示仅四天，现场素材是最后一个还能改变结果的输入。
+
+## 6. One small ask / 一个小请求
 
 If the telemetry `.jsonl` for the earlier 60-second clip
 (`lite3-pov-20260827T024720Z-60s.mp4`) is still on the robot, please send it — it may let us
@@ -70,7 +119,7 @@ label frames we already hold, without you recording anything.
 
 ---
 
-## 6. The prompt — paste this into your coding agent / 提示词：粘贴给你的编程助手
+## 7. The prompt — paste this into your coding agent / 提示词：粘贴给你的编程助手
 
 ```text
 You are commissioning a Deep Robotics Lite3 Venture so that a live MAPPO run can start.
@@ -143,7 +192,7 @@ ALSO WANTED, and it is a real open question rather than a checkbox:
 *Everything below is for when something refuses. You should not need it to start.
 以下内容仅在出现拒绝时查阅，开始时不需要。*
 
-## 7. Before anything walks / 运行前
+## 8. Before anything walks / 运行前
 
 1. **Shadow first.** Confirm `decision` and `transport` appear in telemetry before a live run.
    先跑 shadow，确认遥测中出现 `decision` 与 `transport`。
@@ -153,13 +202,13 @@ ALSO WANTED, and it is a real open question rather than a checkbox:
    手持急停；若电机有异味或步态改变，立即停止。
 4. `--operator-ready` is typed **last**, after STANDING and navigation mode.
 
-## 8. The nine inputs a live run requires / 实机运行所需的九项输入
+## 9. The nine inputs a live run requires / 实机运行所需的九项输入
 
 Produced by `commission.py --emit-flags`. This table is for reading a refusal, not for typing.
 
 | flag | where the value comes from / 数值来源 |
 |---|---|
-| `--calibration` | This Lite3's camera. ⚠️ See §11 — the file in circulation is not self-consistent. |
+| `--calibration` | This Lite3's camera. ⚠️ See §12 — the file in circulation is not self-consistent. |
 | `--gait-floor` | **Measured**, `axis_primitive_probe.py`. Not the Go2's 0.35. |
 | `--actuator-gain` | **Measured at this envelope** — fit against pose, not the velocity estimate. |
 | `--robot-radius` | **0.40** — the robot. ⚠️ Not 0.33: that is the *obstacle box*. Must satisfy `--policy-scale = radius / 0.10`, so 0.40 pairs with 4.0. |
@@ -176,7 +225,7 @@ Also required and not a flag: **a virtualenv**. 另需在 **venv** 中运行。
 `--max-vx x --derate`. Against a borrowed right-hand side that comparison is arithmetic,
 not a gate. 包络值是安全门限的右侧；借用别的机器人的数值，这个比较就只是算术。
 
-## 9. Refusal decoder / 拒绝信息对照表
+## 10. Refusal decoder / 拒绝信息对照表
 
 | what you see | what it means | what to do |
 |---|---|---|
@@ -191,7 +240,7 @@ not a gate. 包络值是安全门限的右侧；借用别的机器人的数值�
 **A refusal is the system working.** Every one exists because of a measured failure.
 每一条拒绝都源自一次实测到的故障。
 
-## 10. Known-good command shape / 已验证的命令形状
+## 11. Known-good command shape / 已验证的命令形状
 
 ⚠️ **Values are placeholders — use what `--emit-flags` gives you.** This shows which flags
 must be present. 数值为占位符，请使用 `--emit-flags` 的输出。
@@ -221,7 +270,7 @@ Recording costs control-loop rate: **246.4 ms** per new-result tick with `--reco
 **100.6 ms** without. A run recorded for training is not a run whose timing numbers mean
 anything. 用于训练的录制不适合用来做时序测量。
 
-## 11. ⚠️ The calibration in circulation is not self-consistent / 现有标定文件自相矛盾
+## 12. ⚠️ The calibration in circulation is not self-consistent / 现有标定文件自相矛盾
 
 The camera block embedded in the 2026-08-27 recordings:
 
