@@ -201,7 +201,7 @@ is how a checkpoint sweep picks a winner and it is not a basis for shipping anyt
 | --- | --- | --- | --- |
 | `a` real only | 4/36 lite3, **21** people (−4) | 7/36, **29** (+5) | 7/36, **25** (+5) |
 | `b` + synthetic | 15/36, **7** (−18) | 18/36, **18** (−6) | 17/36, **16** (−4) |
-| `c` + synthetic + flags | 15/36, **1** (−24) | 19/36, **0** (−24) | 18/36, **2** (−18) |
+| `c` + synthetic + flags | 15/36, **1** (−24) | 19/36, **0** (−24) | 17/36, **3** (−17) |
 
 The ablation is monotone in both directions at once: **every step that adds augmentation adds
 `lite3` hits and removes people.** `c` at 300 px finds the robot in 19 of 36 frames and has
