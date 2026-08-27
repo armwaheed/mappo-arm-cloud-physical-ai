@@ -81,9 +81,17 @@ so a suite that runs and is not documented here is an error, and so is a line he
 runs nothing. That list changes when a *directory* appears, not when a test does, which is
 why it can live in prose and the numbers cannot.
 
-Then `ruff check .` from inside **every** directory that holds a `ruff.toml` — there are
-thirteen, and running one directory's config against another directory's code is how a PR
-came to report "ruff clean" while shipping 13 findings.
+Then `ruff check .` from inside **every** directory that holds a `ruff.toml`. List them
+rather than trusting a number in this sentence — the number that used to be here said
+"thirteen" while the tree held sixteen, and the job that forbids counts in this file only
+inspects fenced blocks, so a spelled-out one in prose was invisible to it:
+
+```bash
+git ls-files '*ruff.toml' | xargs -n1 dirname   # every directory to run it from
+```
+
+Running one directory's config against another directory's code is how a PR came to report
+"ruff clean" while shipping 13 findings.
 
 **A `ruff.toml` given with `--config` is resolved against the directory you are standing
 in, not the directory it lives in.** ruff anchors isort's `src` at the project root, and
