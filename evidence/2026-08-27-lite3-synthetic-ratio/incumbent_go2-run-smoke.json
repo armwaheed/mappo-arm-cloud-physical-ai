@@ -1,0 +1,25 @@
+{
+ "preprocessing": "go2-run-smoke",
+ "profile": {
+  "input_size": 300,
+  "confidence": 0.45
+ },
+ "note": "lite3 is SAME-SESSION; person is CROSS-DAY. See the README.",
+ "results": [
+  {
+   "model": "mnssd22.caffemodel",
+   "preprocessing": "go2-run-smoke",
+   "input_size": 300,
+   "confidence": 0.45,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 0,
+    "agnostic_hit": 0
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 20
+   }
+  }
+ ]
+}

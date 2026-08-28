@@ -59,6 +59,23 @@ INPUT_SIZE = inference_profile.MOBILENET_SSD_TRAINED.input_size
 SSD_SCALE = inference_profile.MOBILENET_SSD_TRAINED.scale
 SSD_MEAN = inference_profile.MOBILENET_SSD_TRAINED.mean
 
+
+def profiles_at(input_size: int) -> list:
+    """Every declared profile that runs at ``input_size``, by name. Possibly empty.
+
+    Lives here rather than in ``finetune_ssd`` because THIS module owns the
+    ``inference_profile`` import and the ``sys.path`` line that makes it importable. A
+    caller adding its own ``import inference_profile`` would put that line above its own
+    ``sys.path`` insert the first time ``ruff --fix`` sorted the file, which is how two
+    test files in this repository went from passing to ``ModuleNotFoundError`` with nobody
+    touching a test.
+
+    Empty is a real answer and callers must print it rather than round to the nearest
+    name: 256 px is a configuration nothing here has ever measured.
+    """
+    return [name for name, profile in inference_profile.PROFILES.items()
+            if profile.input_size == input_size]
+
 #: Feature maps that feed the detection heads, in the order the heads are concatenated.
 #: Read off the prototxt rather than assumed; :func:`build` checks each one exists.
 HEAD_SOURCES = ("conv11", "conv13", "conv14_2", "conv15_2", "conv16_2", "conv17_2")
@@ -177,12 +194,20 @@ def load_caffemodel(model: CaffeMirror, net_param) -> int:
 
 
 def verify_against_cv2(model: CaffeMirror, proto: str, weights: str,
-                       tolerance: float = 2e-3) -> dict:
-    """Assert the mirror reproduces the DEPLOYED network on real input.
+                       tolerance: float = 2e-3, input_size: int = INPUT_SIZE) -> dict:
+    """Assert the mirror reproduces the DEPLOYED network on real input, at ``input_size``.
 
     Checks the six head-source feature maps AND the raw ``*_mbox_conf`` / ``*_mbox_loc``
     outputs, on random input rather than zeros — a zero image passes through a surprising
     number of wrong graphs unchanged.
+
+    ``input_size`` is a parameter because the square is a property of the CHECK and not of
+    this file: the same weights run at 300 under ``run-smoke.sh`` and at 224 under
+    ``deploy/run-peer-supervised.sh``, and a mirror is only useful if it reproduces cv2 at
+    whichever square it is about to be trained or scored at. The convolutions are
+    size-agnostic; the head-source feature maps are not. Measured on ``mnssd22``: 19/10/5/3/
+    2/1 cells and 1917 priors at 300, 14/7/4/2/1/1 and **1014 priors** at 224, with the
+    mirror matching cv2 to 3.7e-4 and 6.4e-4 respectively.
 
     Raises on mismatch. A mirror that is quietly wrong trains to something the robot will
     never run, and no shape assertion catches it.
@@ -190,8 +215,8 @@ def verify_against_cv2(model: CaffeMirror, proto: str, weights: str,
     import cv2
     net = cv2.dnn.readNetFromCaffe(proto, weights)
     rng = np.random.default_rng(0)
-    image = rng.integers(0, 255, (INPUT_SIZE, INPUT_SIZE, 3), dtype=np.uint8)
-    blob = cv2.dnn.blobFromImage(image, SSD_SCALE, (INPUT_SIZE, INPUT_SIZE), SSD_MEAN)
+    image = rng.integers(0, 255, (input_size, input_size, 3), dtype=np.uint8)
+    blob = cv2.dnn.blobFromImage(image, SSD_SCALE, (input_size, input_size), SSD_MEAN)
 
     wanted = [f"{s}/relu" for s in HEAD_SOURCES]
     wanted += [f"{s}_mbox_conf" for s in HEAD_SOURCES]

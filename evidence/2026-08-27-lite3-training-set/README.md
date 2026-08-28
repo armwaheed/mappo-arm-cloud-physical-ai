@@ -180,6 +180,15 @@ one thing moves at a time.
 `a` is a real control, not a citation: these operators call `rng.random()` even at
 probability 0, so no earlier run is byte-reproducible under this code.
 
+> ⚠️ **That diagnosis is wrong, and it is corrected in
+> [`evidence/2026-08-27-lite3-synthetic-ratio`](../2026-08-27-lite3-synthetic-ratio/README.md).**
+> The RNG stream is not why runs differ. Five byte-identical invocations of this trainer at
+> `--seed 0` produce five different `.caffemodel` files, with `matched/batch` identical in
+> all five — so the sampler and the augmentation are deterministic and the divergence is in
+> GPU compute. Pinning the stream would not make a run reproducible. The sentence above is
+> left as written because it is what this wave believed, and because the correction is only
+> legible beside it.
+
 ```bash
 python3 summarise_scores.py
 ```

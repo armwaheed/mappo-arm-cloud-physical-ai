@@ -105,6 +105,7 @@ from ssd_torch import (
     CaffeMirror,
     load_caffemodel,
     parse_prototxt,
+    profiles_at,
 )
 
 #: IoU at which a prior is "responsible" for a box. SSD's own threshold; the same 0.5 the
@@ -126,19 +127,27 @@ OVERLAP_LIMIT = 0.3
 # --------------------------------------------------------------------------- priors/heads
 
 
-def read_priors(proto: Path, model: Path) -> tuple[np.ndarray, np.ndarray]:
+def read_priors(proto: Path, model: Path,
+                input_size: int = INPUT_SIZE) -> tuple[np.ndarray, np.ndarray]:
     """``(priors, variances)`` straight out of the deployed network's ``mbox_priorbox``.
 
     Returned as ``(N, 4)`` each: priors are normalised ``xmin, ymin, xmax, ymax`` and are
     NOT clipped to the image (the prototxt says ``clip: false``, and row 0 really does start
     at -0.0737). Variances are the per-coordinate divisors ``DetectionOutput`` multiplies
     back in when it decodes, so encoding has to divide by them.
+
+    ⚠️ **THE PRIORS ARE A FUNCTION OF THE SQUARE, AND NOT ONLY IN NUMBER.** PriorBox takes
+    its ``img_width`` from the data blob, so a ``min_size`` written in absolute pixels
+    becomes a LARGER fraction of a smaller input: the 60 px prior that covers 0.20 of a 300
+    px frame covers 0.27 of a 224 px one. Measured on ``mnssd22``: 1917 priors at 300 and
+    1014 at 224. Reading the priors at one square and training at another trains the loc
+    head to regress from boxes ``DetectionOutput`` will not use.
     """
     import cv2
 
     net = cv2.dnn.readNetFromCaffe(str(proto), str(model))
-    blank = np.zeros((INPUT_SIZE, INPUT_SIZE, 3), np.uint8)
-    net.setInput(cv2.dnn.blobFromImage(blank, SSD_SCALE, (INPUT_SIZE, INPUT_SIZE), SSD_MEAN))
+    blank = np.zeros((input_size, input_size, 3), np.uint8)
+    net.setInput(cv2.dnn.blobFromImage(blank, SSD_SCALE, (input_size, input_size), SSD_MEAN))
     prior_blob = net.forward(["mbox_priorbox"])[0]
     return (prior_blob[0, 0].reshape(-1, 4).astype(np.float32),
             prior_blob[0, 1].reshape(-1, 4).astype(np.float32))
@@ -162,7 +171,8 @@ def assemble_heads(blobs: dict, num_classes: int) -> tuple[torch.Tensor, torch.T
 
 
 def verify_head_assembly(model: CaffeMirror, proto: Path, model_path: Path,
-                         num_classes: int, tolerance: float = 2e-3) -> dict:
+                         num_classes: int, tolerance: float = 2e-3,
+                         input_size: int = INPUT_SIZE) -> dict:
     """Assert :func:`assemble_heads` reproduces ``cv2``'s own ``mbox_loc``/``mbox_conf``.
 
     The whole loss is written against one claim about channel and cell ordering. If that
@@ -174,8 +184,9 @@ def verify_head_assembly(model: CaffeMirror, proto: Path, model_path: Path,
     import cv2
 
     net = cv2.dnn.readNetFromCaffe(str(proto), str(model_path))
-    image = np.random.default_rng(1).integers(0, 255, (INPUT_SIZE, INPUT_SIZE, 3), dtype=np.uint8)
-    blob = cv2.dnn.blobFromImage(image, SSD_SCALE, (INPUT_SIZE, INPUT_SIZE), SSD_MEAN)
+    image = np.random.default_rng(1).integers(0, 255, (input_size, input_size, 3),
+                                              dtype=np.uint8)
+    blob = cv2.dnn.blobFromImage(image, SSD_SCALE, (input_size, input_size), SSD_MEAN)
     net.setInput(blob)
     reference_loc, reference_conf = net.forward(["mbox_loc", "mbox_conf"])
 
@@ -428,21 +439,27 @@ def horizontal_flip(image: np.ndarray, boxes: np.ndarray) -> tuple[np.ndarray, n
 
 
 class PeerFrames(Dataset):
-    """Labelled peer frames plus peer-free frames, augmented into 300x300 network input.
+    """Labelled peer frames plus peer-free frames, augmented into the network's square.
 
     Boxes are carried normalised, so every geometric operator is a coordinate change and
-    nothing has to know the source resolution. The frames are 1920x1080 and the network is
-    a square 300x300: ``cv2.dnn.blobFromImage`` warps rather than letterboxes, so training
+    nothing has to know the source resolution. The frames are 1920x1080 and the network
+    input is a square: ``cv2.dnn.blobFromImage`` warps rather than letterboxes, so training
     warps too. Preserving aspect here would train on a geometry the robot never sees.
+
+    ``input_size`` is passed in rather than read from the module, because WHICH square is a
+    property of the deployment being trained for and there is more than one — 300 under
+    ``run-smoke.sh``, 224 under ``deploy/run-peer-supervised.sh`` (issue #129).
     """
 
     def __init__(self, records: list, augment: bool, config: AugmentConfig,
-                 new_class: int, seed: int = 0, pseudo: dict | None = None) -> None:
+                 new_class: int, seed: int = 0, pseudo: dict | None = None,
+                 input_size: int = INPUT_SIZE) -> None:
         self.records = records
         self.augment = augment
         self.config = config
         self.new_class = new_class
         self.seed = seed
+        self.input_size = input_size
         self.pseudo = pseudo or {}
 
     def __len__(self) -> int:
@@ -475,7 +492,7 @@ class PeerFrames(Dataset):
             if rng.random() < self.config.flip_probability:
                 image, boxes = horizontal_flip(image, boxes)
 
-        image = cv2.resize(image, (INPUT_SIZE, INPUT_SIZE))
+        image = cv2.resize(image, (self.input_size, self.input_size))
         blob = (image.astype(np.float32) - SSD_MEAN) * SSD_SCALE
         # Degenerate boxes are possible after a crop clips a truncated box to a sliver.
         # Dropping them here rather than in the loss keeps the loss free of guards.
@@ -487,7 +504,7 @@ class PeerFrames(Dataset):
 
 
 def teacher_labels(proto: Path, weights: Path, paths: list, threshold: float,
-                   cache: Path) -> dict:
+                   cache: Path, input_size: int = INPUT_SIZE) -> dict:
     """Old-class boxes the STARTING network still finds, keyed by image path.
 
     ⚠️ WITHOUT THIS, FINE-TUNING TEACHES THE NETWORK THAT PEOPLE ARE BACKGROUND, and the
@@ -522,7 +539,7 @@ def teacher_labels(proto: Path, weights: Path, paths: list, threshold: float,
         if image is None:
             continue
         height, width = image.shape[:2]
-        net.setInput(cv2.dnn.blobFromImage(image, SSD_SCALE, (INPUT_SIZE, INPUT_SIZE),
+        net.setInput(cv2.dnn.blobFromImage(image, SSD_SCALE, (input_size, input_size),
                                            SSD_MEAN))
         rows = net.forward()[0, 0]
         kept = []
@@ -701,6 +718,16 @@ def main(argv: list | None = None) -> int:
                         help="hard negatives mined from a frame containing no object")
     parser.add_argument("--peer01-keep", type=int, default=80,
                         help="frames kept from the peer01 segment; see load_records")
+    parser.add_argument("--input-size", type=int, default=INPUT_SIZE, metavar="N",
+                        help=f"the square every training image is warped to, the square "
+                             f"the priors are read at, and the square the teacher runs at. "
+                             f"Default {INPUT_SIZE}, which is "
+                             f"inference_profile.MOBILENET_SSD_TRAINED — the square the "
+                             f"published weights were fitted at. THE ROBOT DOES NOT ONLY "
+                             f"RUN THAT: deploy/run-peer-supervised.sh opens at 224 "
+                             f"(issue #129). Training at one square and deploying at "
+                             f"another is a real difference and not a resize — at 224 this "
+                             f"network has 1014 priors against 300's 1917.")
     parser.add_argument("--num-classes", type=int, default=22)
     parser.add_argument("--old-classes", type=int, default=21)
     parser.add_argument("--expand-max", type=float, default=3.0)
@@ -714,15 +741,24 @@ def main(argv: list | None = None) -> int:
     random.seed(args.seed)
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Say which deployment this square is, out loud, before anything is trained. #147's
+    # rule is that a number nobody can attribute to a preprocessing path is not a number;
+    # the same applies to a checkpoint. `matching_profile` returns None for a square no
+    # launcher runs, and None is printed rather than rounded to the nearest name.
+    trained_for = profiles_at(args.input_size)
+    print(f"training at {args.input_size} px — profiles at this square: "
+          f"{', '.join(trained_for) if trained_for else 'NONE, no launcher runs it'}")
+
     model = build_model(args.proto, args.model, args.caffe_pb2)
-    checks = verify_head_assembly(model, args.proto, args.model, args.num_classes)
+    checks = verify_head_assembly(model, args.proto, args.model, args.num_classes,
+                                  input_size=args.input_size)
     print(f"head assembly matches cv2: {checks}")
 
     teacher = build_model(args.proto, args.model, args.caffe_pb2).to(args.device).eval()
     for parameter in teacher.parameters():
         parameter.requires_grad_(False)
 
-    priors_np, variances_np = read_priors(args.proto, args.model)
+    priors_np, variances_np = read_priors(args.proto, args.model, args.input_size)
     print(f"{len(priors_np)} priors from the deployed network, variances "
           f"{variances_np[0].tolist()}")
     criterion = MultiBoxLoss(torch.from_numpy(priors_np), torch.from_numpy(variances_np),
@@ -736,15 +772,20 @@ def main(argv: list | None = None) -> int:
 
     pseudo = None
     if args.pseudo_labels > 0:
+        # The square is in the cache NAME, not just in the run directory. The teacher is
+        # the shipped network run over the training frames, and it finds different boxes at
+        # 224 than at 300; a cache keyed only by directory would let a re-run at another
+        # square silently train on the previous square's old-class supervision.
         pseudo = teacher_labels(args.proto, args.model, records, args.pseudo_labels,
-                                args.out_dir / "pseudo_labels.json")
+                                args.out_dir / f"pseudo_labels_{args.input_size}.json",
+                                args.input_size)
         total = sum(len(v) for v in pseudo.values())
         print(f"{total} teacher boxes over {sum(1 for v in pseudo.values() if v)} frames "
               f"carried as old-class ground truth at >= {args.pseudo_labels}")
 
     config = AugmentConfig(expand_max=args.expand_max)
     loader = DataLoader(PeerFrames(records, True, config, args.num_classes - 1, args.seed,
-                                   pseudo),
+                                   pseudo, args.input_size),
                         batch_size=args.batch_size, shuffle=True, num_workers=args.workers,
                         collate_fn=collate, drop_last=True, persistent_workers=args.workers > 0)
 

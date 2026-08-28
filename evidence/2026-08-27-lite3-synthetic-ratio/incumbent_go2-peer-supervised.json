@@ -1,0 +1,25 @@
+{
+ "preprocessing": "go2-peer-supervised",
+ "profile": {
+  "input_size": 224,
+  "confidence": 0.25
+ },
+ "note": "lite3 is SAME-SESSION; person is CROSS-DAY. See the README.",
+ "results": [
+  {
+   "model": "mnssd22.caffemodel",
+   "preprocessing": "go2-peer-supervised",
+   "input_size": 224,
+   "confidence": 0.25,
+   "lite3": {
+    "frames": 36,
+    "class_hit": 0,
+    "agnostic_hit": 0
+   },
+   "person": {
+    "frames": 284,
+    "people_kept": 25
+   }
+  }
+ ]
+}
