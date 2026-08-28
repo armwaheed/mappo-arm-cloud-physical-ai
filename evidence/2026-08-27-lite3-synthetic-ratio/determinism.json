@@ -1,0 +1,10 @@
+{
+ "what": "N byte-identical one-epoch runs of the same command, --seed 0 in all",
+ "runs": [
+  {"run": 1, "conf": 5.4547, "loc": 1.7811, "matched_per_batch": 98.3, "weights_md5": "9e4091e06858d928f3971bec92e2b316"},
+  {"run": 2, "conf": 5.4540, "loc": 1.7885, "matched_per_batch": 98.3, "weights_md5": "05f85fbc40beecf1a6abb7f578cac06e"},
+  {"run": 3, "conf": 5.4411, "loc": 1.7717, "matched_per_batch": 98.3, "weights_md5": "a1d919985d4db335817f93432b515eb1"},
+  {"run": 4, "conf": 5.3261, "loc": 1.7566, "matched_per_batch": 98.3, "weights_md5": "c65bb9b4fc0b48af04c12a5fa663c927"},
+  {"run": 5, "conf": 5.4765, "loc": 1.7988, "matched_per_batch": 98.3, "weights_md5": "463e53568e27cc9cc4c4c7f7c1145448"}
+ ]
+}

@@ -1,0 +1,28 @@
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Lint config for this evidence directory. Every directory holding a ruff.toml is linted
+# from inside it, from the repository root, and from every directory the config governs --
+# CI fails if the three disagree. See AGENTS.md.
+#
+# Same settings as ../2026-08-27-lite3-training-set/ruff.toml, which is the wave this one
+# extends. They are a copy rather than an `extend`, deliberately: an evidence directory is
+# an archive of one run, and a later wave editing an earlier wave's config would change how
+# a published directory is linted after the fact.
+line-length = 96
+target-version = "py38"
+
+[lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "SIM", "RET", "ARG", "PTH", "N"]
+ignore = ["B905"]
+
+[lint.isort]
+# audit.py reaches robot-stack/unitree/go2/visual_nav/inference_profile.py through a
+# sys.path line it writes itself, so ruff cannot see that it is first-party. Pinned by name
+# for the reason detector/ruff.toml pins peercap: ruff anchors isort's `src` at the
+# directory you are standing in, so an unpinned sibling gets opposite verdicts from inside
+# this directory and from the repository root, and CI fails on the disagreement.
+known-first-party = ["inference_profile"]
+
+[lint.mccabe]
+max-complexity = 12

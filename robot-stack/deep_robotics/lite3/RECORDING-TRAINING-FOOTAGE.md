@@ -91,6 +91,32 @@ than a different room.
 **中文** —— 相隔一周、在两个不同房间录的两场，价值高于同一个上午录的十场。如果只能补录一场，
 优先选**不同的一天**，而不是不同的房间。
 
+**EN** — ⛔ **This has now been tested, and the result is stronger than the argument was.**
+The 283 real Lite3 boxes from these six clips were multiplied into 2,542 synthetic ones —
+sheared, colour-banded and occluded — and networks were trained on 1:1, 1:3 and 1:9 mixes of
+real to synthetic at matched gradient steps. Then each end of the sweep was **trained three
+times over**, changing nothing. The three runs of one recipe scored **3.5, 16.0 and 14.0**
+people kept out of 284 — a spread wider than the difference between any two recipes tested.
+**Six clips of one morning cannot tell two training recipes apart at all.** They are too few
+frames, from too few viewpoints, to measure a change against. That is not a reason to
+augment harder; augmentation adds **0 viewpoints, 0 rooms and 0 days**. It is the reason a
+second session is worth more than any amount of processing of this one.
+
+**中文** —— ⛔ **这一点现在已经用实验验证过，而且结论比原来的论述更强。** 我们把这六段素材里的
+283 个真实 Lite3 标注扩增成 2,542 个合成样本（错切、色带、遮挡），并在梯度步数对齐的条件下，
+用 1:1、1:3、1:9 三种"真实:合成"配比训练网络。随后对配比的两端各**重复训练了三次**，其他条件
+完全不变。同一套配方的三次训练，跨天素材上保留的行人数分别是 **284 人中的 3.5、16.0、
+14.0 人** —— 这个波动比任何两种配方之间的差异都大。**仅凭一个上午的六段素材，根本无法区分
+两种训练配方的优劣。** 素材帧数太少、视角太少，不足以用来衡量任何改动。这不是"要加大数据增强"
+的理由；数据增强带来的是 **0 个新视角、0 个新房间、0 个新日期**。这恰恰说明：补录第二场的
+价值，高于对这一场做任何后期处理。
+
+**EN** — The measurements are in
+[`evidence/2026-08-27-lite3-synthetic-ratio`](../../../evidence/2026-08-27-lite3-synthetic-ratio/README.md).
+
+**中文** —— 相关实测数据见
+[`evidence/2026-08-27-lite3-synthetic-ratio`](../../../evidence/2026-08-27-lite3-synthetic-ratio/README.md)。
+
 ---
 
 ## 4. Lighting: say which one you are recording

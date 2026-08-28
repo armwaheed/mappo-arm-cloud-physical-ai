@@ -1,0 +1,1473 @@
+{
+ "rule": "A checkpoint is published if it is one a reader needs to check a published claim:\n\n1. **it clears its profile's incumbent floor** at any of the three deployments \u2014 the gate is\n   the decision, and every checkpoint that passes it must be inspectable, including the ones\n   whose `lite3` column makes them useless;\n2. **it is an arm's best `lite3`** at any profile \u2014 the argmax rows in the README;\n3. **it is an arm's best person retention** at any profile \u2014 the other argmax;\n4. **it is an arm's last epoch** \u2014 the matched-step endpoint row, which is the comparison\n   the epoch counts were chosen to make.",
+ "published_checkpoints": 359,
+ "held_on_training_host": 752,
+ "published_bytes": 8330980566,
+ "held_bytes": 17450967648,
+ "training_host_path": "~/lite3-ratio-20260827/runs/<arm>/epoch<NNN>.caffemodel",
+ "also_published_for_every_arm": [
+  "history.json \u2014 per-epoch conf/loc/distil loss and the full argv",
+  "pseudo_labels_224.json / pseudo_labels_300.json \u2014 the teacher's old-class supervision, which differs by square and cannot be rebuilt from the manifests"
+ ],
+ "arms": {
+  "r1x1_224": {
+   "epochs_trained": 144,
+   "published": 7,
+   "held_back": 137,
+   "checkpoints": {
+    "epoch005.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 3/36 lite3)",
+     "most people at go2-navigator-default (29/284)",
+     "clears the go2-peer-supervised floor (34/25 people, 1/36 lite3)",
+     "most people at go2-peer-supervised (34/284)",
+     "clears the go2-run-smoke floor (22/20 people, 1/36 lite3)",
+     "most people at go2-run-smoke (22/284)"
+    ],
+    "epoch006.caffemodel": [
+     "clears the go2-peer-supervised floor (25/25 people, 3/36 lite3)"
+    ],
+    "epoch026.caffemodel": [
+     "clears the go2-peer-supervised floor (26/25 people, 11/36 lite3)"
+    ],
+    "epoch034.caffemodel": [
+     "best lite3 at go2-peer-supervised (17/36)"
+    ],
+    "epoch037.caffemodel": [
+     "clears the go2-peer-supervised floor (25/25 people, 15/36 lite3)"
+    ],
+    "epoch079.caffemodel": [
+     "best lite3 at go2-navigator-default (18/36)",
+     "best lite3 at go2-run-smoke (17/36)"
+    ],
+    "epoch144.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x1_224_s1": {
+   "epochs_trained": 144,
+   "published": 4,
+   "held_back": 140,
+   "checkpoints": {
+    "epoch001.caffemodel": [
+     "most people at go2-navigator-default (23/284)",
+     "clears the go2-peer-supervised floor (27/25 people, 0/36 lite3)",
+     "most people at go2-peer-supervised (27/284)",
+     "most people at go2-run-smoke (19/284)"
+    ],
+    "epoch023.caffemodel": [
+     "best lite3 at go2-peer-supervised (16/36)"
+    ],
+    "epoch048.caffemodel": [
+     "best lite3 at go2-navigator-default (19/36)",
+     "best lite3 at go2-run-smoke (18/36)"
+    ],
+    "epoch144.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x1_224_s2": {
+   "epochs_trained": 144,
+   "published": 112,
+   "held_back": 32,
+   "checkpoints": {
+    "epoch004.caffemodel": [
+     "clears the go2-peer-supervised floor (26/25 people, 1/36 lite3)",
+     "most people at go2-peer-supervised (26/284)"
+    ],
+    "epoch017.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 11/36 lite3)"
+    ],
+    "epoch019.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 13/36 lite3)"
+    ],
+    "epoch020.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 10/36 lite3)"
+    ],
+    "epoch021.caffemodel": [
+     "clears the go2-run-smoke floor (22/20 people, 12/36 lite3)"
+    ],
+    "epoch022.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 13/36 lite3)"
+    ],
+    "epoch023.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 12/36 lite3)"
+    ],
+    "epoch025.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 14/36 lite3)"
+    ],
+    "epoch026.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-peer-supervised floor (25/25 people, 12/36 lite3)",
+     "clears the go2-run-smoke floor (26/20 people, 12/36 lite3)"
+    ],
+    "epoch027.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 12/36 lite3)"
+    ],
+    "epoch028.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 13/36 lite3)"
+    ],
+    "epoch030.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 13/36 lite3)"
+    ],
+    "epoch031.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 14/36 lite3)"
+    ],
+    "epoch033.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 15/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 14/36 lite3)"
+    ],
+    "epoch036.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 16/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 15/36 lite3)"
+    ],
+    "epoch037.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 15/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 14/36 lite3)"
+    ],
+    "epoch039.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 16/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 16/36 lite3)"
+    ],
+    "epoch040.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 17/36 lite3)",
+     "clears the go2-run-smoke floor (26/20 people, 15/36 lite3)"
+    ],
+    "epoch041.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 19/36 lite3)",
+     "best lite3 at go2-navigator-default (19/36)",
+     "best lite3 at go2-peer-supervised (17/36)",
+     "clears the go2-run-smoke floor (24/20 people, 18/36 lite3)",
+     "best lite3 at go2-run-smoke (18/36)"
+    ],
+    "epoch042.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 18/36 lite3)",
+     "most people at go2-navigator-default (32/284)",
+     "clears the go2-run-smoke floor (30/20 people, 16/36 lite3)",
+     "most people at go2-run-smoke (30/284)"
+    ],
+    "epoch043.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 16/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 14/36 lite3)"
+    ],
+    "epoch044.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 15/36 lite3)",
+     "clears the go2-run-smoke floor (27/20 people, 14/36 lite3)"
+    ],
+    "epoch045.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 15/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 15/36 lite3)"
+    ],
+    "epoch046.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 14/36 lite3)"
+    ],
+    "epoch048.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 17/36 lite3)"
+    ],
+    "epoch049.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 17/36 lite3)"
+    ],
+    "epoch050.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 18/36 lite3)"
+    ],
+    "epoch051.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 17/36 lite3)"
+    ],
+    "epoch052.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 17/36 lite3)"
+    ],
+    "epoch053.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 18/36 lite3)"
+    ],
+    "epoch054.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 18/36 lite3)"
+    ],
+    "epoch055.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch056.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch057.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (26/20 people, 17/36 lite3)"
+    ],
+    "epoch058.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 18/36 lite3)"
+    ],
+    "epoch059.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch060.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 17/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 17/36 lite3)"
+    ],
+    "epoch061.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 17/36 lite3)"
+    ],
+    "epoch062.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 17/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 17/36 lite3)"
+    ],
+    "epoch064.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 18/36 lite3)"
+    ],
+    "epoch066.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 18/36 lite3)"
+    ],
+    "epoch069.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 17/36 lite3)"
+    ],
+    "epoch070.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 18/36 lite3)"
+    ],
+    "epoch071.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 18/36 lite3)"
+    ],
+    "epoch072.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 16/36 lite3)"
+    ],
+    "epoch074.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch075.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch076.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 18/36 lite3)"
+    ],
+    "epoch077.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch078.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch079.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch080.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 17/36 lite3)"
+    ],
+    "epoch081.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 17/36 lite3)"
+    ],
+    "epoch083.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch084.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch087.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch088.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 18/36 lite3)"
+    ],
+    "epoch089.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch090.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch091.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch092.caffemodel": [
+     "clears the go2-run-smoke floor (22/20 people, 18/36 lite3)"
+    ],
+    "epoch093.caffemodel": [
+     "clears the go2-run-smoke floor (22/20 people, 18/36 lite3)"
+    ],
+    "epoch094.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch095.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch096.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch097.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch099.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch100.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch101.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch102.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 18/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 18/36 lite3)"
+    ],
+    "epoch103.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch104.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch105.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch106.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch107.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch108.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch109.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch110.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch111.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch112.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch113.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch114.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch115.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch116.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch117.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch118.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 18/36 lite3)"
+    ],
+    "epoch119.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch120.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch121.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch122.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch123.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch124.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch125.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch126.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch127.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch128.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch129.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch130.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch131.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch132.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch133.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch134.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch135.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch136.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch137.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch138.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch139.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch140.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch141.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch142.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch143.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)"
+    ],
+    "epoch144.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "clears the go2-run-smoke floor (21/20 people, 18/36 lite3)",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x1_300": {
+   "epochs_trained": 144,
+   "published": 40,
+   "held_back": 104,
+   "checkpoints": {
+    "epoch001.caffemodel": [
+     "clears the go2-navigator-default floor (43/24 people, 0/36 lite3)",
+     "most people at go2-navigator-default (43/284)",
+     "clears the go2-peer-supervised floor (50/25 people, 0/36 lite3)",
+     "most people at go2-peer-supervised (50/284)",
+     "clears the go2-run-smoke floor (37/20 people, 0/36 lite3)",
+     "most people at go2-run-smoke (37/284)"
+    ],
+    "epoch002.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 0/36 lite3)",
+     "clears the go2-peer-supervised floor (39/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 0/36 lite3)"
+    ],
+    "epoch003.caffemodel": [
+     "clears the go2-navigator-default floor (36/24 people, 0/36 lite3)",
+     "clears the go2-peer-supervised floor (38/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 0/36 lite3)"
+    ],
+    "epoch004.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 0/36 lite3)",
+     "clears the go2-peer-supervised floor (27/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 0/36 lite3)"
+    ],
+    "epoch005.caffemodel": [
+     "clears the go2-navigator-default floor (34/24 people, 2/36 lite3)",
+     "clears the go2-run-smoke floor (32/20 people, 0/36 lite3)"
+    ],
+    "epoch006.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 2/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 1/36 lite3)"
+    ],
+    "epoch007.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 2/36 lite3)",
+     "clears the go2-peer-supervised floor (28/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (27/20 people, 0/36 lite3)"
+    ],
+    "epoch008.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 5/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 3/36 lite3)"
+    ],
+    "epoch010.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 7/36 lite3)",
+     "clears the go2-peer-supervised floor (33/25 people, 1/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 4/36 lite3)"
+    ],
+    "epoch011.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 7/36 lite3)",
+     "clears the go2-peer-supervised floor (26/25 people, 1/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 3/36 lite3)"
+    ],
+    "epoch013.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 6/36 lite3)",
+     "clears the go2-peer-supervised floor (25/25 people, 1/36 lite3)"
+    ],
+    "epoch014.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 8/36 lite3)",
+     "clears the go2-peer-supervised floor (27/25 people, 1/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 8/36 lite3)"
+    ],
+    "epoch016.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 9/36 lite3)",
+     "clears the go2-peer-supervised floor (27/25 people, 3/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 8/36 lite3)"
+    ],
+    "epoch017.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 9/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 8/36 lite3)"
+    ],
+    "epoch018.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 9/36 lite3)"
+    ],
+    "epoch019.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 10/36 lite3)",
+     "clears the go2-peer-supervised floor (26/25 people, 5/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 10/36 lite3)"
+    ],
+    "epoch020.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 11/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 9/36 lite3)"
+    ],
+    "epoch021.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 11/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 10/36 lite3)"
+    ],
+    "epoch022.caffemodel": [
+     "clears the go2-peer-supervised floor (26/25 people, 6/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 11/36 lite3)"
+    ],
+    "epoch023.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-peer-supervised floor (25/25 people, 5/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 12/36 lite3)"
+    ],
+    "epoch024.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 12/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 11/36 lite3)"
+    ],
+    "epoch025.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 11/36 lite3)"
+    ],
+    "epoch026.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 12/36 lite3)"
+    ],
+    "epoch027.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 13/36 lite3)"
+    ],
+    "epoch028.caffemodel": [
+     "clears the go2-run-smoke floor (23/20 people, 12/36 lite3)"
+    ],
+    "epoch029.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 13/36 lite3)"
+    ],
+    "epoch030.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 12/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 12/36 lite3)"
+    ],
+    "epoch031.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 17/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 14/36 lite3)"
+    ],
+    "epoch032.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 13/36 lite3)"
+    ],
+    "epoch035.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 15/36 lite3)"
+    ],
+    "epoch036.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 13/36 lite3)"
+    ],
+    "epoch037.caffemodel": [
+     "best lite3 at go2-navigator-default (18/36)"
+    ],
+    "epoch038.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 13/36 lite3)"
+    ],
+    "epoch039.caffemodel": [
+     "clears the go2-run-smoke floor (22/20 people, 17/36 lite3)"
+    ],
+    "epoch042.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 15/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 15/36 lite3)"
+    ],
+    "epoch044.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 16/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 15/36 lite3)"
+    ],
+    "epoch045.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 17/36 lite3)"
+    ],
+    "epoch061.caffemodel": [
+     "best lite3 at go2-run-smoke (18/36)"
+    ],
+    "epoch082.caffemodel": [
+     "best lite3 at go2-peer-supervised (12/36)"
+    ],
+    "epoch144.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x1_300_s1": {
+   "epochs_trained": 144,
+   "published": 22,
+   "held_back": 122,
+   "checkpoints": {
+    "epoch001.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 0/36 lite3)",
+     "clears the go2-peer-supervised floor (26/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 0/36 lite3)"
+    ],
+    "epoch004.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 2/36 lite3)",
+     "clears the go2-peer-supervised floor (28/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 1/36 lite3)"
+    ],
+    "epoch005.caffemodel": [
+     "clears the go2-navigator-default floor (42/24 people, 2/36 lite3)",
+     "most people at go2-navigator-default (42/284)",
+     "clears the go2-peer-supervised floor (39/25 people, 0/36 lite3)",
+     "most people at go2-peer-supervised (39/284)",
+     "clears the go2-run-smoke floor (33/20 people, 1/36 lite3)",
+     "most people at go2-run-smoke (33/284)"
+    ],
+    "epoch006.caffemodel": [
+     "clears the go2-peer-supervised floor (31/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 0/36 lite3)"
+    ],
+    "epoch009.caffemodel": [
+     "clears the go2-peer-supervised floor (25/25 people, 0/36 lite3)"
+    ],
+    "epoch010.caffemodel": [
+     "clears the go2-peer-supervised floor (29/25 people, 0/36 lite3)"
+    ],
+    "epoch012.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 4/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 1/36 lite3)"
+    ],
+    "epoch013.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 3/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 2/36 lite3)"
+    ],
+    "epoch014.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 6/36 lite3)",
+     "clears the go2-peer-supervised floor (26/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 2/36 lite3)"
+    ],
+    "epoch015.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 3/36 lite3)",
+     "clears the go2-peer-supervised floor (25/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 2/36 lite3)"
+    ],
+    "epoch016.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 8/36 lite3)",
+     "clears the go2-peer-supervised floor (26/25 people, 2/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 5/36 lite3)"
+    ],
+    "epoch018.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 8/36 lite3)"
+    ],
+    "epoch019.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 5/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 3/36 lite3)"
+    ],
+    "epoch020.caffemodel": [
+     "clears the go2-run-smoke floor (22/20 people, 5/36 lite3)"
+    ],
+    "epoch021.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 6/36 lite3)"
+    ],
+    "epoch022.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 4/36 lite3)"
+    ],
+    "epoch029.caffemodel": [
+     "clears the go2-run-smoke floor (20/20 people, 5/36 lite3)"
+    ],
+    "epoch032.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 8/36 lite3)"
+    ],
+    "epoch033.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 11/36 lite3)"
+    ],
+    "epoch039.caffemodel": [
+     "best lite3 at go2-navigator-default (14/36)"
+    ],
+    "epoch045.caffemodel": [
+     "best lite3 at go2-peer-supervised (8/36)",
+     "best lite3 at go2-run-smoke (14/36)"
+    ],
+    "epoch144.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x1_300_s2": {
+   "epochs_trained": 144,
+   "published": 129,
+   "held_back": 15,
+   "checkpoints": {
+    "epoch001.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 0/36 lite3)",
+     "clears the go2-peer-supervised floor (32/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 0/36 lite3)"
+    ],
+    "epoch002.caffemodel": [
+     "clears the go2-peer-supervised floor (29/25 people, 0/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 0/36 lite3)"
+    ],
+    "epoch005.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 2/36 lite3)",
+     "clears the go2-peer-supervised floor (40/25 people, 1/36 lite3)",
+     "most people at go2-peer-supervised (40/284)",
+     "clears the go2-run-smoke floor (24/20 people, 2/36 lite3)"
+    ],
+    "epoch006.caffemodel": [
+     "clears the go2-peer-supervised floor (26/25 people, 0/36 lite3)"
+    ],
+    "epoch019.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 4/36 lite3)",
+     "clears the go2-run-smoke floor (20/20 people, 3/36 lite3)"
+    ],
+    "epoch020.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 6/36 lite3)",
+     "clears the go2-run-smoke floor (27/20 people, 5/36 lite3)"
+    ],
+    "epoch021.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 6/36 lite3)"
+    ],
+    "epoch022.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 7/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 7/36 lite3)"
+    ],
+    "epoch023.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 6/36 lite3)"
+    ],
+    "epoch025.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 9/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 7/36 lite3)"
+    ],
+    "epoch026.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 7/36 lite3)",
+     "clears the go2-run-smoke floor (26/20 people, 7/36 lite3)"
+    ],
+    "epoch027.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 9/36 lite3)",
+     "clears the go2-run-smoke floor (27/20 people, 8/36 lite3)"
+    ],
+    "epoch028.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 7/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 7/36 lite3)"
+    ],
+    "epoch029.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 11/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 9/36 lite3)"
+    ],
+    "epoch030.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 10/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 9/36 lite3)"
+    ],
+    "epoch031.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 12/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 9/36 lite3)"
+    ],
+    "epoch032.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 11/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 10/36 lite3)"
+    ],
+    "epoch033.caffemodel": [
+     "clears the go2-run-smoke floor (21/20 people, 9/36 lite3)"
+    ],
+    "epoch034.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 11/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 8/36 lite3)"
+    ],
+    "epoch035.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 11/36 lite3)",
+     "clears the go2-run-smoke floor (26/20 people, 8/36 lite3)"
+    ],
+    "epoch036.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 14/36 lite3)",
+     "best lite3 at go2-navigator-default (14/36)",
+     "clears the go2-run-smoke floor (27/20 people, 9/36 lite3)"
+    ],
+    "epoch037.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "best lite3 at go2-peer-supervised (9/36)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)",
+     "best lite3 at go2-run-smoke (13/36)"
+    ],
+    "epoch038.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 10/36 lite3)"
+    ],
+    "epoch039.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 10/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 9/36 lite3)"
+    ],
+    "epoch040.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch041.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 12/36 lite3)"
+    ],
+    "epoch042.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 10/36 lite3)"
+    ],
+    "epoch043.caffemodel": [
+     "clears the go2-navigator-default floor (34/24 people, 12/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 10/36 lite3)",
+     "most people at go2-run-smoke (31/284)"
+    ],
+    "epoch044.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 10/36 lite3)"
+    ],
+    "epoch045.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 13/36 lite3)"
+    ],
+    "epoch046.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 10/36 lite3)"
+    ],
+    "epoch047.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 13/36 lite3)"
+    ],
+    "epoch048.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 13/36 lite3)"
+    ],
+    "epoch049.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 13/36 lite3)"
+    ],
+    "epoch050.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 11/36 lite3)"
+    ],
+    "epoch051.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch052.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch053.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 11/36 lite3)"
+    ],
+    "epoch054.caffemodel": [
+     "clears the go2-navigator-default floor (28/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 13/36 lite3)"
+    ],
+    "epoch055.caffemodel": [
+     "clears the go2-navigator-default floor (36/24 people, 13/36 lite3)",
+     "most people at go2-navigator-default (36/284)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch056.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (27/20 people, 13/36 lite3)"
+    ],
+    "epoch057.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (27/20 people, 13/36 lite3)"
+    ],
+    "epoch058.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch059.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 13/36 lite3)"
+    ],
+    "epoch060.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch061.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 13/36 lite3)"
+    ],
+    "epoch062.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (26/20 people, 13/36 lite3)"
+    ],
+    "epoch063.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch064.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (27/20 people, 13/36 lite3)"
+    ],
+    "epoch065.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch066.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 13/36 lite3)"
+    ],
+    "epoch067.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch068.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch069.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 13/36 lite3)"
+    ],
+    "epoch070.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (26/20 people, 13/36 lite3)"
+    ],
+    "epoch071.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch072.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch073.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 13/36 lite3)"
+    ],
+    "epoch074.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch075.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch076.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch077.caffemodel": [
+     "clears the go2-navigator-default floor (29/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (27/20 people, 13/36 lite3)"
+    ],
+    "epoch078.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch079.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch080.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch081.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch082.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 13/36 lite3)"
+    ],
+    "epoch083.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch084.caffemodel": [
+     "clears the go2-navigator-default floor (30/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (28/20 people, 13/36 lite3)"
+    ],
+    "epoch085.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch086.caffemodel": [
+     "clears the go2-navigator-default floor (31/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (29/20 people, 13/36 lite3)"
+    ],
+    "epoch087.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch088.caffemodel": [
+     "clears the go2-navigator-default floor (34/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch089.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch090.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch091.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch092.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch093.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch094.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 12/36 lite3)"
+    ],
+    "epoch095.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch096.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch097.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch098.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch099.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch100.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch101.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch102.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch103.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch104.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch105.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch106.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch107.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch108.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch109.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch110.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch111.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch112.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch113.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch114.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch115.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch116.caffemodel": [
+     "clears the go2-navigator-default floor (33/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch117.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch118.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch119.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch120.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch121.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch122.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch123.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (31/20 people, 13/36 lite3)"
+    ],
+    "epoch124.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch125.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch126.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch127.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch128.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch129.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 14/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch130.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch131.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch132.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch133.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch134.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch135.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch136.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch137.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch138.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch139.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch140.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch141.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch142.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch143.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)"
+    ],
+    "epoch144.caffemodel": [
+     "clears the go2-navigator-default floor (32/24 people, 13/36 lite3)",
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "clears the go2-run-smoke floor (30/20 people, 13/36 lite3)",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x3_224": {
+   "epochs_trained": 87,
+   "published": 6,
+   "held_back": 81,
+   "checkpoints": {
+    "epoch001.caffemodel": [
+     "most people at go2-peer-supervised (9/284)"
+    ],
+    "epoch007.caffemodel": [
+     "best lite3 at go2-run-smoke (15/36)"
+    ],
+    "epoch016.caffemodel": [
+     "most people at go2-navigator-default (19/284)",
+     "most people at go2-run-smoke (15/284)"
+    ],
+    "epoch018.caffemodel": [
+     "best lite3 at go2-peer-supervised (18/36)"
+    ],
+    "epoch021.caffemodel": [
+     "best lite3 at go2-navigator-default (17/36)"
+    ],
+    "epoch087.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x9_224": {
+   "epochs_trained": 40,
+   "published": 6,
+   "held_back": 34,
+   "checkpoints": {
+    "epoch009.caffemodel": [
+     "best lite3 at go2-peer-supervised (21/36)"
+    ],
+    "epoch020.caffemodel": [
+     "best lite3 at go2-navigator-default (21/36)"
+    ],
+    "epoch023.caffemodel": [
+     "most people at go2-navigator-default (18/284)",
+     "most people at go2-peer-supervised (8/284)"
+    ],
+    "epoch027.caffemodel": [
+     "most people at go2-run-smoke (9/284)"
+    ],
+    "epoch030.caffemodel": [
+     "best lite3 at go2-run-smoke (21/36)"
+    ],
+    "epoch040.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x9_224_s1": {
+   "epochs_trained": 40,
+   "published": 24,
+   "held_back": 16,
+   "checkpoints": {
+    "epoch011.caffemodel": [
+     "best lite3 at go2-navigator-default (21/36)"
+    ],
+    "epoch012.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 19/36 lite3)",
+     "most people at go2-navigator-default (27/284)",
+     "most people at go2-peer-supervised (23/284)",
+     "clears the go2-run-smoke floor (23/20 people, 18/36 lite3)"
+    ],
+    "epoch016.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 21/36 lite3)",
+     "best lite3 at go2-run-smoke (21/36)"
+    ],
+    "epoch017.caffemodel": [
+     "best lite3 at go2-peer-supervised (18/36)"
+    ],
+    "epoch020.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 21/36 lite3)"
+    ],
+    "epoch021.caffemodel": [
+     "clears the go2-run-smoke floor (22/20 people, 21/36 lite3)"
+    ],
+    "epoch023.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 21/36 lite3)"
+    ],
+    "epoch024.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 21/36 lite3)"
+    ],
+    "epoch025.caffemodel": [
+     "clears the go2-run-smoke floor (22/20 people, 21/36 lite3)"
+    ],
+    "epoch026.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (22/20 people, 21/36 lite3)"
+    ],
+    "epoch027.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 21/36 lite3)",
+     "most people at go2-run-smoke (25/284)"
+    ],
+    "epoch028.caffemodel": [
+     "clears the go2-run-smoke floor (22/20 people, 21/36 lite3)"
+    ],
+    "epoch029.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (21/20 people, 21/36 lite3)"
+    ],
+    "epoch030.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 21/36 lite3)"
+    ],
+    "epoch031.caffemodel": [
+     "clears the go2-navigator-default floor (27/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 21/36 lite3)"
+    ],
+    "epoch032.caffemodel": [
+     "clears the go2-run-smoke floor (23/20 people, 21/36 lite3)"
+    ],
+    "epoch033.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 21/36 lite3)"
+    ],
+    "epoch034.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 21/36 lite3)"
+    ],
+    "epoch035.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (25/20 people, 21/36 lite3)"
+    ],
+    "epoch036.caffemodel": [
+     "clears the go2-navigator-default floor (26/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 21/36 lite3)"
+    ],
+    "epoch037.caffemodel": [
+     "clears the go2-navigator-default floor (24/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (23/20 people, 21/36 lite3)"
+    ],
+    "epoch038.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 21/36 lite3)"
+    ],
+    "epoch039.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "clears the go2-run-smoke floor (24/20 people, 21/36 lite3)"
+    ],
+    "epoch040.caffemodel": [
+     "clears the go2-navigator-default floor (25/24 people, 21/36 lite3)",
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "clears the go2-run-smoke floor (24/20 people, 21/36 lite3)",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x9_224_s2": {
+   "epochs_trained": 40,
+   "published": 5,
+   "held_back": 35,
+   "checkpoints": {
+    "epoch001.caffemodel": [
+     "most people at go2-navigator-default (19/284)",
+     "clears the go2-peer-supervised floor (28/25 people, 1/36 lite3)",
+     "most people at go2-peer-supervised (28/284)",
+     "most people at go2-run-smoke (16/284)"
+    ],
+    "epoch009.caffemodel": [
+     "best lite3 at go2-peer-supervised (19/36)"
+    ],
+    "epoch010.caffemodel": [
+     "best lite3 at go2-run-smoke (20/36)"
+    ],
+    "epoch023.caffemodel": [
+     "best lite3 at go2-navigator-default (21/36)"
+    ],
+    "epoch040.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  },
+  "r1x9_300": {
+   "epochs_trained": 40,
+   "published": 4,
+   "held_back": 36,
+   "checkpoints": {
+    "epoch001.caffemodel": [
+     "most people at go2-navigator-default (20/284)",
+     "clears the go2-peer-supervised floor (25/25 people, 1/36 lite3)",
+     "most people at go2-peer-supervised (25/284)",
+     "most people at go2-run-smoke (16/284)"
+    ],
+    "epoch026.caffemodel": [
+     "best lite3 at go2-navigator-default (21/36)"
+    ],
+    "epoch034.caffemodel": [
+     "best lite3 at go2-peer-supervised (16/36)",
+     "best lite3 at go2-run-smoke (21/36)"
+    ],
+    "epoch040.caffemodel": [
+     "matched-step endpoint at go2-navigator-default",
+     "matched-step endpoint at go2-peer-supervised",
+     "matched-step endpoint at go2-run-smoke"
+    ]
+   }
+  }
+ }
+}
