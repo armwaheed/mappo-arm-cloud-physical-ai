@@ -36,9 +36,11 @@ recognised", not "nothing there".
 The negative results carry as much weight. Monocular range fell back to constants on 417 of
 4,624 sightings and on one walk drove 21 of 37 avoidance ticks, before a guard was built to
 refuse them. The same weights read 13% to 68% peer recall from the launcher alone. A detector
-fine-tuning run shipped nothing. The MAPPO policy collided in every unsupervised simulated
-configuration and is safe only under the planner's veto. No two-robot hardware run has happened
-on either platform. Appendix A logs what we got wrong and how we found out.
+fine-tuning run shipped nothing — and five byte-identical training runs at one seed produced
+five different detectors, so every arm this project has ever ranked was one draw. The MAPPO
+policy collided in every unsupervised simulated configuration and is safe only under the
+planner's veto. No two-robot hardware run has happened on either platform. Appendix A logs
+what we got wrong and how we found out.
 
 ## Contents
 
@@ -59,7 +61,7 @@ on either platform. Appendix A logs what we got wrong and how we found out.
 10. [Peers over the mesh, not through a detector](#10-peers-over-the-mesh-not-through-a-detector)
 11. [Test runs are the training corpus](#11-test-runs-are-the-training-corpus)
 12. [One robot, four detectors](#12-one-robot-four-detectors)
-13. [A detector training pipeline that shipped nothing, and the three things worth keeping from it](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it)
+13. [A detector training pipeline that shipped nothing, and an instrument too noisy to rank what it trains](#13-a-detector-training-pipeline-that-shipped-nothing-and-an-instrument-too-noisy-to-rank-what-it-trains)
 14. [Guards proven by forcing them to fail](#14-guards-proven-by-forcing-them-to-fail)
 
 **[Part II — What has and has not run on hardware](#part-ii--what-has-and-has-not-run-on-hardware)**
@@ -143,7 +145,7 @@ own measured caveat inline, so the appendix deepens the argument rather than rev
 | [10](#10-peers-over-the-mesh-not-through-a-detector) | A peer-avoidance path that takes pose from the mesh rather than a detector — designed and offline-tested; **MAPPO navigation itself ran on RGB** | a 0.40 m disc, dropped **and** held after 0.6 s; **0** two-robot hardware runs |
 | [11](#11-test-runs-are-the-training-corpus) | Every test run also harvests CV training data, joined tick-to-frame | 89 runs, 9,117 ticks, 4,624 detections harvested |
 | [12](#12-one-robot-four-detectors) | **Finding:** the inference configuration is a larger lever than the weights | same weights, same frames: 13% to 68% recall |
-| [13](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it) | **Negative result, published rather than dropped:** a labelling and fine-tuning pipeline that recommended nothing — and the phrase-choice finding that outlives it | `a robot dog` scores **0.000**; `a small white four-legged machine` scores **0.305–0.629** |
+| [13](#13-a-detector-training-pipeline-that-shipped-nothing-and-an-instrument-too-noisy-to-rank-what-it-trains) | **Negative result, published rather than dropped:** a fine-tuning pipeline that recommended nothing, and the reason no wave of it could have been trusted | five `--seed 0` runs of one command, **five different `.caffemodel` files** |
 | [14](#14-guards-proven-by-forcing-them-to-fail) | Guards are proven by breaking them, and surviving mutations are recorded too | 47 "Made to fail by …" records in test docstrings |
 
 ---
@@ -829,7 +831,7 @@ Lite3's camera of a second Lite3 in a Shanghai office, the deployed MobileNet-SS
 on the robot in **0 of 168** frames at the 224 px `deploy/run-peer-supervised.sh` opens at,
 against 80 of 168 at 300 px — where it calls it a `chair`
 (`evidence/2026-08-27-lite3-pov-clip-audit/`, every number re-derived by `python3 audit.py`).
-[§13](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it)
+[§13](#13-a-detector-training-pipeline-that-shipped-nothing-and-an-instrument-too-noisy-to-rank-what-it-trains)
 is what happened when a `lite3` class was trained on the six `--record-raw` clips that audit
 asked for: at 224 px, nothing passed. The obvious route to two robots in a room is to teach
 the detector what a quadruped looks like; we measured that route to its ceiling on the one
@@ -916,7 +918,7 @@ code in the tree". Both were true when written and neither is true now** — the
 a document like this corrects out loud rather than quietly deletes. The run landed on
 2026-08-27 as `evidence/2026-08-27-lite3-training-set/`, and it produced **nothing shippable**,
 which is why it is written up in full as
-[§13](#13-a-detector-training-pipeline-that-shipped-nothing-and-the-three-things-worth-keeping-from-it).
+[§13](#13-a-detector-training-pipeline-that-shipped-nothing-and-an-instrument-too-noisy-to-rank-what-it-trains).
 The two hand-labelled manifests above are unchanged and remain the corpus of record.
 
 > **Attribution, corrected.** This technique is often described in conversation as a
@@ -974,19 +976,46 @@ the weights, and a detector benchmark that does not pin it is measuring the laun
 repository's response is `report.py --check-readme`, which fails if the published page has
 drifted from the data.
 
+**And "the same weights, four ways" understates it: two of the four are a different network.**
+`finetune_ssd.py` had no `--input-size` until 2026-08-27 — `INPUT_SIZE = 300` was one module
+constant read by the prior generator, the mirror check, the teacher pass and the dataset
+resize at once. Threading the square through all four shows what changing it costs: PriorBox
+takes its `img_width` from the data blob, so the head-source feature maps go from 19/10/5/3/2/1
+cells to 14/7/4/2/1/1 and the network carries **1,014 priors at 224 px against 1,917 at 300**.
+A 224 px launcher is not a 300 px model evaluated smaller; it is a second architecture over a
+different prior grid. That is issue #129 with a number attached, and
+`evidence/2026-08-27-lite3-synthetic-ratio/audit.py` re-derives both counts from what each
+training run printed at startup.
+
+**Two provenance findings from the same audit, reported and not fixed.** The trainer that
+produced the checkpoints scored above is **not the trainer in this repository**: the training
+host's `finetune_ssd.py` is 1,000 lines and implements `motion_blur`, `sensor_noise` and
+`composite_onto_background`, while the committed copy before 2026-08-27 was **811** lines,
+otherwise a strict subset function for function, and implements none of them — the
+`--motion-blur`, `--sensor-noise` and `--composite` flags every earlier wave passed **were
+never committed**. And `ssd_torch.verify_against_cv2`, which `export_caffemodel`'s docstring
+calls "the only evidence that the robot would run what was trained", has **no call site
+anywhere in the tree**. Taken with
+[§13.2](#132-the-transferable-negative-five-identical-runs-five-different-detectors), those
+waves are irreproducible in two independent ways.
+
 > **Caveat, inline.** No candidate detector has been run on a robot, and none is deployed. The
 > gate — lose none of the people the shipped network sees — is cleared by nothing scored so
 > far. The sweep scripts themselves are **not in this repository**; they ran on a training host
 > and their outputs are committed byte-for-byte as JSON.
 
-## 13. A detector training pipeline that shipped nothing, and the three things worth keeping from it
+## 13. A detector training pipeline that shipped nothing, and an instrument too noisy to rank what it trains
 
-**This section reports a negative result and leads with it.** Three fine-tunes were run on a
-DGX Spark, scored against the incumbent, and refused; the shipped detector is unchanged and
-nothing here is recommended for deployment. It is in the paper because a repository that
-publishes its wins and quietly drops the week the numbers came out badly has a publication
-record that disagrees with its own evidence directory — and because three of the things this
-run measured are worth more to somebody else than a checkpoint would have been.
+**This section reports a negative result and leads with it — and the strongest thing in it is
+not about detectors.** Fourteen fine-tuning arms were run on a DGX Spark across two waves,
+scored against the incumbent at named preprocessings, and refused; the shipped detector is
+unchanged and nothing here is recommended for deployment. It is in the paper because a
+repository that publishes its wins and quietly drops the week the numbers came out badly has a
+publication record that disagrees with its own evidence directory. What the second wave found
+on the way to that verdict is worth more than any checkpoint would have been: **the trainer
+does not reproduce itself at a fixed seed**, so every arm this project has ever ranked — the
+ones behind the shipped detector's ranking included — was one draw from a distribution nobody
+had measured.
 
 Everything below regenerates from committed JSON with no video, no model and no network:
 
@@ -994,6 +1023,10 @@ Everything below regenerates from committed JSON with no video, no model and no 
 cd evidence/2026-08-27-lite3-training-set
 python3 audit.py               # the corpus: views, boxes, ride-along drift, hand-checks
 python3 summarise_scores.py    # both score tables, under both selection rules
+
+cd ../2026-08-27-lite3-synthetic-ratio
+python3 audit.py               # the determinism probe, the priors, the trainer hashes
+python3 summarise_ratio.py     # eleven arms, three profiles, and the replicate spread
 ```
 
 ### 13.1 The pipeline
@@ -1042,15 +1075,85 @@ flowchart TB
 ```
 
 
-`a_ws_real` is a real contemporaneous control and not a citation to an earlier run: these
-augmentation operators call `rng.random()` even at probability 0, so no previous run is
-byte-reproducible under this code.
+`a_ws_real` is a real contemporaneous control and not a citation to an earlier run. The
+reason first given for that — "these augmentation operators call `rng.random()` even at
+probability 0, so no previous run is byte-reproducible under this code" — is **wrong**, and
+[§13.2](#132-the-transferable-negative-five-identical-runs-five-different-detectors) is why.
+The control is sound under the correct reason, which is stronger.
 
-### 13.2 The transferable negative: the ablation is monotone in both directions, at every resolution
+**A second wave re-used this dataset without changing one frame, one box or one synthetic
+image** (`evidence/2026-08-27-lite3-synthetic-ratio/`), and moved two variables the first had
+confounded: how much of the synthetic half each arm sees — `1:1 ⊂ 1:3 ⊂ 1:9`, nested,
+no RNG — and the square the trainer warps to, 224 or 300. Its five arms are matched on
+**gradient steps** rather than epochs (~5,200, within 0.7%, one cosine schedule as a function
+of step) because wave 7's `a` took a tenth of the steps its `b` did, so "real only" and
+"barely trained" moved together and that ablation could not separate them. Then six of the
+arms were run again, changing nothing at all.
 
-Best `lite3` epoch per run, with person retention *reported* at that epoch rather than
-selected on — the argmax of one metric with the other merely quoted, which is how a
-checkpoint sweep picks a winner and is not a basis for shipping anything:
+### 13.2 The transferable negative: five identical runs, five different detectors
+
+Five byte-identical invocations of `finetune_ssd.py`, `--seed 0` in every one, same machine,
+same data, one epoch each:
+
+| run | conf loss | `matched/batch` | md5 of the exported weights |
+| ---: | ---: | ---: | --- |
+| 1 | 5.4547 | 98.3 | `9e4091e06858d928…` |
+| 2 | 5.4540 | 98.3 | `05f85fbc40beecf1…` |
+| 3 | 5.4411 | 98.3 | `a1d919985d4db335…` |
+| 4 | **5.3261** | 98.3 | `c65bb9b4fc0b48af…` |
+| 5 | **5.4765** | 98.3 | `463e53568e27cc9c…` |
+
+**Five runs, five different `.caffemodel` files**, with the classification loss spanning a
+**2.82%** range after a single epoch and no two exported checkpoints sharing a hash.
+`matched/batch` is **98.3 in all five**, and that column is what makes this a specific finding
+rather than a shrug: it is a property of the data pipeline — which images, in which order,
+with which augmentation — so **the sampler and the augmentation are deterministic and the
+divergence is in GPU compute**. `audit.py` checks both halves, hashes all distinct and
+`matched/batch` constant, so the claim fails a build rather than sitting in prose.
+
+⚠️ **The earlier diagnosis was wrong, and the wrong diagnosis is the expensive half.** Wave 7
+— [§13.1](#131-the-pipeline)'s run — attributed the irreproducibility to the **augmentation
+RNG stream**, in its README and in `run_lite3_ws.sh`, which implies that pinning the stream
+would fix it. It would not: the stream is already deterministic and the weights diverge
+anyway. Anyone acting on that sentence would pin it, re-run, get different weights and have no
+idea why. That README now carries the correction beside the original claim rather than in
+place of it ([A18](#a18-our-diagnosis-blamed-the-random-number-stream)).
+
+**What that does to every ranking in this project.** Re-run one arm three times, changing
+nothing, and score all of its checkpoints at the three deployed preprocessings:
+
+| `r1x1_224`, three runs of one recipe | median people kept, of 284 | epochs clearing the incumbent's people |
+| --- | --- | --- |
+| `go2-peer-supervised` 224/0.25 | 12.5 / 6.0 / 16.0 | 4 / 1 / 2 of 144 |
+| `go2-navigator-default` 300/0.40 | 13.0 / 18.0 / 22.0 | 1 / 0 / 42 of 144 |
+| `go2-run-smoke` 300/0.45 | 10.0 / 15.5 / 21.0 | 1 / 0 / **108** of 144 |
+
+Re-running one arm moves its median cross-day person retention by as much as **12.5 people**
+and its count of gate-clearing epochs from **0 to 108** — wider, within one condition, than
+any difference either wave was built to detect between conditions. **Every wave in this
+project has compared arms at n=1.**
+
+> **Had I run one seed, as every previous wave did, this directory would have published a
+> gate-clearing production checkpoint.**
+>
+> — `evidence/2026-08-27-lite3-synthetic-ratio/README.md`
+
+The checkpoint it means is `r1x1_224` epoch 037: 15/36 `lite3` at exactly 25 of 284 people,
+clearing the production gate. Re-*scoring* it returns 25 every time, because `cv2` runs a
+fixed graph over fixed frames. The variation is in re-running the *training*, and its two
+replicates score **0/36 and 12/36** under the same gate — the first of them `ep001`, base
+weights.
+
+**What did not replicate: the ratio.** On one run per condition it looked decisive — median
+people at 224 px / 0.25 of **12.5** at 1:1 against **3.5** at 1:9. Three runs of each end it:
+means of **11.5 against 11.2**, on within-condition sample standard deviations of **5.1 and
+6.7**. The 3.5 was a low draw; its replicates score 16.0 and 14.0, squarely inside the 1:1
+range. The honest statement is not "the ratio does not matter" — it is that **the experiment
+cannot answer the question it was built for**, because the between-condition difference is 0.3
+to 5.5 people and the within-condition spread is 5 to 12.
+
+That also settles what survives of the ablation this section used to lead with. Wave 7's three
+runs, one each, read:
 
 | run | 224 px / 0.25 (production) | 300 px / 0.40 | 300 px / 0.45 |
 | --- | --- | --- | --- |
@@ -1058,20 +1161,46 @@ checkpoint sweep picks a winner and is not a basis for shipping anything:
 | `b` + synthetic | 15/36, **7** (−18) | 18/36, **18** (−6) | 17/36, **16** (−4) |
 | `c` + synthetic + wave-6 flags | 15/36, **1** (−24) | 19/36, **0** (−24) | 17/36, **3** (−17) |
 
-**Every step that adds augmentation adds `lite3` hits and removes people — in both directions
-at once, at all three preprocessing configurations.** Person retention falls **21 → 7 → 1** at
-224 px and **29 → 18 → 0** at 300 px; quadruped hits climb 4 → 15 → 15 and 7 → 18 → 19 over the
-same two steps. Run `c` at 300 px finds the robot in 19 of 36 frames and has **almost stopped
-seeing people at all**. Because the sign is the same at every resolution, **this is not a
-resolution artefact** — which is the one thing a reader most needs to know before repeating it.
+Against the spread measured above, the `a` → `b` step of 14 people is larger than the noise
+and **the `b` → `c` step of 6 is not**. So "monotone in both directions" is half supported and
+half inside the band — and nothing about which half was knowable from a single run of each.
+The suspicion this section used to publish, that a 1 : 9.0 real-to-synthetic ratio is what
+costs the people, is the one the second wave was commissioned to test, and it came back
+unresolvable rather than confirmed. What is still certain is the ceiling: augmentation adds
+**0 viewpoints, 0 rooms and 0 days**, and 456 views from thirteen minutes bounds every
+multiplier.
 
-**The most likely cause, stated rather than left to be inferred: real : synthetic = 1 : 9.0** —
-283 real boxes against 2,542 synthetic ones. A network trained nine-to-one on warps of one
-morning's 456 views learns that morning, and `person` is the class that pays. We did not run
-the ratio sweep that would confirm it, so this is the suspicion the data supports and not a
-finding; saying which is which is the point. What *is* certain is that augmentation adds
-**0 viewpoints, 0 rooms and 0 days** — it multiplies examples, and 456 views from thirteen
-minutes is the ceiling regardless of the multiplier.
+**Why the two columns are not equally noisy, which is the mechanism worth carrying away.** The
+same three runs that scatter the person column by 12.5 give a *stable* `lite3` column —
+medians of 19, 17 and 18 of 36, a range of **2**. `lite3` is the class being **trained**;
+`person` is a class being **preserved**, by distillation and pseudo-labels, and every retained
+person box is a marginal detection sitting on a score threshold, which is exactly what
+run-to-run nondeterminism moves across it. **The stable column is the trained one; the noisy
+one is the gate.** It is also why one result in the stable column does survive: training at
+224 buys about **+6 of 36** Lite3 frames when scored at 224 — median 16/36 against 10/36 at
+1:1, 19/36 against 12/36 at 1:9 — consistently across ratios and selection rules. The
+train/deploy mismatch of [§12](#12-one-robot-four-detectors) was real and was costing
+detection. It simply was not what removed the people.
+
+**What did replicate — as a capability, not a value, and only at 300 px.** `r1x1_300` — 283
+real positives against 283 synthetic, trained at 300 — was run three times. Best `lite3` among
+epochs keeping at least the incumbent's people, with the epoch quoted so a near-untouched
+network cannot masquerade as a trained one:
+
+| `r1x1_300` | run 1 | run 2 | run 3 | incumbent |
+| --- | --- | --- | --- | --- |
+| `go2-navigator-default` 300/0.40 | **17/36** @ep031 | **8/36** @ep016 | **14/36** @ep036 | **0/36** |
+| `go2-run-smoke` 300/0.45 | **17/36** @ep039 | **11/36** @ep033 | **13/36** @ep037 | **0/36** |
+| `go2-peer-supervised` 224/0.25 | 6/36 @ep022 | 2/36 @ep016 | 1/36 @ep005 — base weights | **0/36** |
+
+**Three of three runs produce a *trained* checkpoint that detects the Lite3 at both 300 px
+deployments while keeping at least as many cross-day people as the shipped network, which
+finds the robot in 0 of 36.** Every winning epoch on those two rows is 16 to 39 of 144, with
+the classification loss down **2.7×** on its own `ep001` — not an `ep001` artefact. That is
+the only claim in either wave that survived an attempt to break it. The **value** does not
+survive: 17, 8 and 14 of 36 is a factor of two, so none of them is "the" number. And at
+224 px, the square production launches, the same three runs give **6, 2 and 1 of 36**, the
+third being base weights.
 
 ### 13.3 The finding worth the section on its own: a name scores zero, a description scores 0.6
 
@@ -1114,20 +1243,31 @@ would have been caught at all.
 
 ### 13.5 Nothing is recommended
 
-At 224 px — the size `deploy/run-peer-supervised.sh` actually launches — **no checkpoint from
-any of the three runs both detects the Lite3 and holds its people**; the best that detects
-anything at all keeps **7 of 284** against the incumbent's 25. One bright corner is worth
-naming precisely because it is small: `a_ws_real` epoch 026 at `go2-navigator-default` finds
-the Lite3 in 7 of 36 frames while keeping 29 people against the incumbent's 24 — a checkpoint
-that learned a new class without paying for it in the old one. It is still unshippable: the
-7/36 is same-session and 19% recall besides, 300 px / 0.40 is not what the peer launcher
-passes, and +5 on a base of 284 sits only just outside this project's own ±1–3 run-to-run
-noise.
+Three statements, kept apart because collapsing them is how four waves each produced a
+different answer. **A capability is real and replicated**, and it is the `r1x1_300` row above.
+**No value from it should be quoted**: the same three runs give 17, 8 and 14 of 36, and every
+`lite3` number in this section is **same-session** — a held-out time block of the same six
+tripod shots, one room, thirteen minutes, 456 distinct views, 0.0–1.0 px of camera motion. 47%
+recall on the morning it trained on is not a detection rate for a demo, and the only cross-day
+column sits at parity rather than ahead. **And nothing works at 224 px**, the square
+`deploy/run-peer-supervised.sh` opens: 6, 2 and 1 of 36, against wave 7's best there keeping
+7 of 284 people to the incumbent's 25. This is the **fourth** wave to hit that split, and it
+is now costed — the checkpoint that clears the gate does so only under launchers that pass no
+`--input-size` ([§12](#12-one-robot-four-detectors), issue #129).
 
-**The 300-versus-224 split is the blocker, and this is the third wave to hit it**:
-`finetune_ssd.py` resizes every training image to 300, the launcher opens at 224, and the class
-the training produces is weakest exactly where it has to run — which is
-[§12](#12-one-robot-four-detectors) arriving a second time, by a different road.
+So the recommendation is *nothing*, and the reason is specific rather than a shrug:
+
+> **The gate cannot resolve a training change at all.** 284 cross-day frames, an incumbent
+> keeping 25 of them, and a run-to-run spread of 12.5. You cannot tune what you cannot
+> measure, and four waves have now tried.
+
+Which changes what the next measurement is. Every previous framing of "we need more data"
+meant more **training** data, and augmentation already showed what that buys: 0 viewpoints,
+0 rooms, 0 days. The binding constraint is the other half — **more data widens the *eval* set
+as well as the training set, and the eval set is what ran out.** A venue recording session on
+**Monday 31 August 2026** at the MGM Shanghai West Bund is scheduled against exactly that, and
+[`robot-stack/deep_robotics/lite3/RECORDING-TRAINING-FOOTAGE.md`](../robot-stack/deep_robotics/lite3/RECORDING-TRAINING-FOOTAGE.md)
+§2 and §3 — move the camera, come back on a second day — are what it should be run against.
 
 ## 14. Guards proven by forcing them to fail
 
@@ -1234,6 +1374,7 @@ python3 evidence/2026-08-26-range-scale-audit/scale_audit.py            # k = 1.
 python3 evidence/2026-08-26-ranging-without-a-size-prior/ground_vs_prior.py
 python3 evidence/2026-08-19-what-the-policy-sees/radius_latch.py
 python3 evidence/2026-08-27-one-robot-four-detectors/report.py --check-readme
+python3 evidence/2026-08-27-lite3-synthetic-ratio/audit.py                 # the determinism probe
 python3 evidence/2026-08-27-lite3-executable-avoidance/replay_with_supervisor.py
 python3 robot-stack/preflight/tree_stamp.py id <any-directory>
 ```
@@ -1252,6 +1393,19 @@ pixels, the 800 checkpoints, and the sweep scripts. They live on a training host
 private model repository; their *outputs* are committed byte-for-byte as JSON, and the scoring
 scripts that read those outputs are in the tree. The evidence directory concerned says so in
 its own words: "Nothing here is re-derivable from a clone alone."
+
+The corpus and the weights behind [§13](#13-a-detector-training-pipeline-that-shipped-nothing-and-an-instrument-too-noisy-to-rank-what-it-trains)
+are in the **private** Hugging Face dataset `armwaheed/go2-peer-detection` under
+`lite3_20260827/`: the 3,179-frame labelled corpus, every manifest and every scored JSON, each
+arm's per-epoch losses and its teacher's old-class labels, and **359 of the 1,111 checkpoints**
+— beside the `aug20_crossday/` frames every person number in that section is scored against.
+`published_checkpoints.json` names the 752 that were held back and the rule that excluded
+them. Weights are published rather than left to be regenerated for the reason
+[§13.2](#132-the-transferable-negative-five-identical-runs-five-different-detectors) measures:
+**re-running the trainer does not reproduce them**, so a negative result whose weights are
+gone cannot be checked by anyone. It is private and stays private — the corpus holds an
+identifiable person, and `publish_to_hub.py` refuses to run against a public repo rather than
+trusting that it is not.
 
 **What needs a robot**, and the ladder in `deploy/README.md` for getting there: simulate, then
 shadow (`mappo_shadow.py`, which cannot move a leg), then drive under veto
@@ -1449,6 +1603,21 @@ a suite's `--check` leg could pass while a `ModuleNotFoundError` quietly removed
 directories from the count. The general shape: a suite that cannot reach a test reports the same
 green as a suite that passes it, which is why CI now discovers `test_*.py` by globbing and
 re-measures rather than trusting a list.
+
+### A18. Our diagnosis blamed the random-number stream
+
+A training run that does not reproduce at a fixed seed is a finding. The *explanation* is what
+other people act on, and ours was wrong. Wave 7 recorded — in its README and in the shell
+script that ran it — that its augmentation operators "call `rng.random()` even at probability
+0, so no earlier run is byte-reproducible under this code", attributing the irreproducibility
+to the augmentation RNG stream. Five byte-identical invocations at `--seed 0` produce five
+different `.caffemodel` files with `matched/batch` identical in all five, so the sampler and
+the augmentation are deterministic and the divergence is in GPU compute
+([§13.2](#132-the-transferable-negative-five-identical-runs-five-different-detectors)).
+Pinning the stream would have changed nothing. The correction is committed **beside** the
+original claim in wave 7's own README rather than in place of it, so anyone who already acted
+on it can find out. The mechanism worth carrying away: **a wrong mechanism costs more than an
+unexplained observation**, because only the wrong mechanism is actionable.
 
 ## Appendix B — What a payload costs a proxy platform
 
