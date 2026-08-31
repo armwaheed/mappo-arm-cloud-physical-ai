@@ -134,6 +134,8 @@ for _directory in (_STACK, _STACK / "visual_nav"):
     sys.path.insert(0, str(_directory))
 
 from avoidance import (  # noqa: E402
+    STATIC_HARD_GAP_M,
+    STATIC_SOFT_GAP_M,
     SUB_FLOOR_PROGRESS_FRACTION,
     SUB_FLOOR_WINDOW_S,
     Command,
@@ -1178,6 +1180,84 @@ def peer_navigator(base, peers: PeerSource):
     return PeerNavigator
 
 
+#: How long the warmup gate may hold the plan against unconfirmed landmarks before
+#: it steps aside. Long enough for two sightings of a box the camera is pointed at
+#: (measured: confirmation lands inside the first second of a run); short enough that
+#: a marker nobody can see — mis-tuned profile, dead colour channel — costs one pause
+#: and not the whole run. Without the timeout the gate is an unbounded hold, which is
+#: the one failure mode worse than the blind drive it exists to prevent.
+MAP_WARMUP_TIMEOUT_S = 5.0
+
+
+def warmup_navigator(base):
+    """A ``VisualNavigator`` subclass that plans against UNCONFIRMED landmarks too,
+    for the first few seconds of a run.
+
+    The failure this exists for was measured three times on 2026-08-31 (runs
+    ``live-supervisor-20260831T024326Z``, ``…T025936Z``, ``…T031547Z``): the static
+    map needs two sightings to confirm a landmark, so for the first 1.5-2 s of every
+    run the planner's obstacle list is EMPTY, the policy drives blind at the goal,
+    and by the time the box confirms the robot has already covered 0.5-0.7 m and is
+    inside the clearance circle — where the supervisor honestly refuses to take over,
+    because from inside the circle there is no clearance-respecting detour left. The
+    run then veto-holds against the confirmed box until the 60 s timeout. No
+    repositioning of the box fixes this: the blind drive is ~0.7 m at the gait floor,
+    so the box would have to start far enough away that it is out of the reliable
+    detection range that made it a landmark in the first place.
+
+    The fix is to close the window rather than move the furniture. An unconfirmed
+    landmark is a sighting the map has seen once — it is not noise the detector
+    imagined, it is a real return whose position is simply not yet tight. Its
+    ``planning_radius_m`` already says so: the radius carries ``position_sigma``, which
+    is at its widest exactly while the landmark is unconfirmed, so the injected disc
+    is the most conservative reading of what the camera has reported. During the
+    warmup the veto therefore holds the robot STANDING STILL inside the first metre,
+    the map converges while nothing moves (odometry does not drift on a stationary
+    robot, so convergence is fast and clean), and the gate lifts the moment the first
+    landmark confirms — after which the vendored ``_obstacles`` carries it with a
+    shrunken radius and the supervisor has the room it needs to drive the detour.
+
+    The object id deliberately matches the vendored construction
+    (``landmark-<id>``, no suffix): the disc the veto holds against during warmup is
+    the SAME disc the planner keeps after confirmation, so telemetry and the
+    supervisor's blocker bookkeeping read as one obstacle tightening, not one
+    vanishing and another appearing.
+
+    Same seam as :func:`peer_navigator` and for the same reason: ``robot-stack/`` is
+    vendored and ``PROVENANCE.md`` forbids editing it in place.
+    """
+
+    class WarmupNavigator(base):
+        def _obstacles(self, now: float) -> list:
+            obstacles = super()._obstacles(now)
+            if self.__dict__.get("_warmup_done"):
+                return obstacles
+            static_map = getattr(self, "_static_map", None)
+            if static_map is None:
+                # No static profile configured: there is nothing to warm up, now or
+                # later, so latch the gate off rather than checking every tick.
+                self.__dict__["_warmup_done"] = True
+                return obstacles
+            started = self.__dict__.setdefault("_warmup_started_at", now)
+            planned_ids = {landmark.landmark_id
+                           for landmark in static_map.confirmed()}
+            if planned_ids or now - started > MAP_WARMUP_TIMEOUT_S:
+                self.__dict__["_warmup_done"] = True
+                return obstacles
+            obstacles.extend(
+                Obstacle(x=landmark.x, y=landmark.y, vx=0.0, vy=0.0,
+                         radius_m=landmark.planning_radius_m, label=landmark.label,
+                         person_shaped=False, soft_gap_m=STATIC_SOFT_GAP_M,
+                         hard_gap_m=STATIC_HARD_GAP_M,
+                         kind="static",
+                         object_id=f"landmark-{landmark.landmark_id}")
+                for landmark in static_map.landmarks
+                if landmark.landmark_id not in planned_ids)
+            return obstacles
+
+    return WarmupNavigator
+
+
 def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     group = parser.add_argument_group("MAPPO policy")
     group.add_argument("--package", type=Path, default=DEFAULT_PACKAGE,
@@ -1477,7 +1557,11 @@ def main(argv=None, bindings=None) -> int:
         # optional: the commanded and achieved velocities differ by about a factor of two
         # on this robot, so a policy fed the command believes it is moving twice as fast
         # as it is. VisualNavigator is where loco and the planner are both in scope.
-        real_navigator = visual_nav.VisualNavigator
+        # The warmup wrapper is unconditional: with no static profile configured it
+        # latches itself off on the first tick and costs nothing afterwards.
+        real_navigator = warmup_navigator(visual_nav.VisualNavigator)
+        print(f"[mappo_drive] map warmup gate: unconfirmed landmarks constrain the "
+              f"plan for up to {MAP_WARMUP_TIMEOUT_S:.0f} s while the map confirms")
 
         def navigator(loco, perception, planner, *rest, **kwargs):
             if isinstance(planner, MappoPlanner):

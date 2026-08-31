@@ -44,6 +44,7 @@ from avoidance import (
     MIN_GAIT_COMMAND_M_S,
     PLANNER_REASONS,
     STATIC_HARD_GAP_M,
+    STATIC_SOFT_GAP_M,
     Command,
     Limits,
     Obstacle,
@@ -60,6 +61,7 @@ import mappo_bridge
 from mappo_bridge import external_hold
 from mappo_drive import (
     _STOP_REASONS,
+    MAP_WARMUP_TIMEOUT_S,
     SUB_FLOOR_PROGRESS_FRACTION,
     SUB_FLOOR_WINDOW_S,
     MappoPlanner,
@@ -68,6 +70,7 @@ from mappo_drive import (
     peer_navigator,
     platform_gait_floor,
     split_argv,
+    warmup_navigator,
 )
 from mappo_policy import (
     DEFAULT_PACKAGE,
@@ -1040,6 +1043,85 @@ def test_the_transform_is_the_enabling_flag_so_it_can_never_be_absent():
     assert parser.parse_args([]).peer_odom_align is None
     assert parser.parse_args(["--peer-odom-align", "2,1,180"]).peer_odom_align == "2,1,180"
     assert parser.parse_args([]).peer_timeout == PEER_TIMEOUT_S
+
+
+# ── The map warmup gate ─────────────────────────────────────────────────────
+class _FakeLandmark:
+    """Attribute-shaped stand-in for ``static_map.Landmark``."""
+
+    def __init__(self, landmark_id, confirmed, x=1.5, y=0.0, radius_m=0.80,
+                 label="bin"):
+        self.landmark_id = landmark_id
+        self.confirmed = confirmed
+        self.x = x
+        self.y = y
+        self.planning_radius_m = radius_m
+        self.label = label
+
+
+class _FakeMap:
+    """The two queries ``warmup_navigator`` makes of a ``StaticObstacleMap``."""
+
+    def __init__(self, landmarks):
+        self._landmarks = list(landmarks)
+
+    @property
+    def landmarks(self):
+        return list(self._landmarks)
+
+    def confirmed(self):
+        return [landmark for landmark in self._landmarks if landmark.confirmed]
+
+
+def _warmup(landmarks, *args):
+    navigator = warmup_navigator(_FakeNavigator)("loco", "perception", "planner")
+    if landmarks is not None:
+        navigator._static_map = _FakeMap(landmarks)
+    return navigator._obstacles(*args) if args else navigator._obstacles(0.0)
+
+
+def test_warmup_injects_an_unconfirmed_landmark_as_the_disc_it_will_become():
+    """2026-08-31, three live runs: the map needs two sightings, the planner saw an
+    empty obstacle list for the first 1.5-2 s, and the policy drove 0.5-0.7 m blind —
+    into the clearance circle, where the supervisor then honestly refused the detour.
+    During the warmup the unconfirmed landmark must constrain the plan, with the WIDE
+    radius its unconverged sigma already carries."""
+    obstacles = _warmup([_FakeLandmark(7, confirmed=False)])
+    assert [o.object_id for o in obstacles] == ["landmark-1", "landmark-7"]
+    warmup = obstacles[-1]
+    assert isinstance(warmup, Obstacle)
+    assert warmup.kind == "static" and warmup.radius_m == 0.80
+    assert (warmup.soft_gap_m, warmup.hard_gap_m) == (STATIC_SOFT_GAP_M, STATIC_HARD_GAP_M)
+
+
+def test_warmup_lifts_the_moment_a_landmark_confirms():
+    """The gate's whole purpose is to buy the map its two sightings with the robot
+    standing still; keeping the injection after confirmation would double-list the
+    same box on every tick for the rest of the run."""
+    landmark = _FakeLandmark(7, confirmed=False)
+    navigator = warmup_navigator(_FakeNavigator)("loco", "perception", "planner")
+    navigator._static_map = _FakeMap([landmark])
+    assert [o.object_id for o in navigator._obstacles(0.0)] == ["landmark-1", "landmark-7"]
+    landmark.confirmed = True
+    assert [o.object_id for o in navigator._obstacles(0.5)] == ["landmark-1"]
+
+
+def test_warmup_times_out_rather_than_holding_forever_for_a_marker_nobody_sees():
+    """A mis-tuned static profile would otherwise be an unbounded hold — the one
+    failure mode worse than the blind drive this gate exists to prevent."""
+    navigator = warmup_navigator(_FakeNavigator)("loco", "perception", "planner")
+    navigator._static_map = _FakeMap([_FakeLandmark(7, confirmed=False)])
+    assert [o.object_id for o in navigator._obstacles(0.0)] == ["landmark-1", "landmark-7"]
+    obstacles = navigator._obstacles(MAP_WARMUP_TIMEOUT_S + 1.0)
+    assert [o.object_id for o in obstacles] == ["landmark-1"]
+
+
+def test_warmup_without_a_static_map_is_a_passthrough_that_latches_off():
+    """Runs without ``--static-profile`` are every run recorded before this gate
+    existed; they must read exactly as they did, on the first tick and the last."""
+    navigator = warmup_navigator(_FakeNavigator)("loco", "perception", "planner")
+    assert [o.object_id for o in navigator._obstacles(0.0)] == ["landmark-1"]
+    assert navigator.__dict__["_warmup_done"] is True
 
 
 # ── The floor is checked on the command, not just on the envelope (issue #26) ──
