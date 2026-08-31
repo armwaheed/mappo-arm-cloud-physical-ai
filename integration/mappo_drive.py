@@ -134,12 +134,15 @@ for _directory in (_STACK, _STACK / "visual_nav"):
     sys.path.insert(0, str(_directory))
 
 from avoidance import (  # noqa: E402
+    STATIC_HARD_GAP_M,
+    STATIC_SOFT_GAP_M,
     SUB_FLOOR_PROGRESS_FRACTION,
     SUB_FLOOR_WINDOW_S,
     Command,
     DynamicWindowPlanner,
     Obstacle,
 )
+from static_map import MAX_PLANNING_SIGMA_M  # noqa: E402
 
 #: Statuses that mean "stop", mapped to the reason string the vendored loop understands.
 #: The word is not cosmetic there. ``visual_nav.blocked_stop`` rests the legs on a stop
@@ -1178,6 +1181,139 @@ def peer_navigator(base, peers: PeerSource):
     return PeerNavigator
 
 
+#: How long the warmup gate may hold the plan against unconfirmed landmarks before
+#: it steps aside. Long enough for two sightings of a box the camera is pointed at
+#: (measured: confirmation lands inside the first second of a run); short enough that
+#: a marker nobody can see — mis-tuned profile, dead colour channel — costs one pause
+#: and not the whole run. Without the timeout the gate is an unbounded hold, which is
+#: the one failure mode worse than the blind drive it exists to prevent.
+MAP_WARMUP_TIMEOUT_S = 5.0
+
+
+def warmup_navigator(base):
+    """A ``VisualNavigator`` subclass that plans against UNCONFIRMED landmarks too,
+    for the first few seconds of a run.
+
+    The failure this exists for was measured three times on 2026-08-31 (runs
+    ``live-supervisor-20260831T024326Z``, ``…T025936Z``, ``…T031547Z``): the static
+    map needs two sightings to confirm a landmark, so for the first 1.5-2 s of every
+    run the planner's obstacle list is EMPTY, the policy drives blind at the goal,
+    and by the time the box confirms the robot has already covered 0.5-0.7 m and is
+    inside the clearance circle — where the supervisor honestly refuses to take over,
+    because from inside the circle there is no clearance-respecting detour left. The
+    run then veto-holds against the confirmed box until the 60 s timeout. No
+    repositioning of the box fixes this: the blind drive is ~0.7 m at the gait floor,
+    so the box would have to start far enough away that it is out of the reliable
+    detection range that made it a landmark in the first place.
+
+    The fix is to close the window rather than move the furniture. An unconfirmed
+    landmark is a sighting the map has seen once — it is not noise the detector
+    imagined, it is a real return whose position is simply not yet tight. Its
+    ``planning_radius_m`` already says so: the radius carries ``position_sigma``, which
+    is at its widest exactly while the landmark is unconfirmed, so the injected disc
+    is the most conservative reading of what the camera has reported. During the
+    warmup the veto therefore holds the robot STANDING STILL inside the first metre,
+    the map converges while nothing moves (odometry does not drift on a stationary
+    robot, so convergence is fast and clean), and each landmark leaves this injection
+    the moment IT confirms — after which the vendored ``_obstacles`` carries it with a
+    shrunken radius and the supervisor has the room it needs to drive the detour. Per
+    landmark, not per run: the gate itself runs until :data:`MAP_WARMUP_TIMEOUT_S`, so a
+    second box still on one sighting keeps constraining the plan after the first has
+    confirmed.
+
+    The injection relaxes the sightings gate and NOTHING ELSE. ``confirmed()`` applies
+    two further gates — a per-label cap sized against odometry duplicates, and
+    ``MAX_PLANNING_SIGMA_M`` on the disc it will carry — and both are honoured here,
+    the cap by filling only the room the confirmed set leaves and the ceiling by
+    clamping rather than excluding. See the comments in ``_obstacles`` for the measured
+    reason each is the shape it is.
+
+    The object id deliberately matches the vendored construction
+    (``landmark-<id>``, no suffix): the disc the veto holds against during warmup is
+    the SAME disc the planner keeps after confirmation, so telemetry and the
+    supervisor's blocker bookkeeping read as one obstacle tightening, not one
+    vanishing and another appearing.
+
+    Same seam as :func:`peer_navigator` and for the same reason: ``robot-stack/`` is
+    vendored and ``PROVENANCE.md`` forbids editing it in place.
+    """
+
+    class WarmupNavigator(base):
+        def _obstacles(self, now: float) -> list:
+            obstacles = super()._obstacles(now)
+            if getattr(self, "_warmup_done", False):
+                return obstacles
+            static_map = getattr(self, "_static_map", None)
+            if static_map is None:
+                # No static profile configured: there is nothing to warm up, now or
+                # later, so latch the gate off rather than checking every tick.
+                self._warmup_done = True
+                return obstacles
+            if not hasattr(self, "_warmup_started_at"):
+                self._warmup_started_at = now
+            # ONLY the timeout latches the gate off. An earlier version also latched on
+            # the first confirmation — `if planned_ids or now - started > ...` — which
+            # dropped a SECOND box that was still on one sighting the instant the first
+            # one confirmed, reopening for box two exactly the blind-drive window this
+            # gate exists to close. `max_per_label` is 2, so two boxes is a supported
+            # arrangement rather than a hypothetical one. The de-duplication that latch
+            # appeared to provide is done by the `planned_ids` filter below and was
+            # never the latch's job: removing the term left all four of the tests this
+            # gate shipped with passing, which is how the bug survived review.
+            if now - self._warmup_started_at > MAP_WARMUP_TIMEOUT_S:
+                self._warmup_done = True
+                return obstacles
+            planned = static_map.confirmed()
+            planned_ids = {landmark.landmark_id for landmark in planned}
+            # `confirmed()` applies three gates and this injection relaxes exactly ONE of
+            # them — the sightings count. The other two are not ours to spend:
+            #
+            # `max_landmarks_for` caps how many landmarks of a label the planner may see
+            # at once, and it is sized against DUPLICATES SPAWNED BY BAD ODOMETRY, which
+            # is precisely what a one-sighting landmark may be. So the warmup fills only
+            # the room the confirmed set has left under that cap, best-evidenced first —
+            # the same `(-sightings, position_sigma)` ranking `confirmed()` uses.
+            room: dict = {}
+            for landmark in planned:
+                room[landmark.label] = room.get(landmark.label, 0) + 1
+            keep = set()
+            for landmark in sorted(
+                    (lm for lm in static_map.landmarks
+                     if lm.landmark_id not in planned_ids),
+                    key=lambda lm: (-lm.sightings, lm.position_sigma)):
+                used = room.get(landmark.label, 0)
+                if used >= static_map.max_landmarks_for(landmark.label):
+                    continue
+                room[landmark.label] = used + 1
+                keep.add(landmark.landmark_id)
+            # ...and MAX_PLANNING_SIGMA_M caps how wide a disc the planner may carry at
+            # all. Injecting `planning_radius_m` raw honoured it no better than the cap:
+            # measured against the real map, a one-sighting landmark with a 3.0 m sigma —
+            # the ghost that
+            # ceiling exists to exclude — arrived as a 3.33 m disc, which in a 3 m arena
+            # is every route at once and holds the robot still until the map prunes it.
+            # Clamping instead of excluding, because excluding would switch this gate
+            # off where it is needed most: a first sighting's sigma is 0.30 m at 1.5 m
+            # and 0.43 m at 2.5 m, so a hard sigma filter would drop every box first
+            # seen beyond ~2.3 m while the blind drive this prevents is 0.5-0.7 m. The
+            # clamp keeps the disc and bounds it at the widest the planner would ever
+            # carry for that label — 0.73 m for the 0.33 m demo box.
+            obstacles.extend(
+                Obstacle(x=landmark.x, y=landmark.y, vx=0.0, vy=0.0,
+                         radius_m=min(landmark.planning_radius_m,
+                                      landmark.radius_m + MAX_PLANNING_SIGMA_M),
+                         label=landmark.label,
+                         person_shaped=False, soft_gap_m=STATIC_SOFT_GAP_M,
+                         hard_gap_m=STATIC_HARD_GAP_M,
+                         kind="static",
+                         object_id=f"landmark-{landmark.landmark_id}")
+                for landmark in static_map.landmarks
+                if landmark.landmark_id in keep)
+            return obstacles
+
+    return WarmupNavigator
+
+
 def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
     group = parser.add_argument_group("MAPPO policy")
     group.add_argument("--package", type=Path, default=DEFAULT_PACKAGE,
@@ -1477,7 +1613,13 @@ def main(argv=None, bindings=None) -> int:
         # optional: the commanded and achieved velocities differ by about a factor of two
         # on this robot, so a policy fed the command believes it is moving twice as fast
         # as it is. VisualNavigator is where loco and the planner are both in scope.
-        real_navigator = visual_nav.VisualNavigator
+        # The warmup wrapper is unconditional: with no static profile configured it
+        # latches itself off on the first tick and costs nothing afterwards. The BANNER
+        # is not, because a run with no static map does none of what it describes.
+        real_navigator = warmup_navigator(visual_nav.VisualNavigator)
+        if "--static-profile" in vendored_argv:
+            print(f"[mappo_drive] map warmup gate: unconfirmed landmarks constrain the "
+                  f"plan for up to {MAP_WARMUP_TIMEOUT_S:.0f} s while the map confirms")
 
         def navigator(loco, perception, planner, *rest, **kwargs):
             if isinstance(planner, MappoPlanner):
