@@ -26,6 +26,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+import numpy as np
+
 # BOTH paths go in before ANY sibling import. `ruff --fix` sorts imports into
 # contiguous blocks and will hoist `from avoidance import ...` above a sys.path line that
 # sits between the blocks — which is exactly how this file went from passing to
@@ -40,6 +42,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack", "unitree", "go2",
 # written for, and a hand-rolled stand-in for that transport would be a test of the
 # stand-in. It is pure stdlib and imports no vendor SDK.
 sys.path.insert(0, os.path.join(_HERE, "..", "robot-stack"))
+import static_map
 from avoidance import (
     MIN_GAIT_COMMAND_M_S,
     PLANNER_REASONS,
@@ -1046,38 +1049,60 @@ def test_the_transform_is_the_enabling_flag_so_it_can_never_be_absent():
 
 
 # ── The map warmup gate ─────────────────────────────────────────────────────
-class _FakeLandmark:
-    """Attribute-shaped stand-in for ``static_map.Landmark``."""
-
-    def __init__(self, landmark_id, confirmed, x=1.5, y=0.0, radius_m=0.80,
-                 label="bin"):
-        self.landmark_id = landmark_id
-        self.confirmed = confirmed
-        self.x = x
-        self.y = y
-        self.planning_radius_m = radius_m
-        self.label = label
-
-
-class _FakeMap:
-    """The two queries ``warmup_navigator`` makes of a ``StaticObstacleMap``."""
-
-    def __init__(self, landmarks):
-        self._landmarks = list(landmarks)
-
-    @property
-    def landmarks(self):
-        return list(self._landmarks)
-
-    def confirmed(self):
-        return [landmark for landmark in self._landmarks if landmark.confirmed]
+# These use the REAL ``static_map.StaticObstacleMap`` and ``Landmark``. The stand-ins
+# they replaced modelled only the sightings gate, so they could not see the two further
+# gates ``confirmed()`` applies — and every test written against them passed identically
+# against a warmup injection that honoured neither, and against a latch that dropped a
+# second box the moment the first confirmed. A fake of the thing under test is a test of
+# the fake.
+def _landmark(landmark_id, *, sightings=1, sigma_m=0.10, x=1.5, y=0.0,
+              radius_m=0.33, label="brown-box-marker"):
+    """A real ``Landmark`` with a chosen isotropic 1-sigma position uncertainty."""
+    variance = sigma_m ** 2
+    return static_map.Landmark(
+        landmark_id=landmark_id, mean=np.array([x, y], dtype=float),
+        covariance=np.array([[variance, 0.0], [0.0, variance]], dtype=float),
+        radius_m=radius_m, label=label, sightings=sightings)
 
 
-def _warmup(landmarks, *args):
-    navigator = warmup_navigator(_FakeNavigator)("loco", "perception", "planner")
-    if landmarks is not None:
-        navigator._static_map = _FakeMap(landmarks)
-    return navigator._obstacles(*args) if args else navigator._obstacles(0.0)
+def _map_of(*landmarks):
+    """A real map holding ``landmarks``. Seeded directly rather than through
+    ``observe()`` so a test can state the sigma it means to exercise; every gate the
+    injection has to respect — ``confirmed``, ``max_landmarks_for``,
+    ``planning_radius_m`` — is then the shipped one."""
+    mapping = static_map.StaticObstacleMap(radii={"brown-box-marker": 0.33})
+    mapping._landmarks = list(landmarks)
+    return mapping
+
+
+class _MappedNavigator:
+    """Base whose ``_obstacles`` is the vendored static-landmark branch verbatim, so
+    what the base contributes under test is what the robot's base contributes."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def _obstacles(self, now: float) -> list:
+        mapping = getattr(self, "_static_map", None)
+        if mapping is None:
+            return []
+        return [Obstacle(x=lm.x, y=lm.y, vx=0.0, vy=0.0,
+                         radius_m=lm.planning_radius_m, label=lm.label,
+                         person_shaped=False, soft_gap_m=STATIC_SOFT_GAP_M,
+                         hard_gap_m=STATIC_HARD_GAP_M, kind="static",
+                         object_id=f"landmark-{lm.landmark_id}")
+                for lm in mapping.confirmed()]
+
+
+def _warmup_nav(*landmarks):
+    navigator = warmup_navigator(_MappedNavigator)("loco", "perception", "planner")
+    if landmarks:
+        navigator._static_map = _map_of(*landmarks)
+    return navigator
+
+
+def _ids(obstacles):
+    return [o.object_id for o in obstacles]
 
 
 def test_warmup_injects_an_unconfirmed_landmark_as_the_disc_it_will_become():
@@ -1086,42 +1111,84 @@ def test_warmup_injects_an_unconfirmed_landmark_as_the_disc_it_will_become():
     into the clearance circle, where the supervisor then honestly refused the detour.
     During the warmup the unconfirmed landmark must constrain the plan, with the WIDE
     radius its unconverged sigma already carries."""
-    obstacles = _warmup([_FakeLandmark(7, confirmed=False)])
-    assert [o.object_id for o in obstacles] == ["landmark-1", "landmark-7"]
-    warmup = obstacles[-1]
+    navigator = _warmup_nav(_landmark(1, sightings=1, sigma_m=0.10))
+    assert navigator._static_map.confirmed() == [], "one sighting is not confirmed"
+    obstacles = navigator._obstacles(0.0)
+    assert _ids(obstacles) == ["landmark-1"]
+    warmup = obstacles[0]
     assert isinstance(warmup, Obstacle)
-    assert warmup.kind == "static" and warmup.radius_m == 0.80
+    assert warmup.kind == "static" and math.isclose(warmup.radius_m, 0.43)
     assert (warmup.soft_gap_m, warmup.hard_gap_m) == (STATIC_SOFT_GAP_M, STATIC_HARD_GAP_M)
 
 
-def test_warmup_lifts_the_moment_a_landmark_confirms():
-    """The gate's whole purpose is to buy the map its two sightings with the robot
-    standing still; keeping the injection after confirmation would double-list the
-    same box on every tick for the rest of the run."""
-    landmark = _FakeLandmark(7, confirmed=False)
-    navigator = warmup_navigator(_FakeNavigator)("loco", "perception", "planner")
-    navigator._static_map = _FakeMap([landmark])
-    assert [o.object_id for o in navigator._obstacles(0.0)] == ["landmark-1", "landmark-7"]
-    landmark.confirmed = True
-    assert [o.object_id for o in navigator._obstacles(0.5)] == ["landmark-1"]
+def test_warmup_keeps_holding_a_second_box_that_has_not_confirmed_yet():
+    """THE FINDING. The gate is per LANDMARK, not per run. An earlier latch read
+    ``if planned_ids or now - started > TIMEOUT``, so the instant box one confirmed the
+    gate shut and box two — still on one sighting — vanished from the plan, reopening
+    for it exactly the blind-drive window this gate exists to close. ``max_per_label``
+    is 2, so two boxes is an arrangement the map supports rather than a hypothetical."""
+    navigator = _warmup_nav(_landmark(1, sightings=2, sigma_m=0.10),
+                            _landmark(2, sightings=1, sigma_m=0.10, x=2.2, y=0.6))
+    assert _ids(_MappedNavigator._obstacles(navigator, 0.5)) == ["landmark-1"], \
+        "the vendored base carries only the confirmed one"
+    assert _ids(navigator._obstacles(0.5)) == ["landmark-1", "landmark-2"], \
+        "and the still-unconfirmed second box keeps constraining the plan"
+
+
+def test_warmup_stops_injecting_a_landmark_once_it_confirms():
+    """Injecting after confirmation would double-list the same box on every tick for
+    the rest of the run. The ``planned_ids`` filter is what prevents that — not the
+    latch, which is why removing the latch's confirmation term changes nothing here."""
+    landmark = _landmark(1, sightings=1, sigma_m=0.10)
+    navigator = _warmup_nav(landmark)
+    assert _ids(navigator._obstacles(0.0)) == ["landmark-1"]
+    landmark.sightings = 2
+    assert _ids(navigator._obstacles(0.5)) == ["landmark-1"], "listed once, not twice"
+
+
+def test_warmup_clamps_the_disc_at_the_planners_own_sigma_ceiling():
+    """THE FINDING. ``confirmed()`` refuses any landmark whose ``position_sigma``
+    exceeds ``MAX_PLANNING_SIGMA_M``, a gate its docstring attributes to a live run that
+    failed on exactly this. Injecting ``planning_radius_m`` raw ignored it: a
+    one-sighting ghost with a 3.0 m sigma arrived as a 3.33 m disc, which in a 3 m arena
+    is every route at once. Clamped rather than excluded, because a first sighting's
+    sigma is already 0.43 m at 2.5 m and excluding would switch the gate off exactly
+    where the blind drive it prevents happens."""
+    ghost = _landmark(1, sightings=1, sigma_m=3.0)
+    assert ghost.planning_radius_m > 3.3, "the raw disc this used to inject"
+    assert ghost.position_sigma > static_map.MAX_PLANNING_SIGMA_M
+    obstacles = _warmup_nav(ghost)._obstacles(0.0)
+    assert math.isclose(obstacles[0].radius_m, 0.33 + static_map.MAX_PLANNING_SIGMA_M)
+
+
+def test_warmup_fills_only_the_room_the_per_label_cap_leaves():
+    """THE FINDING. ``max_landmarks_for`` is sized against DUPLICATES SPAWNED BY BAD
+    ODOMETRY — which is precisely what a one-sighting landmark may be — so the warmup
+    may not show the planner more of a label than the cap allows. It fills the room
+    best-evidenced first, the same ``(-sightings, position_sigma)`` ranking
+    ``confirmed()`` ranks by, and emits in map order as ``confirmed()`` does."""
+    navigator = _warmup_nav(_landmark(1, sigma_m=0.30),
+                            _landmark(2, sigma_m=0.10, x=2.0),
+                            _landmark(3, sigma_m=0.20, x=2.5))
+    assert static_map.MAX_LANDMARKS_PER_LABEL == 2, "the cap this is written against"
+    assert _ids(navigator._obstacles(0.0)) == ["landmark-2", "landmark-3"], \
+        "the two tightest, in map order"
 
 
 def test_warmup_times_out_rather_than_holding_forever_for_a_marker_nobody_sees():
     """A mis-tuned static profile would otherwise be an unbounded hold — the one
     failure mode worse than the blind drive this gate exists to prevent."""
-    navigator = warmup_navigator(_FakeNavigator)("loco", "perception", "planner")
-    navigator._static_map = _FakeMap([_FakeLandmark(7, confirmed=False)])
-    assert [o.object_id for o in navigator._obstacles(0.0)] == ["landmark-1", "landmark-7"]
-    obstacles = navigator._obstacles(MAP_WARMUP_TIMEOUT_S + 1.0)
-    assert [o.object_id for o in obstacles] == ["landmark-1"]
+    navigator = _warmup_nav(_landmark(1, sightings=1, sigma_m=0.10))
+    assert _ids(navigator._obstacles(0.0)) == ["landmark-1"]
+    assert _ids(navigator._obstacles(MAP_WARMUP_TIMEOUT_S + 1.0)) == []
 
 
 def test_warmup_without_a_static_map_is_a_passthrough_that_latches_off():
     """Runs without ``--static-profile`` are every run recorded before this gate
     existed; they must read exactly as they did, on the first tick and the last."""
-    navigator = warmup_navigator(_FakeNavigator)("loco", "perception", "planner")
-    assert [o.object_id for o in navigator._obstacles(0.0)] == ["landmark-1"]
-    assert navigator.__dict__["_warmup_done"] is True
+    navigator = _warmup_nav()
+    assert navigator._obstacles(0.0) == []
+    assert navigator._warmup_done is True
 
 
 # ── The floor is checked on the command, not just on the envelope (issue #26) ──
