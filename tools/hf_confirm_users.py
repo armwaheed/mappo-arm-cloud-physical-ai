@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
-"""Re-derive the Hugging Face username list in docs/hf-collaborators.md.
+"""Re-derive the Hugging Face username list, and print it.
 
-Queries the public quicksearch endpoint. No token needed, no writes.
-A display-name match is a lead, not an identity proof — see the doc.
+Queries the public quicksearch endpoint. No token needed, no writes. Hugging Face has no
+API for adding collaborators, so the output is a click-list for the web UI.
+
+A DISPLAY-NAME MATCH IS A LEAD, NOT AN IDENTITY PROOF. As of 2026-08-26 none of the GitHub
+handles existed as a Hugging Face username, so every row is matched on fullname alone —
+which can collide, and which nobody consented to being published against.
+
+The rendered list used to be committed as docs/hf-collaborators.md and was removed: a
+repository shared with Deep Robotics and Arm's China teams is not the place to hold a
+roster of named individuals matched by guesswork. Run this when the list is needed.
 """
 import json
 import urllib.parse

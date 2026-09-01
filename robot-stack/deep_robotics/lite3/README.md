@@ -370,6 +370,11 @@ Bringing up a **new** robot end to end — robot-side staging, commissioning, ca
 scene layout, live run, evidence recovery — follows
 [`DEPLOYMENT-SOP.md`](DEPLOYMENT-SOP.md), once per robot.
 
+Putting robots and the operator's laptop on one airgapped WiFi LAN — so the robots walk
+untethered and the Device Connect dashboard can discover them at all — follows
+[`DEMO-NETWORK.md`](DEMO-NETWORK.md). Read its routing-table trap before concluding that an
+access point is isolating clients; on 2026-09-01 it looked exactly like that and was not.
+
 `192.168.1.120` is the **motion host**, and it is not supposed to have ROS 2, a
 `Lite3_ROS` checkout or outbound DNS. Start with
 [`commissioning/`](commissioning/README.md): it decodes the state the robot already
