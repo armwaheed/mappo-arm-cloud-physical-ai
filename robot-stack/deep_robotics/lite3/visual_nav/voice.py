@@ -1,0 +1,119 @@
+#!/usr/bin/env python3
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""Bilingual spoken cues, Chinese first and then English.
+
+WHY CHINESE FIRST, and it is not alphabetical. The demo is in Shanghai, the audience and
+the venue staff are Chinese-speaking, and the cue that matters most -- "please step out of
+my path" -- is useless if the person it is addressed to has to wait through an English
+sentence to hear it. English follows for the visitors.
+
+WHY THIS NEVER RAISES AND NEVER BLOCKS. It is called from a supervisor watching a live
+run. A missing WAV, a busy sound card or an absent ``aplay`` must degrade to silence, not
+end a run that is otherwise going fine -- losing the demo to a codec is a worse outcome
+than losing the announcement. And playback is a SUBPROCESS that is not waited on: the
+person-stop cue is 2.7 s of Chinese plus 4.3 s of English, and seven seconds of blocking
+would be seven seconds of a robot not reacting to the person it is talking to.
+
+The cue set is borrowed from the RRD DR02 repository (``assets/voice``), which already
+carries matched zh/en pairs recorded from one voice. Cues naming a *table* are deliberately
+not used here: this demo drives to a marker, and a robot announcing furniture it is not
+looking for reads as a bug to anyone who speaks the language.
+"""
+
+from __future__ import annotations
+
+import shutil
+import subprocess
+import time
+from pathlib import Path
+
+#: Cue -> the two files that speak it, Chinese first.
+CUES = {
+    "person_stop": ("rrd_person_stop_zh.wav", "rrd_person_stop_en.wav"),
+    "person_thanks": ("rrd_person_thanks_zh.wav", "rrd_person_thanks_en.wav"),
+    "resuming": ("rrd_resuming_zh.wav", "rrd_resuming_en.wav"),
+    "fault": ("rrd_fault_zh.wav", "rrd_fault_en.wav"),
+    "greeting": ("rrd_greeting_zh.wav", "rrd_greeting_en.wav"),
+}
+
+#: A cue may not repeat inside this many seconds. Without it a robot held for a minute by
+#: a stationary person says "excuse me" twenty times, which stops reading as politeness.
+DEFAULT_REPEAT_GUARD_S = 12.0
+
+
+class Voice:
+    """Plays cue pairs, or silently does nothing when it cannot."""
+
+    def __init__(self, directory: Path | str | None, *, enabled: bool = True,
+                 repeat_guard_s: float = DEFAULT_REPEAT_GUARD_S,
+                 player: str | None = None) -> None:
+        self.directory = Path(directory) if directory is not None else None
+        self._guard = float(repeat_guard_s)
+        self._last: dict[str, float] = {}
+        self._player = player or shutil.which("aplay") or shutil.which("paplay")
+        self._processes: list = []
+        # Resolved once, so the reason for silence is reportable rather than mysterious.
+        self.reason: str | None = None
+        if not enabled:
+            self.reason = "disabled"
+        elif self.directory is None:
+            self.reason = "no voice directory configured"
+        elif not self.directory.is_dir():
+            self.reason = f"{self.directory} is not a directory"
+        elif self._player is None:
+            self.reason = "no aplay or paplay on PATH"
+        self.enabled = self.reason is None
+
+    def describe(self) -> str:
+        if self.enabled:
+            return f"voice: {self.directory} via {Path(self._player).name}, zh then en"
+        return f"voice: SILENT ({self.reason})"
+
+    def missing(self) -> list[str]:
+        """Cue files that are configured but absent. Reported at start-up rather than
+        discovered when the robot tries to speak and a run is already moving."""
+        if not self.enabled:
+            return []
+        return sorted(name for pair in CUES.values() for name in pair
+                      if not (self.directory / name).is_file())
+
+    def say(self, cue: str, *, now: float | None = None) -> bool:
+        """Speak ``cue`` if it is due. Returns whether playback was started."""
+        if not self.enabled or cue not in CUES:
+            return False
+        moment = time.monotonic() if now is None else now
+        if moment - self._last.get(cue, float("-inf")) < self._guard:
+            return False
+        files = [self.directory / name for name in CUES[cue]]
+        if not all(f.is_file() for f in files):
+            return False
+        self._last[cue] = moment
+        try:
+            # One shell, two plays, sequential: zh must finish before en starts, but
+            # NEITHER may block the caller. Reaped opportunistically in _harvest.
+            self._processes.append(subprocess.Popen(
+                [self._player, "-q", *[str(f) for f in files]],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
+        except OSError:
+            # The sound card can disappear mid-run; that is not a reason to stop driving.
+            return False
+        self._harvest()
+        return True
+
+    def _harvest(self) -> None:
+        """Reap finished players so a long run does not accumulate zombies."""
+        for process in list(self._processes):
+            if process.poll() is not None:
+                self._processes.remove(process)
+
+    def close(self) -> None:
+        """Wait briefly for anything still speaking, then give up on it."""
+        for process in self._processes:
+            try:
+                process.wait(timeout=8.0)
+            except Exception:
+                process.kill()
+        self._processes.clear()

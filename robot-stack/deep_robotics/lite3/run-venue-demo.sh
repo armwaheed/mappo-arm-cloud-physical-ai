@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Copyright (c) 2024-2026, Arm Limited and Contributors. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# The Friday demo, as one command: drive to the ArUco goal, avoid whatever is in the way,
+# ask the room to clear in Chinese and then English when it cannot, and keep trying.
+#
+# WHAT THIS ENCODES, and why each part is not a default:
+#
+#   --camera-rectify   This camera is RECTILINEAR and the shared model is EQUIDISTANT.
+#                      Without this every bearing is wrong by +8 deg at 40 deg off axis,
+#                      which on 2026-08-31 collapsed a stationary box from 1.27 m to
+#                      0.33 m across 63 deg of yaw. See WHITEPAPER Appendix A19.
+#   --static-detect-*  Obstacles are ranged from their FLOOR CONTACT POINT, so nothing
+#                      needs a size prior, a colour marker or a trained class. It is the
+#                      only mechanism here that can handle "an attendee drops a bag in
+#                      the lane".
+#   the class list     EVERY VOC class except person. A Lite3 cannot be reliably detected
+#                      as a Lite3 -- measured: zero response from MobileNet-SSD over 38
+#                      frames -- so whatever the network decides a quadruped is (YOLO
+#                      offered "motorcycle"), it is mapped as an obstacle anyway. People
+#                      are excluded here because they are TRACKED instead, which is
+#                      stronger: a landmark is routed around, a person is stopped for.
+#   mission.py         Restarts the run when it ends without arriving, re-acquiring the
+#                      goal each time, and speaks while it waits.
+#
+# ⚠️ This platform reports NO motor temperatures. Retries are bounded and there is a real
+# cooldown between them; that is the only thermal margin there is. Do not raise the caps
+# without someone watching the robot. robot-stack/SAFETY.md governs all of this.
+#
+#   ./run-venue-demo.sh            # live
+#   DRY=1 ./run-venue-demo.sh      # same configuration, no motion
+set -euo pipefail
+
+STAGE="${STAGE:-$HOME/mappo-lite3-stage}"
+TAG="${TAG:-mappo-arm-cloud-physical-ai-lite3-20260901-v13}"
+RELEASE="$STAGE/releases/$TAG"
+RUN_ID="${RUN_ID:-venue-$(date -u +%Y%m%dT%H%M%SZ)}"
+
+# Every VOC class the detector knows, except person and the background pseudo-class.
+# An ARRAY, not a string: these are separate argv entries for an nargs="+" flag, so the
+# word splitting is wanted. Quoting the string instead would pass all nineteen as ONE
+# class name, which argparse accepts and the detector then never matches.
+OBSTACLE_CLASSES=(aeroplane bicycle bird boat bottle bus car cat chair cow diningtable
+                  dog horse motorbike pottedplant sheep sofa train tvmonitor)
+
+LIVE=(--live --operator-ready)
+if [ -n "${DRY:-}" ]; then LIVE=(); fi
+
+cd "$RELEASE/robot-stack/deep_robotics/lite3/visual_nav"
+# shellcheck disable=SC1091  # the venv is created on the robot, not in this repository
+. "$STAGE/venv/bin/activate"
+export PYTHONPATH="$STAGE/python"
+export MAPPO_ROBOT_HOST=1
+
+echo "[venue] release $TAG"
+echo "[venue] run id  $RUN_ID"
+
+exec python3 mission.py \
+  --voice-dir "$STAGE/voice" \
+  --patience "${PATIENCE:-4}" \
+  --cooldown "${COOLDOWN:-25}" \
+  --max-attempts "${ATTEMPTS:-8}" \
+  --max-total-seconds "${TOTAL:-900}" \
+  -- python3 mappo_drive.py \
+     --package "$RELEASE/policy" \
+     --policy-mode supervised --policy-scale 4.0 \
+     --execution-supervisor turn-drive \
+     --policy-gait-floor 0.30 \
+     --goal-detect-scale 1.0 \
+     --heading-servo goal \
+     --camera-source "${CAMERA:-rtsp://127.0.0.1:8554/test}" \
+     --model-dir "$STAGE/models/mobilenet-ssd" \
+     --camera-rectify "$STAGE/calibration/lite3_front_camera_rectify_20260901.json" \
+     --calibration "$STAGE/calibration/lite3_front_camera_equidistant_20260901.json" \
+     --marker-size 0.14 \
+     --static-detect --static-detect-ground \
+     --static-detect-classes "${OBSTACLE_CLASSES[@]}" \
+     --static-detect-radius 0.35 \
+     --static-detect-pitch-error-deg 1.5 \
+     --static-detect-max-range-error 0.20 \
+     --locomotion-transport axis \
+     --axis-profile "$STAGE/calibration/lite3_axis_profile_LITE3-A-executable.json" \
+     --state-bind 127.0.0.1 \
+     "${LIVE[@]}" \
+     --gait-floor 0.30 --actuator-gain 1.07 --robot-radius 0.40 \
+     --max-vx 0.55 --max-vy 0 --max-wz 0.90 \
+     --accept-no-motor-temperatures --max-seconds "${SECS:-90}" \
+     --record "$STAGE/evidence/$RUN_ID.mp4" \
+     --record-raw "$STAGE/evidence/$RUN_ID-raw.mp4" \
+     --telemetry "$STAGE/evidence/$RUN_ID.jsonl"
