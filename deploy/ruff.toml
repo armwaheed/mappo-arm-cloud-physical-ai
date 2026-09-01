@@ -26,3 +26,17 @@ target-version = "py38"
 
 [lint]
 select = ["E", "W", "F", "I", "UP", "B", "C4", "SIM", "RET", "RUF"]
+
+[lint.isort]
+# ruff anchors isort's `src` at the directory you are STANDING IN, not at the directory the
+# config lives in. `make_board_sheet.py` imports its sibling `make_marker_sheet`, which is
+# therefore FIRST-party from inside deploy/markers and an unknown THIRD-party from deploy/
+# or the repository root -- so the same config returned two different verdicts about the
+# same file, and CI's three-standpoint comparison failed on the disagreement rather than on
+# the code. Pinning the module makes the answer the same from everywhere; see AGENTS.md,
+# which records the earlier instance of this (eight I001 findings that neither documented
+# command produced).
+#
+# `goal` needs no pin. It resolves through a sys.path insert into robot-stack/ and is never
+# inside deploy/, so every standpoint already agrees it is third-party.
+known-third-party = ["make_marker_sheet"]
