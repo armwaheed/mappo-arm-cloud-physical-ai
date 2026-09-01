@@ -35,6 +35,7 @@ from deep_robotics.lite3.visual_nav.camera import (
     camera_source_kind,
     parse_camera_source,
 )
+from deep_robotics.lite3.visual_nav.camera_rectify import Rectifier, rectified_camera
 from deep_robotics.lite3.visual_nav.safety import Lite3HealthMonitor
 from preflight.venv_guard import describe as describe_venv_guard
 from preflight.venv_guard import require_virtualenv
@@ -93,6 +94,12 @@ class Lite3Bindings:
         )
         parser.add_argument("--camera-gstreamer", action="store_true",
                             help="open --camera-source with OpenCV's GStreamer backend")
+        parser.add_argument("--camera-rectify", type=Path, default=None, metavar="JSON",
+                            help="lite3-rectify/v1 file: remap every frame into the "
+                                 "equidistant projection --calibration describes. This "
+                                 "camera is nearly rectilinear and the shared model is "
+                                 "equidistant; without this, bearings are wrong by "
+                                 "+8 deg at 40 deg off axis")
         self._add_ros_arguments(parser)
         calibration = parser.add_argument_group("Lite3 measured calibration")
         calibration.add_argument(
@@ -138,6 +145,8 @@ class Lite3Bindings:
             help="V4L2 index, RTSP URI, or GStreamer pipeline for the forward RGB camera",
         )
         parser.add_argument("--camera-gstreamer", action="store_true")
+        parser.add_argument("--camera-rectify", type=Path, default=None, metavar="JSON",
+                            help="lite3-rectify/v1 file; see the drive parser's help")
         self._add_ros_arguments(parser)
         parser.add_argument("--operator-ready", action="store_true")
         parser.add_argument("--battery-topic", default="/battery_state")
@@ -262,11 +271,20 @@ class Lite3Bindings:
         return
 
     def create_camera(self, args, stamp_fn):
-        return Lite3Camera(
+        camera = Lite3Camera(
             parse_camera_source(args.camera_source),
             gstreamer=args.camera_gstreamer,
             stamp_fn=stamp_fn,
         )
+        # Optional, and OFF by default: a run without --camera-rectify reads exactly as
+        # every run recorded before this existed. See camera_rectify's module docstring
+        # for why the correction is a remap rather than a focal length.
+        path = getattr(args, "camera_rectify", None)
+        if path is not None:
+            rectifier = Rectifier(path)
+            print(f"[lite3] {rectifier.describe()}")
+            camera = rectified_camera(camera, rectifier)
+        return camera
 
     def preflight_navigation(self, args, _config, health) -> None:
         measurements = {

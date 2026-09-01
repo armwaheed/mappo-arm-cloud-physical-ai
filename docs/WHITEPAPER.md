@@ -355,9 +355,21 @@ is recorded in a comment beside the constants.
 > follow from the measured one**: 1290.16 px at 1920 px width implies **73.31°**.
 > `focal_px` is the measurement; `hfov_deg` is the spec sheet.
 > `robot-stack/CAMERA-GEOMETRY.md` labels every field measured or assumed for exactly this
-> reason, and **no spin calibration has ever been run on a Lite3** — see
+> reason — see
 > [§3](#3-depth-from-a-focal-length--and-the-guard-that-refuses-a-constant-range) and
 > [A3](#a3-our-fallbacks-ranges-that-were-constants).
+
+> **⚠️ And on a Lite3 this method returns a confident wrong answer.** A spin calibration was
+> finally run on one on 2026-09-01 — 49 sightings across 73.4° of yaw — and fitted
+> **focal_px 888.85**, which an operator tape refuted outright: it places a marker at 5.65 m
+> that a tape puts at 3.00 m. The script had already said so. It reported a **4.37°
+> systematic** residual against 2.17° of jitter and warned that "the equidistant model may
+> not describe this lens, and no single focal length will fix that" — the same
+> `spin_fit_quality` decomposition that exonerated the model on the Go2 convicts it here.
+> **The method is sound and its self-check works; what fails is the assumption underneath
+> it.** The spin fits one intrinsic of an equidistant model, so on a lens that is not
+> equidistant it has no parameter with which to be right. See
+> [A19](#a19-our-camera-model-the-wrong-equation-and-four-focal-lengths-fitted-to-hide-it).
 
 The motivation for RGB-only self-calibration — a robot you can drop into an environment,
 switch on and deploy in minutes, on a platform that carries an RGB camera because depth and
@@ -1320,7 +1332,7 @@ and the Lite3 half essentially did not.**
 | Lite3 offline port | complete and tested; **has not moved either robot** |
 | Lite3 first `--live` walks (four runs) | **live** — a 0.05→0.55 m/s ramp, one arrival 0.99 m from the chair, battery gate and stall abort exercised — but these ran the **plain goal follower**, not the policy, and none avoided the box |
 | Lite3 `--execution-supervisor turn-drive` | **offline only; cannot be exercised live yet** |
-| Lite3 monocular ranging | **not trustworthy today** — no spin calibration exists for this platform |
+| Lite3 monocular ranging | **corrected 2026-09-01, and the correction is not a focal length.** A spin calibration was run and returned 888.85, which an operator tape refuted; the lens is rectilinear, not the equidistant shape the model assumes (52.9 px RMS against 2.9). Frames are now remapped into a synthetic equidistant projection, measured at 0.9% worst-case range error and 0.18° worst-case bearing over −51°..+28°, against a 281% range swing before. Absolute scale still inherits a 2.94 px pinhole fit with no top-of-frame coverage — good to a few percent, no better. See [A19](#a19-our-camera-model-the-wrong-equation-and-four-focal-lengths-fitted-to-hide-it) |
 | Any candidate detector from the sweeps | **never run on a robot** |
 
 ### The measured limits of the RGB-only design
@@ -1618,6 +1630,74 @@ Pinning the stream would have changed nothing. The correction is committed **bes
 original claim in wave 7's own README rather than in place of it, so anyone who already acted
 on it can find out. The mechanism worth carrying away: **a wrong mechanism costs more than an
 unexplained observation**, because only the wrong mechanism is actionable.
+
+### A19. Our camera model: the wrong equation, and four focal lengths fitted to hide it
+
+`camera_model.FisheyeCamera` is an **equidistant** model — `radius_px = focal_px · θ`, one
+intrinsic, no distortion terms — and every range and bearing in this system is computed
+through it. On the Lite3 it is the wrong equation. Measured on 2026-09-01 from 26 ArUco
+grid-board views taken through the robot's own feed:
+
+| model | RMS reprojection |
+| --- | --- |
+| `cv2.fisheye.calibrate` — equidistant, what the stack assumes | **52.9 px** |
+| `cv2.calibrateCamera` — pinhole + distortion | **2.9 px** |
+
+The lens is very nearly **rectilinear**: `fx` 508.74, `fy` 494.93, `cx` 640.90, `cy` 339.51,
+103° horizontal field. Because `tan θ ≈ θ` near the axis, the two models **agree on the
+optical axis and diverge with angle**. What the equidistant model reports for a true bearing:
+
+| true off-axis | reported | error |
+| --- | --- | --- |
+| 10° | 10.1° | +0.1° |
+| 20° | 20.9° | +0.9° |
+| 30° | 33.1° | +3.1° |
+| 40° | 48.1° | **+8.1°** |
+| 50° | 68.3° | **+18.3°** |
+
+**The mechanism, and it is the transferable part: a model-class error presents as a
+calibration error, and invites you to fix it with a scalar.** Four focal lengths were fitted
+to this lens in one day — 469.63 shipped, 888.85 from `--spin`, 660 from a panel width at a
+taped range, 392.4 from a taped range to the goal marker. Each was *correct at the bearing it
+was fitted at* and wrong elsewhere, so each new measurement appeared to refute the last one
+and the disagreement read as careless measurement rather than as evidence about the model.
+Two of the four were withdrawn for compounding reasons that are worth naming separately: 660
+was read off a blob **after** the detector's median blur, 7×7 morphological opening and
+`sat_min 200` threshold had all eroded it, and was then validated against a scene whose box
+had since been moved; 392.4 was fitted so the goal range matched an operator's **visual
+estimate** that had never been taped.
+
+What made it visible was a live run rather than an analysis. In
+`live-goal-avoid-20260831T110648Z` the robot swept **63° of yaw while translating 0.08 m**,
+and its range to a **stationary** box collapsed from **1.27 m to 0.33 m — a 281% swing** on
+an obstacle that had not moved. The planner veto-held, correctly, on a number that was wrong;
+the stall detector then reported *"something is holding the robot — check the tether"*, which
+sent the operator looking for a snag that never existed. The paired control was the same
+system with the goal **dead ahead**: over 0.66 m of travel the reported range closed 0.62 m,
+an error of **−6%**. Near the axis the model is fine. That contrast is the whole diagnosis,
+and it was available in the telemetry before any calibration was attempted.
+
+**The fix does not touch the model.** `robot-stack/deep_robotics/lite3/visual_nav/camera_rectify.py`
+remaps every frame into a *synthetic equidistant projection* of known focal length, and
+`--calibration` states that focal — so the vendored geometry is correct **by construction**
+across the whole frame, with no change to `robot-stack/unitree/`, which
+[PROVENANCE.md](../PROVENANCE.md) forbids editing in place. `focal_out` is the largest
+equidistant focal that crops **no** field of view; the vertical axis binds, because a sensor
+is 16:9 and an equidistant mapping is radial, so the cost is unused corners rather than a
+discarded periphery — and the periphery is where an obstacle appears before the robot is
+committed to a path. Measured end to end against an accurate pinhole pose over the same 26
+views, bearings −51° to +28°:
+
+| | before | after |
+| --- | --- | --- |
+| range error | 281% swing | mean **+0.0%**, sd 0.2%, worst **0.9%** |
+| bearing error | +8.1° at 40° | mean **+0.01°**, worst **0.18°** |
+
+**What it does not fix, stated in the artefact itself.** The rectification converts the
+measured pinhole model faithfully and cannot beat it. That fit carries RMS 2.94 px, `fx/fy`
+1.028 and no coverage of the frame's top third — the board rode on a floor-standing robot,
+which cannot reach the top of the frame. Stability across bearing is repaired; **absolute**
+scale inherits those limits and should not be quoted better than a few percent.
 
 ## Appendix B — What a payload costs a proxy platform
 
