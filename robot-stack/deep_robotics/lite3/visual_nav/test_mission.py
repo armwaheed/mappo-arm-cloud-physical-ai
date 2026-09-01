@@ -85,6 +85,39 @@ def test_missing_cue_files_are_named_at_startup_not_discovered_mid_run():
     assert voice.say("person_stop") is True, "and the others still work"
 
 
+def test_the_probe_reports_silence_that_exits_zero():
+    """THE LESSON FROM THE ROBOT. The account was not in the `audio` group, so the device
+    would not open, PulseAudio's default sink was `auto_null` -- a black hole -- and aplay
+    wrote into it and exited 0. Every check passed and nothing was audible. A zero exit
+    code is not evidence of sound, so the probe reads stderr too."""
+    quiet = _voice_dir()
+    liar = Path(tempfile.mkdtemp()) / "liar.sh"
+    liar.write_text("#!/bin/sh\necho 'aplay: main:852: audio open error: "
+                    "No such device' >&2\nexit 0\n")
+    liar.chmod(0o755)
+    voice = Voice(quiet, player=str(liar))
+    assert voice.enabled, "it looks configured, which is exactly the trap"
+    assert voice.probe() is not None, "a 0 exit with an ALSA error is NOT audible"
+    assert "audio open error" in voice.probe()
+
+
+def test_the_probe_passes_when_the_device_really_opens():
+    """The other side of it: a player that opens the device and says nothing must not be
+    reported as broken, or the warning becomes noise an operator learns to ignore."""
+    voice = _quiet_voice()
+    assert voice.probe() is None
+
+
+def test_an_explicit_alsa_device_reaches_the_player():
+    """The default device on this robot is a null sink, so naming the hardware is what
+    makes the difference between audible and not."""
+    voice = Voice(_voice_dir(), player=SILENT_PLAYER, device="plughw:0,0")
+    command = voice._command([Path("/x/a.wav")])
+    assert "-D" in command and "plughw:0,0" in command
+    assert "plughw:0,0" not in Voice(_voice_dir(), player=SILENT_PLAYER)._command(
+        [Path("/x/a.wav")])
+
+
 def test_chinese_is_played_before_english():
     """The demo is in Shanghai. The person being asked to move should not have to wait
     through an English sentence first."""

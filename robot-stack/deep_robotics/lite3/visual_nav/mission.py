@@ -162,6 +162,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--voice-dir", type=Path, default=None,
                         help="directory of rrd_*_zh.wav / rrd_*_en.wav cues")
     parser.add_argument("--no-voice", action="store_true")
+    parser.add_argument("--voice-device", default=None, metavar="ALSA",
+                        help="ALSA device for the cues, e.g. plughw:0,0. Worth stating: "
+                             "this robot's PulseAudio default sink is auto_null, so the "
+                             "player's default device is silent even when it exits 0")
     parser.add_argument("--patience", type=float, default=DEFAULT_PATIENCE_S,
                         help="seconds held before asking the room to clear")
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN_S,
@@ -179,8 +183,16 @@ def main(argv: list[str] | None = None) -> int:
     if args.max_attempts < 1:
         parser.error("--max-attempts must be at least 1")
 
-    voice = Voice(args.voice_dir, enabled=not args.no_voice)
+    voice = Voice(args.voice_dir, enabled=not args.no_voice,
+                  device=args.voice_device)
     print(f"[mission] {voice.describe()}")
+    # Prove the device opens BEFORE a run starts. A silent demo that nobody
+    # notices until the robot needs to speak is the failure this prevents.
+    unheard = voice.probe() if voice.enabled else None
+    if unheard:
+        print(f"[mission] ⚠️  NOTHING WILL BE AUDIBLE: {unheard}")
+        print("[mission]    on this platform: is the account in the 'audio' group, and is")
+        print("[mission]    --voice-device set? A null sink exits 0 and makes no sound.")
     absent = voice.missing()
     if absent:
         # Named at start-up, not discovered when the robot tries to speak mid-run.

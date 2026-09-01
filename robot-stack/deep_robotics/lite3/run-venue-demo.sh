@@ -24,6 +24,12 @@
 #   mission.py         Restarts the run when it ends without arriving, re-acquiring the
 #                      goal each time, and speaks while it waits.
 #
+# ⚠️ AUDIO NEEDS THE `audio` GROUP. The account running this must be in it, or the sound
+# device cannot be opened, PulseAudio falls back to its auto_null sink, and aplay writes
+# into a black hole and EXITS 0 -- every check passes and the robot is silent. Fix once
+# with `sudo usermod -aG audio "$USER"` and start a new session. mission.py probes the
+# device before each mission and says so if nothing will be audible.
+#
 # ⚠️ This platform reports NO motor temperatures. Retries are bounded and there is a real
 # cooldown between them; that is the only thermal margin there is. Do not raise the caps
 # without someone watching the robot. robot-stack/SAFETY.md governs all of this.
@@ -58,6 +64,7 @@ echo "[venue] run id  $RUN_ID"
 
 exec python3 mission.py \
   --voice-dir "$STAGE/voice" \
+  --voice-device "${VOICE_DEVICE:-plughw:0,0}" \
   --patience "${PATIENCE:-4}" \
   --cooldown "${COOLDOWN:-25}" \
   --max-attempts "${ATTEMPTS:-8}" \

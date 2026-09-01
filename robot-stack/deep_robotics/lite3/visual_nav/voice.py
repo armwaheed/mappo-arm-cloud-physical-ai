@@ -55,8 +55,9 @@ class Voice:
 
     def __init__(self, directory: Path | str | None, *, enabled: bool = True,
                  repeat_guard_s: float = DEFAULT_REPEAT_GUARD_S,
-                 player: str | None = None) -> None:
+                 player: str | None = None, device: str | None = None) -> None:
         self.directory = Path(directory) if directory is not None else None
+        self.device = device
         self._guard = float(repeat_guard_s)
         self._last: dict[str, float] = {}
         self._player = player or shutil.which("aplay") or shutil.which("paplay")
@@ -73,10 +74,46 @@ class Voice:
             self.reason = "no aplay or paplay on PATH"
         self.enabled = self.reason is None
 
+    def _command(self, files: list) -> list[str]:
+        device = ["-D", self.device] if self.device else []
+        return [self._player, *device, "-q", *[str(f) for f in files]]
+
     def describe(self) -> str:
         if self.enabled:
-            return f"voice: {self.directory} via {Path(self._player).name}, zh then en"
+            where = self.device or "the player's default device"
+            return (f"voice: {self.directory} via {Path(self._player).name} -> {where}, "
+                    f"zh then en")
         return f"voice: SILENT ({self.reason})"
+
+    def probe(self, timeout_s: float = 20.0) -> str | None:
+        """Actually open the device, and report why not if it will not open.
+
+        THIS EXISTS BECAUSE A ZERO EXIT CODE MEANT NOTHING. On this robot the account
+        running the demo was not in the ``audio`` group, so the device could not be
+        opened, PulseAudio's default sink had fallen back to ``auto_null`` -- a black
+        hole -- and ``aplay`` wrote into it and exited 0. Every check passed and the robot
+        made no sound. So this plays a real file and reads STDERR: ALSA reports "audio
+        open error" there while still exiting successfully.
+
+        Returns ``None`` when sound will actually come out, else the reason it will not.
+        """
+        if not self.enabled:
+            return self.reason
+        sample = next((self.directory / pair[0] for pair in CUES.values()
+                       if (self.directory / pair[0]).is_file()), None)
+        if sample is None:
+            return "no cue files to probe with"
+        try:
+            done = subprocess.run(self._command([sample]), capture_output=True,
+                                  text=True, timeout=timeout_s)
+        except (OSError, subprocess.SubprocessError) as exc:
+            return f"{type(exc).__name__}: {exc}"
+        noise = (done.stderr or "").strip()
+        if "audio open error" in noise or "No such device" in noise:
+            return noise.splitlines()[-1][:120]
+        if done.returncode != 0:
+            return f"exit {done.returncode}: {noise.splitlines()[-1][:100] if noise else ''}"
+        return None
 
     def missing(self) -> list[str]:
         """Cue files that are configured but absent. Reported at start-up rather than
@@ -101,7 +138,7 @@ class Voice:
             # One shell, two plays, sequential: zh must finish before en starts, but
             # NEITHER may block the caller. Reaped opportunistically in _harvest.
             self._processes.append(subprocess.Popen(
-                [self._player, "-q", *[str(f) for f in files]],
+                self._command(files),
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
         except OSError:
             # The sound card can disappear mid-run; that is not a reason to stop driving.
