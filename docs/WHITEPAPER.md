@@ -811,6 +811,69 @@ Two measured results:
 > 0.74 forward / 0.27 lateral. (c) **The page has no login**; `--host 0.0.0.0` means anyone
 > who can reach the port can drive any motion-enabled robot on the mesh.
 
+### 9.1 One LAN, because a tether is not a network
+
+The dashboard finds robots by **multicast on the LAN**. That single sentence decides the
+demo's network, and it took until 2026-09-01 to act on it.
+
+Until then every robot was reached down its own Ethernet cable to a laptop:
+
+```
+                 ┌───────────────┐
+   laptop  en9 ──┤  robot 1      │      192.168.1.50  <-->  192.168.1.120
+                 └───────────────┘
+
+   robot 2  ......  unreachable: one adapter, one cable, one robot
+```
+
+That is not a LAN. It is a **point-to-point link**, and it has three consequences that are
+easy to miss until a demo is being set up on the floor of a hotel function room:
+
+1. **The fleet table cannot fill.** D2D discovery is multicast; two robots on two separate
+   point-to-point links share no broadcast domain, so no amount of correct dashboard code
+   will show them as a fleet. §9's screenshot has four robots in it because they are bench
+   doubles on one segment.
+2. **The robot is tethered to the operator.** Every run today ended with a cable running
+   back to a laptop — through the lane the robot was supposed to walk down.
+3. **The laptop's routing is at risk.** macOS ranks Ethernet above Wi-Fi, so a router
+   handing out a default gateway silently captures the laptop's traffic. Measured: it did,
+   twice, and the second time the operator unplugged the router to get their internet back.
+
+The answer is an **isolated WiFi router**, carried to the venue, connected to nothing:
+
+```
+        corp WiFi ────── en0 ┐
+        (internet)           ├── laptop        default route stays here
+                             │
+   ┌────────────────┐   en9 ─┘                 manual IP, NO gateway, no DNS
+   │  NETGEAR RAX50 │◄────────── LAN port
+   │  192.168.1.1   │
+   │  WAN: EMPTY    │◄···· WiFi ····► robot 1  192.168.1.120  (DHCP reservation)
+   └────────────────┘                 robot 2  192.168.1.121  (DHCP reservation)
+                                      ...      one broadcast domain, multicast works
+```
+
+**The WAN port is deliberately empty.** The router is airgapped from the Arm network: a
+demo LAN carrying robots that can be driven from a browser is not something to bridge into
+a corporate network, and an airgap enforced by an unpopulated socket is one nobody can
+misconfigure.
+
+**The laptop keeps its internet, and that is a configuration rather than a hope.** The
+Ethernet service is set to a manual address with **no router and no DNS servers**, so it is
+structurally incapable of becoming the default route whatever the service order says. Two
+attempts with DHCP proved the point: both times the RAX50's gateway outranked Wi-Fi and the
+laptop lost the internet.
+
+⚠️ **The failure that cost the most time was not the router.** With the robot on both a
+cable and the WiFi, `eth1` and `wlan0` each carried `192.168.1.120`, and Linux resolves one
+route per subnet by metric. ARP answered on whichever interface the request arrived on — so
+address resolution always worked — while ICMP and TCP replies left through whichever
+interface had the lower metric, which was repeatedly the one that had just been unplugged.
+It presents exactly like client isolation and is not: **when ARP succeeds and everything
+above it fails, suspect the routing table before the access point.** The interfaces now sit
+on different addresses, and the right fix is different SUBNETS, so that no metric arbitrates
+between them at all.
+
 ## 10. Peers over the mesh, not through a detector
 
 **Read this before the title misleads you: every navigation result in this paper came from
@@ -1712,6 +1775,47 @@ measured pinhole model faithfully and cannot beat it. That fit carries RMS 2.94 
 1.028 and no coverage of the frame's top third — the board rode on a floor-standing robot,
 which cannot reach the top of the frame. Stability across bearing is repaired; **absolute**
 scale inherits those limits and should not be quoted better than a few percent.
+
+### A20. Our checks passed and the robot was silent, twice
+
+The demo speaks: held by somebody in its path it says *不好意思,请让一下。* and then
+*"Excuse me. Please step out of my path."* Chinese first, because the demo is in Shanghai
+and the person being asked to move should not have to wait through an English sentence.
+
+It shipped mute, and then it shipped talking over itself, and **both times every automated
+check passed**. The mechanism is the same one twice: **a process exiting is not a
+job finishing**, and an exit code was allowed to stand in for the thing anybody actually
+cared about.
+
+**First: a zero exit code from a black hole.** The account running the demo was not in the
+`audio` group, so the sound device could not be opened. PulseAudio had therefore fallen
+back to its `auto_null` sink — a device that accepts everything and plays nothing — and
+`aplay` wrote into it and **exited 0**. The probe was run, the exit code read, and
+"playback OK" reported. Nothing had been audible. It was caught because the operator said
+*"I didn't hear the robot say anything"*.
+
+`Voice.probe()` now opens the device for real **before the first attempt** and reads
+STDERR, because ALSA reports `audio open error` there while still exiting successfully. If
+nothing will be heard it says so, with the reason, up front.
+
+**Second: the English started over the top of the Chinese.** With sound restored, both
+utterances were handed to one player invocation and then, when only the Chinese was heard,
+to two invocations chained with `;`. That serialised the two **processes**, which is not
+the thing anyone hears: `aplay -D pulse` hands its buffer to PulseAudio and exits while the
+sink is still rendering. On the short cues it sounded correct. On the longer Chinese
+phrases the English began underneath. Caught the same way — by somebody listening.
+
+Playback is now one worker thread reading a queue, and each utterance costs the wall time
+of its own file, read from the WAV header, however early the player returns.
+
+**What the tests were doing wrong is the transferable part.** They asserted the *shape of
+the command* — two invocations, `;` and not `&&`, Chinese first — and every one of them
+passed while the robot was inaudible and then while it was talking over itself. A test that
+checks the arrangement of a thing cannot see a timing bug in it. The replacements assert
+**order and exclusivity** through a fake player, and pin the actual cause: a player that
+exits immediately must still cost the file's duration.
+
+Both bugs were found by a person in the room, not by CI, and that is the honest summary.
 
 ## Appendix B — What a payload costs a proxy platform
 
