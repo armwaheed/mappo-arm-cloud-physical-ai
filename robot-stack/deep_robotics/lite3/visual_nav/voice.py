@@ -25,10 +25,13 @@ looking for reads as a bug to anyone who speaks the language.
 
 from __future__ import annotations
 
-import shlex
+import contextlib
+import queue
 import shutil
 import subprocess
+import threading
 import time
+import wave
 from pathlib import Path
 
 #: Cue -> the two files that speak it, Chinese first.
@@ -46,6 +49,14 @@ CUES = {
     "stand_request": ("lite3_stand_request_zh.wav", "lite3_stand_request_en.wav"),
 }
 
+#: Longest a single utterance may hold the queue before it is abandoned. A cue that will
+#: not finish is a cue blocking every cue behind it.
+UTTERANCE_TIMEOUT_S = 30.0
+
+#: Utterances allowed to wait. A backlog is worse than a dropped cue: by the time a cue
+#: five deep is spoken, the situation it described has gone.
+QUEUE_LIMIT = 4
+
 #: A cue may not repeat inside this many seconds. Without it a robot held for a minute by
 #: a stationary person says "excuse me" twenty times, which stops reading as politeness.
 DEFAULT_REPEAT_GUARD_S = 12.0
@@ -62,7 +73,8 @@ class Voice:
         self._guard = float(repeat_guard_s)
         self._last: dict[str, float] = {}
         self._player = player or shutil.which("aplay") or shutil.which("paplay")
-        self._processes: list = []
+        self._queue: queue.Queue = queue.Queue()
+        self._worker: threading.Thread | None = None
         # Resolved once, so the reason for silence is reportable rather than mysterious.
         self.reason: str | None = None
         if not enabled:
@@ -75,18 +87,47 @@ class Voice:
             self.reason = "no aplay or paplay on PATH"
         self.enabled = self.reason is None
 
-    def _command(self, files: list) -> list[str]:
-        """One player invocation PER FILE, chained in a shell.
+    def _command(self, path: Path) -> list[str]:
+        device = ["-D", self.device] if self.device else []
+        return [self._player, *device, "-q", str(path)]
 
-        Handing several files to one ``aplay`` looked equivalent and was not: on the
-        robot only the Chinese was heard, because the player did not reliably carry on to
-        the second file after re-opening the device. Chaining with ``;`` -- not ``&&`` --
-        means the English still plays even when the Chinese fails, which matters because
-        the whole point of the cue is that somebody understands it."""
-        device = f"-D {shlex.quote(self.device)} " if self.device else ""
-        player = shlex.quote(self._player)
-        chain = "; ".join(f"{player} {device}-q {shlex.quote(str(f))}" for f in files)
-        return ["sh", "-c", chain]
+    @staticmethod
+    def duration_s(path: Path) -> float:
+        """How long the file actually is. Zero when it cannot be read."""
+        try:
+            with contextlib.closing(wave.open(str(path))) as handle:
+                rate = handle.getframerate()
+                return handle.getnframes() / rate if rate else 0.0
+        except Exception:
+            return 0.0
+
+    def _play_one(self, path: Path) -> None:
+        """Play ONE file and do not return until it has actually been heard.
+
+        THE PLAYER RETURNING IS NOT THE SOUND ENDING. ``aplay -D pulse`` hands its buffer
+        to PulseAudio and exits while the sink is still rendering, so chaining two
+        invocations started the English over the top of the Chinese -- audible on the
+        robot, and invisible to every exit code. The remaining wall time of the file is
+        therefore slept off after the player returns."""
+        started = time.monotonic()
+        try:
+            subprocess.run(self._command(path), stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=UTTERANCE_TIMEOUT_S)
+        except (OSError, subprocess.SubprocessError):
+            return
+        remaining = self.duration_s(path) - (time.monotonic() - started)
+        if remaining > 0:
+            time.sleep(remaining)
+
+    def _run(self) -> None:
+        while True:
+            path = self._queue.get()
+            try:
+                if path is None:
+                    return
+                self._play_one(path)
+            finally:
+                self._queue.task_done()
 
     def describe(self) -> str:
         if self.enabled:
@@ -146,30 +187,31 @@ class Voice:
         files = [self.directory / name for name in CUES[cue]]
         if not all(f.is_file() for f in files):
             return False
-        self._last[cue] = moment
-        try:
-            # One shell, two plays, sequential: zh must finish before en starts, but
-            # NEITHER may block the caller. Reaped opportunistically in _harvest.
-            self._processes.append(subprocess.Popen(
-                self._command(files),
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
-        except OSError:
-            # The sound card can disappear mid-run; that is not a reason to stop driving.
+        # Dropped rather than queued when a backlog has built: by the time a cue five
+        # deep is spoken the situation it described is over, and saying it then is worse
+        # than not saying it.
+        if self._queue.qsize() >= QUEUE_LIMIT:
             return False
-        self._harvest()
+        self._last[cue] = moment
+        if self._worker is None or not self._worker.is_alive():
+            # Daemon: a stuck sound card must not keep the process alive at exit.
+            self._worker = threading.Thread(target=self._run, daemon=True,
+                                            name="voice")
+            self._worker.start()
+        for path in files:
+            self._queue.put(path)
         return True
 
-    def _harvest(self) -> None:
-        """Reap finished players so a long run does not accumulate zombies."""
-        for process in list(self._processes):
-            if process.poll() is not None:
-                self._processes.remove(process)
+    def pending(self) -> int:
+        """Utterances still waiting. One queue, one voice, strictly in order."""
+        return self._queue.qsize()
 
-    def close(self) -> None:
-        """Wait briefly for anything still speaking, then give up on it."""
-        for process in self._processes:
-            try:
-                process.wait(timeout=8.0)
-            except Exception:
-                process.kill()
-        self._processes.clear()
+    def close(self, timeout_s: float = 20.0) -> None:
+        """Let what is queued finish, then stop the worker."""
+        if self._worker is None:
+            return
+        deadline = time.monotonic() + timeout_s
+        while self._queue.qsize() and time.monotonic() < deadline:
+            time.sleep(0.1)
+        self._queue.put(None)
+        self._worker.join(timeout=max(0.5, deadline - time.monotonic()))

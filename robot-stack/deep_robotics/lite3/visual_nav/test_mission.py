@@ -14,9 +14,12 @@ sees and what no unit of the drive path covers.
 
 from __future__ import annotations
 
+import contextlib
 import shutil
 import sys
 import tempfile
+import time
+import wave
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
@@ -108,26 +111,57 @@ def test_the_probe_passes_when_the_device_really_opens():
     assert voice.probe() is None
 
 
-def test_english_still_plays_when_the_chinese_fails():
-    """FOUND ON THE ROBOT: only the Chinese was heard. Both files went to ONE aplay, which
-    did not reliably continue to the second. Each utterance is now its own command chained
-    with ';' -- not '&&' -- so a failure on the first cannot swallow the second."""
-    voice = Voice(_voice_dir(), player=SILENT_PLAYER, device="pulse")
-    command = voice._command([Path("/x/zh.wav"), Path("/x/en.wav")])
-    assert command[0] == "sh" and command[1] == "-c"
-    chain = command[2]
-    assert chain.count("-q") == 2, "one invocation per utterance, not one for both"
-    assert "; " in chain and "&&" not in chain, "';' so English survives a failed Chinese"
-    assert chain.index("zh.wav") < chain.index("en.wav"), "Chinese first"
+def test_only_one_utterance_plays_at_a_time_and_the_rest_queue():
+    """FOUND BY THE OPERATOR, TWICE. First only the Chinese was heard; then, once both
+    played, the English STARTED OVER THE TOP of the longer Chinese phrases. The second is
+    the subtler bug: `aplay -D pulse` hands its buffer to PulseAudio and EXITS while the
+    sink is still rendering, so chaining two invocations never serialised anything and no
+    exit code could have revealed it. One queue, one worker, one voice."""
+    voice = _quiet_voice()
+    order: list = []
+    voice._play_one = lambda path: (order.append(path.name), time.sleep(0.05))
+    assert voice.say("person_stop") is True
+    voice.close(timeout_s=10.0)
+    assert [n.split("_")[-1] for n in order] == ["zh.wav", "en.wav"], "Chinese, then English"
+    assert voice.pending() == 0
+
+
+def test_the_player_returning_early_does_not_end_the_utterance():
+    """The whole cause of the overlap. A player that exits immediately must still cost
+    the wall time of the file, or the next utterance starts over the top of it."""
+    directory = _voice_dir()
+    voice = Voice(directory, player=SILENT_PLAYER)
+    sample = directory / "rrd_person_stop_zh.wav"
+    assert voice.duration_s(sample) >= 0.0
+    long_enough = Path(tempfile.mkdtemp()) / "half.wav"
+    with contextlib.closing(wave.open(str(long_enough), "wb")) as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(24000)
+        handle.writeframes(b"\x00\x00" * 12000)          # exactly 0.5 s
+    assert abs(voice.duration_s(long_enough) - 0.5) < 0.01
+    started = time.monotonic()
+    voice._play_one(long_enough)
+    assert time.monotonic() - started >= 0.45, "returned before the sound could have ended"
+
+
+def test_a_backlog_is_dropped_rather_than_queued_for_ever():
+    """By the time a cue five deep is spoken, the situation it described is over. Saying
+    it then is worse than not saying it."""
+    voice = _quiet_voice(repeat_guard_s=0.0)
+    voice._play_one = lambda path: time.sleep(0.4)
+    accepted = sum(1 for i in range(8)
+                   if voice.say("person_stop", now=100.0 + i))
+    voice.close(timeout_s=15.0)
+    assert accepted < 8, "an unbounded backlog was accepted"
 
 
 def test_an_explicit_alsa_device_reaches_the_player():
     """The default device on this robot is a null sink, so naming the hardware is what
     makes the difference between audible and not."""
     voice = Voice(_voice_dir(), player=SILENT_PLAYER, device="plughw:0,0")
-    assert "-D plughw:0,0" in voice._command([Path("/x/a.wav")])[2]
-    assert "-D" not in Voice(_voice_dir(), player=SILENT_PLAYER)._command(
-        [Path("/x/a.wav")])[2]
+    assert voice._command(Path("/x/a.wav"))[1:3] == ["-D", "plughw:0,0"]
+    assert "-D" not in Voice(_voice_dir(), player=SILENT_PLAYER)._command(Path("/x/a.wav"))
 
 
 def test_chinese_is_played_before_english():
