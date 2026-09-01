@@ -1,0 +1,32 @@
+{
+  "calibration_limits": [
+    "THIS FILE IS ONLY TRUE WITH --camera-rectify. focal_px 545.9 describes the SYNTHETIC equidistant projection that lite3_front_camera_rectify_20260901.json produces, not the raw lens. Passed as --calibration without that flag it is wrong at every bearing.",
+    "The raw lens is nearly rectilinear (fx 508.7, fy 494.9, HFOV 103 deg). The shared FisheyeCamera model is equidistant and cannot express it; on raw frames it reports 48.1 deg for a true 40 deg. That cost the 2026-08-31 live run a 281% range swing on a stationary box across 63 deg of yaw.",
+    "pitch_rad and height_m are the physical mounting and are unchanged by rectification; they carry over from the two-station elevation fit (residual -0.57 deg).",
+    "SUPERSEDES focal_px 469.63 (shipped), 888.85 (spin), 660 and 392.4 (both fitted by hand on 2026-08-31). All four were attempts to repair a wrong equation with a scalar."
+  ],
+  "calibration_status": "validated",
+  "cx": 640.0,
+  "cy": 360.0,
+  "focal_px": 545.9171708276577,
+  "height": 720,
+  "height_m": 0.4,
+  "hfov_deg": 134.34015578875764,
+  "method": "equidistant-by-construction-via-rectification",
+  "pitch_rad": -0.262519298362,
+  "platform": "deep-robotics-lite3-venture",
+  "validation": {
+    "REQUIRES": "--camera-rectify lite3_front_camera_rectify_20260901.json. Without it this file is wrong at every bearing, because it describes a projection the raw camera does not produce.",
+    "reviewed_at": "2026-09-01T05:29:37Z",
+    "reviewed_by": "armwaheed (operator, on site, Shanghai)",
+    "supersedes": {
+      "panel_fit": 660.0,
+      "shipped": 469.6297123443955,
+      "spin": 888.8504272088496,
+      "tape_fit": 392.4
+    },
+    "what_is_NOT_asserted": "Absolute scale beyond a few percent. The rectification converts the measured pinhole model faithfully and cannot beat it; that fit carries RMS 2.94 px, fx/fy 1.028 and no coverage of the frame's top third. Stability across bearing is fixed; absolute range is not independently verified against a tape at more than one distance.",
+    "what_is_asserted": "That focal_px 545.9 correctly describes the SYNTHETIC equidistant projection produced by lite3_front_camera_rectify_20260901.json, measured 2026-09-01 from 26 ArUco grid-board views by cv2.calibrateCamera (pinhole RMS 2.94 px) and validated end to end against an accurate pinhole pose over bearings -51..+28 deg: range error mean +0.0% / sd 0.2% / worst 0.9%, bearing error mean +0.01 deg / worst 0.18 deg."
+  },
+  "width": 1280
+}

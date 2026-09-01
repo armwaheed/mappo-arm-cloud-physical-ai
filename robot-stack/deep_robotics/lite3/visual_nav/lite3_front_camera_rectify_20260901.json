@@ -1,0 +1,40 @@
+{
+  "camera_matrix": [
+    [
+      508.74343769196315,
+      0.0,
+      640.8972102871645
+    ],
+    [
+      0.0,
+      494.93297523678166,
+      339.5051069783413
+    ],
+    [
+      0.0,
+      0.0,
+      1.0
+    ]
+  ],
+  "distortion": [
+    -0.01784532060803426,
+    -0.0394743077743008,
+    0.005264550108232382,
+    0.00407164788011708,
+    0.008583767801687198
+  ],
+  "focal_out_px": 545.9171708276577,
+  "height": 720,
+  "platform": "deep-robotics-lite3-venture",
+  "provenance": {
+    "focal_out_rule": "largest equidistant focal that crops no field of view; the vertical axis binds because the sensor is 16:9 and the mapping is radial",
+    "limits": "inherits the pinhole fit: RMS 2.94 px, fx/fy 1.028, no coverage of the frame's top third. Stability across bearing is fixed; ABSOLUTE scale is only as good as that fit. Do not quote a range better than a few percent.",
+    "measured": "2026-09-01, cv2.calibrateCamera over 26 ArUco grid-board views (2x3, 75 mm markers, ids 10-15) captured from this robot's own RTSP feed",
+    "pinhole_rms_px": 2.935039370300416,
+    "validated_end_to_end": "stack pose vs accurate pinhole pose over the same 26 views, bearings -51..+28 deg: range error mean +0.0% sd 0.2% worst 0.9%; bearing error mean +0.01 deg worst 0.18 deg",
+    "views": 26,
+    "why_pinhole": "cv2.fisheye.calibrate (equidistant, the shared stack's model) gave RMS 52.9 px on the same correspondences; pinhole+distortion gave 2.9. This lens is nearly rectilinear, not equidistant."
+  },
+  "schema": "lite3-rectify/v1",
+  "width": 1280
+}
