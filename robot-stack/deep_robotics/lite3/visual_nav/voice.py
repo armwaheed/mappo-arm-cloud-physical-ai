@@ -37,6 +37,12 @@ CUES = {
     "resuming": ("rrd_resuming_zh.wav", "rrd_resuming_en.wav"),
     "fault": ("rrd_fault_zh.wav", "rrd_fault_en.wav"),
     "greeting": ("rrd_greeting_zh.wav", "rrd_greeting_en.wav"),
+    # Not from RRD: that set has no cue for "you need to change my posture", and its
+    # nearest neighbour (fault) is true but tells nobody what to do about it. Generated
+    # to the same 24 kHz mono format so the two sets are interchangeable.
+    #   zh  我还没有站起来。请在遥控器上把我切换到站立模式。
+    #   en  I am not standing yet. Please set me to standing mode on the controller.
+    "stand_request": ("lite3_stand_request_zh.wav", "lite3_stand_request_en.wav"),
 }
 
 #: A cue may not repeat inside this many seconds. Without it a robot held for a minute by

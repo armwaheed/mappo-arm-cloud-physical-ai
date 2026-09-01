@@ -69,6 +69,37 @@ DEFAULT_MAX_TOTAL_S = 900.0
 _TICK = re.compile(r"^\[\s*[\d.]+s\]\s+(\S+)")
 _OUTCOME = re.compile(r"outcome:\s*(.+?)\s*$")
 
+#: The refusal that only a HUMAN can clear. ``assert_axis_state_ready`` refuses when the
+#: robot is not in force-control standing, and no amount of retrying changes that by
+#: itself -- so this is the one failure where speaking is not decoration but the entire
+#: remedy. Matched on the refusal's own words rather than an exit code, because the exit
+#: code is shared with every other SystemExit in the drive path.
+_NEEDS_STANDING = re.compile(r"basic_state=\d+.*force-control state")
+
+
+#: Flags whose value is a path this supervisor must keep unique per attempt.
+EVIDENCE_FLAGS = ("--telemetry", "--record", "--record-raw")
+
+
+def per_attempt(command: list[str], attempt: int) -> list[str]:
+    """Give each attempt its own evidence files.
+
+    Found by running it: the launcher computes one run id, so every retry wrote over the
+    telemetry and video of the attempt before it -- destroying the recording of the
+    failure that CAUSED the retry, which is the one a person would actually want to
+    watch. The first attempt keeps the unsuffixed name so a single-attempt run reads
+    exactly as it did before this existed.
+    """
+    if attempt <= 1:
+        return list(command)
+    out = list(command)
+    for index, token in enumerate(out[:-1]):
+        if token in EVIDENCE_FLAGS:
+            path = Path(out[index + 1])
+            out[index + 1] = str(path.with_name(
+                f"{path.stem}-attempt{attempt}{path.suffix}"))
+    return out
+
 
 class Attempt:
     """What one run of the child did, in the terms the supervisor decides on."""
@@ -76,6 +107,7 @@ class Attempt:
     def __init__(self) -> None:
         self.outcome: str | None = None
         self.arrived = False
+        self.needs_standing = False
         self.held_ticks = 0
         self.moving_ticks = 0
         self.spoke_for_help = False
@@ -92,6 +124,10 @@ def supervise(command: list[str], voice: Voice, *, patience_s: float,
         for line in process.stdout:
             line = line.rstrip("\n")
             echo(line)
+            if _NEEDS_STANDING.search(line):
+                attempt.needs_standing = True
+                if voice.say("stand_request"):
+                    attempt.spoke_for_help = True
             found = _OUTCOME.search(line)
             if found:
                 attempt.outcome = found.group(1)
@@ -165,16 +201,25 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         print(f"\n[mission] ── attempt {attempt_number} of {args.max_attempts} "
               f"({elapsed:.0f}s elapsed) ──")
-        attempt = supervise(command, voice, patience_s=args.patience)
+        attempt = supervise(per_attempt(command, attempt_number), voice,
+                            patience_s=args.patience)
         print(f"[mission] attempt {attempt_number}: outcome={attempt.outcome!r} "
               f"held={attempt.held_ticks} moving={attempt.moving_ticks} "
-              f"asked_for_help={attempt.spoke_for_help}")
+              f"asked_for_help={attempt.spoke_for_help}"
+              + (" NEEDS-STANDING" if attempt.needs_standing else ""))
+        if attempt.needs_standing:
+            print("[mission] the robot is not in force-control standing. It has asked, in "
+                  "Chinese and English, for somebody to set it. Retrying after the "
+                  "cooldown; nothing else will clear this.")
         if attempt.arrived:
             print(f"[mission] ARRIVED on attempt {attempt_number} "
                   f"after {time.monotonic() - started:.0f}s")
             voice.close()
             return 0
-        voice.say("fault")
+        if not attempt.needs_standing:
+            # It has already asked for the specific thing that would fix this; following
+            # it with "a fault has occurred" would bury the actionable sentence.
+            voice.say("fault")
         if attempt_number < args.max_attempts:
             print(f"[mission] cooling down {args.cooldown:.0f}s before the next attempt")
             time.sleep(args.cooldown)

@@ -22,7 +22,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from mission import Attempt, main, supervise
+from mission import Attempt, main, per_attempt, supervise
 from voice import CUES, Voice
 
 
@@ -157,6 +157,43 @@ def test_it_stops_and_says_so_rather_than_retrying_for_ever():
     rc = main(["--no-voice", "--cooldown", "0", "--max-attempts", "3",
                "--", sys.executable, "-c", f"print({never!r}, flush=True)"])
     assert rc == 1, "a run that never arrived must not report success"
+
+
+def test_it_asks_for_standing_mode_when_only_a_human_can_clear_the_refusal():
+    """The one failure where speaking IS the remedy. assert_axis_state_ready refuses a
+    robot that is not in force-control standing, and no amount of retrying changes that
+    by itself -- so it must ask, in Chinese and English, for the specific thing needed."""
+    voice = _quiet_voice()
+    refusal = ("deep_robotics.lite3.locomotion.lite3_udp_locomotion.Lite3LinkLost: "
+               "Lite3 basic_state=8; axis motion requires documented force-control state 6")
+    attempt = supervise(_emitter([refusal]), voice, patience_s=4.0, echo=lambda _l: None)
+    assert attempt.needs_standing is True
+    assert attempt.spoke_for_help is True, "it must ask, not just record"
+    assert attempt.arrived is False
+
+
+def test_an_ordinary_stall_is_not_mistaken_for_a_posture_refusal():
+    """Guards the regex: matching too broadly would make every failure ask for standing
+    mode, which is the wrong instruction and would train the operator to ignore it."""
+    stall = "[visual_nav] outcome: stalled: commanded 0.30 m/s for 4.0s and moved 0.00 m"
+    attempt = supervise(_emitter([stall]), _quiet_voice(), patience_s=4.0,
+                        echo=lambda _l: None)
+    assert attempt.needs_standing is False
+
+
+def test_a_retry_does_not_overwrite_the_evidence_of_the_failure_that_caused_it():
+    """FOUND BY RUNNING IT. The launcher computes one run id, so before this every retry
+    wrote over the telemetry and video of the attempt before -- destroying the recording
+    of the failure that caused the retry, which is the one worth watching."""
+    base = ["python3", "drive.py", "--telemetry", "/e/run.jsonl",
+            "--record", "/e/run.mp4", "--record-raw", "/e/run-raw.mp4", "--live"]
+    assert per_attempt(base, 1) == base, "a single-attempt run reads exactly as before"
+    second = per_attempt(base, 2)
+    assert "/e/run-attempt2.jsonl" in second
+    assert "/e/run-attempt2.mp4" in second
+    assert "/e/run-raw-attempt2.mp4" in second
+    assert second[-1] == "--live", "flags without a path are untouched"
+    assert per_attempt(base, 3).count("/e/run-attempt3.jsonl") == 1
 
 
 def test_an_attempt_starts_out_having_neither_arrived_nor_spoken():
