@@ -108,14 +108,26 @@ def test_the_probe_passes_when_the_device_really_opens():
     assert voice.probe() is None
 
 
+def test_english_still_plays_when_the_chinese_fails():
+    """FOUND ON THE ROBOT: only the Chinese was heard. Both files went to ONE aplay, which
+    did not reliably continue to the second. Each utterance is now its own command chained
+    with ';' -- not '&&' -- so a failure on the first cannot swallow the second."""
+    voice = Voice(_voice_dir(), player=SILENT_PLAYER, device="pulse")
+    command = voice._command([Path("/x/zh.wav"), Path("/x/en.wav")])
+    assert command[0] == "sh" and command[1] == "-c"
+    chain = command[2]
+    assert chain.count("-q") == 2, "one invocation per utterance, not one for both"
+    assert "; " in chain and "&&" not in chain, "';' so English survives a failed Chinese"
+    assert chain.index("zh.wav") < chain.index("en.wav"), "Chinese first"
+
+
 def test_an_explicit_alsa_device_reaches_the_player():
     """The default device on this robot is a null sink, so naming the hardware is what
     makes the difference between audible and not."""
     voice = Voice(_voice_dir(), player=SILENT_PLAYER, device="plughw:0,0")
-    command = voice._command([Path("/x/a.wav")])
-    assert "-D" in command and "plughw:0,0" in command
-    assert "plughw:0,0" not in Voice(_voice_dir(), player=SILENT_PLAYER)._command(
-        [Path("/x/a.wav")])
+    assert "-D plughw:0,0" in voice._command([Path("/x/a.wav")])[2]
+    assert "-D" not in Voice(_voice_dir(), player=SILENT_PLAYER)._command(
+        [Path("/x/a.wav")])[2]
 
 
 def test_chinese_is_played_before_english():

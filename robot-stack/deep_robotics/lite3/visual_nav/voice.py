@@ -25,6 +25,7 @@ looking for reads as a bug to anyone who speaks the language.
 
 from __future__ import annotations
 
+import shlex
 import shutil
 import subprocess
 import time
@@ -75,8 +76,17 @@ class Voice:
         self.enabled = self.reason is None
 
     def _command(self, files: list) -> list[str]:
-        device = ["-D", self.device] if self.device else []
-        return [self._player, *device, "-q", *[str(f) for f in files]]
+        """One player invocation PER FILE, chained in a shell.
+
+        Handing several files to one ``aplay`` looked equivalent and was not: on the
+        robot only the Chinese was heard, because the player did not reliably carry on to
+        the second file after re-opening the device. Chaining with ``;`` -- not ``&&`` --
+        means the English still plays even when the Chinese fails, which matters because
+        the whole point of the cue is that somebody understands it."""
+        device = f"-D {shlex.quote(self.device)} " if self.device else ""
+        player = shlex.quote(self._player)
+        chain = "; ".join(f"{player} {device}-q {shlex.quote(str(f))}" for f in files)
+        return ["sh", "-c", chain]
 
     def describe(self) -> str:
         if self.enabled:
@@ -104,8 +114,11 @@ class Voice:
         if sample is None:
             return "no cue files to probe with"
         try:
-            done = subprocess.run(self._command([sample]), capture_output=True,
-                                  text=True, timeout=timeout_s)
+            # Probe the PLAYER directly rather than through the shell chain: `sh -c`
+            # would report the shell's success, not the player's.
+            device = ["-D", self.device] if self.device else []
+            done = subprocess.run([self._player, *device, "-q", str(sample)],
+                                  capture_output=True, text=True, timeout=timeout_s)
         except (OSError, subprocess.SubprocessError) as exc:
             return f"{type(exc).__name__}: {exc}"
         noise = (done.stderr or "").strip()

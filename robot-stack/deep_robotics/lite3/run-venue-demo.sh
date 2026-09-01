@@ -24,7 +24,9 @@
 #   mission.py         Restarts the run when it ends without arriving, re-acquiring the
 #                      goal each time, and speaks while it waits.
 #
-# ⚠️ AUDIO NEEDS THE `audio` GROUP. The account running this must be in it, or the sound
+# ⚠️ AUDIO GOES THROUGH PULSEAUDIO, NOT THE RAW CARD. PulseAudio holds this codec
+# exclusively, so `plughw:0,0` returns "Device or resource busy"; `pulse` is the route
+# that works. And the account must be in the `audio` GROUP. The account running this must be in it, or the sound
 # device cannot be opened, PulseAudio falls back to its auto_null sink, and aplay writes
 # into a black hole and EXITS 0 -- every check passes and the robot is silent. Fix once
 # with `sudo usermod -aG audio "$USER"` and start a new session. mission.py probes the
@@ -64,7 +66,7 @@ echo "[venue] run id  $RUN_ID"
 
 exec python3 mission.py \
   --voice-dir "$STAGE/voice" \
-  --voice-device "${VOICE_DEVICE:-plughw:0,0}" \
+  --voice-device "${VOICE_DEVICE:-pulse}" \
   --patience "${PATIENCE:-4}" \
   --cooldown "${COOLDOWN:-25}" \
   --max-attempts "${ATTEMPTS:-8}" \
