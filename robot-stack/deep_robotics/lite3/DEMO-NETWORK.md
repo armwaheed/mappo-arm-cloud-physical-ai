@@ -92,6 +92,63 @@ falls back to a null sink and `aplay` exits 0 while making no sound:
 sudo usermod -aG audio "$USER"     # then start a NEW session
 ```
 
+## Addressing, both robots
+
+Two Lite3s ship with the **same** factory address, `192.168.1.120`, so the second one to
+join a shared LAN collides with the first. Give each robot's wired interface a distinct
+address before it ever meets the other.
+
+| | robot 1 (LITE3-A) | robot 2 |
+| --- | --- | --- |
+| `wlan0` (demo path) | `192.168.1.120` | `192.168.1.2` |
+| `wlan0` MAC | `54:ef:33:9e:88:2a` | `54:ef:33:9e:1a:8d` |
+| `eth1` (cable fallback) | `192.168.1.119` | `192.168.1.118` |
+| DHCP reservation | done | **still to do** |
+
+⚠️ **`jy_exe` sends robot state to exactly one address**, set in
+`/home/ysc/jy_exe/conf/network.toml`. It ships as `192.168.1.120`, so **moving the wired
+interface off `.120` silently breaks the drive path** — `mappo_drive` then dies with *"no
+Lite3 state frame arrived on 127.0.0.1:43897 within 5s"*. Robot 1 kept working only by
+luck: its `wlan0` inherited `.120`, so the vendor's target still resolved.
+
+Set it to `127.0.0.1`. The drive runs **on** the robot, so localhost is both correct and
+immune to any future address change:
+
+```toml
+ip = '127.0.0.1'
+target_port = 43897
+local_port = 43893
+```
+
+It takes effect when `jy_exe` restarts. **Restarting it is a motion-controller restart** —
+do it with an operator present, not remotely on an unattended robot.
+
+## Bootstrapping a robot with no internet
+
+The robots are airgapped, so Python dependencies cannot be fetched on the robot, and
+`python3 -m venv` on this image cannot `ensurepip`. Neither is a problem: **wheels are zip
+files**, so cross-download them on a laptop and extract them onto a `PYTHONPATH` directory.
+The venv still exists because `preflight/venv_guard.py` requires one for `--live`; it simply
+holds no packages.
+
+```sh
+# on the laptop
+pip download --only-binary=:all: --platform manylinux2014_aarch64     --python-version 38 --implementation cp --abi cp38     "numpy<1.25" "opencv-python-headless<4.10" -d wheels/
+
+# on the robot, after copying wheels/ across
+cd ~/mappo-lite3-stage/python && for w in ~/mappo-lite3-stage/wheels/*.whl; do
+  python3 -c "import zipfile,sys; zipfile.ZipFile(sys.argv[1]).extractall('.')" "$w"
+done
+export PYTHONPATH=$HOME/mappo-lite3-stage/python
+```
+
+**This installs nothing into the system interpreter**, which `AGENTS.md` forbids outright.
+
+The detector model is not in this repository and must be copied across too: `--model-dir`
+expects `MobileNetSSD_deploy.prototxt` and `MobileNetSSD_deploy.caffemodel`, the **stock**
+published pair. ⚠️ Checksum a newly-fetched copy against a working robot's before trusting
+it — this repository's detector measurements are tied to specific weights.
+
 ## ⚠️ The trap that cost the most time
 
 **Do not let two interfaces hold the same address.** With a cable in *and* WiFi up, `eth1`
