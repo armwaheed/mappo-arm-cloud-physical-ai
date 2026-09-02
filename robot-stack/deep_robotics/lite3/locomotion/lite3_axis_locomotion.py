@@ -878,7 +878,12 @@ class Lite3AxisLocomotion(Lite3UdpLocomotion):
             raise Lite3LinkLost(
                 f"Lite3 basic_state={basic}; axis motion requires documented force-control state 6"
             )
-        if policy != 0:
+        # ``None`` means this firmware omits ``robot_policy_state`` from its state frame
+        # (see ``_ROBOT_STATE_NO_POLICY``), so the check is unenforceable rather than
+        # passed: there is no measurement to gate on. The rest of the gate -- error_state,
+        # force-control basic 6, the profile's gait set, and motion -- still applies, and
+        # it is those that bound the motion this authorises.
+        if policy is not None and policy != 0:
             raise Lite3LinkLost(
                 f"Lite3 policy_state={policy}; profile-gated manual moving mode requires policy 0"
             )

@@ -96,6 +96,58 @@ def _robot_state_frame(**overrides) -> bytes:
     return bytes(buffer)
 
 
+# offsetof for the firmware that omits ``robot_policy_state``. Not from a vendor compile:
+# measured on a second unit of the same fleet, whose frames are 212 bytes and whose header
+# reports a 200-byte payload. The offsets were located by searching the datagram for the
+# float64 that equals each float32 the same robot reports in its ImuData frame -- rpy was
+# found at payload offset 8 and xyz_acc at 56, both exactly 8 below the long layout, which
+# is what dropping one leading int and its alignment padding does. Decoded that way every
+# field is physically sound (gravity on z, battery in 0-100, zero velocity while idle);
+# decoded with the long layout the battery reads 0.0.
+_ROBOT_STATE_NO_POLICY_OFFSETS = {
+    "robot_basic_state": 0, "robot_gait_state": 4,
+    "rpy": 8, "rpy_vel": 32, "xyz_acc": 56, "pos_world": 80,
+    "vel_world": 104, "vel_body": 128, "touch_down_and_stair_trot": 152,
+    "is_charging": 156, "error_state": 160, "robot_motion_state": 164,
+    "battery_level": 168, "task_state": 176, "is_robot_need_move": 180,
+    "zero_position_flag": 181, "ultrasound": 184,
+}
+
+
+def _robot_state_frame_no_policy(**overrides) -> bytes:
+    """Build a 212-byte RobotState frame: same fields, no ``robot_policy_state``."""
+    long_frame_fields = {
+        "robot_basic_state": 3, "robot_gait_state": 2,
+        "rpy": (1.5, -2.5, 30.0), "rpy_vel": (0.1, 0.2, 0.3),
+        "xyz_acc": (0.0, 0.0, 9.81), "pos_world": (1.0, 2.0, 0.35),
+        "vel_world": (0.4, 0.05, 0.0), "vel_body": (0.42, -0.01, 0.0),
+        "touch_down_and_stair_trot": 15, "is_charging": False, "error_state": 0,
+        "robot_motion_state": 4, "battery_level": 87.5, "task_state": 0,
+        "is_robot_need_move": False, "zero_position_flag": True,
+        "ultrasound": (0.0, 1.25),
+    }
+    long_frame_fields.update(overrides)
+
+    buffer = bytearray(212)
+    struct.pack_into("<3i", buffer, 0, ROBOT_STATE_CODE, 200, 0)
+    for name, offset in _ROBOT_STATE_NO_POLICY_OFFSETS.items():
+        at = _DATA_OFFSET + offset
+        value = long_frame_fields[name]
+        if name in ("rpy", "rpy_vel", "xyz_acc", "pos_world", "vel_world", "vel_body"):
+            struct.pack_into("<3d", buffer, at, *value)
+        elif name == "ultrasound":
+            struct.pack_into("<2d", buffer, at, *value)
+        elif name == "battery_level":
+            struct.pack_into("<d", buffer, at, value)
+        elif name in ("touch_down_and_stair_trot", "error_state"):
+            struct.pack_into("<I", buffer, at, value)
+        elif name in ("is_charging", "is_robot_need_move", "zero_position_flag"):
+            struct.pack_into("<?", buffer, at, value)
+        else:
+            struct.pack_into("<i", buffer, at, value)
+    return bytes(buffer)
+
+
 def _handle_state_frame(forward=0.3, side=0.0, yaw=0.0) -> bytes:
     return struct.pack("<3i6d", HANDLE_STATE_CODE, 48, 0,
                        0.5, 0.0, 0.0, forward, side, yaw)
@@ -107,8 +159,9 @@ def _imu_frame(angle=(0.0, 0.0, 0.0), angular_velocity=(0.0, 0.0, 0.0)) -> bytes
 
 
 def test_frame_lengths_match_the_compiled_vendor_header():
-    assert sorted(FRAME_KINDS) == [52, 60, 108, 220]
+    assert sorted(FRAME_KINDS) == [52, 60, 108, 212, 220]
     assert FRAME_KINDS[220] == ("robot_state", ROBOT_STATE_CODE)
+    assert FRAME_KINDS[212] == ("robot_state", ROBOT_STATE_CODE)
     assert FRAME_KINDS[108] == ("joint_state", JOINT_STATE_CODE)
     assert FRAME_KINDS[60] == ("handle_state", HANDLE_STATE_CODE)
     assert FRAME_KINDS[52] == ("imu", IMU_DATA_CODE)
@@ -126,6 +179,26 @@ def test_robot_state_decodes_at_the_compilers_offsets_not_a_packed_guess():
     assert frame["ultrasound"] == [0.0, 1.25]
     assert frame["is_charging"] is False
     assert frame["zero_position_flag"] is True
+
+
+def test_short_robot_state_reports_policy_as_unmeasured_not_zero():
+    frame = decode_frame(_robot_state_frame_no_policy())
+    assert frame["kind"] == "robot_state"
+    # None, not 0: the axis gate reads a measured 0 as permission to move.
+    assert frame["robot_policy_state"] is None
+    assert frame["battery_level"] == 87.5
+    assert frame["xyz_acc"] == [0.0, 0.0, 9.81]
+
+
+def test_both_firmware_layouts_decode_every_shared_field_identically():
+    """The shear this guards against decodes to plausible numbers, not an exception."""
+    long_frame = decode_frame(_robot_state_frame())
+    short_frame = decode_frame(_robot_state_frame_no_policy())
+    # ``size`` is the payload length the firmware itself declares, so it differs by design.
+    for field in ("robot_policy_state", "size"):
+        long_frame.pop(field)
+        short_frame.pop(field)
+    assert long_frame == short_frame
 
 
 def test_handle_state_carries_the_firmwares_own_derived_velocity():

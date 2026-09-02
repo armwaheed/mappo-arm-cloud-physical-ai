@@ -480,6 +480,44 @@ def test_axis_locomotion_refuses_undocumented_or_unhealthy_vendor_state():
             raise AssertionError(f"accepted unsafe vendor state {(basic, gait, policy, motion)}")
 
 
+def test_the_gate_treats_an_absent_policy_state_as_unmeasured_rather_than_zero():
+    """Firmware that omits ``robot_policy_state`` still has to clear the rest of the gate.
+
+    That firmware never sends the field, so there is no measurement to compare against and
+    the check cannot be enforced. ``None`` records the absence instead of substituting the
+    0 the gate reads as permission to move. The risk is that "unenforceable" quietly
+    becomes "waived", so this pins that the other four checks still bite on such a frame.
+    """
+    profile = _load_profile(_profile_data())
+
+    def gate(basic, gait, policy, motion, error_state=0):
+        loco = Lite3AxisLocomotion(
+            axis_profile=profile,
+            motion_host="127.0.0.1",
+            command_port=43893,
+            state_port=0,
+            bind="127.0.0.1",
+        )
+        loco._state = SimpleNamespace(
+            received_at=loco._clock(),
+            error_state=error_state,
+            mode=(basic, gait, policy, motion),
+        )
+        loco.assert_axis_state_ready()
+
+    # Safe on every field the firmware does report: an absent one must not block motion.
+    gate(6, 0, None, 0)
+
+    unsafe = ((98, 0, None, 0), (6, 2, None, 0), (6, 0, None, 4), (6, 0, None, 0, 7))
+    for case in unsafe:
+        try:
+            gate(*case)
+        except Lite3LinkLost:
+            pass
+        else:
+            raise AssertionError(f"an absent policy state waived the rest of the gate: {case}")
+
+
 def test_the_vendor_state_gate_refuses_a_snapshot_that_stopped_arriving():
     """``prepare_motion`` calls this gate at pre-flight with no age check ahead of it.
 

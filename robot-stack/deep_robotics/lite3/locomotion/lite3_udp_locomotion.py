@@ -165,6 +165,9 @@ class Lite3UdpLocomotion:
         self._reader: threading.Thread | None = None
         self._running = False
         self._state: _StateSnapshot | None = None
+        # Datagram lengths seen but not decodable, counted so a failed connect() can
+        # report what actually arrived instead of naming a cause. See A21.
+        self._undecodable: dict[int, int] = {}
         self._previous_yaw: tuple[float, float] | None = None
         self._yaw_rate = 0.0
 
@@ -200,12 +203,30 @@ class Lite3UdpLocomotion:
                 return
             time.sleep(0.02)
 
+        # Report the symptom and the evidence, not a cause. The previous wording named
+        # ~/jy_exe/conf/network.toml, which is right when nothing arrives and sends the
+        # reader to an innocent file when something does -- a robot whose firmware sends
+        # a frame length this build does not know looks identical from here. See A21.
+        undecodable = dict(self._undecodable)
         self.shutdown()
+        if undecodable:
+            seen = ", ".join(f"{count} x {length} B" for length, count in
+                             sorted(undecodable.items(), key=lambda item: -item[1]))
+            detail = (
+                f"{sum(undecodable.values())} datagram(s) DID arrive and none could be "
+                f"decoded: {seen}. The decoder dispatches on length, so a firmware whose "
+                f"frames are a length this build does not know is dropped here rather "
+                f"than reported. The network is not the suspect: something is sending."
+            )
+        else:
+            detail = (
+                "nothing arrived at all. The motion host sends to exactly one address: "
+                f"check 'ip' in ~/jy_exe/conf/network.toml against this host's address, "
+                f"and confirm {self._motion_host} is reachable."
+            )
         raise Lite3LinkLost(
             f"no Lite3 state frame arrived on {self._bind}:{self._state_port} within "
-            f"{self._connect_timeout_s:.0f}s. The motion host sends to exactly one "
-            f"address: check 'ip' in ~/jy_exe/conf/network.toml against this host's "
-            f"address, and confirm {self._motion_host} is reachable."
+            f"{self._connect_timeout_s:.0f}s -- {detail}"
         )
 
     def shutdown(self) -> None:
@@ -298,7 +319,11 @@ class Lite3UdpLocomotion:
         return self._require_fresh_state().battery_level
 
     def mode(self) -> tuple:
-        """Documented vendor state tuple: basic state, gait, policy, and motion."""
+        """Documented vendor state tuple: basic state, gait, policy, and motion.
+
+        ``policy`` is ``None`` on firmware that omits the field from its state
+        frame; callers that gate on it must treat that as unmeasured, not as 0.
+        """
         return self._require_state().mode
 
     def error_state(self) -> int:
@@ -364,6 +389,7 @@ class Lite3UdpLocomotion:
             try:
                 frame = decode_frame(payload)
             except DecodeError:
+                self._undecodable[len(payload)] = self._undecodable.get(len(payload), 0) + 1
                 continue
             if frame["kind"] != "robot_state":
                 continue

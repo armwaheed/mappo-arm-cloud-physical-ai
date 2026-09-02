@@ -1817,6 +1817,59 @@ exits immediately must still cost the file's duration.
 
 Both bugs were found by a person in the room, not by CI, and that is the honest summary.
 
+### A21. Our decoder assumed a fleet runs one firmware, and the wrong layout decoded fine
+
+The second Lite3 would not drive. Every attempt ended the same way:
+
+    Lite3LinkLost: no Lite3 state frame arrived on 127.0.0.1:43897 within 5s.
+    The motion host sends to exactly one address: check 'ip' in
+    ~/jy_exe/conf/network.toml against this host's address
+
+That message is **confidently wrong**, and it was written by us. It names the network as
+the cause because on the first robot the network always *was* the cause. So the first hour
+went into an innocent file: reading `network.toml`, rewriting it, restarting the motion
+service, rebooting the robot. A socket bound to the port received frames the whole time.
+
+**State frames were arriving at 34 Hz and being dropped by our own decoder.** It dispatches
+on datagram length, and the length was 212 bytes where the first robot sends 220. Both
+carry the same `robot_state` code. The second robot's firmware declares `RobotState`
+**without `robot_policy_state`**: two leading ints instead of three, and no alignment
+padding, because 8 is already double-aligned. The 18-double block therefore begins at
+payload offset 8 rather than 16, and the payload is 200 bytes rather than 208.
+
+**The dangerous part is what happens if you "fix" this by relaxing the length check.**
+Decoding a 212-byte frame with the 208-byte layout does not raise. Every field shears by
+one double and still decodes to a believable number: gravity moves off the z axis, and the
+battery reads a calm `0.0`. Nothing in the output announces that it is nonsense. That is
+why the two layouts are separate structs keyed by length, and why the tests build each
+frame from its own field offsets rather than from the format string they are checking — a
+test that packs with the same struct it unpacks with agrees with itself no matter how wrong
+both are.
+
+The layout was not guessed. The robot publishes an `ImuData` frame that our decoder already
+reads correctly, so the same values are available twice: each float32 in the IMU frame was
+searched for as a float64 inside the state datagram. `rpy` was found at payload offset 8
+and `xyz_acc` at 56 — both exactly 8 below the long layout, which is what dropping one
+leading int and its padding does. Decoded that way every field is physically sound:
+gravity on z at 9.75, battery 74%, zero velocity while the robot sat still.
+
+**One safety check did not survive, and it is recorded rather than quietly dropped.** The
+axis gate refuses motion unless `robot_policy_state == 0`. On firmware that never sends the
+field there is no measurement to compare, so the decoder reports `None` — *unmeasured* —
+and the gate skips that one clause. Substituting `0` was the obvious shortcut and it is
+the wrong one: the gate reads a measured `0` as permission to move, so a default would have
+manufactured consent from a field the robot never sent. The other four clauses —
+`error_state`, force-control `basic == 6`, the profile's gait set, and motion state — still
+apply, and a test pins that each still refuses on a frame whose policy state is absent.
+
+**The transferable lesson is about error messages, not about Deep Robotics.** Ours stated a
+cause instead of a symptom. It could only have been written by someone who had already
+debugged this once, and it encoded that one experience as the answer for everyone after.
+The honest version of that message names what was observed — no frame of the expected
+length arrived — and lists what could produce it. Two robots bought together, running the
+same vendor stack, differed in a struct, and a diagnostic that had been right once sent us
+to the wrong file.
+
 ## Appendix B — What a payload costs a proxy platform
 
 The Go2s in this paper are **proxies** for the Lite3s
