@@ -273,6 +273,15 @@ The two event Lite3 Ventures have **an RGB camera and no LiDAR**. The offline po
 not moved either robot; its runbook names every measurement and vendor feed still needed
 at commissioning rather than filling them with Go2 values.
 
+**Networking is a safety surface on these robots, not just plumbing.**
+[`DEMO-NETWORK.md`](robot-stack/deep_robotics/lite3/DEMO-NETWORK.md) is the network SOP:
+the airgapped venue LAN, both robots' addressing, and — the part that bites — the **single
+radio** each robot serves its hand controller from. It hosts an access point and joins the
+venue router on one PHY, so `#channels <= 1` binds: a controller AP on 5 GHz and a router
+link on 2.4 GHz is refused outright, and the robot then advertises nothing at all. That is
+how a WiFi change silently disabled a manual-control path
+([A22](docs/WHITEPAPER.md#a22-we-configured-the-wifi-and-switched-off-the-robots-manual-control-path)).
+
 **Moves as-is.** Everything that turns pixels into a plan is robot-agnostic numpy and
 OpenCV: `camera_model` (fisheye pixel ↔ bearing, angular-size ranging), `person_detector`,
 `colour_detector`, `tracker`, `static_map`, `avoidance`, `goal`, `overlay`, `telemetry`,
