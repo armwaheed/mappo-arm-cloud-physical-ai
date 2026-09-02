@@ -95,10 +95,15 @@ from pathlib import Path
 #: ``evidence/`` (``--max-seconds 45`` in the runbook, 40 in ``run-peer-supervised.sh``).
 MAX_RUN_SECONDS = 120.0
 
-#: What ``start_run`` uses when the caller says nothing. Deliberately shorter than the
-#: runbook's 45: the first thing anybody does from a dashboard is press the button to see
-#: what happens, and the default should be the length of a look rather than of a demo.
-DEFAULT_RUN_SECONDS = 30.0
+#: What ``start_run`` uses when the caller says nothing.
+#:
+#: WAS 30, on the reasoning that the first thing anybody does from a dashboard is press the
+#: button to see what happens, so the default should be the length of a look rather than of
+#: a demo. That was right for a look and wrong for this platform: measured on the Lite3 in
+#: the rehearsal room, a run to a marker across a shared office ends ``timeout after 30s``
+#: with the robot still walking and nothing wrong with it. A default that reliably reports
+#: a timeout teaches an operator to distrust the panel, which is worse than a longer wait.
+DEFAULT_RUN_SECONDS = 90.0
 
 #: Added to a run's own bound before the driver's watchdog terminates it. It is NOT the
 #: run's duration budget — it is startup: opening the camera, loading the detector, DDS
