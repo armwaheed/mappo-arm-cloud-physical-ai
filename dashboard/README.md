@@ -454,6 +454,86 @@ against `dashboard/go2_frame_server.py` on `main` before treating a frame as evi
 robot's copy has already been ahead of the repository's once, when it carried a lint fix the
 repository did not.
 
+### The Lite3 needs a different one, because RTSP is not an SDK call
+
+⛔ **`go2_frame_server.py` cannot serve a Lite3**, and the reason is on its import line: it
+imports `unitree_sdk2py` and pulls frames through the Go2 SDK's `VideoClient`, an RPC to a
+video service that runs on a Go2. A Lite3 runs no such service — its camera is published as
+**RTSP** (`rtsp://127.0.0.1:8554/test`, the same URI `--camera-source` takes), so the bridge
+has to be an RTSP client rather than an SDK client. That is a separate file:
+[`../robot-stack/deep_robotics/lite3/visual_nav/lite3_frame_server.py`](../robot-stack/deep_robotics/lite3/visual_nav/lite3_frame_server.py).
+
+It runs **on the robot** — the stream is on the robot's own loopback, so a workstation copy
+has nothing to open. On both robots it is an enabled systemd unit rather than a hand-started
+process, which is the one place it differs in operation from the Go2's:
+
+```ini
+# /etc/systemd/system/lite3-frame-server.service
+[Unit]
+Description=Lite3 RTSP-to-JPEG frame server for the Device Connect viewport
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=user
+Environment=PYTHONPATH=/home/user/mappo-lite3-stage/python
+ExecStart=/usr/bin/python3 /home/user/mappo-lite3-stage/dc/lite3_frame_server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`PYTHONPATH` is not optional and is not about this file: it is where the staged AArch64
+wheels put `cv2` — the same line `DEPLOYMENT-SOP.md` carries for every other Lite3 command.
+`ExecStart` passes no flags, so the defaults apply: `rtsp://127.0.0.1:8554/test` in, port
+**8801** out, JPEG quality 70.
+
+To try it before installing the unit:
+
+```bash
+scp robot-stack/deep_robotics/lite3/visual_nav/lite3_frame_server.py user@192.168.1.120:~/
+ssh user@192.168.1.120 \
+    'PYTHONPATH=$HOME/mappo-lite3-stage/python python3 ~/lite3_frame_server.py'
+```
+
+Then point the driver at it, with the same flag a Go2 uses:
+
+```bash
+--camera-url http://<robot>:8801/
+```
+
+On a Lite3 the driver runs on the robot as well (see *Running the driver ON a Lite3*), so
+that address is the robot's own; the flag does not change either way.
+
+Measured on both robots, 192.168.1.120 and 192.168.1.2: one GET returns HTTP **200** with a
+**127–135 KB** JPEG, and the dashboard viewport streams from it. It is read-only — it opens
+the stream, encodes, and serves. No lease, no motion, no writes. `/` is the only route, and
+there is no `/status`, so the equivalent of the Go2 server's `have_frame` is the status code:
+**503 until the first frame exists**, 200 after.
+
+A reader thread keeps only the newest frame, because OpenCV's RTSP capture buffers
+internally. Serving straight out of `read()` inside the handler hands the operator a picture
+several seconds behind the robot, which is worse than no picture because it looks current.
+
+⚠️ **When the RTSP source is not up the reader must sleep before retrying, and the symptom
+of not sleeping is not a crash.** An earlier build reopened the capture in a tight loop. That
+holds the GIL for the whole of each blocking `cv2.VideoCapture` attempt and starves the HTTP
+thread, so the port listens, every GET times out, and **the log stays empty** — which reads
+as a network fault rather than as a busy process. `test_lite3_frame_server.py` asserts one
+wait per failed open, and that the wait is not zero.
+
+⚠️ **It is a `ThreadingHTTPServer`, and the reason is other clients, not throughput.** The
+viewport polls several times a second; on a single-threaded server every other client — a
+second viewer, a `curl` taking evidence — is accepted and then waits behind that poll, which
+reads as an unreachable camera from everywhere except the machine already being served.
+Stated plainly because the wrong version of this is easy to repeat: threading did **not** fix
+an outage. The "unreachable camera" it was changed while chasing was a fault in the checking
+script — zsh does not word-split `set -- $var`, so `curl` was handed a malformed URL and
+reported HTTP `000`. The server was serving the whole time.
+
 ## What it does
 
 | | |

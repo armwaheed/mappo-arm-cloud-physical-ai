@@ -78,6 +78,7 @@ terminal. What makes that work, and what to check before trusting it:
 | `script` is **`venue_run.py`** | `~/mappo-lite3-stage/dc/run-profile.json` | naming `mission.py` fails — `run_control` spells `--package`, which the supervisor has never heard of |
 | `MAPPO_VOICE_DIR` in the profile `env` | same file | unset means the run is silent, and says so at startup |
 | `XDG_RUNTIME_DIR` + `PULSE_SERVER` in the unit, and `loginctl enable-linger` | `mappo-dc-driver.service.d/audio.conf` | a service has no login session, so `aplay` cannot reach PulseAudio and every cue fails while the run succeeds |
+| the **frame server** on the robot | `lite3-frame-server.service`, read by `--camera-url http://<robot>:8801/` | the camera viewport is empty without it, and `go2_frame_server.py` cannot stand in — it imports `unitree_sdk2py`, and this robot publishes RTSP. Enabled on both robots; measured HTTP 200 with a 127–135 KB JPEG per GET |
 | **no `--allow-motion`** in the unit | same | a service that starts by itself must not come up able to move the robot |
 
 ⚠️ **A live run needs `--allow-motion`, and that is a decision a person makes at the
