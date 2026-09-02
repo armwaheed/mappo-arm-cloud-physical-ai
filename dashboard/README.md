@@ -102,6 +102,57 @@ installed, so `python3.11` above is literal. The launcher picks an interpreter t
 already import `device_connect_edge` before it picks the newest ≥ 3.11, because a machine
 with 3.11, 3.12 and 3.13 usually has Device Connect in exactly one of them.
 
+### Running the driver ON a Lite3, and why you have to
+
+`start-dashboard.sh` says *workstation, not the robot*, and for a Go2 that is right. **On a
+Lite3 it is wrong, and the difference is not cosmetic.** A workstation-side driver on this
+fleet cannot do two of the things the dashboard is for:
+
+| | driver on the workstation | driver on the robot |
+| --- | --- | --- |
+| `get_status` pose/velocity | ✗ `cause: fault` | ✓ live, from `jy_exe` |
+| `download_model` lands on | the **workstation** | the **robot** |
+| `start_run` | ✓ over SSH | ✓ locally |
+
+`jy_exe` streams state to the single address in `~/jy_exe/conf/network.toml`, which is set
+to `127.0.0.1` so the on-robot run works regardless of the robot's address. Nothing off the
+robot can receive that. And `download_model` calls `cloud_models.fetch` **in the driver's own
+process**, so "pull a checkpoint onto the robot" is only true if the driver is on the robot.
+
+**The obstacle is the interpreter.** The robot image is Ubuntu 20.04 with Python 3.8.10;
+Device Connect needs 3.11. A venv does not help — `python3 -m venv` under 3.8 gives a 3.8
+venv. So install a standalone interpreter beside the image Python and leave the image alone:
+
+```bash
+# on the laptop, which has internet
+curl -LO https://github.com/astral-sh/python-build-standalone/releases/download/<tag>/\
+cpython-3.11.16+<tag>-aarch64-unknown-linux-gnu-install_only.tar.gz
+scp cpython-3.11.16+*.tar.gz user@<robot>:/tmp/
+
+# on the robot
+tar xzf /tmp/cpython-3.11.16+*.tar.gz -C ~/mappo-lite3-stage/py311 --strip-components=1
+~/mappo-lite3-stage/py311/bin/python3 -m venv ~/mappo-lite3-stage/venv311
+```
+
+⚠️ **Two dependency traps, both of which look like "no aarch64 support" and are not.**
+
+1. **`eclipse-zenoh` publishes `manylinux_2_28` + `cp39-abi3`.** A `pip download` asking for
+   `--platform manylinux2014_aarch64 --abi cp311` matches neither and silently resolves back
+   to `0.10.0rc0`, five years stale, which then fails to satisfy the pin. Ask for
+   `--platform manylinux_2_28_aarch64` **and** `--abi abi3` as well. Check the robot's glibc
+   is ≥ 2.28 first: Ubuntu 20.04 has 2.31, so it is fine.
+2. **`nkeys` is sdist-only.** It is pure Python, so it installs anywhere, but it cannot
+   satisfy `--only-binary=:all:`, and under `--no-index` its PEP 517 build cannot fetch
+   setuptools. Install it separately with `--no-build-isolation`, before the rest — a
+   failure building it aborts the whole batch and reads as though the wheels were bad.
+
+`--bridge-python /usr/bin/python3` keeps the **policy run** on the image's 3.8, because that
+is where this robot's `numpy` and `cv2` are. Do **not** export the staged `PYTHONPATH` into
+the driver: it holds numpy 1.24 built for 3.8 and will shadow the venv's own numpy.
+
+Run it from systemd so it survives a reboot, and **never with `--allow-motion`** — a service
+that starts by itself must not come up able to move the robot.
+
 ## The seven things, and which of them work
 
 | | | how | today |
