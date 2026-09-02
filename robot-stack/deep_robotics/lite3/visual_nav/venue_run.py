@@ -64,12 +64,17 @@ def build_command(drive_args, env=None, python: str | None = None) -> list:
         # would be reported by Voice as "not a directory" only once a cue was due.
         voice = ["--no-voice"]
 
-    return [python, "mission.py", *voice,
+    # ``-u`` on BOTH, and it is not a nicety. ``run_control`` launches the profile's script
+    # with ``-u`` and then streams its stdout to the dashboard; exec'ing a buffered
+    # ``mission.py`` from here throws that away, and the operator watches a blank panel
+    # while the robot walks. The inner one matters for the same reason one layer down:
+    # ``mission.py`` reads the drive's stdout line by line to decide when to speak.
+    return [python, "-u", "mission.py", *voice,
             "--patience", settings["MAPPO_MISSION_PATIENCE"],
             "--cooldown", settings["MAPPO_MISSION_COOLDOWN"],
             "--max-attempts", settings["MAPPO_MISSION_ATTEMPTS"],
             "--max-total-seconds", settings["MAPPO_MISSION_TOTAL"],
-            "--", python, "mappo_drive.py", *drive_args]
+            "--", python, "-u", "mappo_drive.py", *drive_args]
 
 
 def main(argv: list | None = None) -> int:
