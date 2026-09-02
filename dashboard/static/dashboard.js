@@ -431,7 +431,18 @@ function renderRunControls(caps) {
 
   const armable = !!run.supported && !!run.motion_enabled;
   $("run-arm").disabled = !armable;
-  if (!armable) $("run-arm").checked = false;
+  // Default ON, but only on a driver already started with --allow-motion. That flag is the
+  // deliberate decision, made at a console with an operator on the abort; this box was a
+  // second copy of it, and on demo day the second copy is the one that gets forgotten --
+  // the press then runs a scene check, the robot does not move, and the operator debugs a
+  // robot that was never asked to walk. On an UNARMED driver it still defaults off, so the
+  // safe default survives everywhere the deliberate decision has not been made.
+  // `touched` mirrors run-seconds: once a person sets it either way, stop overriding them.
+  if (!armable) {
+    $("run-arm").checked = false;
+  } else if (!$("run-arm").dataset.touched) {
+    $("run-arm").checked = true;
+  }
   $("run-start").disabled = !run.supported || state.controlOwner === "policy";
   $("run-where").textContent = run.supported
     ? (run.remote ? `on the robot, over ${(run.launch_prefix || []).join(" ")}`
@@ -1211,7 +1222,10 @@ function init() {
 
   $("run-start").addEventListener("click", startRun);
   $("run-stop").addEventListener("click", stopRun);
-  $("run-arm").addEventListener("change", renderRunPreview);
+  $("run-arm").addEventListener("change", () => {
+    $("run-arm").dataset.touched = "1";
+    renderRunPreview();
+  });
   $("run-mode").addEventListener("change", renderRunPreview);
   $("run-servo").addEventListener("change", renderRunPreview);
   $("run-seconds").addEventListener("input", () => {

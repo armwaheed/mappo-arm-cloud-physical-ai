@@ -158,11 +158,15 @@ SPDX-License-Identifier: Apache-2.0
       <span class="badge muted" id="control-badge">control —</span>
     </div>
     <p class="hint">
-      The default press is the <strong>scene check</strong>: perception, the policy and the
-      planner's veto, with no <code>--live</code> — so it has no way to command a leg at all.
       Moving the robot needs the driver to have been started with
       <code>--allow-motion</code> <em>and</em> the arm below. Missing either is a refusal,
       never a quiet dry run.
+      On a driver <strong>without</strong> <code>--allow-motion</code> the arm box is
+      unavailable and the press is a <strong>scene check</strong>: perception, the policy and
+      the planner's veto, with no <code>--live</code>, so it cannot command a leg at all.
+      <strong>On a driver started WITH it, the arm box is ticked for you</strong> — that flag
+      was already the deliberate decision, and a second copy of it is the one that gets
+      forgotten on a demo floor. Untick it for a scene check on an armed robot.
     </p>
 
     <div class="row">
