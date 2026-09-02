@@ -5,6 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Lite3 live run: every flag, every refusal / Lite3 实机运行：所有参数与所有拒绝原因
 
+**English** | [简体中文](LIVE-RUN-RUNBOOK_CN.md)
+
 **EN** — A live Lite3 run refuses unless **nine** things are stated. Each refusal exits in
 about three seconds, before the robot stands, and looks from across the room like nothing
 happened. This page exists so that no refusal costs you a day.

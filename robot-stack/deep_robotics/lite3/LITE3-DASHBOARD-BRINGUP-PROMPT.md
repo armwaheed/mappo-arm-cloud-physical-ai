@@ -17,12 +17,12 @@ and the agent is told to stop rather than continue past a failed one.**
 **每个阶段结束都有一个检查点，并且明确要求 agent 在检查不通过时停下，而不是继续往下走。**
 
 **EN** — The operator's reference for the dashboard itself is
-[`../../../dashboard/OPERATOR-GUIDE.zh-CN.md`](../../../dashboard/OPERATOR-GUIDE.zh-CN.md)
+[`../../../dashboard/OPERATOR-GUIDE_CN.md`](../../../dashboard/OPERATOR-GUIDE_CN.md)
 (bilingual) and [`../../../dashboard/README.md`](../../../dashboard/README.md) (English, 933
 lines, authoritative). Keep the first one open beside you.
 
 **中文** —— dashboard 本身的操作参考是
-[`../../../dashboard/OPERATOR-GUIDE.zh-CN.md`](../../../dashboard/OPERATOR-GUIDE.zh-CN.md)
+[`../../../dashboard/OPERATOR-GUIDE_CN.md`](../../../dashboard/OPERATOR-GUIDE_CN.md)
 （中英对照）和 [`../../../dashboard/README.md`](../../../dashboard/README.md)
 （英文，933 行，**以它为准**）。请把前者开在旁边随时对照。
 
