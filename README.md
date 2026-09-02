@@ -5,6 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Multi-Agent Proximal Policy Optimization (MAPPO) using Arm Cloud AI and Arm Physical AI
 
+**English** | [简体中文](README_CN.md)
+
 A MAPPO policy, trained in simulation, driving real quadrupeds to goals in a shared
 room. This repository is the meeting point: the **robot-side control stack** that
 perceives and moves, the **telemetry contract** between it and the policy, and the

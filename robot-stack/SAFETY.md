@@ -1,5 +1,7 @@
 # SAFETY — operating a real humanoid under low-level / learned control
 
+**English** | [简体中文](SAFETY_CN.md)
+
 This document is the **non-negotiable** safety layer for running motor-level control on a
 physical humanoid: velocity-walk, `rt/arm_sdk` overlays, and
 especially **whole-body RL-policy deploy** (`rt/lowcmd` with the vendor balance controller

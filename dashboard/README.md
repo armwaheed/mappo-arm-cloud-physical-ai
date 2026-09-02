@@ -12,7 +12,7 @@ over [Arm Device Connect](https://github.com/arm/device-connect).
 a leg, and it is not optional.** Motion is off by default; `--allow-motion` is this
 directory's `--live`.
 
-📄 **Bilingual (EN/中文) operator guide: [`OPERATOR-GUIDE.zh-CN.md`](OPERATOR-GUIDE.zh-CN.md).**
+📄 **Bilingual (EN/中文) operator guide: [`OPERATOR-GUIDE_CN.md`](OPERATOR-GUIDE_CN.md).**
 It covers the seven workflows below and the Lite3's four surprises, paired paragraph by
 paragraph for the Shanghai team. This file stays the authority; that one is the shorter road
 in. For a **first Lite3 bring-up**, start instead from

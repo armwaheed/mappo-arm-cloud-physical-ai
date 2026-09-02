@@ -5,6 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # Demo network — one isolated LAN, no tethers / 演示网络 —— 独立局域网，无网线牵绊
 
+**English** | [简体中文](DEMO-NETWORK_CN.md)
+
 **EN** — Every robot and the operator's laptop on one airgapped WiFi LAN, so the robots walk
 untethered and the Device Connect dashboard can actually discover them.
 **中文** —— 所有机器人与操作笔记本接入同一个隔离的 WiFi 局域网：机器人无需拖线行走，

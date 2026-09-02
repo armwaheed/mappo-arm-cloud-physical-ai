@@ -5,6 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # AGENTS.md
 
+**English** | [简体中文](AGENTS_CN.md)
+
 Standing rules for any coding agent working in this repository — Codex, Qwen Code, Claude
 Code, or otherwise. If your tool does not load this file automatically, paste it into your
 first prompt.
