@@ -1910,6 +1910,41 @@ path is part of the system under test, so a change to the network was allowed to
 to safety without anyone classifying it that way. The robot was reachable, drivable and
 talkative throughout — from the laptop. Nobody had asked the controller.
 
+### A23. The voice worked over SSH and the same robot was mute as a service
+
+The demo was moved behind a `systemd` unit so an operator could start it from the dashboard
+instead of an SSH session. The run worked. The robot was silent, and the reason it was
+silent is one nobody would test for, because the act of checking creates the thing that is
+missing.
+
+    [mission] ⚠️  NOTHING WILL BE AUDIBLE: aplay: audio open error: Connection refused
+
+**An SSH login creates a user session; a system service does not.** The session is what
+gives the account an `XDG_RUNTIME_DIR` at `/run/user/1000`, and PulseAudio's socket lives
+inside it. A unit started by `systemd` has neither, so `aplay` has nowhere to connect and
+fails — while the same command, typed over SSH on the same robot seconds earlier, plays
+perfectly. Worse, without `loginctl enable-linger` that directory does not exist **at all**
+until somebody logs in, so at boot the robot is mute until a human opens a shell, which is
+exactly what running it as a service was supposed to stop needing.
+
+The fix is two lines and a flag: `loginctl enable-linger`, and `XDG_RUNTIME_DIR` plus
+`PULSE_SERVER` in the unit.
+
+**This is [A20](#a20-our-checks-passed-and-the-robot-was-silent-twice) for the third time,
+and the pattern is now worth stating on its own.** Sound has failed here three ways — a
+group membership, a player that returns before the sink drains, and now a missing session —
+and every time the automated checks passed, because every check ran in a context that
+happened to have what the real one lacked. *Testing from the shell you deployed from proves
+nothing about the service you deployed.* The probe that catches it has to run **where the
+work will run**: `Voice.probe()` inside the mission, under the unit, not `aplay` in a
+terminal.
+
+**A second thing was wrong in the same move, and it was silent too.** `run_control` launches
+the run with `-u` and streams its stdout to the dashboard, but the shim exec'd a *buffered*
+`mission.py`. A 25-second run produced **199 telemetry records on the robot and three lines
+on the operator's screen** — a working robot behind a blank panel. Buffering is invisible
+until the thing reading the output is a person waiting to see it.
+
 ## Appendix B — What a payload costs a proxy platform
 
 The Go2s in this paper are **proxies** for the Lite3s
