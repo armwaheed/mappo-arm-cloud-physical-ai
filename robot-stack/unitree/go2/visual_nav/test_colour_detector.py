@@ -28,10 +28,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from camera_model import FisheyeCamera
 from colour_detector import (
     BLUE_BIN,
-    collapse_stacked_blobs,
     COLOUR_PROFILE_SCHEMA,
     ColourBlobDetector,
     ColourProfile,
+    collapse_stacked_blobs,
     load_colour_profile,
 )
 from person_detector import Detection, estimate_range
