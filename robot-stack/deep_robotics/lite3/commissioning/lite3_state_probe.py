@@ -69,6 +69,15 @@ _HEADER = struct.Struct("<3i")
 # ``is_charging``/``zero_position_flag`` are each followed by padding. Explicit ``x`` bytes
 # reproduce that; a naive field-by-field format would silently shear every double.
 _ROBOT_STATE = struct.Struct("<3i4x18dI?3xIidi??2x2d")
+
+# Some firmware declares ``RobotState`` without ``robot_policy_state``: two leading ints
+# and, because 8 is already double-aligned, no padding before ``rpy``. The 18-double block
+# therefore starts at payload offset 8 rather than 16 and the payload is 200 bytes, not
+# 208. Both variants are ``robot_state`` and both carry ``ROBOT_STATE_CODE``; only the
+# length tells them apart. Decoding the short frame with the long layout does not fail --
+# it shears every field by one double and yields a plausible-looking battery of 0.0 and a
+# garbage policy state, which is why this is a separate layout rather than a tolerance.
+_ROBOT_STATE_NO_POLICY = struct.Struct("<2i18dI?3xIidi??2x2d")
 _JOINT_STATE = struct.Struct("<12d")
 _HANDLE_STATE = struct.Struct("<6d")
 _IMU_DATA = struct.Struct("<I9f")
@@ -85,6 +94,7 @@ JOINT_NAMES = (
 #: than decoded into plausible-looking nonsense.
 FRAME_KINDS = {
     _HEADER.size + _ROBOT_STATE.size: ("robot_state", ROBOT_STATE_CODE),
+    _HEADER.size + _ROBOT_STATE_NO_POLICY.size: ("robot_state", ROBOT_STATE_CODE),
     _HEADER.size + _JOINT_STATE.size: ("joint_state", JOINT_STATE_CODE),
     _HEADER.size + _HANDLE_STATE.size: ("handle_state", HANDLE_STATE_CODE),
     _HEADER.size + _IMU_DATA.size: ("imu", IMU_DATA_CODE),
@@ -128,7 +138,14 @@ def decode_frame(payload: bytes) -> dict:
 
 
 def _decode_robot_state(payload: bytes, offset: int) -> dict:
-    values = _ROBOT_STATE.unpack_from(payload, offset)
+    if len(payload) - offset == _ROBOT_STATE_NO_POLICY.size:
+        short = _ROBOT_STATE_NO_POLICY.unpack_from(payload, offset)
+        # ``None`` records that the firmware never sent the field. A 0 would be
+        # indistinguishable from a measured "policy idle", and the axis gate treats a
+        # measured 0 as permission to move.
+        values = (short[0], short[1], None, *short[2:])
+    else:
+        values = _ROBOT_STATE.unpack_from(payload, offset)
     return {
         "robot_basic_state": values[0],
         "robot_gait_state": values[1],

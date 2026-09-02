@@ -186,6 +186,52 @@ def test_connect_fails_loudly_when_the_robot_streams_somewhere_else():
         raise AssertionError("connect() succeeded with no state stream")
 
 
+def test_connect_reports_arriving_undecodable_frames_instead_of_blaming_the_network():
+    """A firmware whose frame length this build cannot decode is not a network fault.
+
+    The original message named ``network.toml`` unconditionally. On the second robot,
+    which streams a 212-byte state frame, that sent an hour of debugging into an innocent
+    file while datagrams arrived at 34 Hz and were dropped by length. See whitepaper A21.
+    """
+    scout = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    scout.bind(("127.0.0.1", 0))
+    state_port = scout.getsockname()[1]
+    scout.close()
+
+    stop_feeding = threading.Event()
+    sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+    def feed():
+        while not stop_feeding.is_set():
+            try:
+                # A length no Lite3 frame has: arriving, and undecodable.
+                sender.sendto(b"\x00" * 999, ("127.0.0.1", state_port))
+            except OSError:
+                return
+            stop_feeding.wait(0.02)
+
+    feeder = threading.Thread(target=feed, daemon=True)
+    loco = Lite3UdpLocomotion(motion_host="127.0.0.1", command_port=59999,
+                              state_port=state_port, bind="127.0.0.1",
+                              connect_timeout_s=0.5)
+    try:
+        feeder.start()
+        loco.connect()
+    except Lite3LinkLost as error:
+        message = str(error)
+        assert "999 B" in message, message
+        assert "DID arrive" in message, message
+        # The whole point: it must not send the reader to the address config.
+        assert "network.toml" not in message, message
+    else:
+        loco.shutdown()
+        raise AssertionError("connect() succeeded on undecodable frames")
+    finally:
+        stop_feeding.set()
+        feeder.join(timeout=2.0)
+        sender.close()
+
+
 def test_connect_then_decode_pose_velocity_and_battery():
     host = _MotionHost()
     # Claim an ephemeral port, release it, and hand the number to connect(). Datagrams

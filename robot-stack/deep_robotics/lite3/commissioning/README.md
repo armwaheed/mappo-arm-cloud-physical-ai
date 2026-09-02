@@ -144,6 +144,35 @@ python3 lite3_state_probe.py --seconds 30 --robot-id LITE3-A --record lite3-a-ca
 
 If it reports zero frames, the destination address is wrong; the report says what to check.
 
+## Two firmware layouts, told apart by length
+
+Not every Lite3 sends the same `RobotState`. Two units bought together, running the same
+vendor stack, differ:
+
+| payload | datagram | leading ints | `rpy` at | `robot_policy_state` |
+| --- | --- | --- | --- | --- |
+| 208 B | **220 B** | 3 + 4 pad | offset 16 | present |
+| 200 B | **212 B** | 2, no pad | offset 8 | **absent** |
+
+Both carry `ROBOT_STATE_CODE`. Only the length separates them, and `decode_frame`
+dispatches on length for exactly that reason.
+
+**Do not "fix" a rejected frame by loosening the length check.** Decoding the short frame
+with the long layout does not raise. Every field shears by one double and still reads as a
+plausible number — gravity leaves the z axis and the battery reports a calm `0.0`. A
+silent wrong answer is the failure mode here, not an exception.
+
+If a robot rejects its own state frames, `connect()` now says so directly: it counts the
+datagrams that arrived and could not be decoded and reports their lengths. A message that
+names lengths is telling you about firmware. A message that says nothing arrived at all is
+telling you about the address in `~/jy_exe/conf/network.toml`.
+
+**`robot_policy_state` is `None`, never `0`, on the short layout.** The axis gate refuses
+motion unless that field is `0`, and a robot that never sends it cannot clear a check on
+it. `None` records *unmeasured* so the gate skips that one clause; a substituted `0` would
+read as permission to move. Every other clause — `error_state`, force-control `basic == 6`,
+the profile's gait set, motion state — still applies on such a robot.
+
 ## Mirror existing telemetry without changing the robot
 
 [`lite3_state_relay.py`](lite3_state_relay.py) is a diagnostic-only sender for a computer that
