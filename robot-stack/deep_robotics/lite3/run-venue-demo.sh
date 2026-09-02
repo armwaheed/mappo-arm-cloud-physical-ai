@@ -45,12 +45,21 @@ TAG="${TAG:-mappo-arm-cloud-physical-ai-lite3-20260901-v13}"
 RELEASE="$STAGE/releases/$TAG"
 RUN_ID="${RUN_ID:-venue-$(date -u +%Y%m%dT%H%M%SZ)}"
 
-# Every VOC class the detector knows, except person and the background pseudo-class.
+# WAS all nineteen VOC classes. Measured in the rehearsal room on 2026-09-02, that plus
+# the 0.10 static score floor produced a robot that stood still asking the room to clear:
+# bare carpet scored `pottedplant` 0.27 at 0.61 m and `chair` 0.25 at 0.42 m, both inside
+# the planner's 1.20 m soft gap, so the veto never lifted. person_detector's own
+# STATIC_CLASSES comment says why the wide list is wrong at a lowered floor -- it is there
+# to discard "the whole-wall aeroplane and train slabs".
+#
+# This is that tuned set, minus pottedplant (the measured false positive above), plus
+# motorbike for ONE reason: a Lite3 lying down detects as motorbike at 0.66, and a robot
+# parked in the lane has to be avoided. 0.66 is far above the 0.25-0.27 phantom noise.
+#
 # An ARRAY, not a string: these are separate argv entries for an nargs="+" flag, so the
-# word splitting is wanted. Quoting the string instead would pass all nineteen as ONE
-# class name, which argparse accepts and the detector then never matches.
-OBSTACLE_CLASSES=(aeroplane bicycle bird boat bottle bus car cat chair cow diningtable
-                  dog horse motorbike pottedplant sheep sofa train tvmonitor)
+# word splitting is wanted. Quoting the string instead would pass them all as ONE class
+# name, which argparse accepts and the detector then never matches.
+OBSTACLE_CLASSES=(chair sofa diningtable tvmonitor motorbike)
 
 LIVE=(--live --operator-ready)
 if [ -n "${DRY:-}" ]; then LIVE=(); fi
@@ -83,9 +92,11 @@ exec python3 mission.py \
      --camera-rectify "$STAGE/calibration/lite3_front_camera_rectify_20260901.json" \
      --calibration "$STAGE/calibration/lite3_front_camera_equidistant_20260901.json" \
      --marker-size 0.14 \
+     --arrive "${ARRIVE:-0.5}" \
      --static-detect --static-detect-ground \
      --static-detect-classes "${OBSTACLE_CLASSES[@]}" \
      --static-detect-radius 0.35 \
+     --static-detect-confidence "${STATIC_CONFIDENCE:-0.35}" \
      --static-detect-pitch-error-deg 1.5 \
      --static-detect-max-range-error 0.20 \
      --locomotion-transport axis \
