@@ -287,6 +287,57 @@ read the routing table before blaming the access point.**
 is putting `eth1` on a **different subnet** (`192.168.137.0/24`, the vendor default) so no
 metric arbitrates between them at all.
 
+## When a robot cannot reach the router it is associated with
+
+A robot can be **associated with the venue WiFi, hold a valid address on it, and still not
+reach the router**, with no error anywhere. It looks like a broken router or a bad PSK. It
+is neither.
+
+```
+$ iw dev wlan0 link
+Connected to 38:94:ed:65:7a:83 (on wlan0)   SSID: NETGEAR93   freq: 2457
+$ ping 192.168.1.1
+(nothing)
+
+$ ip route
+192.168.1.0/24 dev eth1  proto kernel scope link src 192.168.1.118 metric 100
+192.168.1.0/24 dev wlan0 proto kernel scope link src 192.168.1.2   metric 603
+```
+
+**Two interfaces, one subnet.** A laptop cabled straight to `eth1` puts that cable on
+`192.168.1.0/24`, and the router's WiFi puts `wlan0` on the same `192.168.1.0/24`. The
+kernel picks by metric, `eth1` wins at 100, and every packet for `192.168.1.1` goes down a
+cable the router is not on. Nothing is misconfigured in the WiFi sense, which is why this
+reads as a hardware fault.
+
+This is the same shape as the duplicate-address trap below: one address space reachable
+two ways, arbitrated by a rule nobody was thinking about.
+
+**To reach the router anyway**, without unplugging anything, pin that one host to `wlan0`:
+
+```bash
+sudo ip route add 192.168.1.1/32 dev wlan0 src 192.168.1.2 metric 50
+ip route get 192.168.1.1        # must say: dev wlan0
+```
+
+⚠️ **This is a diagnostic workaround, not a fix, and it does not survive a reboot.** The
+real answer at the venue is that a robot has **one** path to `192.168.1.0/24`: WiFi, with
+the direct laptop cable unplugged. Two live paths to one subnet is a coin toss decided by
+metrics, and the coin is not weighted the way you expect.
+
+### Reaching the router's web UI from a laptop that is not on its LAN
+
+The operator laptop keeps its internet on corp WiFi and is often cabled to a **robot**, not
+to the router — so it cannot open `192.168.1.1` at all. Rather than re-cabling, tunnel
+through a robot that is on the router's WiFi:
+
+```bash
+ssh -f -N -L 18080:192.168.1.1:80 user@<robot eth1 address>
+# then browse to http://127.0.0.1:18080/
+```
+
+The robot needs the host route above for this to work, for the reason just given.
+
 ## Verifying it, in order
 
 Do these **before** removing the cable — the whole point is to prove the new path works while
