@@ -54,6 +54,7 @@ from deep_robotics.lite3.commissioning import (
     loaded_radius_probe,
     motor_temperature_probe,
 )
+from deep_robotics.lite3.locomotion.lite3_udp_locomotion import DEFAULT_MOTION_HOST
 from deep_robotics.lite3.commissioning.measurement import (
     REVIEWED,
     Refusal,
@@ -301,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     control.add_argument("--live", action="store_true",
                          help="DANGER: permit the two stages that walk the robot")
     control.add_argument("--operator-ready", action="store_true")
-    control.add_argument("--motion-host", default="192.168.1.120")
+    control.add_argument("--motion-host", default=DEFAULT_MOTION_HOST)
     control.add_argument("--command-port", type=int, default=43893)
     control.add_argument("--state-port", type=int, default=43897)
 

@@ -64,7 +64,9 @@ def test_the_default_transport_is_udp_and_it_reaches_the_motion_host():
 
     args = _args()
     assert args.locomotion_transport == "udp"
-    assert args.motion_host == "192.168.1.120"
+    assert args.motion_host == "127.0.0.1", (
+        "the default must be THIS robot, not the first one: on a second robot the old\n"
+        "default drove robot 1 across the network")
     assert args.command_port == 43893
     assert args.state_port == 43897
 
@@ -73,7 +75,7 @@ def test_the_default_transport_is_udp_and_it_reaches_the_motion_host():
         cmd_vel_topic=args.cmd_vel_topic, odom_topic=args.odom_topic,
         stamped=False, node_name="test")
     assert isinstance(implementation, Lite3UdpLocomotion)
-    assert implementation._motion_host == "192.168.1.120"
+    assert implementation._motion_host == "127.0.0.1"
 
 
 def test_selecting_ros2_keeps_the_bridge_factory_rather_than_the_udp_one():
@@ -738,7 +740,7 @@ def test_telemetry_records_the_real_transport_and_whether_motors_were_watched():
     binding = Lite3Bindings()
     platform = binding.telemetry_config(_args())["platform"]
     assert platform["transport"] == "udp"
-    assert platform["motion_host"] == "192.168.1.120"
+    assert platform["motion_host"] == "127.0.0.1"
     assert platform["motor_temperatures_monitored"] is True
 
     platform = binding.telemetry_config(
