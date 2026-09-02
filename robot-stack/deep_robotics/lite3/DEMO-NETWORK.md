@@ -97,6 +97,34 @@ graph LR
 The AP never reaches `type AP`; it stays `managed` and the controller sees no SSID at all.
 The symptom is indistinguishable from a broken radio.
 
+### ⚠️ `netplan apply` drops the hand controller's access point
+
+This bit both robots, a day apart, and the second time was avoidable.
+
+`/etc/netplan/config.yaml` uses `renderer: NetworkManager`, so `netplan apply` regenerates
+NetworkManager's connections and restarts it. That **deactivates the `p2p0` AP**, and if the
+AP profile has `connection.autoconnect: no` — which is how both robots shipped — it never
+comes back. The robot stays reachable over Ethernet and WiFi throughout, so nothing looks
+wrong until somebody picks up the controller.
+
+**Any change to the wired addressing takes the controller down with it.** Treat a netplan
+edit as touching the manual-control path, and check the controller afterwards.
+
+Both robots are now set so this cannot recur silently:
+
+```bash
+# band and channel in ONE command (nmcli validates the whole connection), matching the
+# router's fixed channel, and autoconnect so an NM restart brings it back by itself
+sudo nmcli con mod myap50G 802-11-wireless.band bg 802-11-wireless.channel 10
+sudo nmcli con mod myap50G connection.autoconnect yes connection.autoconnect-priority 60
+sudo nmcli con up myap50G
+```
+
+| robot | AP SSID | `p2p0` | autoconnect |
+| --- | --- | --- | --- |
+| robot 1 | `YSC-JYML-dj6ipv-5G` | `192.168.2.1/24` | yes, priority 60 |
+| robot 2 | `YSC-JYML-gg9uma-5G` | `192.168.2.1/24` | yes, priority 60 |
+
 ### Which of the two AP mechanisms is yours
 
 These robots ship with **two** ways to raise that AP, and only one is active per unit:

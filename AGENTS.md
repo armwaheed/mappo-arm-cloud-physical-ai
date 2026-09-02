@@ -155,6 +155,37 @@ unpowered arm is perfectly still, so the check could never fail.
   ask them to confirm the lane is clear, before a run.
 - Return absolute filepaths for any recording you produce, so they can be opened.
 
+⛔ **A network change on a Lite3 can take the operator's remote away, and nothing reports
+it.** The remote is served by an access point on the robot's own `p2p0`. Both robots
+shipped with `connection.autoconnect: no` on that profile, and
+`/etc/netplan/config.yaml` uses `renderer: NetworkManager` — so **`netplan apply`
+deactivates the AP and it does not come back**. The robot stays reachable over Ethernet and
+WiFi, every service stays `active`, and the only symptom is that the controller finds no
+SSID, which reads as a radio fault rather than as a consequence of the address change you
+made an hour earlier. It cost an hour on each robot, a day apart.
+
+Before and after any change to `netplan`, `nmcli`, `wlan0` or an address, run this and
+compare — `p2p0` must say **`type AP`**:
+
+```bash
+iw dev | grep -E "Interface|type|ssid|channel"
+```
+
+If the AP is down, restore it with band and channel in **one** `nmcli` call — nmcli
+validates the whole connection, so changing one at a time is rejected with a misleading
+`'36' is not a valid channel`:
+
+```bash
+sudo nmcli con mod myap50G 802-11-wireless.band bg 802-11-wireless.channel 10
+sudo nmcli con mod myap50G connection.autoconnect yes connection.autoconnect-priority 60
+sudo nmcli con up myap50G
+```
+
+The channel must match the venue router's fixed channel: one radio serves both the AP and
+the station, and the driver allows `#channels <= 1`. Full detail, including why a
+2.4/5 GHz split is refused, is in
+[`robot-stack/deep_robotics/lite3/DEMO-NETWORK.md`](robot-stack/deep_robotics/lite3/DEMO-NETWORK.md).
+
 ## Never install anything on a robot
 
 You are the reader this rule is written for. An operator following a runbook is *less*
