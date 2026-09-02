@@ -1870,6 +1870,46 @@ length arrived — and lists what could produce it. Two robots bought together, 
 same vendor stack, differed in a struct, and a diagnostic that had been right once sent us
 to the wrong file.
 
+### A22. We configured the WiFi, and switched off the robot's manual-control path
+
+The demo wanted both robots on a venue router so nothing trails an Ethernet cable. Putting
+the second robot's `wlan0` on that router worked: it took an address, answered SSH, ran the
+drive path, and spoke. Every check we had was green.
+
+**The vendor's hand controller then could not find the robot.** It had stopped advertising
+its access point. The controller is how an operator stops a moving robot by hand, so a
+change filed under "networking" had removed a manual-control path, and nothing in the
+checks noticed, because every one of them ran over the interface that still worked.
+
+The cause is a hardware limit the driver states plainly:
+
+    #{ managed, P2P-client } <= 2, #{ AP, P2P-GO } <= 1, total <= 2, #channels <= 1
+
+One radio. It will serve an access point **and** a station at the same time — the robot has
+a virtual `p2p0` interface for exactly that, its MAC one bit off `wlan0`'s — but both must
+be on **one channel**. The robot's AP was pinned to 5 GHz channel 36 while the router sat on
+2.4 GHz channel 10. Two channels, one radio: the AP was refused, reported as *"802.1X
+supplicant took too long to authenticate"*, and `p2p0` stayed in `managed` mode. **An
+interface that never becomes `type AP` is indistinguishable from a radio that is broken.**
+
+So the "obvious" architecture — controller on one band, infrastructure on the other, out of
+each other's way — is the one configuration this hardware refuses. The fix is the opposite
+of the intuition: put **both on the same channel**. They then coexist, and the AP will even
+follow the station onto its channel by itself.
+
+**Three attempts to fix it failed for a reason worth its own sentence.** `nmcli` validates
+the *whole* connection on every edit, so clearing the band while the 5 GHz channel was still
+set was rejected — `'36' is not a valid channel` — as was setting the channel first. Each
+half is invalid on its own; only `band` and `channel` **in a single command** is accepted.
+The tool reports this as a bad value, which reads as "this channel is not allowed here" and
+sends you looking at regulatory domains. It means "not allowed *yet*".
+
+**The transferable part is not about WiFi.** We had a rule that live movement needs measured
+numbers, and a checklist for the e-stop. We did not have a rule that says the manual-control
+path is part of the system under test, so a change to the network was allowed to be a change
+to safety without anyone classifying it that way. The robot was reachable, drivable and
+talkative throughout — from the laptop. Nobody had asked the controller.
+
 ## Appendix B — What a payload costs a proxy platform
 
 The Go2s in this paper are **proxies** for the Lite3s

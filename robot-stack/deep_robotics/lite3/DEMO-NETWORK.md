@@ -32,7 +32,7 @@ Three reasons, and only the first is about tidiness.
   │ NETGEAR RAX50    │◄─── LAN port (optional; WiFi works too)
   │ 192.168.1.1      │
   │ WAN: EMPTY       │◄··· WiFi ···► robot 1  192.168.1.120
-  └──────────────────┘                robot 2  192.168.1.121
+  └──────────────────┘                robot 2  192.168.1.2
          airgapped                     one broadcast domain
 ```
 
@@ -44,11 +44,100 @@ Three reasons, and only the first is about tidiness.
 | Security | **WPA2-PSK** | not WPA3 — WPA2 is what the robot's NetworkManager was verified against |
 | LAN | `192.168.1.0/24`, router `.1` | matches the robots' existing addressing; nothing on the robot needed changing |
 | Address reservation | robot MAC → fixed IP | the robots reboot often; a moving IP mid-demo is an avoidable failure |
+| 2.4 GHz channel | **FIXED, not auto** (10) | the robots' controller AP must share this channel — see below. A router that hops channels breaks the hand controller mid-demo |
 | Client isolation | **off** | this model exposes no such control on the main SSID; verified by test, not by checkbox |
 | WAN port | **EMPTY** | airgap from the Arm network, enforced by an unpopulated socket |
 
 ⚠️ **Change the admin password before the venue.** `admin`/`password` is tolerable on an
 office island and not in a hotel where the SSID is visible to everyone in range.
+
+## The hand controller and the router, on one radio / 手柄与路由器共用一个射频
+
+The Lite3 serves the Deep Robotics hand controller from its **own access point**, and joins
+the venue router as a **station**, on the **same radio**. The driver states the limit:
+
+```
+$ iw phy | grep -A1 "valid interface combinations"
+    * #{ managed, P2P-client } <= 2, #{ AP, P2P-GO } <= 1, total <= 2, #channels <= 1
+```
+
+**`#channels <= 1` is the whole story.** One AP plus one station is supported — but both
+must sit on **one channel**. There is no 2.4 GHz-controller / 5 GHz-router split on this
+hardware: it is not a tuning preference, it is refused.
+
+```mermaid
+graph LR
+    HC["Deep Robotics<br/>hand controller"]
+    subgraph ROBOT["Lite3 — ONE radio, ONE channel"]
+        direction TB
+        AP["<b>p2p0</b> — access point<br/>SSID YSC-JYML-&lt;id&gt;-5G<br/>192.168.2.1/24"]
+        PHY(["single PHY<br/><b>#channels &lt;= 1</b><br/>2.4 GHz, channel 10"])
+        STA["<b>wlan0</b> — station<br/>SSID NETGEAR93<br/>192.168.1.x"]
+        AP --- PHY
+        STA --- PHY
+    end
+    RT["NETGEAR93 router<br/>2.4 GHz <b>fixed ch 10</b><br/>WAN port EMPTY"]
+    LAP["Operator laptop<br/>internet stays on corp WiFi"]
+    HC -->|"associates, ch 10"| AP
+    STA -->|"associates, ch 10"| RT
+    LAP -->|"ethernet, no gateway"| RT
+```
+
+**The configuration that does NOT work**, and cost an afternoon:
+
+```mermaid
+graph LR
+    AP2["p2p0 AP pinned<br/>band a, <b>5 GHz ch 36</b>"]
+    STA2["wlan0 station<br/><b>2.4 GHz ch 10</b>"]
+    FAIL{{"two channels, one radio<br/><b>REFUSED</b><br/>802.1X supplicant took<br/>too long to authenticate"}}
+    AP2 --> FAIL
+    STA2 --> FAIL
+```
+
+The AP never reaches `type AP`; it stays `managed` and the controller sees no SSID at all.
+The symptom is indistinguishable from a broken radio.
+
+### Which of the two AP mechanisms is yours
+
+These robots ship with **two** ways to raise that AP, and only one is active per unit:
+
+| mechanism | SSID | interface | subnet | DHCP |
+| --- | --- | --- | --- | --- |
+| NetworkManager profile `myap50G` | `YSC-JYML-<id>-5G` | `p2p0` | `192.168.2.1/24` | NM shared (dnsmasq) |
+| `multi_master.service` → `master_start.sh` → `hostapd` | from `/home/ysc/master/host.conf` | `p2p0` | `192.168.3.1/24` | `isc-dhcp-server` |
+
+Both robots here use the **NetworkManager** one; `multi_master` is disabled from the
+factory and its `host.conf` still carries the placeholder SSID `lite3_xxx_master`. Do not
+enable it to "fix" a missing hotspot — you get a differently-named AP on a different
+subnet, which the controller will not join.
+
+### Restoring the hotspot
+
+⚠️ **Putting `wlan0` on the venue router does not by itself break the controller** — but
+pinning the AP to a different channel does. If the controller stops seeing the robot:
+
+```bash
+# band and channel MUST be set in ONE command. nmcli validates the whole connection,
+# so changing band while the old 5 GHz channel is still set is rejected outright:
+#   Error: 802-11-wireless.channel: '36' is not a valid channel
+sudo nmcli con mod myap50G 802-11-wireless.band bg 802-11-wireless.channel 10
+sudo nmcli con mod myap50G connection.autoconnect yes connection.autoconnect-priority 60
+sudo nmcli con up myap50G
+
+iw dev | grep -E "Interface|type|ssid|channel"   # p2p0 must say: type AP
+```
+
+Both links coming up together, which is the state to check before the demo starts:
+
+```
+Interface p2p0        ssid YSC-JYML-gg9uma-5G   type AP        channel 10
+Interface wlan0       ssid NETGEAR93            type managed   channel 10
+p2p0   192.168.2.1/24        wlan0   192.168.1.2/24
+```
+
+**A WiFi change can disable the manual-control path.** The controller is how an operator
+stops a robot by hand. Reconfiguring `wlan0` is not a networking-only change, and it
+belongs to the same pre-run checklist as the e-stop.
 
 ## Laptop — the setting that stops it losing the internet
 
@@ -104,6 +193,37 @@ address before it ever meets the other.
 | `wlan0` MAC | `54:ef:33:9e:88:2a` | `54:ef:33:9e:1a:8d` |
 | `eth1` (cable fallback) | `192.168.1.119` | `192.168.1.118` |
 | DHCP reservation | done | **still to do** |
+
+### Every interface, both robots
+
+Three interfaces are live on each robot at once. They serve different people and they fail
+independently, so check all three, not just the one you are SSH'd over.
+
+**Robot 2** — measured 2026-09-01, all three up simultaneously, and the hand
+controller confirmed paired by the operator while `wlan0` held the router link:
+
+| interface | role | SSID | channel | address | MAC | serves |
+| --- | --- | --- | --- | --- | --- | --- |
+| `p2p0` | **access point** | `YSC-JYML-gg9uma-5G` | 10 | `192.168.2.1/24` | `56:ef:33:9e:1a:8d` | the hand controller |
+| `wlan0` | **station** | `NETGEAR93` | 10 | `192.168.1.2/24` | `54:ef:33:9e:1a:8d` | the venue router / dashboard |
+| `eth1` | wired | — | — | `192.168.1.118/24` | `2c:16:bd:d4:9d:fd` | a laptop, direct or via the router |
+
+**Robot 1** — the AP row is observed from a scan; the rest is from this robot's own setup
+and is **not re-verified since it was last powered on**. Confirm before the demo:
+
+| interface | role | SSID | channel | address | MAC | serves |
+| --- | --- | --- | --- | --- | --- | --- |
+| `p2p0` | **access point** | `YSC-JYML-dj6ipv-5G` | 10 (observed) | `192.168.2.1/24` (assumed) | `56:ef:33:9e:88:2a` | the hand controller |
+| `wlan0` | **station** | `NETGEAR93` | 10 | `192.168.1.120` | `54:ef:33:9e:88:2a` | the venue router / dashboard |
+| `eth1` | wired | — | — | `192.168.1.119` ⚠️ **not persisted** | — | a laptop, direct or via the router |
+
+⚠️ **Robot 1's `eth1` reverts to `192.168.1.120` on reboot.** Its
+`/etc/netplan/config.yaml` still carries the factory address, so the running `.119` is not
+the configured one. Fix netplan on robot 1 before the venue, or it rejoins the LAN on the
+same address robot 1's `wlan0` already holds.
+
+Note both AP MACs are the wired/`wlan0` MAC with one bit flipped (`54:` → `56:`): `p2p0`
+is a virtual interface on the same radio, which is why the one-channel rule above binds.
 
 ⚠️ **`jy_exe` sends robot state to exactly one address**, set in
 `/home/ysc/jy_exe/conf/network.toml`. It ships as `192.168.1.120`, so **moving the wired
