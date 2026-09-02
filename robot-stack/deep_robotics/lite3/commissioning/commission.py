@@ -54,7 +54,6 @@ from deep_robotics.lite3.commissioning import (
     loaded_radius_probe,
     motor_temperature_probe,
 )
-from deep_robotics.lite3.locomotion.lite3_udp_locomotion import DEFAULT_MOTION_HOST
 from deep_robotics.lite3.commissioning.measurement import (
     REVIEWED,
     Refusal,
@@ -68,6 +67,7 @@ from deep_robotics.lite3.commissioning.measurement import (
     utc_now,
     write_record,
 )
+from deep_robotics.lite3.locomotion.lite3_udp_locomotion import DEFAULT_MOTION_HOST
 
 #: Stages in the order they may be run. Read-only first, tape second, camera third, and
 #: the two that move the robot last. Changing this order is a safety decision.
