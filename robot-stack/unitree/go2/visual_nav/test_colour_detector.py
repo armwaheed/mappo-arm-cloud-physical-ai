@@ -28,12 +28,13 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from camera_model import FisheyeCamera
 from colour_detector import (
     BLUE_BIN,
+    collapse_stacked_blobs,
     COLOUR_PROFILE_SCHEMA,
     ColourBlobDetector,
     ColourProfile,
     load_colour_profile,
 )
-from person_detector import estimate_range
+from person_detector import Detection, estimate_range
 
 #: The office the robot actually works in: grey carpet and grey partitions, i.e.
 #: unsaturated. Saturation is what the profile leans on, so the ground matters.
@@ -397,6 +398,67 @@ def test_the_shipped_profile_carries_the_measured_gate():
     later edit that 'tidies' it back to a rounder number would silently restore the
     3%-detection behaviour without failing anything else."""
     assert BLUE_BIN.min_fill == 0.35
+
+
+def _box(x1, y1, x2, y2, label="cone"):
+    return Detection(x1=float(x1), y1=float(y1), x2=float(x2), y2=float(y2),
+                     score=0.5, label=label)
+
+
+def test_a_cones_two_red_bands_collapse_to_the_lower_one():
+    """The measured failure. Robot 1 saw ONE cone at 0.74 m as two boxes stacked in the
+    same column, and the size prior — calibrated on the lower band — read the smaller
+    upper band as the same band 1.75x further away. That phantom landed on the goal line
+    and stopped a run. Both boxes below are the real ones, in pixels, off that frame."""
+    lower = _box(1070, 488, 1152, 592)
+    upper = _box(1084, 366, 1132, 426)
+    refused = []
+    kept = collapse_stacked_blobs([lower, upper], refused=refused)
+    assert kept == [lower], "the band nearest the floor is the calibrated one"
+    assert [d for d, _ in refused] == [upper]
+    assert [source for _, source in refused] == ["stacked-blob"]
+
+
+def test_the_lower_band_wins_whichever_order_it_arrives_in():
+    """`detect` sorts by area and the lower band is usually larger, but a cone seen at an
+    angle, part-occluded or clipped by the frame edge need not present that way. The
+    choice must come from geometry, not from arrival order."""
+    lower = _box(1070, 488, 1152, 592)
+    upper = _box(1084, 366, 1132, 426)
+    assert collapse_stacked_blobs([upper, lower]) == [lower]
+    assert collapse_stacked_blobs([lower, upper]) == [lower]
+
+
+def test_two_cones_side_by_side_both_survive():
+    """The gate must not cost the scene its second obstacle. Two cones at different
+    bearings share no image column, so nothing collapses — this is the case that
+    separates 'one object, one obstacle' from 'one obstacle, whatever the scene'."""
+    left_lower = _box(200, 488, 282, 592)
+    left_upper = _box(214, 366, 262, 426)
+    right_lower = _box(1070, 488, 1152, 592)
+    right_upper = _box(1084, 366, 1132, 426)
+    kept = collapse_stacked_blobs([left_lower, left_upper, right_lower, right_upper])
+    assert sorted(kept, key=lambda d: d.x1) == [left_lower, right_lower]
+
+
+def test_columns_that_merely_graze_are_left_alone():
+    """Two distinct props whose boxes clip each other at the edge are still two props.
+    The overlap is measured against the NARROWER box, so a wide blob cannot swallow a
+    slim neighbour it happens to touch."""
+    wide = _box(100, 400, 400, 600)
+    slim = _box(390, 300, 420, 360)
+    assert len(collapse_stacked_blobs([wide, slim])) == 2
+
+
+def test_a_dropped_blob_is_never_dropped_silently():
+    """An obstacle that leaves nothing behind is indistinguishable from open world:
+    `is_feasible` returns True unconditionally when there is nothing to check. Every
+    collapse must therefore be recoverable from `refused`."""
+    boxes = [_box(1070, 488, 1152, 592), _box(1084, 366, 1132, 426),
+             _box(1080, 250, 1120, 300)]
+    refused = []
+    kept = collapse_stacked_blobs(boxes, refused=refused)
+    assert len(kept) + len(refused) == len(boxes)
 
 
 if __name__ == "__main__":
