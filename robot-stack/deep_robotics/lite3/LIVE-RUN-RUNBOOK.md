@@ -67,6 +67,41 @@ question about limits, not about building an instrument.
 
 ---
 
+## 0b. Running it from the dashboard instead / 改用仪表板运行
+
+The whole demo can be started and stopped from the Device Connect dashboard, with no
+terminal. What makes that work, and what to check before trusting it:
+
+| piece | where | why it is not optional |
+| --- | --- | --- |
+| driver runs **on the robot** | `mappo-dc-driver.service` | a workstation driver cannot read `jy_exe` state (it goes to `127.0.0.1`) and `download_model` would fetch to the workstation |
+| `script` is **`venue_run.py`** | `~/mappo-lite3-stage/dc/run-profile.json` | naming `mission.py` fails — `run_control` spells `--package`, which the supervisor has never heard of |
+| `MAPPO_VOICE_DIR` in the profile `env` | same file | unset means the run is silent, and says so at startup |
+| `XDG_RUNTIME_DIR` + `PULSE_SERVER` in the unit, and `loginctl enable-linger` | `mappo-dc-driver.service.d/audio.conf` | a service has no login session, so `aplay` cannot reach PulseAudio and every cue fails while the run succeeds |
+| **no `--allow-motion`** in the unit | same | a service that starts by itself must not come up able to move the robot |
+
+⚠️ **A live run needs `--allow-motion`, and that is a decision a person makes at the
+console.** `build_run_argv` refuses `--live` without it rather than downgrading to a dry
+run, because a run that starts and cannot move is indistinguishable from one that will not,
+and you would spend the difference diagnosing the robot. To arm it, with a clear lane and a
+hand on the stop:
+
+```bash
+sudo systemctl edit mappo-dc-driver     # add:  [Service] / ExecStart= / ExecStart=... --allow-motion
+sudo systemctl restart mappo-dc-driver
+```
+
+Disarm it the same way after the demo. Checks before trusting a dashboard run:
+
+```bash
+# the robot answers, with a pose that is not a simulated zero
+curl -s -X POST http://<laptop>:8080/api/invoke -H 'Content-Type: application/json' \
+  -d '{"device_id":"mappo-lite3-robot1","function":"get_status","params":{}}'
+
+# and the run narrates: if the panel shows three lines for a 25-second run, something
+# in the chain is buffered -- both mission.py and mappo_drive.py must be started with -u
+```
+
 ## 1. The nine required inputs / 九项必需输入
 
 | flag | where the value comes from / 数值来源 |
