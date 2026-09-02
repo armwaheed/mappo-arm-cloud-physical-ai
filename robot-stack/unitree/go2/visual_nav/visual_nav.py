@@ -149,6 +149,7 @@ from colour_detector import (
     PROFILES,
     ColourBlobDetector,
     ColourProfile,
+    collapse_stacked_blobs,
     load_colour_profile,
 )
 from expansion import ExpansionConsistency
@@ -439,6 +440,28 @@ class PerceptionWorker:
                              person_shaped=item.person_shaped(width, height))
             for item in ranged
         ]
+        # ONE OBJECT IS ONE OBSTACLE, and a red thing that cannot be standing on this
+        # floor is not an obstacle at all. Both gates run before ranging because the
+        # size prior cannot tell either error from a real object further away: it maps
+        # "smaller in frame" to "further off" and has no other hypothesis. The blob's
+        # own geometry is the only thing that can, and it is free.
+        colour_detections = collapse_stacked_blobs(colour_detections,
+                                                   refused=unrangeable)
+        # A cone's lower red band sits ~0.1 m off the floor and the lens ~0.36 m, so its
+        # bottom edge is BELOW the horizon from any distance — there is no range at
+        # which a floor-standing prop rises above camera height. A blob whose bottom
+        # edge is at or above the horizon is therefore mounted, hung or lit: the venue's
+        # red neon sign and the upper reaches of the orange sofa all qualify. Sized
+        # against the prior they arrive as near, solid obstacles on the goal line;
+        # `ground_range` returns None for exactly this ray and costs one call to say so.
+        floor_standing = []
+        for detection in colour_detections:
+            centre_x, _ = detection.centre
+            if self._model.ground_range(centre_x, detection.y2) is None:
+                unrangeable.append((detection, "above-horizon"))
+                continue
+            floor_standing.append(detection)
+        colour_detections = floor_standing
         # Ranged with the PROP's size prior, not the person's — the two detectors find
         # different things and a shared prior would scale one of them wrongly.
         static_ranged = ([] if self._colour is None else

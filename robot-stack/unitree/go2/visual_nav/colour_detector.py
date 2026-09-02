@@ -321,3 +321,59 @@ class ColourBlobDetector:
                 score=float(fill),
                 label=self._profile.label))
         return detections
+
+
+def collapse_stacked_blobs(detections: list[Detection], *,
+                           overlap_frac: float = 0.5,
+                           refused: list | None = None) -> list[Detection]:
+    """Collapse blobs sharing a bearing to the LOWEST one: one object, one obstacle.
+
+    ``detect``'s closing kernel seals a logo printed across a face. It cannot seal a
+    traffic cone, whose white stripe between the two red bands is wider than any kernel
+    that would still preserve the bands — so segmentation returns BOTH red bands, as two
+    boxes stacked in the same image column.
+
+    That is not two obstacles, and the second copy is not merely redundant, it is WRONG
+    AND FAR. ``range_detections`` sizes a blob against ``ColourProfile.prior``, which is
+    calibrated on the lower band; the upper band is smaller in frame, so the same prior
+    reads it as the lower band seen from further away. Measured on robot 1 against a
+    single cone at 0.74 m:
+
+        lower band   (1070, 488)-(1152, 592)   82 x 104 px   0.74 m  @ -48.6 deg
+        upper band   (1084, 366)-(1132, 426)   48 x  60 px   1.29 m  @ -49.5 deg
+
+    One cone, one bearing, two obstacles, the far one 1.75x out. A phantom standing
+    behind a real cone is usually harmless — it is occluded by the thing that made it —
+    but it moves with the robot, and on 2026-09-02 one landed at ``x=+3.40 y=-0.01``,
+    dead on robot 1's goal line and 0.46 m PAST the goal, which ended the run.
+
+    Keeping the LOWEST box is the right choice twice over: it is the one whose bottom
+    edge is nearest the object's floor contact, so it is the one the prior was
+    calibrated on AND the one ``ground_range`` could check. Two genuinely separate
+    objects at one bearing collapse too, and that is safe in the only direction that
+    matters: what survives is the NEARER of the two, and the one discarded stood behind
+    it, already occluded and already unreachable without passing the first.
+
+    ``refused`` collects ``(detection, source)`` exactly as ``range_detections`` does,
+    because a silently dropped box is indistinguishable from an open world downstream.
+    """
+    kept: list[Detection] = []
+    for candidate in detections:
+        for index, existing in enumerate(kept):
+            overlap = (min(candidate.x2, existing.x2)
+                       - max(candidate.x1, existing.x1))
+            narrower = min(candidate.x2 - candidate.x1, existing.x2 - existing.x1)
+            if narrower <= 0.0 or overlap / narrower < overlap_frac:
+                continue
+            # Same column. The lower box wins; `y2` grows DOWNWARD in image
+            # coordinates, so the larger `y2` is the one nearer the floor.
+            if candidate.y2 > existing.y2:
+                if refused is not None:
+                    refused.append((existing, "stacked-blob"))
+                kept[index] = candidate
+            elif refused is not None:
+                refused.append((candidate, "stacked-blob"))
+            break
+        else:
+            kept.append(candidate)
+    return kept
