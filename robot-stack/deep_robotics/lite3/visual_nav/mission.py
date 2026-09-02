@@ -36,9 +36,12 @@ would reasonably let it, and then stops and says so rather than deciding for its
 from __future__ import annotations
 
 import argparse
+import contextlib
 import re
+import signal
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -113,13 +116,57 @@ class Attempt:
         self.spoke_for_help = False
 
 
+#: Set when a stop signal arrives. The retry loop reads it so that stopping a mission
+#: stops the mission, rather than ending one attempt and starting the next.
+_STOP = threading.Event()
+
+
+def stop_requested() -> bool:
+    """Whether a SIGTERM or SIGINT has been seen since :func:`main` started."""
+    return _STOP.is_set()
+
+
+def _terminate(process: subprocess.Popen) -> None:
+    """Stop the child, SIGTERM only, and wait for it.
+
+    ⛔ **There is no SIGKILL path here**, for the reason ``SAFETY.md`` §0 gives: the drive
+    process damps its velocity on SIGTERM, and a hard kill leaves the last command latched
+    on a robot that is still walking.
+    """
+    if process.poll() is None:
+        with contextlib.suppress(ProcessLookupError, OSError):
+            process.terminate()
+    process.wait()
+
+
 def supervise(command: list[str], voice: Voice, *, patience_s: float,
               echo=print, clock=time.monotonic) -> Attempt:
-    """Run ``command`` once, narrating it. Returns what happened."""
+    """Run ``command`` once, narrating it. Returns what happened.
+
+    **A signal here has to reach the child, not just this process.** The child is what
+    commands velocity; this only reads its stdout. ``run-venue-demo.sh`` hid that, because
+    Ctrl-C reaches the whole foreground process group and the child got it anyway. A
+    supervisor started by Device Connect does not have that luck: ``run_control``'s stop is
+    ``kill -TERM`` against the ONE recorded pid, so without the handler below a stop would
+    end this process and leave the robot driving.
+    """
     attempt = Attempt()
     held_since: float | None = None
     process = subprocess.Popen(command, stdout=subprocess.PIPE,
                                stderr=subprocess.STDOUT, text=True, bufsize=1)
+
+    def _on_stop(_signum, _frame):
+        _STOP.set()
+        if process.poll() is None:
+            with contextlib.suppress(ProcessLookupError, OSError):
+                process.terminate()
+
+    previous: dict = {}
+    for number in (signal.SIGTERM, signal.SIGINT):
+        # ValueError: not the main thread. Worth continuing without the handler rather
+        # than refusing to run at all; the finally below still stops the child.
+        with contextlib.suppress(ValueError, OSError):
+            previous[number] = signal.signal(number, _on_stop)
     try:
         for line in process.stdout:
             line = line.rstrip("\n")
@@ -151,7 +198,13 @@ def supervise(command: list[str], voice: Voice, *, patience_s: float,
                     voice.say("resuming")
                 held_since = None
     finally:
-        process.wait()
+        for number, handler in previous.items():
+            with contextlib.suppress(ValueError, OSError):
+                signal.signal(number, handler)
+        # Not process.wait() alone. A child that closed stdout but is still running would
+        # hang this for ever, and a child still running after this returns is a robot
+        # nobody is reading the output of any more.
+        _terminate(process)
     return attempt
 
 
@@ -202,6 +255,9 @@ def main(argv: list[str] | None = None) -> int:
           f"between them, {args.max_total_seconds:.0f}s total ceiling")
 
     started = time.monotonic()
+    # Cleared here rather than at import, so a second call to main() in one process (the
+    # tests do exactly that) does not inherit the previous run's stop.
+    _STOP.clear()
     voice.say("greeting")
     for attempt_number in range(1, args.max_attempts + 1):
         elapsed = time.monotonic() - started
@@ -228,13 +284,25 @@ def main(argv: list[str] | None = None) -> int:
                   f"after {time.monotonic() - started:.0f}s")
             voice.close()
             return 0
+        if _STOP.is_set():
+            # Somebody asked this to stop. Retrying now would restart the robot the stop
+            # was issued to halt, which is the opposite of what the button said.
+            print(f"[mission] STOPPED on request during attempt {attempt_number}. The "
+                  f"drive process was sent SIGTERM and has exited; the goal was not "
+                  f"reached and no further attempt will be started.")
+            voice.close()
+            return 3
         if not attempt.needs_standing:
             # It has already asked for the specific thing that would fix this; following
             # it with "a fault has occurred" would bury the actionable sentence.
             voice.say("fault")
         if attempt_number < args.max_attempts:
             print(f"[mission] cooling down {args.cooldown:.0f}s before the next attempt")
-            time.sleep(args.cooldown)
+            # Interruptible: a stop during the cooldown should not wait it out first.
+            if _STOP.wait(args.cooldown):
+                print("[mission] STOPPED on request during the cooldown.")
+                voice.close()
+                return 3
 
     print(f"[mission] STOPPING: {args.max_attempts} attempts did not reach the goal. "
           f"Not a success — read the outcomes above.")

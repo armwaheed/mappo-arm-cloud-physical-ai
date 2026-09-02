@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import contextlib
 import shutil
+import signal
 import sys
 import tempfile
 import time
@@ -25,7 +26,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from mission import Attempt, main, per_attempt, supervise
+from mission import Attempt, main, per_attempt, stop_requested, supervise
 from voice import CUES, Voice
 
 
@@ -273,6 +274,65 @@ def test_a_retry_does_not_overwrite_the_evidence_of_the_failure_that_caused_it()
     assert "/e/run-raw-attempt2.mp4" in second
     assert second[-1] == "--live", "flags without a path are untouched"
     assert per_attempt(base, 3).count("/e/run-attempt3.jsonl") == 1
+
+
+def test_a_child_that_stops_talking_is_stopped_rather_than_waited_on_for_ever():
+    """``process.wait()`` on its own hangs here until the child decides to exit.
+
+    A supervisor blocked in ``wait`` is a robot whose output nobody is reading any more,
+    for as long as the drive process feels like running.
+    """
+    # BOTH descriptors: stderr is a dup of the same pipe (stderr=STDOUT), so closing
+    # only fd 1 leaves the write end open and the parent never sees EOF.
+    script = ("import os, sys, time;"
+              "print('[visual_nav] outcome: stalled: commanded 0.30 m/s', flush=True);"
+              "sys.stdout.flush(); os.close(1); os.close(2); time.sleep(60)")
+    started = time.monotonic()
+    attempt = supervise([sys.executable, "-c", script], _quiet_voice(),
+                        patience_s=1.0, echo=lambda _line: None)
+    assert time.monotonic() - started < 20, "it waited on a child that had stopped talking"
+    assert attempt.outcome is not None
+
+
+def test_a_stop_signal_terminates_the_drive_and_not_only_the_supervisor():
+    """``run_control``'s stop is ``kill -TERM`` against ONE pid: this process.
+
+    The child is what commands velocity. Under ``run-venue-demo.sh`` Ctrl-C reached the
+    whole foreground process group and the child died with it, which hid this. Started by
+    Device Connect there is no process group to rely on, so a stop that does not reach the
+    child is a stop that leaves the robot walking.
+    """
+    script = ("import time;"
+              "print('[visual_nav] outcome: stalled: commanded 0.30 m/s', flush=True);"
+              "time.sleep(60)")
+
+    def stop_when_it_speaks(_line):
+        # The handler is installed before the read loop, so this is delivered to it and
+        # not to the test runner.
+        signal.raise_signal(signal.SIGTERM)
+
+    started = time.monotonic()
+    try:
+        supervise([sys.executable, "-c", script], _quiet_voice(),
+                  patience_s=1.0, echo=stop_when_it_speaks)
+        assert time.monotonic() - started < 20, "the child outlived the stop"
+        assert stop_requested(), "the stop was not recorded for the retry loop"
+    finally:
+        import mission
+        mission._STOP.clear()
+
+
+def test_a_stop_does_not_start_the_next_attempt():
+    """Retrying after a stop restarts the robot the stop was issued to halt."""
+    marker = Path(tempfile.mkdtemp()) / "n"
+    script = (f"import os, pathlib, signal, time;p=pathlib.Path({str(marker)!r});"
+              "n=int(p.read_text()) if p.exists() else 0;p.write_text(str(n+1));"
+              "print('[visual_nav] outcome: stalled: commanded 0.30 m/s', flush=True);"
+              "time.sleep(0.5); os.kill(os.getppid(), signal.SIGTERM); time.sleep(30)")
+    rc = main(["--no-voice", "--cooldown", "0", "--max-attempts", "5",
+               "--", sys.executable, "-c", script])
+    assert rc == 3, "a stopped mission is neither an arrival nor an exhausted retry budget"
+    assert marker.read_text() == "1", "it started another attempt after being stopped"
 
 
 def test_an_attempt_starts_out_having_neither_arrived_nor_spoken():
