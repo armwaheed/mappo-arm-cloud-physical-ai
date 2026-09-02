@@ -67,6 +67,7 @@ from deep_robotics.lite3.commissioning.measurement import (
     utc_now,
     write_record,
 )
+from deep_robotics.lite3.locomotion.lite3_udp_locomotion import DEFAULT_MOTION_HOST
 
 #: Stages in the order they may be run. Read-only first, tape second, camera third, and
 #: the two that move the robot last. Changing this order is a safety decision.
@@ -301,7 +302,7 @@ def build_parser() -> argparse.ArgumentParser:
     control.add_argument("--live", action="store_true",
                          help="DANGER: permit the two stages that walk the robot")
     control.add_argument("--operator-ready", action="store_true")
-    control.add_argument("--motion-host", default="192.168.1.120")
+    control.add_argument("--motion-host", default=DEFAULT_MOTION_HOST)
     control.add_argument("--command-port", type=int, default=43893)
     control.add_argument("--state-port", type=int, default=43897)
 

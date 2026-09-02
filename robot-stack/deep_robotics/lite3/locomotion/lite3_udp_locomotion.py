@@ -74,7 +74,21 @@ VELOCITY_COMMAND_CODES = frozenset((
     YAW_VELOCITY_CODE,
 ))
 
-DEFAULT_MOTION_HOST = "192.168.1.120"
+#: Where velocity commands are SENT when nobody says otherwise.
+#:
+#: ⚠️ THIS WAS ``192.168.1.120`` — THE FIRST ROBOT'S OWN ADDRESS — AND THAT IS A FLEET-WIDE
+#: HAZARD, not a stale value. On robot 1 the default resolved to itself and everything
+#: worked, which is exactly what hid it. On a SECOND robot the same default names robot 1,
+#: so that robot's policy drove the other one across the network: measured 2026-09-02 with
+#: both robots armed, robot 2 reporting ``37/37 ticks driven`` and ``moved 0.00 m`` while
+#: robot 1 walked away from a button press addressed to robot 2.
+#:
+#: ``127.0.0.1`` is right because of where this code RUNS: ``mappo_drive`` executes ON the
+#: robot it drives, so localhost is that robot, on every robot, and stays correct through
+#: any address change. A laptop-side tool must now name its robot explicitly, which is the
+#: safer failure: a wrong explicit address reaches nothing and says so, where a wrong
+#: default reaches a different robot and moves it.
+DEFAULT_MOTION_HOST = "127.0.0.1"
 DEFAULT_COMMAND_PORT = 43893
 DEFAULT_STATE_PORT = 43897
 
