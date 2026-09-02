@@ -1945,6 +1945,44 @@ the run with `-u` and streams its stdout to the dashboard, but the shim exec'd a
 on the operator's screen** — a working robot behind a blank panel. Buffering is invisible
 until the thing reading the output is a person waiting to see it.
 
+### A24. Associated, leased, and unreachable: the robot answered down the wrong wire
+
+The demo needs both robots on a venue router with no cables trailing off them. Each robot
+joined the WiFi, took a lease, and could not be reached. The dashboard showed *no robots on
+the mesh*, and an hour went into the router: attached-device lists, isolation settings, a
+subnet sweep that found nothing but the router and the laptop.
+
+Every diagnostic that reports on WiFi said the WiFi was fine:
+
+    iw dev wlan0 link   ->  Connected to NETGEAR93, freq 2457
+    nmcli ... NETGEAR93 ->  IP4.ADDRESS 192.168.1.2/24, IP4.GATEWAY 192.168.1.1
+    ping 192.168.1.1    ->  nothing
+
+Associated, leased, correct gateway, unreachable. **The routing table was the only place it
+was visible**, and nothing points you there, because the fault is not in any layer the
+symptom implicates:
+
+    192.168.1.0/24 dev eth1  src 192.168.1.118 metric 100   <- wins
+    192.168.1.0/24 dev wlan0 src 192.168.1.2   metric 600
+
+Both interfaces held the same subnet, the lower metric won, and every packet the robot sent
+to a `192.168.1.x` address left by **Ethernet** — into a cable whose other end was now in
+the router, not the robot. The robot could be *reached* and could not *reply*. One line per
+robot fixed it: `ipv4.route-metric 50` on the WiFi profile.
+
+**The transferable part is about which direction a test measures.** Everything we ran asked
+"can the laptop reach the robot", and the answer was a timeout that implicates the network
+between them. Nothing asked the robot the reciprocal question — *which way do YOU send this*
+— and `ip route get 192.168.1.1` answers it in one line. On a machine with two interfaces on
+one subnet, reachability is not symmetric, and a tool that only tests one direction will
+describe the wrong half of the problem for as long as you let it.
+
+**It also came with a second lesson we paid for twice in one hour.** The mesh driver picks
+its interface when it starts and never re-runs discovery, so every cable move left a driver
+`active`, publishing to nobody, and a dashboard reporting an empty fleet. The robots were
+fine both times. *A service that binds to a network at startup needs restarting when the
+network changes*, and neither the service nor the dashboard says so.
+
 ## Appendix B — What a payload costs a proxy platform
 
 The Go2s in this paper are **proxies** for the Lite3s

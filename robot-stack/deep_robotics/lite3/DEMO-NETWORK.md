@@ -353,6 +353,80 @@ real answer at the venue is that a robot has **one** path to `192.168.1.0/24`: W
 the direct laptop cable unplugged. Two live paths to one subnet is a coin toss decided by
 metrics, and the coin is not weighted the way you expect.
 
+### ⚠️ The robot answers the router down the cable, not the radio
+
+This is the one that cost the most, and it is not the same bug as the section above. There,
+a laptop could not reach the router. Here, **the robot cannot**, while every check says it
+is fine:
+
+```
+$ iw dev wlan0 link
+Connected to 38:94:ed:65:7a:83   SSID: NETGEAR93   freq: 2457      # associated
+$ nmcli -f IP4.ADDRESS,IP4.GATEWAY con show NETGEAR93
+IP4.ADDRESS[1]: 192.168.1.2/24    IP4.GATEWAY: 192.168.1.1         # leased, gateway right
+$ ping 192.168.1.1
+(nothing)
+```
+
+Associated. Leased. Correct gateway. Unreachable. The routing table is the only place it
+shows:
+
+```
+192.168.1.0/24 dev eth1  src 192.168.1.118 metric 100   <- wins
+192.168.1.0/24 dev wlan0 src 192.168.1.2   metric 600
+```
+
+**Both interfaces hold the same subnet and the lower metric wins**, so every packet the
+robot sends to a `192.168.1.x` address — the router, the operator laptop, the dashboard —
+leaves by **Ethernet**. With the laptop on the router and nothing in the robot's Ethernet
+port, each reply goes into a cable connected to nothing. The robot is reachable *to* and
+mute *from*, which presents as the router dropping it.
+
+**The fix is one persistent line per robot**, making the radio own the subnet:
+
+```bash
+sudo nmcli con mod NETGEAR93 ipv4.route-metric 50   # below eth1's 100
+sudo nmcli con up NETGEAR93
+ip route get 192.168.1.1                            # must say: dev wlan0
+```
+
+⚠️ **Applying it will drop an SSH session that is on the Ethernet cable**, because that
+session's replies move to the radio mid-command. Pin the laptop to `eth1` first, and remove
+the pin when the cable moves:
+
+```bash
+sudo ip route replace 192.168.1.50/32 dev eth1 src <robot eth1 addr> metric 10
+# ... make the change, verify, then before the cable moves:
+sudo ip route del 192.168.1.50/32 dev eth1
+```
+
+Both robots now carry `ipv4.route-metric 50`, which NetworkManager persists across reboots.
+
+### The venue configuration, as measured
+
+Laptop on the router by Ethernet; **both robots wireless, no tethers**; each robot serving
+its own controller AP on the same radio.
+
+| | robot 1 (LITE3-A) | robot 2 |
+| --- | --- | --- |
+| `wlan0` (the demo path) | `192.168.1.120` | `192.168.1.2` |
+| `eth1` (debug only) | `192.168.1.119` | `192.168.1.118` |
+| `p2p0` controller AP | `YSC-JYML-dj6ipv-5G` @ `192.168.2.1` | `YSC-JYML-gg9uma-5G` @ `192.168.2.1` |
+| `wlan0` route metric | 50 | 50 |
+| camera for the dashboard | `:8801`, `lite3-frame-server` | `:8801`, `lite3-frame-server` |
+| driver | `mappo-dc-driver`, enabled | `mappo-dc-driver`, enabled |
+| calibration | its own, measured | ⚠️ robot 1 placeholder |
+
+**Two rules that explain most of a lost afternoon:**
+
+1. ⚠️ **After any network change, restart the driver** — `sudo systemctl restart
+   mappo-dc-driver`. Mesh discovery picks its interface when the driver starts and never
+   re-runs, so a robot that moved between Ethernet and WiFi is simply absent from the
+   dashboard, with the driver `active` and publishing to nobody.
+2. ⚠️ **After any reboot, check the controller before you need it** — `iw dev` must show
+   `p2p0 ... type AP`. The AP profile reverts to 5 GHz with `autoconnect: no` on both
+   robots.
+
 ### Reaching the router's web UI from a laptop that is not on its LAN
 
 The operator laptop keeps its internet on corp WiFi and is often cabled to a **robot**, not
