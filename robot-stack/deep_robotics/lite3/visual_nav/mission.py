@@ -77,7 +77,21 @@ _OUTCOME = re.compile(r"outcome:\s*(.+?)\s*$")
 #: itself -- so this is the one failure where speaking is not decoration but the entire
 #: remedy. Matched on the refusal's own words rather than an exit code, because the exit
 #: code is shared with every other SystemExit in the drive path.
-_NEEDS_STANDING = re.compile(r"basic_state=\d+.*force-control state")
+#: The refusals a PERSON can clear by setting the robot's mode, as opposed to a fault.
+#: `assert_axis_state_ready` has five gates and this matched exactly one of them, so the
+#: other three operator-fixable ones fell through to "a fault has occurred" -- a sentence
+#: that tells an operator standing next to the robot nothing they can act on. Measured
+#: 2026-09-04 on robot 2: three attempts, every one refused with
+#: `Lite3 gait_state=4; axis profile allows (0,)`, and all three announced a generic fault
+#: while the fix was one control on the vendor app.
+#:
+#: `error_state` is deliberately NOT here. It is the one gate standing the robot up cannot
+#: clear, and promising an operator that it can is worse than saying nothing.
+_NEEDS_STANDING = re.compile(
+    r"basic_state=\d+.*force-control state"
+    r"|policy_state=\d+.*moving mode"
+    r"|gait_state=\d+.*axis profile allows"
+    r"|motion_state=\d+.*stationary/stepping")
 
 
 #: Flags whose value is a path this supervisor must keep unique per attempt.
