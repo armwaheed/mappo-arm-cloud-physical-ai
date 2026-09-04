@@ -2516,6 +2516,49 @@ def test_the_search_walk_is_not_the_policy_and_says_so():
         "on this transport a creep is a walk, and that must not be discovered on a robot"
 
 
+def _systemexit_messages() -> list[tuple[int, str]]:
+    """Every `raise SystemExit(...)` in visual_nav.py, as (line, leading text).
+
+    Read out of the AST rather than by grepping strings, so a message split across
+    implicit-concatenation lines or built as an f-string is still seen whole.
+    """
+    import visual_nav
+
+    source = Path(visual_nav.__file__).read_text()
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Raise) or not isinstance(node.exc, ast.Call):
+            continue
+        if getattr(node.exc.func, "id", None) != "SystemExit" or not node.exc.args:
+            continue
+        argument, text = node.exc.args[0], ""
+        for part in (argument.values if isinstance(argument, ast.JoinedStr) else [argument]):
+            if isinstance(part, ast.Constant) and isinstance(part.value, str):
+                text += part.value
+        found.append((node.lineno, text))
+    return found
+
+
+def test_every_refusal_says_that_it_is_one():
+    """⛔ A refusal an operator cannot grep for is a refusal nobody finds.
+
+    `static_profile`'s used to read `[visual_nav] --static-profile contains evidenced
+    dimensions; ...` -- a bare SystemExit, indistinguishable from the ordinary
+    `[visual_nav]` lines around it, while its own sibling two lines below said REFUSING
+    TO USE STATIC PROFILE. Measured 2026-09-04: it exited every run on both robots for
+    an afternoon. `mission.py` saw no `outcome:` line and reported `outcome=None`, the
+    driver's log truncated it to `[visual_nav] --stati...(117 chars)`, and two sessions
+    read past it. The message was on screen the whole time and did not look like a
+    refusal.
+    """
+    messages = _systemexit_messages()
+    assert len(messages) >= 10, f"expected the module's refusals; found {len(messages)}"
+    unmarked = [(line, text[:70]) for line, text in messages if "REFUSING" not in text]
+    assert not unmarked, (
+        "these exit the run without saying they refused it, so `grep REFUSING` on a "
+        f"failed run's output misses them: {unmarked}")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
