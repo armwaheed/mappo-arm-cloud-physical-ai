@@ -142,6 +142,11 @@ class Attempt:
         self.held_ticks = 0
         self.moving_ticks = 0
         self.spoke_for_help = False
+        #: How the drive ENDED, kept for the case where it printed no outcome at all.
+        #: `outcome=None` on its own says the drive died without deciding anything and
+        #: nothing about why; these two turn that into a diagnosis. See `_no_outcome`.
+        self.exit_code: int | None = None
+        self.last_line: str = ""
 
 
 #: Set when a stop signal arrives. The retry loop reads it so that stopping a mission
@@ -199,6 +204,11 @@ def supervise(command: list[str], voice: Voice, *, patience_s: float,
         for line in process.stdout:
             line = line.rstrip("\n")
             echo(line)
+            if line.strip():
+                # The last thing the drive said before it stopped saying anything. When it
+                # exits without an outcome this is the only evidence of why, and it is
+                # usually the refusal itself.
+                attempt.last_line = line
             if _NEEDS_STANDING.search(line):
                 attempt.needs_standing = True
                 if voice.say("stand_request"):
@@ -233,7 +243,35 @@ def supervise(command: list[str], voice: Voice, *, patience_s: float,
         # hang this for ever, and a child still running after this returns is a robot
         # nobody is reading the output of any more.
         _terminate(process)
+        # After _terminate, which waits: the code is settled by here.
+        attempt.exit_code = process.returncode
     return attempt
+
+
+def _no_outcome(attempt: Attempt) -> str:
+    """What to print when the drive decided nothing, in place of a bare ``outcome=None``.
+
+    ⚠️ THIS IS THE LINE THAT WAS MISSING. Measured 2026-09-04: the run profile carried
+    `--prop-radius` alongside `--static-profile`, which `visual_nav.static_profile`
+    refuses, so every attempt on both robots exited 1 during its own banner. All the
+    supervisor said was `outcome=None held=0 moving=0`, which describes a drive that
+    decided nothing and says nothing about why. The refusal WAS on stdout, one line
+    above, and it took two sessions to read it -- the driver's log truncates long lines
+    to 20 characters, and `[visual_nav] --stati...(117 chars)` is not a legible refusal.
+
+    So the supervisor now says the exit code and quotes the last line itself.
+    `held=0 moving=0` means it never issued a tick, which separates "refused before it
+    drove" from "drove and then died".
+    """
+    drove = attempt.held_ticks or attempt.moving_ticks
+    # Built outside the f-string: the robots run Python 3.8, where an f-string expression
+    # may not reuse the enclosing quote character.
+    what = ("ran and then stopped" if drove else
+            "never issued a tick, so it stopped before it drove")
+    last = attempt.last_line or "(nothing at all)"
+    return (f"[mission] the drive printed no outcome and exited {attempt.exit_code}. "
+            f"It {what}. Its last line was:\n"
+            f"[mission]     {last}")
 
 
 #: Transport flags the gesture needs and the drive command already carries. Copied FROM
@@ -396,6 +434,8 @@ def main(argv: list[str] | None = None) -> int:
               f"held={attempt.held_ticks} moving={attempt.moving_ticks} "
               f"asked_for_help={attempt.spoke_for_help}"
               + (" NEEDS-STANDING" if attempt.needs_standing else ""))
+        if attempt.outcome is None:
+            print(_no_outcome(attempt))
         if attempt.needs_standing:
             print("[mission] the robot is not in force-control standing. It has asked, in "
                   "Chinese and English, for somebody to set it. Retrying after the "

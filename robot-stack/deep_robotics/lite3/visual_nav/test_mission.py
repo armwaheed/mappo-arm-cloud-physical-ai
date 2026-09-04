@@ -32,6 +32,7 @@ from mission import (
     _LOOK_DEGREES,
     _NEEDS_STANDING,
     Attempt,
+    _no_outcome,
     flourish_command,
     main,
     per_attempt,
@@ -418,6 +419,51 @@ def test_a_look_is_offered_only_for_the_outcome_it_fits():
         "the look must be gated on the outcome, not fired after every failure"
     assert "not attempt.needs_standing" in source, \
         "a robot in the wrong mode cannot turn; asking it to is noise on top of a refusal"
+
+
+def test_a_drive_that_decided_nothing_says_why_it_stopped():
+    """⚠️ THE AFTERNOON THIS COST. `visual_nav.static_profile` refused the run profile's
+    `--prop-radius` beside `--static-profile`, so every attempt on both robots exited 1
+    inside its own banner. The supervisor reported `outcome=None held=0 moving=0` and
+    nothing else, and the refusal -- which was on stdout one line above -- reached the
+    driver's log truncated to `[visual_nav] --stati...(117 chars)`. Two sessions read
+    past it. The exit code and the last line are what turn that into a diagnosis."""
+    refusal = ("[visual_nav] REFUSING TO RUN: --static-profile contains evidenced "
+               "dimensions; do not override them with --prop-height or --prop-radius")
+    attempt = supervise(
+        [sys.executable, "-c", f"import sys; print({refusal!r}); sys.exit(1)"],
+        Voice(None), patience_s=1.0, echo=lambda _line: None)
+
+    assert attempt.outcome is None, "the drive really did decide nothing"
+    assert attempt.exit_code == 1, attempt.exit_code
+    said = _no_outcome(attempt)
+    assert "exited 1" in said, said
+    # The refusal itself, in full -- not a 20-character prefix of it.
+    assert refusal in said, said
+    # And the distinction that says whether it refused or died mid-drive.
+    assert "never issued a tick" in said, said
+
+
+def test_a_drive_that_drove_and_then_died_is_not_called_a_refusal():
+    """`held=0 moving=0` is the whole difference between "refused before it drove" and
+    "was driving and fell over", and an operator acts on them differently."""
+    attempt = Attempt()
+    attempt.exit_code, attempt.moving_ticks = 3, 12
+    attempt.last_line = "[visual_nav] tick 12 moving"
+    said = _no_outcome(attempt)
+    assert "ran and then stopped" in said, said
+    assert "never issued a tick" not in said, said
+
+
+def test_the_supervisor_says_nothing_extra_when_the_drive_did_decide():
+    """A run that reached an outcome is not a diagnosis; the extra lines would be noise
+    on every successful attempt."""
+    import inspect
+
+    import mission
+    source = inspect.getsource(mission.main)
+    assert "if attempt.outcome is None:" in source, \
+        "the diagnosis must be gated on there being no outcome"
 
 
 def _gesture_args():

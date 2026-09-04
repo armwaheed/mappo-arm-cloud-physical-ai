@@ -1423,8 +1423,8 @@ def static_profile(args) -> ColourProfile:
     if custom_profile is not None:
         if args.prop_height is not None or args.prop_radius is not None:
             raise SystemExit(
-                "[visual_nav] --static-profile contains evidenced dimensions; do not override "
-                "them with --prop-height or --prop-radius"
+                "[visual_nav] REFUSING TO RUN: --static-profile contains evidenced dimensions; "
+                "do not override them with --prop-height or --prop-radius"
             )
         try:
             return load_colour_profile(custom_profile)
@@ -1477,7 +1477,8 @@ def static_detect_prior(args) -> tuple[SizePrior | None, float] | None:
                      args.static_detect_pitch_error_deg)) if value is None]
         if missing:
             raise SystemExit(
-                f"[visual_nav] --static-detect-ground needs {' and '.join(missing)}: "
+                f"[visual_nav] REFUSING TO RUN: --static-detect-ground needs "
+                f"{' and '.join(missing)}: "
                 f"ranging from the floor contact point costs no size prior, but it does "
                 f"not size the obstacle disc and its whole error budget is the pitch")
     else:
@@ -1486,7 +1487,8 @@ def static_detect_prior(args) -> tuple[SizePrior | None, float] | None:
                    if value is None]
         if missing:
             raise SystemExit(
-                f"[visual_nav] --static-detect needs {' and '.join(missing)}: the detector "
+                f"[visual_nav] REFUSING TO RUN: --static-detect needs "
+                f"{' and '.join(missing)}: the detector "
                 f"finds an object of unknown size and every range scales linearly on the "
                 f"prior it is given")
     bad = [name for name, value in (("--static-detect-height", args.static_detect_height),
@@ -1495,14 +1497,15 @@ def static_detect_prior(args) -> tuple[SizePrior | None, float] | None:
            if value is not None and not (math.isfinite(value) and value > 0.0)]
     if bad:
         raise SystemExit(
-            f"[visual_nav] {', '.join(bad)} must be a positive number of metres")
+            f"[visual_nav] REFUSING TO RUN: {', '.join(bad)} must be a positive number "
+            f"of metres")
     if ground:
         for name, value in (("--static-detect-pitch-error-deg",
                              args.static_detect_pitch_error_deg),
                             ("--static-detect-max-range-error",
                              args.static_detect_max_range_error)):
             if not (math.isfinite(value) and value > 0.0):
-                raise SystemExit(f"[visual_nav] {name} must be a positive number")
+                raise SystemExit(f"[visual_nav] REFUSING TO RUN: {name} must be a positive number")
         # No prior at all, and `None` rather than a placeholder: a `SizePrior` here would
         # be a number nothing measured, sitting in a field whose only job is to be
         # measured, waiting for the next reader to divide by it.
@@ -1545,7 +1548,8 @@ def build_goal_source(args, camera_model: FisheyeCamera, pose_fn) -> GoalSource:
     if args.goal_class is not None:
         if args.goal_height is None:
             raise SystemExit(
-                "[visual_nav] --goal-class needs --goal-height: the range to the goal "
+                "[visual_nav] REFUSING TO RUN: --goal-class needs --goal-height: the range "
+                "to the goal "
                 "scales linearly on it, so there is no safe default to guess.")
         # A SECOND detector instance, not the obstacle one. It wants a different class
         # and a different confidence, and it runs on a crop; sharing would mean the
@@ -2027,7 +2031,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
             # legs move — rather than after the only chance to capture it has passed.
             if not writer.isOpened():
                 raise SystemExit(
-                    f"[visual_nav] cannot open {path} for writing (mp4v). "
+                    f"[visual_nav] REFUSING TO RUN: cannot open {path} for writing (mp4v). "
                     f"The run would produce an empty file, so it is not starting. "
                     f"Check the path is writable and that this OpenCV has FFMPEG.")
             return writer
