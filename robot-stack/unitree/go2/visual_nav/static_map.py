@@ -125,6 +125,33 @@ DRIFT_SIGMA_M_PER_S = 0.02
 #: landmark one metre further out would fail to confirm and the robot would walk at it.
 MAX_PLANNING_SIGMA_M = 0.40
 
+#: Metres. Ceiling on how much a landmark's own uncertainty may widen the disc the planner
+#: has to clear. The inflation itself is right — a landmark the map is unsure of should be
+#: cleared more widely than one it is sure of — but it was unbounded below
+#: :data:`MAX_PLANNING_SIGMA_M`, and that is where it went wrong.
+#:
+#: MEASURED 2026-09-04, robot 1 holding in front of a chair it was nowhere near:
+#:
+#:     planning radius 0.750 m  =  0.35 declared  +  0.40 sigma
+#:     required        0.40 robot + 0.12 gap + 0.750  =  1.27 m centre-to-centre
+#:     the chair's true radius is about 0.30, so the robot stopped 0.30 m short and held
+#:
+#: The doubt was LARGER THAN THE OBJECT, and most of the clearance being demanded was
+#: doubt rather than chair. It is not a fix to shrink the declared radius instead: that is
+#: the model of how big the thing is, and understating it plans paths through furniture.
+#:
+#: Bounding it is defensible because the other end is already bounded.
+#: :data:`MAX_PLANNING_SIGMA_M` refuses to plan against anything sigma > 0.40 at all, on
+#: the argument that such a landmark "has stopped carrying DIRECTION as well as position".
+#: Between this cap and that limit the landmark is still avoided — it simply stops growing
+#: while the map's opinion of it gets vaguer.
+#:
+#: ⚠️ THE TRADE, STATED: a landmark localised worse than this is now planned against as
+#: though it were known to this. On a robot whose ground-contact ranging is known to be
+#: unreliable that is a real reduction in margin, and it is why this is a named constant
+#: with an argument attached rather than a number folded into the expression below.
+MAX_PLANNING_INFLATION_M = 0.15
+
 #: Most landmarks of one label the map will plan against, best-evidenced first. ONE bin
 #: cannot be in four places, and on the failed run it was: odometry that reads
 #: "stationary" while the robot is physically dragged projects every sighting to a
@@ -187,8 +214,13 @@ class Landmark:
 
     @property
     def planning_radius_m(self) -> float:
-        """Radius the planner must clear: the object, widened by how unsure we are."""
-        return self.radius_m + self.position_sigma
+        """Radius the planner must clear: the object, widened by how unsure we are.
+
+        The widening is CAPPED. Uncapped it grew until the doubt was larger than the
+        object and the robot held a metre short of a chair — see
+        :data:`MAX_PLANNING_INFLATION_M`, which carries the measurement.
+        """
+        return self.radius_m + min(self.position_sigma, MAX_PLANNING_INFLATION_M)
 
 
 class StaticObstacleMap:
