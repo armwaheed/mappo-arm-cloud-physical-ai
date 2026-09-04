@@ -324,6 +324,16 @@ def main(argv=None) -> int:
     except Refusal as refusal:
         print(f"[flourish] REFUSED: {refusal}", file=sys.stderr)
         return 1
+    except Exception as refusal:
+        # A GESTURE MUST NOT RAISE AT AN OPERATOR. What reaches here is the vendor mode
+        # gate -- `Lite3LinkLost: Lite3 basic_state=1; axis motion requires documented
+        # force-control state 6` and its siblings -- and it means the robot is in the
+        # wrong mode, which is one control on the vendor app. Measured 2026-09-04: every
+        # attempt on both robots ended with the surrender gesture printing a traceback on
+        # top of the mission's own explanation, which reads as a code fault and sends an
+        # operator to look at the software instead of at the robot.
+        print(f"[flourish] REFUSED: {type(refusal).__name__}: {refusal}", file=sys.stderr)
+        return 1
 
 
 if __name__ == "__main__":
