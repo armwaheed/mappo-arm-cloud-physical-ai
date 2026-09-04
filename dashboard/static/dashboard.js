@@ -399,7 +399,8 @@ function setPadEnabled(enabled) {
   // Which directions this robot can execute at all, as opposed to whether the pad is live
   // right now. `null` means the device could not say, and then nothing here grades a key:
   // a key wrongly greyed is as much a lie as a key wrongly live.
-  const directions = (state.capabilities || {}).motion_directions || null;
+  const caps = state.capabilities || {};
+  const directions = caps.motion_directions || null;
   for (const key of document.querySelectorAll(".key")) {
     const fn = key.dataset.fn;
     // Stop is never gated. If motion is disabled it will be refused by the device anyway,
@@ -419,6 +420,20 @@ function setPadEnabled(enabled) {
     }
     key.classList.remove("unmeasured");
     key.title = key.dataset.baseTitle;
+    // POSTURE IS NOT THIS DASHBOARD'S TO CHANGE ON EVERY PLATFORM. On a Lite3 `stand`
+    // only validates that the operator confirmed standing and high-level navigation
+    // mode, and `lie_down` only stops -- the vendor app owns posture and the bridge
+    // exposes no lie-down command. Both then complete successfully having moved nothing,
+    // which from the operator's side is indistinguishable from a dead button: measured
+    // 12:45 on robot 2, four `stand` presses, every one `travelled_m=0.0, warning=''`.
+    // They stay PRESSABLE -- `lie_down` really does stop the robot, and a stop is not an
+    // affordance to take away -- but they say what they actually do.
+    if ((fn === "stand" || fn === "lie_down") && caps.lie_down_changes_posture === false) {
+      key.classList.add("advisory");
+      key.title = caps.posture_note || key.dataset.baseTitle;
+    } else {
+      key.classList.remove("advisory");
+    }
     key.disabled = !enabled;
   }
   // Why the pad is inert is not the same question in the two cases, and an operator staring

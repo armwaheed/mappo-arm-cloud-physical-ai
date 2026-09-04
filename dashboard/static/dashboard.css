@@ -456,3 +456,17 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
   opacity: 0.45;
   cursor: not-allowed;
 }
+
+/* A key that works, completes cleanly, and does less than its label implies: the Lite3's
+   stand and lie_down, where posture belongs to the vendor app. Not struck through -- it is
+   not refused, and lie_down really does stop the robot -- but marked, because a button that
+   succeeds having moved nothing reads exactly like a dead one. */
+.key.advisory::after {
+  content: "*";
+  position: absolute;
+  top: 2px;
+  right: 4px;
+  font-size: 0.7em;
+  opacity: 0.7;
+}
+.key.advisory { position: relative; }

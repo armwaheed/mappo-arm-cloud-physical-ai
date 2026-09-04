@@ -1715,6 +1715,44 @@ def test_reverse_supported_is_derived_and_can_be_false():
     assert "directions[\"walk_back\"][\"available\"]" in source, source[:200]
 
 
+def test_the_gait_floor_does_not_gate_a_sign_only_transport():
+    """A gait floor is the lowest command that still walks. On the axis transport there is
+    no such thing to be below: every command past the deadband emits the same primitive at
+    full scale. `gait_floor_probe.py` refuses this transport by name for that reason, so the
+    measurement this gate waits for cannot be taken while the robot is commanded this way.
+
+    Measured before the fix: every directional key on the Lite3 refused with "no gait floor
+    has ever been measured on the lite3", and `force sub-floor` had to be ticked on every
+    single press -- a safety control that must always be bypassed.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        axis = _driver(tmp, platform="lite3",
+                       lite3_link={"locomotion-transport": "axis"})
+        assert axis._transport_preserves_magnitude() is False
+        assert axis._precheck("walk_forward", {"vx": 0.3}, False) == "", \
+            "a sign-only transport has no sub-floor command to refuse"
+        assert axis._precheck("turn_left", {"wz": 0.5}, False) == ""
+
+        # ...and this is NOT the platform test. The same Lite3 on the magnitude-preserving
+        # transport still gets the floor check, because there a speed IS a speed.
+        udp = _driver(tmp, platform="lite3",
+                      lite3_link={"locomotion-transport": "udp"})
+        assert udp._transport_preserves_magnitude() is True
+        assert "gait floor" in udp._precheck("walk_forward", {"vx": 0.3}, False), \
+            "the udp transport preserves magnitude, so the floor still applies"
+
+
+def test_an_unrecognised_transport_cannot_switch_the_floor_check_off():
+    """The safe reading of an unknown transport is that a speed is a speed. A transport
+    name nobody has priced must not be able to disable a safety check by being unknown."""
+    with tempfile.TemporaryDirectory() as tmp:
+        driver = _driver(Path(tmp), platform="lite3",
+                         lite3_link={"locomotion-transport": "ros2"})
+        assert driver._transport_preserves_magnitude() is True
+        assert "gait floor" in driver._precheck("walk_forward", {"vx": 0.3}, False)
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
