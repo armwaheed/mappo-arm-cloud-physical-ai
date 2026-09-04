@@ -5,6 +5,8 @@ SPDX-License-Identifier: Apache-2.0
 
 # One RGB camera, no depth sensor, no LiDAR
 
+**English** | [简体中文](WHITEPAPER_CN.md)
+
 ### What a quadruped can do with that, and where it stops being enough
 
 **Waheed Brown** ([waheed.brown@arm.com](mailto:waheed.brown@arm.com)) — lead author<br>
