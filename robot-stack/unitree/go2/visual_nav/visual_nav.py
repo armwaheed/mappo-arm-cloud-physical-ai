@@ -1603,6 +1603,16 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
     ap.add_argument("--obstacle-height", type=float, default=None,
                     help="true height of the tracked object in metres, when --classes "
                          "is something other than person")
+    ap.add_argument("--body-length", type=float, default=None, metavar="M",
+                    help="the robot's footprint ALONG the body, in metres. State it with "
+                         "--body-width and the planner clears two discs shaped like the "
+                         "robot instead of one circle inscribing its diagonal. On a "
+                         "0.610 x 0.370 m Lite3 that is a modelled half-width of 0.24 m "
+                         "rather than 0.40 m, so a passable gap narrows by 0.32 m without "
+                         "understating a single obstacle. Both or neither.")
+    ap.add_argument("--body-width", type=float, default=None, metavar="M",
+                    help="the robot's footprint ACROSS the body, in metres. See "
+                         "--body-length; stating one without the other is refused.")
     ap.add_argument("--robot-radius", type=float, default=planner.robot_radius_m,
                     help="the loaded robot's measured plan-view planning radius in "
                          "metres. It sets both obstacle clearance and MAPPO scale; do "
@@ -1939,7 +1949,9 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         bindings.warn_if_below_gait_floor(limits.max_vx, args)
         planner_config = PlannerConfig(horizon_s=args.horizon,
                                        obstacle_radius_m=args.obstacle_radius,
-                                       robot_radius_m=robot_radius)
+                                       robot_radius_m=robot_radius,
+                                       body_length_m=args.body_length,
+                                       body_width_m=args.body_width)
         print(f"[visual_nav] planner: horizon {planner_config.horizon_s:.1f}s "
               f"({planner_config.horizon_s * limits.max_vx:.2f} m of lookahead at "
               f"top speed), robot radius {planner_config.robot_radius_m:.2f} m, "
