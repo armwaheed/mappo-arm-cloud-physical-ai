@@ -99,6 +99,100 @@ STOPPED = (0.0, 0.0, 0.0)
 CRUISING = (0.30, 0.0, 0.0)
 
 
+# ── the body is a rectangle, not a circle ───────────────────────────────────
+#
+# Suggested by @FedericoPecora during a live session: the robot is longer than it is wide,
+# so describe it with two discs instead of one. A single disc must inscribe the DIAGONAL,
+# which inflates the width to the length -- on the Lite3's vendor 0.610 x 0.370 m that is a
+# modelled half-width of 0.40 m against a true 0.185 m.
+LITE3_L, LITE3_W = 0.610, 0.370
+
+
+def _body(**kw):
+    return PlannerConfig(body_length_m=LITE3_L, body_width_m=LITE3_W, **kw)
+
+
+def test_an_unstated_footprint_is_still_one_disc():
+    """The default must not change. Nobody has said how big most robots are, and a single
+    disc at `robot_radius_m` is the only honest model available without a measurement."""
+    assert PlannerConfig().body_discs() == ((0.0, 0.40),)
+    assert PlannerConfig(robot_radius_m=0.25).body_discs() == ((0.0, 0.25),)
+
+
+def test_two_discs_cover_the_whole_rectangle_including_its_corners():
+    """A capsule of half-width radius does NOT: the corner of a 0.610 x 0.370 m body sits
+    0.240 m from its half's centre while the half-width is 0.185 m, so a capsule would
+    leave the corners uncovered and quietly clip door frames."""
+    discs = _body().body_discs()
+    assert len(discs) == 2
+    for corner_x, corner_y in ((LITE3_L / 2, LITE3_W / 2), (LITE3_L / 2, -LITE3_W / 2),
+                               (-LITE3_L / 2, LITE3_W / 2), (-LITE3_L / 2, -LITE3_W / 2)):
+        covered = any(math.hypot(corner_x - ox, corner_y) <= r + 1e-9
+                      for ox, r in discs)
+        assert covered, f"corner ({corner_x}, {corner_y}) is outside both discs"
+
+
+def test_the_modelled_half_width_falls_and_that_is_the_whole_point():
+    discs = _body().body_discs()
+    half_width = max(r for _, r in discs)
+    assert half_width < 0.40, "a two-disc body must be narrower than the inscribed circle"
+    assert abs(half_width - 0.2398) < 1e-3, half_width
+    # ...and it is still WIDER than the true half-width, because the discs must also
+    # reach the corners. This is a better model, not a smaller robot.
+    assert half_width > LITE3_W / 2
+
+
+def test_the_discs_ride_the_body_rather_than_the_world():
+    """A two-disc model evaluated at a fixed yaw is a model of a robot that never turns."""
+    planner = DynamicWindowPlanner(limits=Limits(), config=_body())
+    obstacle = Obstacle(x=0.0, y=0.60, vx=0.0, vy=0.0, radius_m=0.10)
+    facing_x = planner.current_gap((0.0, 0.0, 0.0), [obstacle])
+    facing_y = planner.current_gap((0.0, 0.0, math.pi / 2), [obstacle])
+    assert facing_y < facing_x, \
+        "nose-on to the obstacle the front disc is nearer, so the gap must be smaller"
+
+
+def test_a_gap_the_inscribed_circle_refuses_is_passable_to_the_real_body():
+    """The measured win. A slot 0.62 m wide has 0.31 m of half-clearance: less than the
+    0.40 m inscribed circle and more than the 0.24 m two-disc half-width."""
+    walls = [Obstacle(x=1.0, y=+0.31 + 0.05, vx=0.0, vy=0.0, radius_m=0.05,
+                      hard_gap_m=0.0),
+             Obstacle(x=1.0, y=-0.31 - 0.05, vx=0.0, vy=0.0, radius_m=0.05,
+                      hard_gap_m=0.0)]
+    straight = (0.3, 0.0, 0.0)
+    circle = DynamicWindowPlanner(limits=Limits(), config=PlannerConfig())
+    body = DynamicWindowPlanner(limits=Limits(), config=_body())
+    assert not circle.is_feasible(ORIGIN, straight, walls), \
+        "the inscribed circle believes it cannot fit"
+    assert body.is_feasible(ORIGIN, straight, walls), \
+        "the real footprint fits, and this is the 0.32 m of gap the circle was wasting"
+
+
+def test_a_gap_narrower_than_the_real_body_is_still_refused():
+    """The counter-test, and the one that matters: this must be a better MODEL, not a
+    smaller robot. A slot narrower than the two-disc half-width is still impassable."""
+    walls = [Obstacle(x=1.0, y=+0.20 + 0.05, vx=0.0, vy=0.0, radius_m=0.05,
+                      hard_gap_m=0.0),
+             Obstacle(x=1.0, y=-0.20 - 0.05, vx=0.0, vy=0.0, radius_m=0.05,
+                      hard_gap_m=0.0)]
+    body = DynamicWindowPlanner(limits=Limits(), config=_body())
+    assert not body.is_feasible(ORIGIN, (0.3, 0.0, 0.0), walls)
+
+
+def test_a_half_stated_or_swapped_footprint_is_refused_at_construction():
+    """Guessing the missing half is how a robot comes to be modelled narrower than it is,
+    and swapping the two models it side-on."""
+    for kwargs in ({"body_length_m": LITE3_L}, {"body_width_m": LITE3_W},
+                   {"body_length_m": LITE3_W, "body_width_m": LITE3_L},
+                   {"body_length_m": 0.0, "body_width_m": 0.0}):
+        try:
+            PlannerConfig(**kwargs)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"{kwargs} should be refused")
+
+
 def _planner(**overrides):
     return DynamicWindowPlanner(limits=Limits(**overrides), config=PlannerConfig())
 

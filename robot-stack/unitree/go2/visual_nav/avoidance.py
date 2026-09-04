@@ -405,6 +405,55 @@ class PlannerConfig:
     samples_wz: int = 11
 
     robot_radius_m: float = 0.40  # Go2 is ~0.70 x 0.31 m; half-diagonal, rounded up
+
+    #: The robot's own footprint, in metres, when it is worth saying it is not round.
+    #: BOTH or NEITHER: stating one is a half-answer and is refused at construction.
+    #:
+    #: A quadruped is a rectangle, and a single disc has to inscribe its DIAGONAL, so it
+    #: inflates the width to the length. On the Lite3's 0.610 x 0.370 m that is a modelled
+    #: half-width of 0.40 m against a true 0.185 m: 0.16 m of robot that is not there, on
+    #: each side, in every direction, permanently. It is the largest single over-estimate
+    #: in the clearance budget and it is not an obstacle's fault.
+    #:
+    #: Two discs, each circumscribing half the rectangle, cover the same footprint exactly
+    #: while the LATERAL half-width falls to 0.24 m. A gap the robot may pass narrows by
+    #: 0.32 m without a single obstacle being understated. Suggested by @FedericoPecora.
+    body_length_m: float | None = None
+    body_width_m: float | None = None
+
+    def __post_init__(self) -> None:
+        stated = (self.body_length_m is not None, self.body_width_m is not None)
+        if any(stated) and not all(stated):
+            raise ValueError(
+                "body_length_m and body_width_m are stated together or not at all: one "
+                "without the other cannot describe a footprint, and guessing the missing "
+                "half is how a robot comes to be modelled narrower than it is")
+        if all(stated) and not (self.body_length_m > 0 and self.body_width_m > 0):
+            raise ValueError("a body footprint must be positive in both dimensions")
+        if all(stated) and self.body_width_m > self.body_length_m:
+            raise ValueError(
+                f"body_width_m {self.body_width_m} exceeds body_length_m "
+                f"{self.body_length_m}; these are along-body then across-body, and "
+                "swapping them models the robot side-on")
+
+    def body_discs(self) -> tuple[tuple[float, float], ...]:
+        """The footprint to clear, as ``(offset along body +x, radius)`` discs.
+
+        One disc at the origin — today's behaviour, exactly — until a footprint is stated.
+        The default is not a worse model, it is the only honest one available when nobody
+        has said how big the robot is.
+
+        Given a footprint, two discs each circumscribing HALF the rectangle. That covers
+        the whole rectangle including its corners, which a capsule of half-width radius
+        does not: the corner of a 0.610 x 0.370 m body sits 0.240 m from its half's centre
+        while the half-width is only 0.185 m, so a capsule would leave the corners
+        uncovered and quietly clip door frames.
+        """
+        if self.body_length_m is None or self.body_width_m is None:
+            return ((0.0, self.robot_radius_m),)
+        offset = self.body_length_m / 4.0
+        radius = math.hypot(self.body_length_m / 2.0, self.body_width_m) / 2.0
+        return ((+offset, radius), (-offset, radius))
     obstacle_radius_m: float = 0.35   # a person's personal footprint
     hard_gap_m: float = 0.25      # free space that must remain between the two discs
 
@@ -795,9 +844,9 @@ class DynamicWindowPlanner:
         """Which of these velocities keep every obstacle's hard gap over the horizon."""
         if not obstacles:
             return np.ones(rows.shape[0], dtype=bool)
-        xy, _ = self._rollout(rows, pose)
+        xy, yaws = self._rollout(rows, pose)
         required = self._hard_gaps(obstacles)[None, :] + margin
-        return (self._gaps(xy, obstacles) >= required).all(axis=1)
+        return (self._gaps(xy, yaws, obstacles) >= required).all(axis=1)
 
     def _transport_refusal(self, candidates: np.ndarray, executed: np.ndarray,
                            known: np.ndarray | None, moves: np.ndarray | None,
@@ -970,7 +1019,8 @@ class DynamicWindowPlanner:
             yaws[:, k] = yaw
         return xy, yaws
 
-    def _gaps(self, xy: np.ndarray, obstacles: list[Obstacle]) -> np.ndarray:
+    def _gaps(self, xy: np.ndarray, yaws: np.ndarray,
+              obstacles: list[Obstacle]) -> np.ndarray:
         """Worst free gap over the horizon, per candidate PER OBSTACLE: ``(N, M)``.
 
         "Gap" is surface-to-surface: centre distance minus both radii. Obstacles are
@@ -994,11 +1044,25 @@ class DynamicWindowPlanner:
 
         # (M, K, 2): each obstacle's predicted position at each rollout step.
         predicted = centres[:, None, :] + velocities[:, None, :] * times[None, :, None]
-        # (N, M, K): distance from candidate n at step k to obstacle m at step k.
-        delta = xy[:, None, :, :] - predicted[None, :, :, :]
-        distance = np.linalg.norm(delta, axis=-1)
-        gaps = distance - radii[None, :, None] - self.config.robot_radius_m
-        return gaps.min(axis=2)
+        # ONE PASS PER BODY DISC, and the worst of them. `min` is associative, so taking
+        # the per-disc minimum over steps and then the minimum across discs is the same
+        # number as a joint minimum over both — at one disc's peak memory rather than D.
+        # With the default single disc at the origin this is byte-for-byte the old path.
+        worst = None
+        for offset, radius in self.config.body_discs():
+            if offset:
+                # The disc rides the BODY, so where it sits depends on the heading the
+                # rollout reached, not on the heading the robot started at. A two-disc
+                # model evaluated at a fixed yaw is a model of a robot that never turns.
+                nose = np.stack((np.cos(yaws), np.sin(yaws)), axis=-1)   # (N, K, 2)
+                centres_xy = xy + offset * nose
+            else:
+                centres_xy = xy
+            delta = centres_xy[:, None, :, :] - predicted[None, :, :, :]
+            distance = np.linalg.norm(delta, axis=-1)
+            gaps = (distance - radii[None, :, None] - radius).min(axis=2)
+            worst = gaps if worst is None else np.minimum(worst, gaps)
+        return worst
 
     def _soft_gaps(self, obstacles: list[Obstacle]) -> np.ndarray:
         """Each obstacle's soft gap, defaulting to the planner's, shape ``(M,)``."""
@@ -1028,9 +1092,11 @@ class DynamicWindowPlanner:
         """
         if not obstacles:
             return math.inf
+        x, y, yaw = pose
         return min(
-            math.hypot(o.x - pose[0], o.y - pose[1])
-            - o.radius_m - self.config.robot_radius_m
+            math.hypot(o.x - (x + offset * math.cos(yaw)),
+                       o.y - (y + offset * math.sin(yaw))) - o.radius_m - radius
+            for offset, radius in self.config.body_discs()
             for o in obstacles)
 
     def is_feasible(self, pose: tuple[float, float, float],
@@ -1082,13 +1148,18 @@ class DynamicWindowPlanner:
         rows, known = self._executed(np.asarray([list(command)], dtype=float))
         if known is not None and not bool(known[0]):
             return False
-        xy, _ = self._rollout(rows, pose)
+        xy, yaws = self._rollout(rows, pose)
         if horizon_s is not None:
             # Truncating the path is equivalent to re-rolling with a shorter horizon and
             # cheaper: _gaps derives its per-step obstacle prediction times from
             # xy.shape[1], so slicing keeps the moving obstacles consistent with it.
-            xy = xy[:, :max(1, round(horizon_s / self.config.dt_s)), :]
-        return bool(np.all(self._gaps(xy, obstacles)[0] >= self._hard_gaps(obstacles)))
+            steps = max(1, round(horizon_s / self.config.dt_s))
+            # yaws is truncated WITH xy: a disc offset along the body reads the heading at
+            # the same step as the position it rides on, and slicing one without the other
+            # would put the front disc at a heading the robot reaches later.
+            xy, yaws = xy[:, :steps, :], yaws[:, :steps]
+        return bool(np.all(self._gaps(xy, yaws, obstacles)[0]
+                           >= self._hard_gaps(obstacles)))
 
     # ── Planning ────────────────────────────────────────────────────────────
     def plan(self, pose: tuple[float, float, float], goal: tuple[float, float],
@@ -1127,7 +1198,7 @@ class DynamicWindowPlanner:
         # executed as a 0.30 m/s walk into the obstacle it was creeping past.
         executed, known = self._executed(candidates)
         xy, yaws = self._rollout(executed, pose)
-        per_obstacle_gaps = self._gaps(xy, obstacles)
+        per_obstacle_gaps = self._gaps(xy, yaws, obstacles)
         gaps = self._worst_gap(per_obstacle_gaps)
 
         # Starting is harder than continuing: see PlannerConfig.reason_hysteresis_m.
