@@ -353,8 +353,20 @@ function renderCapabilities(caps) {
   // caveat that is true on every press belongs where the press happens, not in a list that
   // pushes the controls off screen. What is left here is the one that is about the DEVICE
   // rather than about a control.
+  // A GAIT FLOOR IS NOT A THING ON EVERY TRANSPORT, and where it is not, neither the
+  // caveat nor the control that answers it should be on screen. On a sign-only transport
+  // every command past the deadband emits the same primitive at full scale, so there is no
+  // sub-floor command to make and nothing for `force sub-floor` to force: the driver stops
+  // consulting the floor at all, the checkbox changes no outcome, and a control that
+  // changes no outcome is worse than absent -- it invites an operator to tick it and
+  // believe that is why the robot moved.
+  const signOnly = !!(caps.locomotion && caps.locomotion.preserves_magnitude === false);
+  const forceField = $("force-field");
+  if (forceField) forceField.hidden = signOnly;
+  if (signOnly && $("force")) $("force").checked = false;
+
   const unmeasured = caps.unmeasured_axes || [];
-  if (unmeasured.length) {
+  if (unmeasured.length && !signOnly) {
     addNote(notes, "warn",
       `<strong>⚠ marked keys carry a caveat.</strong> No measured ` +
       `${unmeasured.join(" or ")} gait floor on the ${caps.platform} — hover a marked key. ` +
