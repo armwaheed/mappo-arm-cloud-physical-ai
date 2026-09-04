@@ -540,6 +540,105 @@ def test_a_cap_below_one_is_refused_at_construction():
     assert StaticObstacleMap(max_per_label={"bin": 1}).max_landmarks_for("bin") == 1
 
 
+# ── The collapsed landmark that could not die ───────────────────────────────
+#
+# All four reproduce robot 2's 2026-09-02 run `20260902T115833Z-0020f90`, which held 754
+# times in 835 ticks and timed out having moved 1 cm. Measured from that file: one
+# `static-detect` landmark frozen at 0.076 m from the robot, bearing +71.66 deg, planning
+# radius 0.46 m, on 773 consecutive ticks. Required clearance was
+# `robot_radius 0.40 + gap + 0.46 ~ 0.98 m` against 0.076 m, so no sampled command could
+# ever clear it. The chair it came from went on being sighted at 2.3-2.4 m throughout.
+GHOST_RANGE_M = 0.076
+GHOST_BEARING_DEG = 71.66
+
+
+def _robot_standing_on(landmark_x, landmark_y, bearing_deg, range_m):
+    """A robot pose, yaw 0, that puts (landmark_x, landmark_y) at this bearing and range."""
+    return (landmark_x - range_m * math.cos(math.radians(bearing_deg)),
+            landmark_y - range_m * math.sin(math.radians(bearing_deg)),
+            0.0)
+
+
+def test_a_landmark_centre_inside_the_robot_is_refused_as_impossible():
+    """The robot is STANDING there, so nothing it can see is there.
+
+    A real object's centre is at least its own radius beyond its own surface, so an
+    untouched obstacle's centre is never nearer than `robot_radius + its radius`. This is
+    #193's horizon gate applied to the other impossible geometry.
+    """
+    mapping = _map(robot_radius_m=0.40)
+    _see(mapping, 4, bearing_deg=GHOST_BEARING_DEG, range_m=GHOST_RANGE_M)
+    assert mapping.landmarks == [], \
+        "a landmark 0.076 m from the robot centre is inside a 0.40 m footprint"
+
+    # ...and the rule is a floor on distance, not a ban on close obstacles: a bin whose
+    # centre clears the footprint is still acquired normally.
+    mapping = _map(robot_radius_m=0.40)
+    _see(mapping, 4, bearing_deg=GHOST_BEARING_DEG, range_m=0.45)
+    assert len(mapping.confirmed()) == 1
+
+
+def test_the_impossible_rule_is_off_when_the_robot_radius_was_never_stated():
+    """An unmeasured radius is an absence, not a robot of zero width.
+
+    `replay.py` builds a map with no robot at all, and must keep behaving as it did.
+    """
+    mapping = _map()
+    _see(mapping, 4, bearing_deg=GHOST_BEARING_DEG, range_m=GHOST_RANGE_M)
+    assert len(mapping.confirmed()) == 1
+    assert mapping.robot_radius_m == 0.0
+
+
+def test_a_landmark_the_robot_stands_inside_can_still_be_disconfirmed():
+    """The immortality itself, independent of the impossible-centre rule.
+
+    A disc the robot is standing inside subtends every bearing, so the centre-point
+    field-of-view test is the wrong question: it answered "outside 60 deg, not visible" on
+    all 773 ticks, and a confirmed landmark is pruned only on misses it can never score.
+    With the map given no robot radius, the ONLY thing that can kill this landmark is the
+    visibility fix. Measured on the code this replaces: `is_visible` False, misses still 0
+    after MAX_MISSES + 1 cycles of looking and not finding it, landmark alive.
+    """
+    mapping = _map()
+    _see(mapping, CONFIRM_SIGHTINGS, bearing_deg=0.0, range_m=1.5)
+    landmark = mapping.confirmed()[0]
+    assert mapping.robot_radius_m == 0.0, "the impossible-centre rule must not be what fixes this"
+
+    # The robot ends up standing on it, and the landmark falls outside the 120 deg
+    # envelope — exactly the measured geometry.
+    pose = _robot_standing_on(landmark.x, landmark.y, GHOST_BEARING_DEG, GHOST_RANGE_M)
+    assert abs(GHOST_BEARING_DEG) > math.degrees(mapping.fov_rad) / 2.0, \
+        "the reproduction requires a bearing the point test calls invisible"
+    assert landmark.planning_radius_m >= GHOST_RANGE_M, \
+        "the reproduction requires the robot to be INSIDE the disc"
+    assert mapping.is_visible(landmark, *pose), \
+        "a disc the robot stands inside subtends every bearing"
+
+    for index in range(MAX_MISSES + 1):
+        mapping.observe([], 1.0 + index * 0.14, *pose)
+    assert mapping.landmarks == [], \
+        "looked at and not found MAX_MISSES times, it must go"
+
+
+def test_a_landmark_past_the_frame_edge_is_still_not_penalised():
+    """The counter-test, and the reason the fix is not a general widening.
+
+    Widening the envelope by each disc's half-angle would score misses against landmarks
+    at the edge of frame that the detector cannot segment — the failure MAX_MISSES was
+    raised 8 -> 25 for. Only the degenerate inside-the-disc case changed.
+    """
+    mapping = _map()
+    _see(mapping, CONFIRM_SIGHTINGS, bearing_deg=0.0, range_m=2.0)
+    landmark = mapping.confirmed()[0]
+    pose = _robot_standing_on(landmark.x, landmark.y, GHOST_BEARING_DEG, 2.0)
+    assert not mapping.is_visible(landmark, *pose), \
+        "well outside the envelope and nowhere near the robot: still invisible"
+    for index in range(MAX_MISSES + 1):
+        mapping.observe([], 1.0 + index * 0.14, *pose)
+    assert len(mapping.confirmed()) == 1, \
+        "a landmark out of view must not be forgotten for being out of view"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
