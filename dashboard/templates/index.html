@@ -115,6 +115,10 @@ SPDX-License-Identifier: Apache-2.0
          device and carries the stop. -->
     <figure class="viewport" id="viewport">
       <img id="camera" alt="Front RGB camera">
+      <!-- STATUS writes here rather than only into the result panel: an operator watching
+           the robot is looking at the viewport, and a verdict that lands off to the side is
+           a verdict nobody reads while a robot is in front of them. -->
+      <div id="camera-overlay" role="status" aria-live="polite" hidden></div>
       <figcaption>
         <span id="camera-label">camera idle</span>
         <label class="field inline">

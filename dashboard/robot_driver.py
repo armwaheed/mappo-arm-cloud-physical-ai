@@ -655,7 +655,26 @@ class MappoRobotDriver(DeviceDriver):
 
         The check is a pure table lookup (``check_gait_floor`` takes no robot), so doing it
         here costs nothing and restores the immediate answer.
+
+        ⚠️ IT DOES NOT APPLY TO A SIGN-ONLY TRANSPORT, and asking it there was a category
+        error. A gait floor is "the lowest command that still produces a gait", and on the
+        axis transport there is no such thing to be below: every command past the profile's
+        deadband emits the same raw primitive at full scale, so a commanded speed is a
+        DIRECTION. `gait_floor_probe.py` refuses this transport by name for exactly that
+        reason -- "there is no lowest command: there is one command per direction" -- so the
+        measurement this gate waits for cannot be taken while the robot is commanded this
+        way. The result was that every directional key on the Lite3 refused with "no gait
+        floor has ever been measured", and the operator's only way through was to tick
+        `force sub-floor` on every single press: a safety control that must always be
+        bypassed, which teaches an operator to bypass safety controls. `walk_back` already
+        sidesteps the same gate for the same shape of reason (issue #42's axis conflation).
+
+        This is NOT the platform test. A Lite3 on the magnitude-preserving `udp` transport
+        still gets the floor check and still refuses, because there a commanded speed is a
+        speed and being under the floor is a real thing to be.
         """
+        if not self._transport_preserves_magnitude():
+            return ""
         axis, speed = None, 0.0
         if action == "walk_forward":
             axis, speed = "forward", commanded.get("vx", 0.0)
@@ -1759,6 +1778,19 @@ class MappoRobotDriver(DeviceDriver):
             except AxisProfileError as refusal:
                 directions[key] = {"available": False, "reason": str(refusal)}
         return directions
+
+    def _transport_preserves_magnitude(self) -> bool:
+        """Whether a commanded speed reaches the legs as a speed rather than as a sign.
+
+        ``True`` for every platform that is not a Lite3, and for the Lite3's own
+        magnitude-preserving transports. Unknown transports are treated as preserving
+        magnitude, because that is the reading under which the gait floor still applies:
+        an unrecognised transport must not be able to switch a safety check off.
+        """
+        if self.platform != "lite3":
+            return True
+        transport = self.lite3_link.get("locomotion-transport", DEFAULT_LITE3_TRANSPORT)
+        return LITE3_TRANSPORTS.get(transport, {}).get("preserves_magnitude", True) is not False
 
     def _locomotion_snapshot(self) -> dict | None:
         """The selected Lite3 transport and the two facts an operator has to act on.

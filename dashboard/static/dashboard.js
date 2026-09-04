@@ -399,7 +399,8 @@ function setPadEnabled(enabled) {
   // Which directions this robot can execute at all, as opposed to whether the pad is live
   // right now. `null` means the device could not say, and then nothing here grades a key:
   // a key wrongly greyed is as much a lie as a key wrongly live.
-  const directions = (state.capabilities || {}).motion_directions || null;
+  const caps = state.capabilities || {};
+  const directions = caps.motion_directions || null;
   for (const key of document.querySelectorAll(".key")) {
     const fn = key.dataset.fn;
     // Stop is never gated. If motion is disabled it will be refused by the device anyway,
@@ -419,6 +420,43 @@ function setPadEnabled(enabled) {
     }
     key.classList.remove("unmeasured");
     key.title = key.dataset.baseTitle;
+    // POSTURE IS NOT THIS DASHBOARD'S TO CHANGE ON EVERY PLATFORM, and the two keys that
+    // claim it need opposite treatment rather than the same badge.
+    //
+    // `lie_down` on a Lite3 is `stand_down()` -> `stop()`: the velocity-zeroing part of
+    // STOP and nothing else. But it routes through `_move`, so it takes the motion lock
+    // and is REFUSED while the policy holds the legs -- it fails exactly when an operator
+    // would most want it, and STOP is never gated and also ends the run and the nudge
+    // worker. Keeping it is keeping a strictly worse stop, so it goes.
+    //
+    // `stand` commands no velocity at all: `prepare_motion()` plus a posture report. It
+    // is not posture on this platform and should not say it is -- but pressing it does
+    // spawn the bridge, connect, and reach the robot, which makes it the only no-motion
+    // "can the driver still talk to the legs" probe on the page. It stays, relabelled
+    // STATUS, which is what an operator is actually asking when they press it. Measured 12:45 on robot 2: four presses, every one `travelled_m=0.0,
+    // warning=''` -- successful, and indistinguishable from dead while it claimed posture.
+    const posture = caps.lie_down_changes_posture;
+    if (key.dataset.baseLabel === undefined) {
+      const span = key.querySelector("span");
+      key.dataset.baseLabel = span ? span.textContent : "";
+    }
+    const span = key.querySelector("span");
+    if (fn === "lie_down" && posture === false) {
+      key.disabled = true;
+      key.classList.add("unmeasured");
+      key.title = "this platform's posture is operator-controlled; this only STOPS, and " +
+                  "STOP does the same and is never refused. " + (caps.posture_note || "");
+      continue;
+    }
+    if (fn === "stand" && posture === false) {
+      key.classList.add("advisory");
+      if (span) span.textContent = "status";
+      key.title = "No motion. Confirms the driver can still reach the robot and that it " +
+                  "will accept commands. " + (caps.posture_note || "");
+    } else {
+      key.classList.remove("advisory");
+      if (span && key.dataset.baseLabel) span.textContent = key.dataset.baseLabel;
+    }
     key.disabled = !enabled;
   }
   // Why the pad is inert is not the same question in the two cases, and an operator staring
@@ -571,6 +609,50 @@ function motionParams(fn) {
   return {};
 }
 
+// ── STATUS, over the picture ────────────────────────────────────────────────
+//
+// The STAND key commands no velocity on a platform whose posture it cannot change, so what
+// it really answers is "can the driver reach this robot, and will it accept a command". It
+// is relabelled STATUS for that reason, and the answer belongs ON THE VIEWPORT: the whole
+// point of pressing it is that something looks wrong with the robot you are watching, and a
+// verdict rendered in a side panel is one an operator reads a beat too late, if at all.
+//
+// Two facts, deliberately, and no more: whether the bridge reached the robot, and who holds
+// the legs. Anything longer stops being glanceable, which is the only property that matters
+// on top of a live camera.
+const OVERLAY_MS = 5000;
+let overlayTimer = null;
+
+function flashOverlay(text, bad) {
+  const el = $("camera-overlay");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("bad", !!bad);
+  el.hidden = false;
+  if (overlayTimer) clearTimeout(overlayTimer);
+  overlayTimer = setTimeout(() => { el.hidden = true; }, OVERLAY_MS);
+}
+
+async function flashStatus(reach) {
+  const reached = reach && reach.ok !== false;
+  const lines = [reached ? "✓ driver reached the robot"
+                         : "✗ driver could NOT reach the robot"];
+  if (!reached && reach && reach.error) lines.push(String(reach.error).slice(0, 140));
+  if (reached) {
+    const status = await invoke("get_status", {});
+    if (status && status.ok !== false) {
+      const owner = (status.control || {}).owner;
+      lines.push(`${status.busy ? "busy" : "idle"} · legs held by ${owner || "unknown"}`);
+      // An error_state the robot is reporting outranks both of the above, so it goes last
+      // where the eye stops, and it turns the overlay red.
+      if (status.error) { lines.push(`robot error: ${status.error}`); }
+    } else {
+      lines.push("status unavailable");
+    }
+  }
+  flashOverlay(lines.join("\n"), !reached || lines.some((l) => l.startsWith("robot error")));
+}
+
 async function sendMotion(button) {
   const fn = button.dataset.fn;
   // Stop bypasses the busy interlock deliberately: the one command you must be able to send
@@ -580,6 +662,7 @@ async function sendMotion(button) {
   try {
     const result = await invoke(fn, motionParams(fn));
     show($("motion-result"), summariseMotion(fn, result), result.ok === false);
+    if (fn === "stand") await flashStatus(result);
   } finally {
     state.busy = false;
     button.classList.remove("busy");
