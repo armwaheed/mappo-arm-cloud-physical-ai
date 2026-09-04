@@ -188,6 +188,71 @@ def test_the_plan_says_the_robot_does_not_travel():
         assert "0.8563" in text, "the plan must quote the MEASURED yaw speed"
 
 
+def test_the_pose_fields_these_runners_read_actually_exist():
+    """⚠️ THE BUG THIS EXISTS FOR. `flourish.perform` and `reverse_along_path.walk` read
+    `loco.pose()`, and both were written against the SIBLING UPSTREAM repository, whose
+    `Lite3Pose` names the heading `yaw_rad`. This repository names it `yaw`. Nothing
+    offline touched a real pose, so it passed every test here and raised
+    `AttributeError: 'Lite3Pose' object has no attribute 'yaw_rad'` on a robot that had
+    already completed its run.
+
+    The state machines are pure and cannot catch this; only the seam can. So the seam is
+    asserted directly: whatever `Lite3Pose` carries, these two files must read that name.
+    """
+    import ast
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+    from deep_robotics.lite3.locomotion.lite3_udp_locomotion import Lite3Pose
+
+    fields = set(getattr(Lite3Pose, "__dataclass_fields__", {}))
+    assert fields, "Lite3Pose is expected to be a dataclass"
+
+    here = _Path(__file__).resolve().parent
+    for name in ("flourish.py", "reverse_along_path.py"):
+        tree = ast.parse((here / name).read_text(), filename=name)
+        read = {node.attr for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name) and node.value.id == "pose"}
+        assert read, f"{name} no longer reads a pose; delete this test or fix the scan"
+        unknown = read - fields
+        assert not unknown, (
+            f"{name} reads {sorted(unknown)} off a pose, and Lite3Pose has "
+            f"{sorted(fields)}. This is the upstream/downstream naming split.")
+
+
+# ── look: the one gesture that does NOT come home ───────────────────────────
+def test_a_look_turns_the_asked_for_angle_and_stays_there():
+    """The whole difference from `sweep`. This runs between attempts of a run that ended
+    "goal never sighted", so returning to the start heading would leave the next attempt
+    facing exactly the direction that saw nothing."""
+    for degrees in (90.0, -90.0, 180.0):
+        gesture = Flourish(Flourish.LOOK, yaw_speed_rad_s=YAW_RAD_S,
+                           look_rad=math.radians(degrees))
+        yaw, _, signs, swept = _turn(gesture)
+        assert abs(swept - abs(math.radians(degrees))) < LEG_TOLERANCE_RAD + 0.1, swept
+        assert len(set(signs)) == 1, "a look is one continuous turn"
+        assert abs(wrap_pi(yaw - wrap_pi(math.radians(degrees)))) < 0.25, (degrees, yaw)
+
+
+def test_the_sign_of_the_angle_picks_the_direction():
+    left = Flourish(Flourish.LOOK, yaw_speed_rad_s=YAW_RAD_S, look_rad=math.radians(90))
+    right = Flourish(Flourish.LOOK, yaw_speed_rad_s=YAW_RAD_S, look_rad=math.radians(-90))
+    assert left.step(0.0, 0.0) > 0
+    assert right.step(0.0, 0.0) < 0
+
+
+def test_a_look_of_zero_is_refused_rather_than_being_a_silent_no_op():
+    """It would turn nowhere, see nothing new, and cost an attempt to discover that."""
+    try:
+        Flourish(Flourish.LOOK, yaw_speed_rad_s=YAW_RAD_S, look_rad=0.0)
+    except Refusal as refusal:
+        assert "sees nothing new" in str(refusal), refusal
+    else:
+        raise AssertionError("a zero-degree look must be refused")
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

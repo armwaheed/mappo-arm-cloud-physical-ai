@@ -27,6 +27,8 @@ _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
 from mission import (
+    _GOAL_NEVER_SIGHTED,
+    _LOOK_DEGREES,
     _NEEDS_STANDING,
     Attempt,
     main,
@@ -375,6 +377,45 @@ def test_a_robot_fault_is_not_offered_as_something_standing_will_fix():
     # ...and ordinary run output must not be read as a mode refusal either.
     assert not _NEEDS_STANDING.search("[visual_nav] outcome: arrived (0.05 m from goal)")
     assert not _NEEDS_STANDING.search("[visual_nav] veto-hold, gait_state fine")
+
+
+def test_the_outcome_a_look_around_can_fix_is_recognised():
+    """Measured on both robots 2026-09-04: `goal never sighted in 20s`, three times, while
+    the marker was in the room and the detector found it in the raw frame, the rectified
+    frame and the RTSP stream the run itself reads. The robot was pointed the wrong way."""
+    assert _GOAL_NEVER_SIGHTED.search("goal never sighted in 20s")
+    assert _GOAL_NEVER_SIGHTED.search("outcome: Goal Never Sighted in 20s")
+    # ...and not the outcomes a look-around would make worse or cannot help.
+    for other in ("arrived (0.05 m from goal)", "timeout after 90s",
+                  "stalled: commanded 0.30 m/s"):
+        assert not _GOAL_NEVER_SIGHTED.search(other), other
+
+
+def test_the_headings_looked_at_do_not_come_home():
+    """A scan that returns to its start leaves the next attempt facing exactly the
+    direction that just saw nothing. The cumulative headings must be distinct."""
+    seen, heading = [0.0], 0.0
+    for step in _LOOK_DEGREES:
+        heading += step
+        seen.append(heading)
+    assert len(set(seen)) == len(seen), f"a heading is repeated: {seen}"
+    assert seen == [0.0, 90.0, -90.0], seen
+    # At the camera's 134 deg HFOV, three headings 90 deg apart overlap into a continuous
+    # arc rather than leaving gaps between them.
+    assert all(abs(b - a) < 134.0 for a, b in zip(sorted(seen), sorted(seen)[1:])), seen
+
+
+def test_a_look_is_offered_only_for_the_outcome_it_fits():
+    """A run that SAW its goal and was blocked has a different problem, and turning away
+    from a goal it can see would make it worse."""
+    import inspect
+
+    import mission
+    source = inspect.getsource(mission.main)
+    assert "_GOAL_NEVER_SIGHTED.search(attempt.outcome)" in source, \
+        "the look must be gated on the outcome, not fired after every failure"
+    assert "not attempt.needs_standing" in source, \
+        "a robot in the wrong mode cannot turn; asking it to is noise on top of a refusal"
 
 
 if __name__ == "__main__":

@@ -2477,6 +2477,45 @@ def test_a_stale_tick_inherits_no_decision():
     assert all("decision" not in t for t in ticks), ticks
 
 
+def test_the_goal_search_stands_still_unless_asked_to_walk():
+    """Every run recorded before this stood still while searching, and must still."""
+    assert NavConfig().goal_search_walk_m_s == 0.0
+
+
+def test_walking_while_searching_is_gated_by_the_planners_own_feasibility_test():
+    """Searching is not a licence to walk into something the robot can already see.
+
+    The arithmetic this exists for: a 0.14 m DICT_4X4_50 marker at focal 545.9 px spans
+    38 px at 2 m and 22 px at 3.5 m, and 6x6 cells plus a border need roughly 6 px each.
+    A robot staged 3.5 m out cannot decode the goal it is staring straight at. Measured on
+    both robots 2026-09-04: 146 clean perception cycles, zero sightings, no movement.
+    """
+    import inspect
+
+    import visual_nav
+    source = inspect.getsource(visual_nav)
+    start = source.index("goal_xy = self._goal.goal_xy()")
+    block = source[start:start + 1800]
+    assert "self._planner.is_feasible(pose, forward, obstacles)" in block, \
+        "the search walk must ask the same predicate the veto asks"
+    assert "goal-search blocked" in block, \
+        "a search walk refused by geometry must say so in telemetry, not look like a wait"
+
+
+def test_the_search_walk_is_not_the_policy_and_says_so():
+    """MAPPO needs a goal to act on, so no policy command exists while the goal is
+    unknown. These ticks carry no decision record, which is what separates them from
+    `policy` in the telemetry a demo is read from."""
+    import inspect
+
+    import visual_nav
+    doc = inspect.getsource(visual_nav.NavConfig)
+    assert "THIS IS NOT MAPPO" in doc, \
+        "the one property that keeps the demo honest must be stated where the knob is"
+    assert "sign-only" in doc.lower() or "full scale" in doc, \
+        "on this transport a creep is a walk, and that must not be discovered on a robot"
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:
