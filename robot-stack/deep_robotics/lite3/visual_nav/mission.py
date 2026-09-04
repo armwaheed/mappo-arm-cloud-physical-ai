@@ -87,6 +87,20 @@ _OUTCOME = re.compile(r"outcome:\s*(.+?)\s*$")
 #:
 #: `error_state` is deliberately NOT here. It is the one gate standing the robot up cannot
 #: clear, and promising an operator that it can is worse than saying nothing.
+#: The outcome a look-around can actually do something about. Measured 2026-09-04 on both
+#: robots: `outcome: goal never sighted in 20s`, three attempts, then a fault -- while the
+#: marker was in the room and the detector found it in the RAW frame, the RECTIFIED frame
+#: and the RTSP stream the run itself reads. Nothing was broken; the robot was pointed the
+#: wrong way and waited 20 s three times for a marker behind it.
+_GOAL_NEVER_SIGHTED = re.compile(r"goal never sighted", re.IGNORECASE)
+
+#: Where to look after each failed attempt, in degrees, applied BETWEEN attempts. The
+#: robot keeps each heading rather than returning to the one that just failed -- a scan
+#: that comes home leaves the next attempt facing exactly the direction that saw nothing.
+#: +90 then -180 lands on start, +90, -90: three headings, and at the camera's 134 deg
+#: that is roughly 400 degrees of arc looked at across a mission.
+_LOOK_DEGREES = (+90.0, -180.0)
+
 _NEEDS_STANDING = re.compile(
     r"basic_state=\d+.*force-control state"
     r"|policy_state=\d+.*moving mode"
@@ -233,7 +247,8 @@ _FLOURISH_PASSTHROUGH = ("--locomotion-transport", "--axis-profile", "--axis-loc
 _FLOURISH = (Path(__file__).resolve().parents[1] / "locomotion" / "flourish.py")
 
 
-def flourish_command(command: list[str], kind: str, args) -> list[str] | None:
+def flourish_command(command: list[str], kind: str, args,
+                     extra: tuple = ()) -> list[str] | None:
     """The gesture invocation, or ``None`` with a printed reason if it cannot be built.
 
     ``None`` is not an error. A gesture is decoration on the end of a run, and a run that
@@ -254,7 +269,7 @@ def flourish_command(command: list[str], kind: str, args) -> list[str] | None:
         print(f"[mission] --flourish needs --flourish-lane-width, because the gesture "
               f"turns in place and this robot has no lateral sensing; skipping the {kind}")
         return None
-    out = [sys.executable, str(_FLOURISH), "--kind", kind,
+    out = [sys.executable, str(_FLOURISH), "--kind", kind, *extra,
            "--robot-id", args.robot_id, "--firmware", args.firmware,
            "--payload", args.payload,
            "--lane-width-metres", str(args.flourish_lane_width),
@@ -265,7 +280,7 @@ def flourish_command(command: list[str], kind: str, args) -> list[str] | None:
     return out
 
 
-def play_flourish(command: list[str], kind: str, args) -> None:
+def play_flourish(command: list[str], kind: str, args, extra: tuple = ()) -> None:
     """Run the gesture, and never let it change the mission's verdict.
 
     ⚠️ THE ORDER MATTERS AND IT IS NOT OBVIOUS. This runs AFTER the drive process has
@@ -274,7 +289,7 @@ def play_flourish(command: list[str], kind: str, args) -> None:
     own aborts rather than by a timeout here, because a turn that is refused should say
     which gate refused it rather than being killed by a stopwatch that knows nothing.
     """
-    argv = flourish_command(command, kind, args)
+    argv = flourish_command(command, kind, args, extra)
     if argv is None:
         return
     print(f"[mission] {kind}")
@@ -385,8 +400,24 @@ def main(argv: list[str] | None = None) -> int:
             # It has already asked for the specific thing that would fix this; following
             # it with "a fault has occurred" would bury the actionable sentence.
             voice.say("fault")
+        # LOOK SOMEWHERE ELSE BEFORE TRYING AGAIN. Retrying a "goal never sighted" from
+        # the heading that did not sight it is three identical 20 s waits, which is what
+        # was measured. Only for this outcome: a run that saw its goal and was blocked has
+        # a different problem, and turning away from a goal it CAN see would make it worse.
+        looked = False
+        if (attempt.outcome and _GOAL_NEVER_SIGHTED.search(attempt.outcome)
+                and not attempt.needs_standing
+                and attempt_number <= len(_LOOK_DEGREES)):
+            degrees = _LOOK_DEGREES[attempt_number - 1]
+            print(f"[mission] the goal was never sighted; looking {degrees:+.0f} deg "
+                  f"before attempt {attempt_number + 1}")
+            play_flourish(command, "look", args, ("--degrees", str(degrees)))
+            looked = True
         if attempt_number < args.max_attempts:
-            print(f"[mission] cooling down {args.cooldown:.0f}s before the next attempt")
+            if not looked:
+                print(f"[mission] cooling down {args.cooldown:.0f}s before the next attempt")
+            else:
+                print(f"[mission] cooling down {args.cooldown:.0f}s from the new heading")
             # Interruptible: a stop during the cooldown should not wait it out first.
             if _STOP.wait(args.cooldown):
                 print("[mission] STOPPED on request during the cooldown.")

@@ -93,13 +93,15 @@ class Flourish:
     SPIN = "spin"
     SHAKE = "shake"
     SWEEP = "sweep"
+    LOOK = "look"
 
     def __init__(self, kind: str, *, yaw_speed_rad_s: float, turn_sign: int = +1,
-                 revolutions: float = SPIN_REVOLUTIONS, shakes: int = SHAKE_COUNT) -> None:
-        if kind not in (self.SPIN, self.SHAKE, self.SWEEP):
+                 revolutions: float = SPIN_REVOLUTIONS, shakes: int = SHAKE_COUNT,
+                 look_rad: float = SWEEP_RAD) -> None:
+        if kind not in (self.SPIN, self.SHAKE, self.SWEEP, self.LOOK):
             raise Refusal(
                 f"unknown gesture {kind!r}; it is one of "
-                f"{self.SPIN}, {self.SHAKE}, {self.SWEEP}")
+                f"{self.SPIN}, {self.SHAKE}, {self.SWEEP}, {self.LOOK}")
         if yaw_speed_rad_s <= 0.0:
             raise Refusal(
                 "this gesture is timed against the profile's MEASURED yaw speed and it is "
@@ -111,6 +113,15 @@ class Flourish:
         #: Each leg is (radians to turn, sign). A spin is one long leg; a shake alternates.
         if kind == self.SPIN:
             self._legs = [(2.0 * math.pi * revolutions, self.turn_sign)]
+        elif kind == self.LOOK:
+            # ONE LEG, AND IT DOES NOT COME BACK. That is the whole difference from
+            # `sweep`, and it is the point: a sweep that returns to its start heading
+            # leaves the next attempt facing exactly the direction that just failed. This
+            # is used between attempts of a run that ended "goal never sighted", so the
+            # robot has to STAY where it looked for the next attempt to see anything new.
+            if look_rad == 0.0:
+                raise Refusal("a look of zero degrees turns nowhere and sees nothing new")
+            self._legs = [(abs(look_rad), +1 if look_rad > 0 else -1)]
         elif kind == self.SWEEP:
             # Out to one side, across to the other, back to the middle. The robot ends on
             # the heading it was stuck on, having pointed the camera 90 degrees either way.
@@ -178,11 +189,15 @@ class Flourish:
         return COMMAND_WZ * sign
 
 
-def describe(kind: str, yaw_speed_rad_s: float) -> str:
+def describe(kind: str, yaw_speed_rad_s: float, look_rad: float = SWEEP_RAD) -> str:
     """The plan, in the shape the commissioning probes print theirs."""
     if kind == Flourish.SPIN:
         span, legs = 2.0 * math.pi * SPIN_REVOLUTIONS, 1
         what = f"one full turn in place, {math.degrees(span):.0f} deg"
+    elif kind == Flourish.LOOK:
+        span, legs = abs(look_rad), 1
+        what = (f"turn {math.degrees(look_rad):+.0f} deg and STAY there, so the next "
+                f"attempt looks somewhere new")
     elif kind == Flourish.SWEEP:
         span, legs = 4.0 * SWEEP_RAD, 3
         what = (f"look {math.degrees(SWEEP_RAD):.0f} deg each side of the stuck heading, "
@@ -215,8 +230,11 @@ def build_parser() -> argparse.ArgumentParser:
     robot_link.add_context_arguments(parser)
     robot_link.add_link_arguments(parser, moving=True)
     parser.add_argument("--kind",
-                        choices=(Flourish.SPIN, Flourish.SHAKE, Flourish.SWEEP),
+                        choices=(Flourish.SPIN, Flourish.SHAKE, Flourish.SWEEP,
+                                 Flourish.LOOK),
                         default=Flourish.SPIN)
+    parser.add_argument("--degrees", type=float, default=90.0,
+                        help="for --kind look: how far to turn, signed, and STAY there")
     parser.add_argument("--turn-sign", type=int, default=1, choices=(1, -1),
                         help="which way to turn. A CLEARANCE choice: both yaw primitives "
                              "are measured within 0.03%% of each other")
@@ -250,7 +268,8 @@ def perform(args, yaw_speed_rad_s: float) -> int:
     robot_link.preflight(link, args)
 
     gesture = Flourish(args.kind, yaw_speed_rad_s=yaw_speed_rad_s,
-                       turn_sign=args.turn_sign)
+                       turn_sign=args.turn_sign,
+                       look_rad=math.radians(args.degrees))
     tick_s = 1.0 / args.control_hz
     try:
         while True:
@@ -292,7 +311,7 @@ def main(argv=None) -> int:
         return 1
 
     print(f"[flourish] {args.robot_id}:")
-    print(describe(args.kind, yaw))
+    print(describe(args.kind, yaw, math.radians(args.degrees)))
     if not args.live:
         print("\n[flourish] plan only. Add --live --operator-ready to turn it.")
         return 0
