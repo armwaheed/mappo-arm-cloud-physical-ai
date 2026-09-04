@@ -1155,10 +1155,21 @@ def test_warmup_clamps_the_disc_at_the_planners_own_sigma_ceiling():
     sigma is already 0.43 m at 2.5 m and excluding would switch the gate off exactly
     where the blind drive it prevents happens."""
     ghost = _landmark(1, sightings=1, sigma_m=3.0)
-    assert ghost.planning_radius_m > 3.3, "the raw disc this used to inject"
     assert ghost.position_sigma > static_map.MAX_PLANNING_SIGMA_M
+
+    # ⚠️ THE BOUND MOVED UPSTREAM, and this clamp is now the second of two. `Landmark`
+    # caps its own inflation at MAX_PLANNING_INFLATION_M, so the 3.33 m disc this test was
+    # written against can no longer be constructed at all -- `planning_radius_m` is bounded
+    # before it ever reaches the warmup. The clamp here is kept because it is cheap and
+    # because it states the warmup's own requirement rather than inheriting one, but it no
+    # longer binds: the tighter of the two always wins, and that is the source-side one.
+    assert ghost.planning_radius_m == 0.33 + static_map.MAX_PLANNING_INFLATION_M, \
+        "bounded at source now, not raw"
+    assert static_map.MAX_PLANNING_INFLATION_M < static_map.MAX_PLANNING_SIGMA_M, \
+        "if this ever inverts, the clamp below becomes the binding one again"
     obstacles = _warmup_nav(ghost)._obstacles(0.0)
-    assert math.isclose(obstacles[0].radius_m, 0.33 + static_map.MAX_PLANNING_SIGMA_M)
+    assert math.isclose(obstacles[0].radius_m,
+                        0.33 + static_map.MAX_PLANNING_INFLATION_M)
 
 
 def test_warmup_fills_only_the_room_the_per_label_cap_leaves():
