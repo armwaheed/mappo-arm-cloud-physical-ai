@@ -103,6 +103,41 @@ def test_the_venue_settings_are_the_defaults_and_a_deployment_can_override_them(
     assert tuned[tuned.index("--cooldown") + 1] == "5"
 
 
+def test_the_flourish_is_off_unless_the_deployment_asks_for_it():
+    """It moves the robot after the run everybody stopped watching. Off is the default."""
+    cmd = build_command(["--goal", "x"], env={})
+    assert "--flourish" not in cmd, cmd
+
+
+def test_a_partial_flourish_answer_is_treated_as_no_answer():
+    """There is no safe default lane width for a robot about to sweep its own footprint in
+    a room this file cannot see, so a half-configured gesture must not fire."""
+    env = {"MAPPO_FLOURISH": "1", "MAPPO_ROBOT_ID": "LITE3-A"}
+    cmd = build_command(["--goal", "x"], env=env)
+    assert "--flourish" not in cmd, cmd
+
+
+def test_a_fully_answered_flourish_reaches_the_supervisor():
+    env = {"MAPPO_FLOURISH": "1", "MAPPO_FLOURISH_LANE_WIDTH": "2.0",
+           "MAPPO_ROBOT_ID": "LITE3-A", "MAPPO_FIRMWARE": "V1.0.8",
+           "MAPPO_PAYLOAD": "none"}
+    cmd = build_command(["--goal", "x"], env=env)
+    assert "--flourish" in cmd, cmd
+    assert cmd[cmd.index("--flourish-lane-width") + 1] == "2.0"
+    assert cmd[cmd.index("--robot-id") + 1] == "LITE3-A"
+    # ...and it goes to mission.py, NOT to the drive after the separator.
+    assert cmd.index("--flourish") < cmd.index("--"), "the supervisor fires it, not the drive"
+
+
+def test_the_off_switch_accepts_the_shapes_a_run_profile_actually_writes():
+    for value in ("0", "", "false", "False"):
+        cmd = build_command(
+            ["--goal", "x"],
+            env={"MAPPO_FLOURISH": value, "MAPPO_FLOURISH_LANE_WIDTH": "2.0",
+                 "MAPPO_ROBOT_ID": "A", "MAPPO_FIRMWARE": "B", "MAPPO_PAYLOAD": "C"})
+        assert "--flourish" not in cmd, (value, cmd)
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

@@ -26,7 +26,14 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
-from mission import Attempt, main, per_attempt, stop_requested, supervise
+from mission import (
+    _NEEDS_STANDING,
+    Attempt,
+    main,
+    per_attempt,
+    stop_requested,
+    supervise,
+)
 from voice import CUES, Voice
 
 
@@ -340,6 +347,34 @@ def test_an_attempt_starts_out_having_neither_arrived_nor_spoken():
     fresh = Attempt()
     assert fresh.arrived is False and fresh.spoke_for_help is False
     assert fresh.outcome is None
+
+
+def test_every_mode_gate_a_person_can_clear_is_recognised_as_one():
+    """`assert_axis_state_ready` has five gates; this pattern matched exactly one.
+
+    Measured 2026-09-04 on robot 2: three attempts, every one refused with
+    `Lite3 gait_state=4; axis profile allows (0,)`, and all three announced "a fault has
+    occurred" -- while the fix was one control on the vendor app. The generic sentence is
+    the worst possible one to say to an operator standing next to the robot, because it
+    describes the robot as broken when it is merely in the wrong mode.
+    """
+    for refusal in (
+        "Lite3 basic_state=1; axis motion requires documented force-control state 6",
+        "Lite3 policy_state=2; profile-gated manual moving mode requires policy 0",
+        "Lite3 gait_state=4; axis profile allows (0,)",
+        "Lite3 motion_state=3; refusing axis motion outside stationary/stepping",
+    ):
+        assert _NEEDS_STANDING.search(refusal), f"a person can clear this: {refusal}"
+
+
+def test_a_robot_fault_is_not_offered_as_something_standing_will_fix():
+    """`error_state` is the one gate standing the robot up cannot clear. Promising an
+    operator that it can is worse than saying nothing: they would set the mode, watch it
+    refuse again, and have learned nothing."""
+    assert not _NEEDS_STANDING.search("Lite3 error_state=7; refusing axis motion")
+    # ...and ordinary run output must not be read as a mode refusal either.
+    assert not _NEEDS_STANDING.search("[visual_nav] outcome: arrived (0.05 m from goal)")
+    assert not _NEEDS_STANDING.search("[visual_nav] veto-hold, gait_state fine")
 
 
 if __name__ == "__main__":

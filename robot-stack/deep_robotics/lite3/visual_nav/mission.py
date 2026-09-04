@@ -77,7 +77,21 @@ _OUTCOME = re.compile(r"outcome:\s*(.+?)\s*$")
 #: itself -- so this is the one failure where speaking is not decoration but the entire
 #: remedy. Matched on the refusal's own words rather than an exit code, because the exit
 #: code is shared with every other SystemExit in the drive path.
-_NEEDS_STANDING = re.compile(r"basic_state=\d+.*force-control state")
+#: The refusals a PERSON can clear by setting the robot's mode, as opposed to a fault.
+#: `assert_axis_state_ready` has five gates and this matched exactly one of them, so the
+#: other three operator-fixable ones fell through to "a fault has occurred" -- a sentence
+#: that tells an operator standing next to the robot nothing they can act on. Measured
+#: 2026-09-04 on robot 2: three attempts, every one refused with
+#: `Lite3 gait_state=4; axis profile allows (0,)`, and all three announced a generic fault
+#: while the fix was one control on the vendor app.
+#:
+#: `error_state` is deliberately NOT here. It is the one gate standing the robot up cannot
+#: clear, and promising an operator that it can is worse than saying nothing.
+_NEEDS_STANDING = re.compile(
+    r"basic_state=\d+.*force-control state"
+    r"|policy_state=\d+.*moving mode"
+    r"|gait_state=\d+.*axis profile allows"
+    r"|motion_state=\d+.*stationary/stepping")
 
 
 #: Flags whose value is a path this supervisor must keep unique per attempt.
@@ -208,6 +222,70 @@ def supervise(command: list[str], voice: Voice, *, patience_s: float,
     return attempt
 
 
+#: Transport flags the gesture needs and the drive command already carries. Copied FROM
+#: the drive command rather than restated, so a gesture is commanded through exactly the
+#: interface the run was, and cannot be pointed at a different robot by a stale default --
+#: which is the failure `--motion-host` defaulting to robot 1 already cost this fleet once.
+_FLOURISH_PASSTHROUGH = ("--locomotion-transport", "--axis-profile", "--axis-local-port",
+                         "--motion-host", "--command-port", "--state-port")
+
+#: Where the gesture lives, relative to this file.
+_FLOURISH = (Path(__file__).resolve().parents[1] / "locomotion" / "flourish.py")
+
+
+def flourish_command(command: list[str], kind: str, args) -> list[str] | None:
+    """The gesture invocation, or ``None`` with a printed reason if it cannot be built.
+
+    ``None`` is not an error. A gesture is decoration on the end of a run, and a run that
+    ARRIVED has succeeded whether or not the robot then spun. Every path here that cannot
+    produce a command says why and returns, and `main` carries on to its own exit code.
+    """
+    if not args.flourish:
+        return None
+    if not _FLOURISH.is_file():
+        print(f"[mission] no flourish at {_FLOURISH}; skipping the {kind}")
+        return None
+    for name, value in (("--robot-id", args.robot_id), ("--firmware", args.firmware),
+                        ("--payload", args.payload)):
+        if not value:
+            print(f"[mission] --flourish needs {name}; skipping the {kind}")
+            return None
+    if args.flourish_lane_width is None:
+        print(f"[mission] --flourish needs --flourish-lane-width, because the gesture "
+              f"turns in place and this robot has no lateral sensing; skipping the {kind}")
+        return None
+    out = [sys.executable, str(_FLOURISH), "--kind", kind,
+           "--robot-id", args.robot_id, "--firmware", args.firmware,
+           "--payload", args.payload,
+           "--lane-width-metres", str(args.flourish_lane_width),
+           "--live", "--operator-ready"]
+    for flag in _FLOURISH_PASSTHROUGH:
+        if flag in command:
+            out += [flag, command[command.index(flag) + 1]]
+    return out
+
+
+def play_flourish(command: list[str], kind: str, args) -> None:
+    """Run the gesture, and never let it change the mission's verdict.
+
+    ⚠️ THE ORDER MATTERS AND IT IS NOT OBVIOUS. This runs AFTER the drive process has
+    exited, so nothing else holds the legs, and BEFORE `voice.close()`, so a cue that is
+    still playing is not cut off by the gesture's own exit. It is bounded by the gesture's
+    own aborts rather than by a timeout here, because a turn that is refused should say
+    which gate refused it rather than being killed by a stopwatch that knows nothing.
+    """
+    argv = flourish_command(command, kind, args)
+    if argv is None:
+        return
+    print(f"[mission] {kind}")
+    try:
+        subprocess.run(argv, check=False, timeout=60)
+    except Exception as failure:
+        # Deliberately broad. Whatever went wrong turning the robot in place, the run's
+        # outcome was decided before this was called and must not be rewritten by it.
+        print(f"[mission] the {kind} did not run ({failure!r}); the outcome above stands")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=__doc__.strip().splitlines()[0],
@@ -219,6 +297,16 @@ def main(argv: list[str] | None = None) -> int:
                         help="ALSA device for the cues, e.g. plughw:0,0. Worth stating: "
                              "this robot's PulseAudio default sink is auto_null, so the "
                              "player's default device is silent even when it exits 0")
+    gesture = parser.add_argument_group(
+        "flourish (off unless --flourish; it turns the robot in place)")
+    gesture.add_argument("--flourish", action="store_true",
+                         help="spin on arrival, rock on surrender. OFF by default: it "
+                              "moves the robot after the run everybody stopped watching")
+    gesture.add_argument("--flourish-lane-width", type=float, default=None, metavar="M",
+                         help="clear width BOTH SIDES for the turn; required by --flourish")
+    gesture.add_argument("--robot-id", default=None)
+    gesture.add_argument("--firmware", default=None)
+    gesture.add_argument("--payload", default=None)
     parser.add_argument("--patience", type=float, default=DEFAULT_PATIENCE_S,
                         help="seconds held before asking the room to clear")
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN_S,
@@ -282,6 +370,7 @@ def main(argv: list[str] | None = None) -> int:
         if attempt.arrived:
             print(f"[mission] ARRIVED on attempt {attempt_number} "
                   f"after {time.monotonic() - started:.0f}s")
+            play_flourish(command, "spin", args)
             voice.close()
             return 0
         if _STOP.is_set():
@@ -306,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[mission] STOPPING: {args.max_attempts} attempts did not reach the goal. "
           f"Not a success — read the outcomes above.")
+    play_flourish(command, "shake", args)
     voice.close()
     return 1
 
