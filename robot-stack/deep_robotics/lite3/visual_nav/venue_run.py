@@ -42,6 +42,15 @@ DEFAULTS = {
     "MAPPO_MISSION_TOTAL": "900",
 }
 
+#: The flourish is OFF unless the deployment asks for it, and it is asked for HERE rather
+#: than in the drive flags because it is the supervisor that fires it, after the drive has
+#: exited. All five must be set: the gesture turns the robot in place, and issue #13's
+#: context is required beside anything that moves a leg. A partial answer is treated as no
+#: answer -- `mission.py` prints which one is missing and skips the gesture rather than
+#: turning a robot on a guess about the room.
+FLOURISH_SETTINGS = ("MAPPO_FLOURISH_LANE_WIDTH", "MAPPO_ROBOT_ID",
+                     "MAPPO_FIRMWARE", "MAPPO_PAYLOAD")
+
 
 def build_command(drive_args, env=None, python: str | None = None) -> list:
     """The ``mission.py`` command line that runs ``drive_args`` under supervision.
@@ -69,7 +78,25 @@ def build_command(drive_args, env=None, python: str | None = None) -> list:
     # ``mission.py`` from here throws that away, and the operator watches a blank panel
     # while the robot walks. The inner one matters for the same reason one layer down:
     # ``mission.py`` reads the drive's stdout line by line to decide when to speak.
-    return [python, "-u", "mission.py", *voice,
+    # Enabled only when the deployment answered ALL of it. `env.get` and not `settings`,
+    # because these have no defaults on purpose: there is no safe default lane width for a
+    # robot that is about to sweep its own footprint in a room this file cannot see.
+    flourish: list = []
+    if env.get("MAPPO_FLOURISH", "").strip() not in ("", "0", "false", "False"):
+        answered = {name: env.get(name, "").strip() for name in FLOURISH_SETTINGS}
+        missing = [name for name, value in answered.items() if not value]
+        if missing:
+            print(f"[venue-run] MAPPO_FLOURISH is set but {', '.join(missing)} "
+                  f"{'is' if len(missing) == 1 else 'are'} not; the run will NOT gesture.",
+                  flush=True)
+        else:
+            flourish = ["--flourish",
+                        "--flourish-lane-width", answered["MAPPO_FLOURISH_LANE_WIDTH"],
+                        "--robot-id", answered["MAPPO_ROBOT_ID"],
+                        "--firmware", answered["MAPPO_FIRMWARE"],
+                        "--payload", answered["MAPPO_PAYLOAD"]]
+
+    return [python, "-u", "mission.py", *voice, *flourish,
             "--patience", settings["MAPPO_MISSION_PATIENCE"],
             "--cooldown", settings["MAPPO_MISSION_COOLDOWN"],
             "--max-attempts", settings["MAPPO_MISSION_ATTEMPTS"],
