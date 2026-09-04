@@ -240,6 +240,9 @@ def supervise(command: list[str], voice: Voice, *, patience_s: float,
 #: the drive command rather than restated, so a gesture is commanded through exactly the
 #: interface the run was, and cannot be pointed at a different robot by a stale default --
 #: which is the failure `--motion-host` defaulting to robot 1 already cost this fleet once.
+#: ``--live`` obeys the same rule and is handled in `flourish_command`, separately only
+#: because it carries no value to copy. Restating it there, rather than inheriting it, is
+#: what let a dry run turn a robot; the comment at that line has the measurement.
 _FLOURISH_PASSTHROUGH = ("--locomotion-transport", "--axis-profile", "--axis-local-port",
                          "--motion-host", "--command-port", "--state-port")
 
@@ -272,8 +275,23 @@ def flourish_command(command: list[str], kind: str, args,
     out = [sys.executable, str(_FLOURISH), "--kind", kind, *extra,
            "--robot-id", args.robot_id, "--firmware", args.firmware,
            "--payload", args.payload,
-           "--lane-width-metres", str(args.flourish_lane_width),
-           "--live", "--operator-ready"]
+           "--lane-width-metres", str(args.flourish_lane_width)]
+    # ⛔ --live is INHERITED from the drive, never restated here. `--live` is the only flag
+    # in `mappo_drive.py` that commands a leg, and the driver's whole contract for a scene
+    # check rests on that: `start_run(arm_motion=False)` builds a drive command without it,
+    # and reports `can_move=False` because a run without `--live` has no path to a leg --
+    # an absent capability rather than a checked permission. Hard-coding it here handed the
+    # gesture a path of its own, out of a SEPARATE process the driver never gated.
+    # Measured 2026-09-04 on robot 1: a `start_run(arm_motion=False)` that reported
+    # `can_move=False` went on to fire a live +90 deg `look` between attempts. Nothing
+    # turned only because the robots were lying down and the vendor mode gate refused it
+    # (`Lite3LinkLost: basic_state=1; axis motion requires documented force-control state
+    # 6`). On a robot standing in state 6 the same scene check would have turned it.
+    # Without `--live`, flourish.py prints its plan and returns 0, so the narration a
+    # dry run is FOR survives; `--operator-ready` goes with `--live` because flourish.py
+    # refuses `--live` without it.
+    if "--live" in command:
+        out += ["--live", "--operator-ready"]
     for flag in _FLOURISH_PASSTHROUGH:
         if flag in command:
             out += [flag, command[command.index(flag) + 1]]

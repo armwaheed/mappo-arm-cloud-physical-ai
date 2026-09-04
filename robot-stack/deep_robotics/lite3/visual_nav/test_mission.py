@@ -14,6 +14,7 @@ sees and what no unit of the drive path covers.
 
 from __future__ import annotations
 
+import argparse
 import contextlib
 import shutil
 import signal
@@ -31,6 +32,7 @@ from mission import (
     _LOOK_DEGREES,
     _NEEDS_STANDING,
     Attempt,
+    flourish_command,
     main,
     per_attempt,
     stop_requested,
@@ -416,6 +418,54 @@ def test_a_look_is_offered_only_for_the_outcome_it_fits():
         "the look must be gated on the outcome, not fired after every failure"
     assert "not attempt.needs_standing" in source, \
         "a robot in the wrong mode cannot turn; asking it to is noise on top of a refusal"
+
+
+def _gesture_args():
+    """The flourish settings a venue run supplies, all answered. Not a Namespace built by
+    hand from the parser, because what is under test is what reaches `flourish.py`."""
+    return argparse.Namespace(
+        flourish=True, flourish_lane_width=2.0, robot_id="LITE3-A",
+        firmware="unrecorded-20260904", payload="none")
+
+
+def test_a_dry_run_does_not_hand_the_gesture_a_live_flag():
+    """⛔ THE SAFETY PROPERTY. `start_run(arm_motion=False)` builds a drive command with no
+    `--live` and reports `can_move=False`, and the driver means it: `--live` is the only
+    flag in `mappo_drive.py` that commands a leg. The gesture is a SEPARATE process, so a
+    hard-coded `--live` here was a path to a leg out of a run the operator was told could
+    not move -- measured 2026-09-04 on robot 1, where a scene check fired a live +90 deg
+    look and was stopped only by the robots being down in vendor mode 1."""
+    dry = [sys.executable, "-u", "mappo_drive.py", "--arrive", "0.5",
+           "--locomotion-transport", "axis", "--motion-host", "127.0.0.1"]
+    argv = flourish_command(dry, "look", _gesture_args(), ("--degrees", "90"))
+    assert argv is not None, "a dry run still gets its plan printed; it is not skipped"
+    assert "--live" not in argv, argv
+    # flourish.py refuses --live without it, so it has no business here alone either.
+    assert "--operator-ready" not in argv, argv
+    # The gesture still runs, and still against the robot the RUN was pointed at.
+    assert argv[argv.index("--motion-host") + 1] == "127.0.0.1", argv
+    assert "--degrees" in argv and argv[argv.index("--degrees") + 1] == "90", argv
+
+
+def test_a_live_run_still_gets_a_live_gesture():
+    """The fix must not disarm the demo. A run the operator armed keeps its gesture."""
+    live = [sys.executable, "-u", "mappo_drive.py", "--arrive", "0.5",
+            "--locomotion-transport", "axis", "--motion-host", "127.0.0.1", "--live"]
+    argv = flourish_command(live, "shake", _gesture_args())
+    assert argv is not None
+    assert "--live" in argv, argv
+    assert "--operator-ready" in argv, argv
+
+
+def test_the_gesture_is_never_more_armed_than_the_drive_it_follows():
+    """The property, stated once over every gesture the mission can fire, rather than
+    trusted to the two cases above staying in step with `main`."""
+    for kind, extra in (("spin", ()), ("look", ("--degrees", "-180")), ("shake", ())):
+        for live in (True, False):
+            drive = [sys.executable, "-u", "mappo_drive.py", "--locomotion-transport",
+                     "axis", *(["--live"] if live else [])]
+            argv = flourish_command(drive, kind, _gesture_args(), extra)
+            assert ("--live" in argv) is live, (kind, live, argv)
 
 
 if __name__ == "__main__":
