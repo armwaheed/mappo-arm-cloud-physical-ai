@@ -420,19 +420,42 @@ function setPadEnabled(enabled) {
     }
     key.classList.remove("unmeasured");
     key.title = key.dataset.baseTitle;
-    // POSTURE IS NOT THIS DASHBOARD'S TO CHANGE ON EVERY PLATFORM. On a Lite3 `stand`
-    // only validates that the operator confirmed standing and high-level navigation
-    // mode, and `lie_down` only stops -- the vendor app owns posture and the bridge
-    // exposes no lie-down command. Both then complete successfully having moved nothing,
-    // which from the operator's side is indistinguishable from a dead button: measured
-    // 12:45 on robot 2, four `stand` presses, every one `travelled_m=0.0, warning=''`.
-    // They stay PRESSABLE -- `lie_down` really does stop the robot, and a stop is not an
-    // affordance to take away -- but they say what they actually do.
-    if ((fn === "stand" || fn === "lie_down") && caps.lie_down_changes_posture === false) {
+    // POSTURE IS NOT THIS DASHBOARD'S TO CHANGE ON EVERY PLATFORM, and the two keys that
+    // claim it need opposite treatment rather than the same badge.
+    //
+    // `lie_down` on a Lite3 is `stand_down()` -> `stop()`: the velocity-zeroing part of
+    // STOP and nothing else. But it routes through `_move`, so it takes the motion lock
+    // and is REFUSED while the policy holds the legs -- it fails exactly when an operator
+    // would most want it, and STOP is never gated and also ends the run and the nudge
+    // worker. Keeping it is keeping a strictly worse stop, so it goes.
+    //
+    // `stand` commands no velocity at all: `prepare_motion()` plus a posture report. It
+    // is not posture on this platform and should not say it is -- but pressing it does
+    // spawn the bridge, connect, and reach the robot, which makes it the only no-motion
+    // "can the driver still talk to the legs" probe on the page. It stays, relabelled
+    // STATUS, which is what an operator is actually asking when they press it. Measured 12:45 on robot 2: four presses, every one `travelled_m=0.0,
+    // warning=''` -- successful, and indistinguishable from dead while it claimed posture.
+    const posture = caps.lie_down_changes_posture;
+    if (key.dataset.baseLabel === undefined) {
+      const span = key.querySelector("span");
+      key.dataset.baseLabel = span ? span.textContent : "";
+    }
+    const span = key.querySelector("span");
+    if (fn === "lie_down" && posture === false) {
+      key.disabled = true;
+      key.classList.add("unmeasured");
+      key.title = "this platform's posture is operator-controlled; this only STOPS, and " +
+                  "STOP does the same and is never refused. " + (caps.posture_note || "");
+      continue;
+    }
+    if (fn === "stand" && posture === false) {
       key.classList.add("advisory");
-      key.title = caps.posture_note || key.dataset.baseTitle;
+      if (span) span.textContent = "status";
+      key.title = "No motion. Confirms the driver can still reach the robot and that it " +
+                  "will accept commands. " + (caps.posture_note || "");
     } else {
       key.classList.remove("advisory");
+      if (span && key.dataset.baseLabel) span.textContent = key.dataset.baseLabel;
     }
     key.disabled = !enabled;
   }
