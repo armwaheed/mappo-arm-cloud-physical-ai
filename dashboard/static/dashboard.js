@@ -609,6 +609,50 @@ function motionParams(fn) {
   return {};
 }
 
+// ── STATUS, over the picture ────────────────────────────────────────────────
+//
+// The STAND key commands no velocity on a platform whose posture it cannot change, so what
+// it really answers is "can the driver reach this robot, and will it accept a command". It
+// is relabelled STATUS for that reason, and the answer belongs ON THE VIEWPORT: the whole
+// point of pressing it is that something looks wrong with the robot you are watching, and a
+// verdict rendered in a side panel is one an operator reads a beat too late, if at all.
+//
+// Two facts, deliberately, and no more: whether the bridge reached the robot, and who holds
+// the legs. Anything longer stops being glanceable, which is the only property that matters
+// on top of a live camera.
+const OVERLAY_MS = 5000;
+let overlayTimer = null;
+
+function flashOverlay(text, bad) {
+  const el = $("camera-overlay");
+  if (!el) return;
+  el.textContent = text;
+  el.classList.toggle("bad", !!bad);
+  el.hidden = false;
+  if (overlayTimer) clearTimeout(overlayTimer);
+  overlayTimer = setTimeout(() => { el.hidden = true; }, OVERLAY_MS);
+}
+
+async function flashStatus(reach) {
+  const reached = reach && reach.ok !== false;
+  const lines = [reached ? "✓ driver reached the robot"
+                         : "✗ driver could NOT reach the robot"];
+  if (!reached && reach && reach.error) lines.push(String(reach.error).slice(0, 140));
+  if (reached) {
+    const status = await invoke("get_status", {});
+    if (status && status.ok !== false) {
+      const owner = (status.control || {}).owner;
+      lines.push(`${status.busy ? "busy" : "idle"} · legs held by ${owner || "unknown"}`);
+      // An error_state the robot is reporting outranks both of the above, so it goes last
+      // where the eye stops, and it turns the overlay red.
+      if (status.error) { lines.push(`robot error: ${status.error}`); }
+    } else {
+      lines.push("status unavailable");
+    }
+  }
+  flashOverlay(lines.join("\n"), !reached || lines.some((l) => l.startsWith("robot error")));
+}
+
 async function sendMotion(button) {
   const fn = button.dataset.fn;
   // Stop bypasses the busy interlock deliberately: the one command you must be able to send
@@ -618,6 +662,7 @@ async function sendMotion(button) {
   try {
     const result = await invoke(fn, motionParams(fn));
     show($("motion-result"), summariseMotion(fn, result), result.ok === false);
+    if (fn === "stand") await flashStatus(result);
   } finally {
     state.busy = false;
     button.classList.remove("busy");

@@ -470,3 +470,26 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
   opacity: 0.7;
 }
 .key.advisory { position: relative; }
+
+/* STATUS verdict, laid over the live picture. Anchored bottom-left rather than centred so
+   it never sits on top of whatever the robot is walking towards, and `pre-line` so the two
+   or three short lines stay short rather than reflowing into a paragraph. */
+.viewport { position: relative; }
+#camera-overlay {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  max-width: calc(100% - 16px);
+  padding: 6px 10px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #eaf3ea;
+  border-left: 3px solid #5fbf72;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-line;
+  pointer-events: none;
+}
+#camera-overlay.bad {
+  border-left-color: #e0603f;
+  color: #ffe7e0;
+}
