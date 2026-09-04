@@ -218,7 +218,8 @@ class StaticObstacleMap:
     def __init__(self, radii: dict | None = None, default_radius_m: float = 0.25,
                  fov_rad: float = math.radians(120.0),
                  max_range_m: float = 6.0,
-                 max_per_label: dict | None = None) -> None:
+                 max_per_label: dict | None = None,
+                 robot_radius_m: float = 0.0) -> None:
         self.radii = dict(radii or {})
         self.default_radius_m = default_radius_m
         self.max_per_label = dict(max_per_label or {})
@@ -231,6 +232,11 @@ class StaticObstacleMap:
                     f"max_per_label[{label!r}] must be an integer of at least 1, got {cap!r}")
         self.fov_rad = fov_rad
         self.max_range_m = max_range_m
+        # 0.0 means "not stated", not "a robot of zero width": a map handed no radius
+        # cannot know what INSIDE THE ROBOT means, and inventing a value would be the
+        # mistake AGENTS.md names about the gait floor. Left at 0.0 the impossible-centre
+        # rule below never fires and the map behaves exactly as it did before.
+        self.robot_radius_m = float(robot_radius_m)
         self._landmarks: list[Landmark] = []
         self._next_id = 1
 
@@ -304,7 +310,7 @@ class StaticObstacleMap:
             if obs_index not in matched_obs:
                 self._spawn(obs, now)
 
-        self._prune(now)
+        self._prune(now, robot_x, robot_y)
 
     def _associate(self, observations: list) -> list[tuple[int, int]]:
         """Greedy nearest-neighbour association, ``(landmark_index, obs_index)`` pairs.
@@ -340,20 +346,40 @@ class StaticObstacleMap:
             assignments.append((lm_index, obs_index))
         return assignments
 
-    def _prune(self, now: float) -> None:
-        """Drop landmarks that lost their evidence.
+    def _prune(self, now: float, robot_x: float, robot_y: float) -> None:
+        """Drop landmarks that lost their evidence, or that cannot exist.
 
-        Two rules, because the two cases are not alike. A CONFIRMED landmark goes only on
-        disagreement — repeatedly looked at and not found — since a thing that does not
-        move has no reason to stop existing because nobody looked. An UNCONFIRMED one
-        also goes on time: it may sit outside the field of view where the visibility test
-        can never penalise it, so a clock is the only thing that can retire it.
+        Three rules now. A CONFIRMED landmark goes on disagreement — repeatedly looked at
+        and not found — since a thing that does not move has no reason to stop existing
+        because nobody looked. An UNCONFIRMED one also goes on time: it may sit outside
+        the field of view where the visibility test can never penalise it, so a clock is
+        the only thing that can retire it.
+
+        The third goes on GEOMETRY rather than on evidence, and applies confirmed or not:
+        a centre inside the robot's own footprint is not a thing the robot might be wrong
+        about, it is a thing that cannot be there, because the robot is standing there. A
+        real object's centre is at least its own radius beyond its own surface, so an
+        untouched obstacle's centre is never nearer than ``robot_radius + its radius``.
+        This is the same move as #193's horizon gate: refuse the physically impossible
+        before anything downstream has to reason about it.
         """
         self._landmarks = [
             lm for lm in self._landmarks
             if lm.misses <= MAX_MISSES
             and (lm.confirmed or now - lm.last_seen <= UNCONFIRMED_TIMEOUT_S)
+            and not self._inside_robot(lm, robot_x, robot_y)
         ]
+
+    def _inside_robot(self, landmark: Landmark, robot_x: float, robot_y: float) -> bool:
+        """Whether ``landmark``'s centre has landed inside the robot's own footprint.
+
+        Off — always False — when the map was not told the robot's radius. See the note
+        in ``__init__``.
+        """
+        if self.robot_radius_m <= 0.0:
+            return False
+        return math.hypot(landmark.x - robot_x,
+                          landmark.y - robot_y) < self.robot_radius_m
 
     def _fuse(self, landmark: Landmark, obs: Observation, now: float) -> None:
         """Information-filter update of a state that does not change.
@@ -406,6 +432,22 @@ class StaticObstacleMap:
         distance = math.hypot(dx, dy)
         if distance > self.max_range_m:
             return False
+        # THE ROBOT INSIDE THE DISC IS NOT A BEARING QUESTION. `angular_shadow` already
+        # refuses to answer this case for the same geometric reason — the disc subtends
+        # every bearing, so there is no direction the camera could point and not be
+        # looking at it. Asking the point test instead is what made a collapsed landmark
+        # immortal: on robot 2's 2026-09-02 run `20260902T115833Z-0020f90` a fused centre
+        # landed 0.076 m from the robot with a 0.46 m planning radius, which put its
+        # CENTRE at bearing 71.7 deg — outside both the configured 120 deg envelope and
+        # the camera's own 134.3 deg. Invisible on all 773 remaining ticks means never
+        # penalised; a confirmed landmark is pruned only on misses; and no observation
+        # could correct it either, the real chair it came from being 2.3 m away and far
+        # outside ASSOCIATION_GATE_M. The run held 754 times and timed out having never
+        # moved. Deliberately NOT a general widening of the envelope by the disc's
+        # half-angle: that would score misses against landmarks at the frame edge that
+        # the detector cannot segment, which is the failure MAX_MISSES was raised for.
+        if distance <= landmark.planning_radius_m:
+            return True
         bearing = float(wrap_pi(math.atan2(dy, dx) - robot_yaw))
         if abs(bearing) > self.fov_rad / 2.0:
             return False

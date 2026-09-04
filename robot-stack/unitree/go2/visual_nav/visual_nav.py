@@ -1893,9 +1893,14 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
             print("[visual_nav] WARNING: --static-detect surfaces detections the shipped "
                   "prototxt suppresses. Its FALSE-ALARM cost is measured; its RECALL is "
                   "not, and rests on one frame. Supervise the run.")
+        # Hoisted above the map because the map needs it too: a landmark centre inside
+        # the robot's own footprint is refused as impossible, and that judgement cannot
+        # be made without knowing how wide the robot is.
+        robot_radius = bindings.robot_radius(args, PlannerConfig().robot_radius_m)
         if radii:
             static_map = StaticObstacleMap(
-                radii=radii, fov_rad=math.radians(camera_model.hfov_deg))
+                radii=radii, fov_rad=math.radians(camera_model.hfov_deg),
+                robot_radius_m=robot_radius)
 
         # THE FLOOR COMES FROM THE ROBOT'S BINDINGS, NOT FROM A CONSTANT IN THE PLANNER,
         # which is the half of issue #26 that a flag could not fix. `Go2Bindings` answers
@@ -1932,7 +1937,6 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                  if limits.gait_floor > 0.0 else
                  "not measured for this robot, so no command is judged against one"))
         bindings.warn_if_below_gait_floor(limits.max_vx, args)
-        robot_radius = bindings.robot_radius(args, PlannerConfig().robot_radius_m)
         planner_config = PlannerConfig(horizon_s=args.horizon,
                                        obstacle_radius_m=args.obstacle_radius,
                                        robot_radius_m=robot_radius)
