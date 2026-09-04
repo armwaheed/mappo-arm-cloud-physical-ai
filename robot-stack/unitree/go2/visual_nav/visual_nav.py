@@ -233,6 +233,26 @@ class NavConfig:
     arrive_tolerance_m: float = 1.0     # stop this far short of the goal marker
     rest_after_s: float = 15.0          # held this long -> lie down and wait
     goal_search_s: float = 20.0         # give up if the goal is never sighted
+
+    #: Metres per second to walk FORWARD while no goal has been sighted. 0.0 -- the
+    #: default -- stands still and waits, which is every run recorded before this.
+    #:
+    #: It exists because the marker has a decode range and the scene has a start line, and
+    #: they do not always overlap. A 0.14 m DICT_4X4_50 marker at focal 545.9 px spans 38
+    #: px at 2 m and 22 px at 3.5 m, and 6x6 cells plus a border need roughly 6 px each --
+    #: so a robot staged 3.5 m out cannot decode the goal it is staring straight at, waits
+    #: `goal_search_s`, and reports "goal never sighted". Measured on both robots
+    #: 2026-09-04: 146 clean perception cycles, zero sightings, no movement, three times.
+    #:
+    #: ⚠️ THIS IS NOT MAPPO. The policy needs a goal to act on, so no policy command exists
+    #: while the goal is unknown; these ticks carry no decision record and are visibly not
+    #: `policy` in telemetry. Control returns to the policy on the tick the goal latches.
+    #:
+    #: ⚠️ AND ON A SIGN-ONLY TRANSPORT THERE IS NO CREEP. Any value past the profile's
+    #: deadband leaves as the one evidenced primitive at full scale -- 0.536 m/s on the
+    #: Lite3 -- so this is a walk, not an inch. It is still gated by the planner's own
+    #: feasibility test against every obstacle it can see, so it is not a blind walk.
+    goal_search_walk_m_s: float = 0.0
     live: bool = False
     require_arm: bool = True
     latch_arm: bool = True              # hard requirement — see main()
@@ -896,10 +916,26 @@ class VisualNavigator:
                 if elapsed > config.goal_search_s:
                     outcome = f"goal never sighted in {config.goal_search_s:.0f}s"
                     break
-                self._command((0.0, 0.0, 0.0))
+                # WALK TOWARDS A GOAL TOO FAR AWAY TO DECODE, if asked to. The marker's
+                # decode range and the scene's start line do not always overlap, and
+                # standing still cannot fix that: closing the distance can. See
+                # `goal_search_walk_m_s`, which carries the arithmetic.
+                search_command = (0.0, 0.0, 0.0)
+                search_reason = None
+                if config.goal_search_walk_m_s > 0.0:
+                    forward = (config.goal_search_walk_m_s, 0.0, 0.0)
+                    # Gated by the planner's OWN feasibility test, not by hope. Searching
+                    # is not a licence to walk into something the robot can already see,
+                    # and this is the same predicate the veto uses on every other tick.
+                    if self._planner.is_feasible(pose, forward, obstacles):
+                        search_command = forward
+                    else:
+                        search_reason = "goal-search blocked"
+                self._command(search_command)
                 frame = self._record(result, pose, None, obstacles)
                 self._telemetry_tick(elapsed, pose, None, None, obstacles,
-                                     frame_age, result, video_frame=frame)
+                                     frame_age, result, video_frame=frame,
+                                     hold_reason=search_reason)
                 self._sleep_out_the_period(tick_start, period)
                 continue
 
@@ -1603,6 +1639,16 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
     ap.add_argument("--obstacle-height", type=float, default=None,
                     help="true height of the tracked object in metres, when --classes "
                          "is something other than person")
+    ap.add_argument("--goal-search-walk", type=float, default=0.0, metavar="M_S",
+                    help="walk FORWARD at this speed while no goal has been sighted, "
+                         "instead of standing still. For a marker too far away to decode "
+                         "from the start line: a 0.14 m marker is reliable to ~1.9 m, so "
+                         "a robot staged further out can stare straight at its goal and "
+                         "never see it. Still gated by the planner's feasibility test, so "
+                         "it will not walk into what it CAN see. NOT the policy: MAPPO "
+                         "needs a goal, and takes over on the tick the marker latches. On "
+                         "a sign-only transport any value past the deadband leaves at full "
+                         "scale, so this is a walk and not a creep. 0 disables it.")
     ap.add_argument("--body-length", type=float, default=None, metavar="M",
                     help="the robot's footprint ALONG the body, in metres. State it with "
                          "--body-width and the planner clears two discs shaped like the "
@@ -1821,6 +1867,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         motion_mode=getattr(args, "motion_mode", "manual"),
         rest_when_blocked=bindings.rest_when_blocked,
         initially_standing=bindings.initially_standing,
+        goal_search_walk_m_s=args.goal_search_walk,
     )
 
     loco = bindings.create_locomotion(args)
