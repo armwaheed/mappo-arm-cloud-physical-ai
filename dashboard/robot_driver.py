@@ -229,6 +229,22 @@ LITE3_LINK_FLAGS = ("locomotion-transport", "motion-host", "command-port", "stat
 POSE_RESTART_S = 1.0
 
 
+#: The body-frame intent each motion key on the dashboard sends, used ONLY to ask the
+#: transport whether it could execute that key at all. Kept as INTENT VECTORS rather than
+#: as a key-to-primitive-name table on purpose: the navigator's +y is left while the
+#: vendor's positive lateral raw value is right, so a hand-written table would encode that
+#: inversion a second time, in a second place, where nothing would catch it drifting out of
+#: step with `AxisProfile.map_velocity`. Asking the profile keeps one source of truth.
+MOTION_INTENTS = {
+    "walk_forward": (1.0, 0.0, 0.0),
+    "walk_back": (-1.0, 0.0, 0.0),
+    "strafe_left": (0.0, 1.0, 0.0),
+    "strafe_right": (0.0, -1.0, 0.0),
+    "turn_left": (0.0, 0.0, 1.0),
+    "turn_right": (0.0, 0.0, -1.0),
+}
+
+
 class MappoRobotDriver(DeviceDriver):
     """A Go2 or Lite3 Venture carrying a MAPPO checkpoint, on the Device Connect mesh."""
 
@@ -1628,6 +1644,7 @@ class MappoRobotDriver(DeviceDriver):
         """
         from drive_bridge import GAIT_FLOORS
         floors = GAIT_FLOORS.get(self.platform, {})
+        directions = self._motion_directions()
         return {
             "platform": self.platform,
             "simulated": self.simulate,
@@ -1641,7 +1658,17 @@ class MappoRobotDriver(DeviceDriver):
                 "go2": "Go2 lie_down issues StandDown.",
                 "sim": "The bench double records the posture change and moves nothing.",
             }[self.platform],
-            "reverse_supported": True,
+            # Which directional keys this robot can execute AT ALL, so the page can grey
+            # the rest instead of rendering keys that raise on every press. `None` means
+            # "cannot say from here" and the page leaves the keys alone. See
+            # :meth:`_motion_directions`.
+            "motion_directions": directions,
+            # DERIVED, not asserted. This read `True` unconditionally, on both platforms,
+            # while robot 1's axis profile carried no `forward_negative` at all and every
+            # press of `back` returned an AxisProfileError. A capability that cannot be
+            # false is not a capability, it is a decoration.
+            "reverse_supported": (True if directions is None
+                                  else directions["walk_back"]["available"]),
             "reverse_note": ("no rear sensing on either platform; reverse is open-loop into "
                              "unobserved space and is capped at 2 s"),
             "camera": {
@@ -1683,6 +1710,55 @@ class MappoRobotDriver(DeviceDriver):
             "run": (run_control.describe(self.run_profile, allow_motion=self.allow_motion)
                     if self.run_profile is not None else run_control.unsupported()),
         }
+
+    def _motion_directions(self) -> dict | None:
+        """Which motion keys this robot's transport could actually execute, and why not.
+
+        Asked OF THE TRANSPORT rather than answered from a table. On the sign-only axis
+        transport a direction with no evidenced primitive is not a slow direction, it is an
+        ``AxisProfileError`` raised at command time — so a key that renders live and errors
+        on every press is, from the operator's side of the screen, a broken dashboard. That
+        is what it looked like: measured on robot 1's profile 2026-09-04, `forward_positive`
+        and both yaw directions execute, while `forward_negative`, `lateral_positive` and
+        `lateral_negative` are absent, which is three of the six directional keys.
+
+        ``None`` when the answer is not knowable from here — a platform that is not a Lite3,
+        no axis profile named, or a locomotion stack this process cannot import. The page
+        leaves the keys alone on ``None`` rather than greying them on a guess, because a key
+        wrongly greyed is as much a lie as a key wrongly live.
+        """
+        if self.platform != "lite3":
+            return None
+        path = self.lite3_link.get("axis-profile")
+        if not path:
+            return None
+        try:
+            # Same resolution `drive_bridge` uses for the deployed tree, and for the same
+            # reason: this file sits in `dashboard/` and the locomotion stack is beside it
+            # in `robot-stack/`, which is on no interpreter's path by default. Without this
+            # the import fails, the answer degrades to "cannot say", and the pad silently
+            # goes back to rendering keys that raise -- which is how this shipped once.
+            from drive_bridge import _stack_dir
+            stack = _stack_dir()
+            if stack not in sys.path:
+                sys.path.insert(0, stack)
+            from deep_robotics.lite3.locomotion.lite3_axis_locomotion import (
+                AxisProfile,
+                AxisProfileError,
+            )
+            profile = AxisProfile.load(Path(path))
+        except Exception:
+            # Unreadable or unimportable is "cannot say", not "cannot move". `stop` and
+            # `status` legitimately run without a profile; see `_lite3_locomotion`.
+            return None
+        directions = {}
+        for key, (vx, vy, wz) in MOTION_INTENTS.items():
+            try:
+                profile.map_velocity(vx, vy, wz)
+                directions[key] = {"available": True, "reason": ""}
+            except AxisProfileError as refusal:
+                directions[key] = {"available": False, "reason": str(refusal)}
+        return directions
 
     def _locomotion_snapshot(self) -> dict | None:
         """The selected Lite3 transport and the two facts an operator has to act on.

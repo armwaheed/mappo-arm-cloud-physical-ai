@@ -1656,6 +1656,65 @@ def test_a_stop_reports_two_problems_as_two_and_not_as_one():
         assert "did NOT confirm" in result["error"], result["error"]
 
 
+# ── the pad tells the truth about what this robot can execute ───────────────
+def test_a_direction_the_axis_profile_cannot_execute_is_advertised_as_unavailable():
+    """Three of six directional keys were live and raised on every press.
+
+    Robot 1's profile carries `forward_positive` and both yaw directions and NOTHING for
+    reverse or either lateral, so `back`, `strafe L` and `strafe R` returned an
+    AxisProfileError every time they were pressed. From the operator's side of the screen
+    that is a broken dashboard, and `get_capabilities` said `reverse_supported: True`
+    throughout. The page can only grey a key it is told about.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        profile = tmp / "axis.json"
+        profile.write_text(json.dumps({
+            "schema": "lite3-axis-profile/v1",
+            "input_deadband": {"linear_m_s": 0.05, "yaw_rad_s": 0.1},
+            "allowed_gait_states": [0],
+            "evidence": {"forward_positive": "test fixture", "yaw_positive": "test fixture",
+                         "yaw_negative": "test fixture"},
+            "primitives": {"forward_positive": 32767, "forward_negative": None,
+                           "lateral_positive": None, "lateral_negative": None,
+                           "yaw_positive": 16000, "yaw_negative": -16000},
+            "measured_m_s": {"forward_positive": 0.5362},
+            "measured_rad_s": {"yaw_positive": 0.8566, "yaw_negative": 0.8563},
+        }))
+        driver = _driver(tmp, platform="lite3",
+                         lite3_link={"locomotion-transport": "axis",
+                                     "axis-profile": str(profile)})
+        directions = driver._motion_directions()
+        # NOT a soft skip on None. `None` is the degraded answer, and the first cut of this
+        # shipped returning it on every real robot because `deep_robotics` is on no
+        # interpreter's path by default -- the pad went straight back to rendering keys that
+        # raise, and the tests said nothing. Skip only when the stack is genuinely absent.
+        try:
+            from drive_bridge import _stack_dir
+            if _stack_dir() not in sys.path:
+                sys.path.insert(0, _stack_dir())
+            import deep_robotics.lite3.locomotion.lite3_axis_locomotion  # noqa: F401
+        except Exception:
+            return
+        assert directions is not None, \
+            "the locomotion stack imports here, so the driver must be able to answer too"
+        assert directions["walk_forward"]["available"] is True, directions
+        assert directions["turn_left"]["available"] is True, directions
+        assert directions["turn_right"]["available"] is True, directions
+        for absent in ("walk_back", "strafe_left", "strafe_right"):
+            assert directions[absent]["available"] is False, directions
+            assert directions[absent]["reason"], "a greyed key must say why"
+
+
+def test_reverse_supported_is_derived_and_can_be_false():
+    """It was the literal `True`, on both platforms, forever. A capability that cannot be
+    false is a decoration, and this one was false on the robot in the room."""
+    source = inspect.getsource(MappoRobotDriver.get_capabilities)
+    assert '"reverse_supported": True,' not in source, \
+        "reverse_supported must be derived from the transport, not asserted"
+    assert "directions[\"walk_back\"][\"available\"]" in source, source[:200]
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

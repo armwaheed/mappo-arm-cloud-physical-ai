@@ -446,3 +446,13 @@ input:focus, select:focus { outline: 2px solid color-mix(in srgb, var(--accent) 
    keeps this block last. */
 [hidden] { display: none !important; }
 .hidden { display: none !important; }
+
+/* A key the robot's transport cannot execute at all. Distinct from a key that is merely
+   inert right now: this one will not work until somebody measures the primitive behind it,
+   and the hover text says which. Struck through rather than merely dimmed, because the pad
+   is already dim while the policy holds control and the two must not read the same. */
+.key.unmeasured {
+  text-decoration: line-through;
+  opacity: 0.45;
+  cursor: not-allowed;
+}
