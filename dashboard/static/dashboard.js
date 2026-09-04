@@ -396,10 +396,30 @@ function addNote(parent, kind, html) {
 }
 
 function setPadEnabled(enabled) {
+  // Which directions this robot can execute at all, as opposed to whether the pad is live
+  // right now. `null` means the device could not say, and then nothing here grades a key:
+  // a key wrongly greyed is as much a lie as a key wrongly live.
+  const directions = (state.capabilities || {}).motion_directions || null;
   for (const key of document.querySelectorAll(".key")) {
+    const fn = key.dataset.fn;
     // Stop is never gated. If motion is disabled it will be refused by the device anyway,
     // but a stop button that cannot be pressed is the wrong affordance on a robot console.
-    key.disabled = key.dataset.fn === "stop" ? false : !enabled;
+    if (fn === "stop") { key.disabled = false; continue; }
+    if (key.dataset.baseTitle === undefined) key.dataset.baseTitle = key.title;
+    // A direction the transport cannot execute stays disabled whatever the pad state, and
+    // says WHY on hover. On the sign-only axis transport an absent primitive is a refusal
+    // at command time, not a slow direction, so this key was never going to work and an
+    // operator should not have to discover that by pressing it.
+    const direction = directions ? directions[fn] : undefined;
+    if (direction && !direction.available) {
+      key.disabled = true;
+      key.classList.add("unmeasured");
+      key.title = direction.reason || "this robot has no measured primitive for it";
+      continue;
+    }
+    key.classList.remove("unmeasured");
+    key.title = key.dataset.baseTitle;
+    key.disabled = !enabled;
   }
   // Why the pad is inert is not the same question in the two cases, and an operator staring
   // at grey keys should not have to guess which one they are in.
