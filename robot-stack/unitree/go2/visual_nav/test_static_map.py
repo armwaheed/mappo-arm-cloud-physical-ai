@@ -26,6 +26,7 @@ from static_map import (
     CONFIRM_SIGHTINGS,
     MAX_LANDMARKS_PER_LABEL,
     MAX_MISSES,
+    MAX_PLANNING_INFLATION_M,
     MAX_PLANNING_SIGMA_M,
     POSITION_SIGMA_FLOOR_M,
     StaticObstacleMap,
@@ -96,13 +97,27 @@ def test_position_sigma_never_claims_more_precision_than_the_odometry():
     assert mapping.landmarks[0].position_sigma == POSITION_SIGMA_FLOOR_M
 
 
-def test_the_planning_radius_carries_the_uncertainty():
+def test_the_planning_radius_carries_the_uncertainty_up_to_the_cap():
+    """It still carries it — it just stops growing at :data:`MAX_PLANNING_INFLATION_M`.
+
+    ⚠️ THE CAP BITES DURING ACQUISITION, and that is worth stating rather than hiding. A
+    landmark sits near 0.27 m sigma after two sightings and falls below 0.10 m within ten,
+    so between roughly the second and sixth sighting the disc is now bounded while the map
+    is at its least sure. That is the deliberate trade: unbounded, the doubt grew larger
+    than the object and held the robot a metre short of a chair.
+    """
     mapping = _map()
     _see(mapping, 3)
     landmark = mapping.confirmed()[0]
-    assert landmark.planning_radius_m > landmark.radius_m
-    assert (landmark.planning_radius_m
-            == landmark.radius_m + landmark.position_sigma)
+    assert landmark.planning_radius_m > landmark.radius_m, "it still carries uncertainty"
+    assert landmark.planning_radius_m == (
+        landmark.radius_m + min(landmark.position_sigma, MAX_PLANNING_INFLATION_M))
+
+    # ...and once it has converged below the cap, the sum is exact again.
+    _see(mapping, 20, start=10.0)
+    settled = mapping.confirmed()[0]
+    assert settled.position_sigma <= MAX_PLANNING_INFLATION_M, settled.position_sigma
+    assert settled.planning_radius_m == settled.radius_m + settled.position_sigma
 
 
 def test_a_bin_is_not_inflated_to_a_persons_footprint():
@@ -637,6 +652,46 @@ def test_a_landmark_past_the_frame_edge_is_still_not_penalised():
         mapping.observe([], 1.0 + index * 0.14, *pose)
     assert len(mapping.confirmed()) == 1, \
         "a landmark out of view must not be forgotten for being out of view"
+
+
+def test_uncertainty_cannot_inflate_a_disc_without_limit():
+    """The doubt was larger than the object, and most of the clearance was doubt.
+
+    Measured 2026-09-04, robot 1 holding in front of a chair it was nowhere near:
+    planning radius 0.750 = 0.35 declared + 0.40 sigma, so the required clearance was
+    0.40 + 0.12 + 0.750 = 1.27 m against a chair whose true radius is about 0.30. The
+    robot stopped 0.30 m short and held.
+    """
+    mapping = _map(radii={"bin": 0.35})
+    _see(mapping, CONFIRM_SIGHTINGS, range_m=2.15)
+    landmark = mapping.confirmed()[0]
+    # Force the uncertainty well past the cap, the way a noisy ground-contact range does.
+    landmark.covariance = np.eye(2) * (0.40 ** 2)
+    assert landmark.position_sigma > MAX_PLANNING_INFLATION_M, landmark.position_sigma
+    assert landmark.planning_radius_m == 0.35 + MAX_PLANNING_INFLATION_M, \
+        landmark.planning_radius_m
+    assert landmark.planning_radius_m < 0.75, "the uncapped value that caused the hold"
+
+
+def test_a_well_localised_landmark_is_unchanged_by_the_cap():
+    """The cap must bite only where the doubt was doing the blocking. A landmark the map
+    is sure of already inflates by less than the cap and must keep its exact disc."""
+    mapping = _map(radii={"bin": 0.15})
+    _see(mapping, 12, range_m=2.15)
+    landmark = mapping.confirmed()[0]
+    assert landmark.position_sigma <= MAX_PLANNING_INFLATION_M, landmark.position_sigma
+    assert landmark.planning_radius_m == landmark.radius_m + landmark.position_sigma
+
+
+def test_the_object_itself_is_never_shrunk():
+    """Radius is the model of how big the thing is, not a margin. The cap bounds the
+    DOUBT; understating the object would plan paths through furniture."""
+    mapping = _map(radii={"bin": 0.35})
+    _see(mapping, CONFIRM_SIGHTINGS, range_m=2.15)
+    landmark = mapping.confirmed()[0]
+    landmark.covariance = np.eye(2) * (0.60 ** 2)
+    assert landmark.planning_radius_m >= landmark.radius_m, \
+        "the disc can never be smaller than the object"
 
 
 if __name__ == "__main__":

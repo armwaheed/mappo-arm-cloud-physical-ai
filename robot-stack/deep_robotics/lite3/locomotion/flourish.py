@@ -65,6 +65,14 @@ SPIN_REVOLUTIONS = 1.0
 SHAKE_SWEEP_RAD = 0.45
 SHAKE_COUNT = 3
 
+#: The recovery scan: 90 degrees each side of the heading the robot got stuck on, then
+#: back to it. Three legs rather than two so it ENDS where it started -- the next attempt
+#: re-plans from the heading the operator aimed it at, not from wherever the scan happened
+#: to stop. What it buys is a different view: the camera is the only sensor, it sees 134
+#: degrees, and a robot that has held for seconds against something it cannot get around
+#: has been looking at the same frame the whole time.
+SWEEP_RAD = math.pi / 2
+
 #: Radians of slop each leg accepts. One 10 Hz tick at the measured 0.8565 rad/s carries
 #: 0.086 rad, so a tighter tolerance would ask the robot to stop between two commands it
 #: has no way to issue.
@@ -84,11 +92,14 @@ class Flourish:
 
     SPIN = "spin"
     SHAKE = "shake"
+    SWEEP = "sweep"
 
     def __init__(self, kind: str, *, yaw_speed_rad_s: float, turn_sign: int = +1,
                  revolutions: float = SPIN_REVOLUTIONS, shakes: int = SHAKE_COUNT) -> None:
-        if kind not in (self.SPIN, self.SHAKE):
-            raise Refusal(f"unknown gesture {kind!r}; it is {self.SPIN} or {self.SHAKE}")
+        if kind not in (self.SPIN, self.SHAKE, self.SWEEP):
+            raise Refusal(
+                f"unknown gesture {kind!r}; it is one of "
+                f"{self.SPIN}, {self.SHAKE}, {self.SWEEP}")
         if yaw_speed_rad_s <= 0.0:
             raise Refusal(
                 "this gesture is timed against the profile's MEASURED yaw speed and it is "
@@ -100,6 +111,12 @@ class Flourish:
         #: Each leg is (radians to turn, sign). A spin is one long leg; a shake alternates.
         if kind == self.SPIN:
             self._legs = [(2.0 * math.pi * revolutions, self.turn_sign)]
+        elif kind == self.SWEEP:
+            # Out to one side, across to the other, back to the middle. The robot ends on
+            # the heading it was stuck on, having pointed the camera 90 degrees either way.
+            self._legs = [(SWEEP_RAD, self.turn_sign),
+                          (2.0 * SWEEP_RAD, -self.turn_sign),
+                          (SWEEP_RAD, self.turn_sign)]
         else:
             self._legs = []
             for index in range(shakes * 2):
@@ -166,6 +183,10 @@ def describe(kind: str, yaw_speed_rad_s: float) -> str:
     if kind == Flourish.SPIN:
         span, legs = 2.0 * math.pi * SPIN_REVOLUTIONS, 1
         what = f"one full turn in place, {math.degrees(span):.0f} deg"
+    elif kind == Flourish.SWEEP:
+        span, legs = 4.0 * SWEEP_RAD, 3
+        what = (f"look {math.degrees(SWEEP_RAD):.0f} deg each side of the stuck heading, "
+                f"then back to it")
     else:
         span = SHAKE_SWEEP_RAD * (SHAKE_COUNT * 2 - 1)
         legs = SHAKE_COUNT * 2
@@ -193,7 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter)
     robot_link.add_context_arguments(parser)
     robot_link.add_link_arguments(parser, moving=True)
-    parser.add_argument("--kind", choices=(Flourish.SPIN, Flourish.SHAKE),
+    parser.add_argument("--kind",
+                        choices=(Flourish.SPIN, Flourish.SHAKE, Flourish.SWEEP),
                         default=Flourish.SPIN)
     parser.add_argument("--turn-sign", type=int, default=1, choices=(1, -1),
                         help="which way to turn. A CLEARANCE choice: both yaw primitives "
