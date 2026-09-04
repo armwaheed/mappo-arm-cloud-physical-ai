@@ -188,6 +188,40 @@ def test_the_plan_says_the_robot_does_not_travel():
         assert "0.8563" in text, "the plan must quote the MEASURED yaw speed"
 
 
+def test_the_pose_fields_these_runners_read_actually_exist():
+    """⚠️ THE BUG THIS EXISTS FOR. `flourish.perform` and `reverse_along_path.walk` read
+    `loco.pose()`, and both were written against the SIBLING UPSTREAM repository, whose
+    `Lite3Pose` names the heading `yaw_rad`. This repository names it `yaw`. Nothing
+    offline touched a real pose, so it passed every test here and raised
+    `AttributeError: 'Lite3Pose' object has no attribute 'yaw_rad'` on a robot that had
+    already completed its run.
+
+    The state machines are pure and cannot catch this; only the seam can. So the seam is
+    asserted directly: whatever `Lite3Pose` carries, these two files must read that name.
+    """
+    import ast
+    import sys as _sys
+    from pathlib import Path as _Path
+
+    _sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
+    from deep_robotics.lite3.locomotion.lite3_udp_locomotion import Lite3Pose
+
+    fields = set(getattr(Lite3Pose, "__dataclass_fields__", {}))
+    assert fields, "Lite3Pose is expected to be a dataclass"
+
+    here = _Path(__file__).resolve().parent
+    for name in ("flourish.py", "reverse_along_path.py"):
+        tree = ast.parse((here / name).read_text(), filename=name)
+        read = {node.attr for node in ast.walk(tree)
+                if isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name) and node.value.id == "pose"}
+        assert read, f"{name} no longer reads a pose; delete this test or fix the scan"
+        unknown = read - fields
+        assert not unknown, (
+            f"{name} reads {sorted(unknown)} off a pose, and Lite3Pose has "
+            f"{sorted(fields)}. This is the upstream/downstream naming split.")
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

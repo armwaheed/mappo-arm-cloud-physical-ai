@@ -254,8 +254,11 @@ def perform(args, yaw_speed_rad_s: float) -> int:
     tick_s = 1.0 / args.control_hz
     try:
         while True:
+            # `Lite3Pose.yaw`, not `yaw_rad`. The sibling upstream repository names
+            # the same field `yaw_rad`, and writing this against that one cost a
+            # live AttributeError on a robot that had already finished its run.
             pose = loco.pose()
-            wz = gesture.step(pose.yaw_rad, time.monotonic())
+            wz = gesture.step(pose.yaw, time.monotonic())
             if wz is None:
                 break
             # Re-sent every tick: the vendor high-level interface is edge-triggered, so a

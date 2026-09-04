@@ -411,8 +411,11 @@ def walk(args, target_m: float, forward_speed_m_s: float, yaw_speed_rad_s: float
     started = time.monotonic()
     try:
         while True:
+            # `Lite3Pose.yaw`, not `yaw_rad`. The sibling upstream repository names
+            # the same field `yaw_rad`, and writing this against that one cost a
+            # live AttributeError on a robot that had already finished its run.
             pose = loco.pose()
-            intent = plan.step(pose.x, pose.y, pose.yaw_rad, time.monotonic())
+            intent = plan.step(pose.x, pose.y, pose.yaw, time.monotonic())
             if intent is None:
                 break
             if intent.phase != phase_seen:
