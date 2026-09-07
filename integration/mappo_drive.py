@@ -1405,15 +1405,17 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                             "path's line holds the robot. 'none' (the default) is "
                             "today's behaviour: the policy's command, clamped, is what "
                             "the veto judges")
-    group.add_argument("--heading-servo", choices=("off", *SERVO_MODES), default="off",
+    group.add_argument("--heading-servo", choices=("off", *SERVO_MODES), default=GOAL,
                        help="turn the nose towards something the policy does not steer "
                             "for. The policy commands no yaw at all, so with the servo "
-                            "OFF — the default — the robot crabs and its 85-degree "
-                            f"camera never looks anywhere new. {GOAL!r} faces the goal "
-                            f"bearing; {TRAVEL!r} faces the direction of travel and is "
-                            "the law that put the robot into a wall three times on "
-                            "2026-08-17 (issue #16). Default is off because no robot has "
-                            f"yet been driven with {GOAL!r}")
+                            f"'off' the robot crabs and its 85-degree camera never looks "
+                            f"anywhere new — measured 2026-09-07, a crabbing run walked "
+                            f"1.23x the direct line and overshot its arrival. {GOAL!r} — "
+                            f"NOW THE DEFAULT — faces the goal bearing; {TRAVEL!r} faces "
+                            "the direction of travel and is the law that put the robot "
+                            "into a wall three times on 2026-08-17 (issue #16). The "
+                            f"default was 'off' while no robot had been driven with "
+                            f"{GOAL!r}; LITE3-A has now been, and it reached its goal")
     # The old spelling, kept working rather than broken: it appears in operator command
     # lines and in deploy/. It always meant "off", and off is now what you get anyway, so
     # it is a no-op that costs nothing to honour. Hidden from --help so the new flag is
