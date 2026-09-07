@@ -181,14 +181,21 @@ SPDX-License-Identifier: Apache-2.0
       </label>
       <label class="field">
         <span>Policy</span>
+        <!-- ORDER IS THE DEFAULT here too: the first option ships selected. `raw` is
+             first as of 2026-09-07 because it is what the demo runs. See POLICY_MODES
+             in run_control.py, which test_stylesheet.py pins this against. -->
         <select id="run-mode">
+          <option value="raw">raw — NO veto, cleared lane only</option>
           <option value="supervised">supervised — planner keeps its veto</option>
-          <option value="raw">raw — NO veto, empty arena only</option>
         </select>
       </label>
       <label class="field">
         <span>Heading servo</span>
-        <select id="run-servo"><option value="off">off</option></select>
+        <!-- The placeholder is the DEFAULT, not a neutral value: the page ships with it
+             selected, and dashboard.js preserves whatever is already chosen so an
+             operator's pick survives a re-render. `off` here silently outvoted both
+             `HEADING_SERVOS` and mappo_drive.py's argparse default. -->
+        <select id="run-servo"><option value="goal">goal</option></select>
       </label>
     </div>
 

@@ -1020,7 +1020,7 @@ class MappoRobotDriver(DeviceDriver):
     # ── run control ──────────────────────────────────────────────────────────
     @rpc()
     async def start_run(self, seconds: float = run_control.DEFAULT_RUN_SECONDS,
-                        policy_mode: str = "supervised", heading_servo: str = "off",
+                        policy_mode: str = "raw", heading_servo: str = "goal",
                         arm_motion: bool = False) -> dict:
         """Start a MAPPO run. **By default it cannot move the robot**, and that is the point.
 
@@ -1052,13 +1052,21 @@ class MappoRobotDriver(DeviceDriver):
         Args:
             seconds: how long the run may last, clamped to 120 s. Passed as
                 ``--max-seconds`` and backstopped by a watchdog here.
-            policy_mode: ``supervised`` keeps the planner's feasibility veto. ``raw`` removes
-                it, and in the closed-loop simulation the raw policy collided in every
-                configuration tested while the supervised one did not.
-            heading_servo: ``off`` (the default, and the only setting that has not driven a
-                robot into something), ``goal``, or ``travel`` — issue #16's control law.
-                Always sent explicitly, because the deployed tree's default is whatever it
-                was on the day it was copied.
+            policy_mode: ``raw`` (THE DEFAULT since 2026-09-07) hands the policy's command
+                to the legs unfiltered; ``supervised`` keeps the planner's feasibility
+                veto. Measured on the repo's own 10 closed-loop scenarios, not "every
+                configuration" as this line used to claim: raw 7 arrived / 2 collided / 1
+                timeout, supervised 6 / 0 / 4. The veto removes the collisions and costs
+                three timeouts, and the timeouts are what the demo hit, because it held
+                for people walking PAST the lane. ``raw`` therefore assumes a CLEARED
+                lane; a crowded run must ask for ``supervised`` by name.
+            heading_servo: ``goal`` (the default since #212) faces the goal bearing;
+                ``off`` crabs and was measured on 2026-09-07 walking 1.23x the direct line
+                and overshooting; ``travel`` is issue #16's control law. ``off`` was once
+                described here as "the only setting that has not driven a robot into
+                something" — that stopped being true the same day, when LITE3-A drove
+                ``goal`` and reached its goal. Always sent explicitly, because the
+                deployed tree's default is whatever it was on the day it was copied.
             arm_motion: ⛔ the second of two gates. ``true`` adds ``--live`` and hands the
                 legs to the policy, and needs the driver to have been started with
                 ``--allow-motion``. Default ``false``: a scene check that cannot move.

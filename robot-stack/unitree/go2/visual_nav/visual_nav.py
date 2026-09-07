@@ -46,10 +46,33 @@ exposes no sensor timestamp — so transport latency stays inside the measured c
 and the safety margin. Any other camera binding must state which of the two it reports,
 because the difference is invisible until the robot is moving.
 
-The margin here is thinner than it looks: ``perception_timeout_s`` is 0.6 s and the
-worst observed cycle was 0.598 s. Running the goal pass every cycle rather than on its
-throttle put it over repeatedly. Adding a fourth pass needs this re-measured, not
-assumed.
+The margin here is thinner than it looks, and it is thinner than THAT for a reason the
+first version of this paragraph had wrong. ``perception_timeout_s`` is 0.6 s and the
+worst observed cycle was 0.598 s, which reads as "one bad cycle and we are over". The
+frame age a control tick actually sees is close to TWO cycles, not one, and the
+arithmetic is forced:
+
+    frame_age(tick) = cycle(N)  +  elapsed-into-cycle(N+1)
+
+``latest()`` cannot change during cycle N+1 — nothing newer exists yet — so a result
+published after a 250 ms cycle is already 250 ms old the instant it exists, and it stays
+the newest thing the loop has for another whole cycle. Measured on LITE3-A across 742
+ticks in three runs: median frame age 0.43-0.47 s, p90 0.587-0.616 s, max 0.698 s,
+against a median cycle of 200-270 ms. 7-14% of ticks held.
+
+That is NOT "stale on every tick" (issue #195 says so and is wrong — it has been
+measured), and it is not a bug in the timestamp either: the frame really was captured
+then. It is the shape of the pipeline. Two consequences the rest of this file depends
+on:
+
+  * The 0.6 s budget buys roughly ONE spare cycle, not two. Adding a fourth pass, or
+    moving to a slower host, spends that spare cycle and the hold rate climbs.
+  * The only honest way to shrink the budget — and with it the person margin, which is
+    ``reaction_distance_m`` and is directly proportional to it — is to shrink the CYCLE.
+    ``--input-size 224`` is ~1.7x faster than 300 and the goal pass is already
+    throttled; re-measure, then set ``--perception-timeout`` and ``--soft-gap`` to what
+    the faster pipeline earns. Lowering the timeout without lowering the cycle does not
+    make the robot see sooner, it just makes it hold more.
 
 **The robot rests prone and stands only to walk.** The D1 arm loads the hind legs
 continuously (see ``safety.py``), so standing is treated as a cost rather than the
@@ -228,7 +251,70 @@ class NavConfig:
     """Everything tunable about a run."""
 
     control_hz: float = 10.0
-    perception_timeout_s: float = 0.6   # newest frame older than this -> stop
+
+    #: Oldest FRAME the loop may plan on, in seconds. Newest frame older than this and the
+    #: robot stops. Settable from ``--perception-timeout``; 0.6 s is the shipped default.
+    #:
+    #: ``integration/peer_source.PEER_TIMEOUT_S`` is separately declared 0.6 and NOTHING
+    #: PINS THE TWO TOGETHER — checked 2026-09-07, no test relates them. They agreed by
+    #: coincidence while both were hardcoded, and this flag lets them diverge: a run at
+    #: ``--perception-timeout 0.3`` still trusts a peer robot's obstacle for 0.6 s, which
+    #: is the direction that matters because it is the looser one. Left as two numbers
+    #: rather than wired together because peer age is priced differently (``peer_source``
+    #: inflates a peer disc across it instead of holding), but an operator who lowers
+    #: this budget for safety has NOT lowered that one.
+    #:
+    #: THIS IS THE MEASURE THAT IS RIGHT, and it stays. The frame age is ~2 cycles (see
+    #: the module docstring) and that is not an artefact to be normalised away: a person
+    #: who walked into the lane after ``capture_time`` is in NO frame this robot has
+    #: looked at, and no amount of extrapolation invents them. ``_obstacles`` already
+    #: prices the same seconds continuously — it advances every track to ``now`` and
+    #: inflates the radius by ``0.5 * PROCESS_ACCEL_SIGMA * age**2`` — but it can only do
+    #: that for people it has already SEEN. This gate is what covers the ones it has not,
+    #: and the interval it must cover is exactly "seconds since the newest looked-at
+    #: frame", which is what ``now - capture_time`` is.
+    #:
+    #: It is also the multiplier in :func:`reaction_distance_m`, so raising it widens the
+    #: person margin the robot needs by ``(max_vx + 1.4) * delta`` metres.
+    #: :func:`warn_if_soft_gap_is_below_reaction` prints that whenever the two stop
+    #: agreeing, in either direction.
+    #:
+    #: ⚠️ DELIBERATELY NOT DERIVED FROM THE MEASURED CYCLE TIME, e.g. as ``2 * median
+    #: cycle_ms``. That is the tempting spelling and it has the sign backwards: a host
+    #: that runs the detector at 2 Hz would raise its OWN budget to 1 s and go on
+    #: driving, so the slower the robot's eyes the more staleness it would grant itself,
+    #: silently, with no line in the log. The budget is a property of the VENUE and the
+    #: margin — ``soft_gap / (max_vx + WALKING_PERSON_M_S)`` — not of the CPU, so it is
+    #: fixed and a slow host holds more against it. That is the correct direction: the
+    #: run stutters, the hold ledger says how much, and the operator either buys a faster
+    #: cycle or states a wider margin. What the measured cycle IS good for is explaining
+    #: the holds once they happen, which is what ``_note_perception_hold`` uses
+    #: ``result.cycle_ms`` for.
+    perception_timeout_s: float = 0.6
+
+    #: Longest PERCEPTION SILENCE the loop may plan through, in seconds — ``now`` minus
+    #: the moment the newest result was PUBLISHED, not the moment its frame was captured.
+    #: Settable from ``--perception-silence``.
+    #:
+    #: A second bound because the one above answers a question this one does not. Frame
+    #: age is a saw-tooth on a healthy pipeline (1 cycle to 2 cycles, reset every
+    #: publish) and a monotonic climb on a dead one, and the gate above cannot tell those
+    #: apart — it reports both as "stale" and an operator reading the log cannot tell a
+    #: 4 Hz detector from an unplugged camera. Silence can: ``now - publish_time`` resets
+    #: to zero on every completed cycle and only grows without limit when perception has
+    #: actually stopped.
+    #:
+    #: ⚠️ DEFAULTING IT EQUAL TO ``perception_timeout_s`` MAKES IT BEHAVIOURALLY INERT,
+    #: ON PURPOSE. ``publish_time >= capture_time`` always, so silence <= frame age
+    #: always, so at equal bounds this gate can never fire first and the shipped hold
+    #: behaviour is unchanged to the tick. What it earns its place for is the case where
+    #: they are NOT equal: an operator on a slow host who raises ``--perception-timeout``
+    #: to stop the stutter would otherwise buy unbounded staleness with it — at
+    #: ``--perception-timeout 2.0`` a pipeline that died would coast for two seconds.
+    #: ``--perception-silence 0.8`` keeps the dead-pipeline stop where it was while the
+    #: latency budget moves. ``None`` means "track ``perception_timeout_s``".
+    perception_silence_s: float | None = None
+
     max_run_s: float = 90.0
     arrive_tolerance_m: float = 1.0     # stop this far short of the goal marker
     rest_after_s: float = 15.0          # held this long -> lie down and wait
@@ -259,6 +345,18 @@ class NavConfig:
     motion_mode: str = "normal"
     rest_when_blocked: bool = True      # false when posture is operator-controlled
     initially_standing: bool = False
+
+    @property
+    def silence_budget_s(self) -> float:
+        """The silence bound actually in force, with ``None`` resolved.
+
+        A property rather than a default of ``0.6`` so the two numbers cannot drift
+        apart: an operator who passes ``--perception-timeout 0.35`` and nothing else
+        gets a 0.35 s silence bound, not the shipped 0.6 s they never asked for.
+        """
+        if self.perception_silence_s is None:
+            return self.perception_timeout_s
+        return self.perception_silence_s
 
 
 @dataclass(frozen=True)
@@ -294,6 +392,52 @@ class PerceptionResult:
     #: is NOT the same as zero. See :func:`person_detector.widest_open_bearing_rad` and
     #: the saturation hold in :meth:`VisualNavigator.run`.
     open_bearing_rad: float = math.inf
+    #: ``time.monotonic()`` at the instant this result was PUBLISHED — i.e. when the
+    #: detector finished and this object became what ``latest()`` returns.
+    #:
+    #: ⚠️ THIS IS NOT A FRESHER STAMP FOR THE FRAME, AND MUST NEVER BE USED AS ONE. The
+    #: frame was captured at ``capture_time`` and at no other moment; re-stamping it here
+    #: — the obvious way to make the reported age "one cycle instead of two" — would take
+    #: a belief that is genuinely 450 ms old and file it as 200 ms old, which is exactly
+    #: the lie the staleness gate exists to prevent. The two timestamps are carried
+    #: TOGETHER because they answer two different questions:
+    #:
+    #:     now - capture_time   how old is what I am looking at   (LATENCY)
+    #:     now - publish_time   how long since anything arrived   (SILENCE)
+    #:
+    #: Latency is already priced twice over — ``_obstacles`` extrapolates and inflates
+    #: across it, and ``perception_timeout_s`` caps it. Silence is priced nowhere else,
+    #: and it is the only thing in this object that separates a 4 Hz detector from a
+    #: camera that has stopped. Both look identical in ``capture_time`` alone.
+    #:
+    #: ``None`` means "not stamped" and is read conservatively — see :meth:`silence_s`.
+    #:
+    #: ⚠️ NOT a ``0.0`` sentinel tested with ``> 0.0``, which is what this was first
+    #: written as. ``time.monotonic()`` has NO defined epoch: on Linux it is system
+    #: uptime and comfortably large, but on macOS -- where these tests run -- it starts
+    #: near zero, so a genuine stamp a few seconds behind ``now`` is NEGATIVE and a
+    #: ``> 0.0`` test files it as unstamped. The failure is quiet in the safe direction
+    #: (it falls back to frame age, an upper bound), which is exactly why it would have
+    #: survived: a test simulating a dead pipeline silently measured a healthy one and
+    #: passed for the wrong reason. ``None`` cannot be confused with a timestamp.
+    publish_time: float | None = None
+
+    def silence_s(self, now: float) -> float:
+        """Seconds since perception last published anything, at ``now``.
+
+        Bounded by one cycle on a healthy pipeline and unbounded on a dead one, which is
+        the whole reason it exists.
+
+        An unstamped result (``publish_time is None``) falls back to the frame age rather
+        than to ``now``, which would report a monotonic clock's whole uptime, or to
+        ``0.0``, which would report a stopped pipeline as healthy. Frame age is the
+        conservative reading of the two: it is an upper bound on the real silence by
+        construction, so an in-process caller who builds these by hand gets the old
+        single-measure behaviour and never a falsely reassuring one.
+        """
+        reference = (self.capture_time if self.publish_time is None
+                     else self.publish_time)
+        return max(0.0, now - reference)
 
 
 class PerceptionWorker:
@@ -540,6 +684,10 @@ class PerceptionWorker:
                      if source in UNRANGEABLE_SOURCES]
 
         self._cycles += 1
+        # Read ONCE and used for both the cycle cost and the publish stamp, so the two
+        # cannot disagree about when this cycle ended. `capture_time` is untouched and
+        # keeps meaning what `camera.Frame` says it means: when the JPEG arrived.
+        published = time.monotonic()
         result = PerceptionResult(
             seq=frame.seq, capture_time=frame.capture_time, pose=pose,
             observations=observations,
@@ -547,7 +695,8 @@ class PerceptionWorker:
             static_observations=static_observations, goal_fix=goal_fix,
             image=frame.image, detect_ms=detect_ms, wait_ms=wait_ms, pass_ms=pass_ms,
             open_bearing_rad=widest_open_bearing_rad(blocking, self._model),
-            cycle_ms=(time.monotonic() - cycle_started) * 1000.0)
+            publish_time=published,
+            cycle_ms=(published - cycle_started) * 1000.0)
         with self._lock:
             self._result = result
         return last_seq
@@ -581,6 +730,54 @@ def control_interval_s(previous_tick_s: float | None, now_s: float,
     if previous_tick_s is None:
         return period_s
     return min(MAX_CONTROL_DT_S, max(period_s, now_s - previous_tick_s))
+
+
+#: The two ways perception can fail the control loop, as the strings that reach the
+#: console and ``telemetry``'s ``hold_reason``. Named constants because a reader
+#: grepping a run log for one of them must not have to guess the wording, and because
+#: the whole point of the split is that these two are counted apart.
+PERCEPTION_LATENT = "perception-latent"
+PERCEPTION_SILENT = "perception-silent"
+
+
+def perception_hold_reason(frame_age_s: float, silence_s: float,
+                           config: NavConfig) -> str | None:
+    """Why perception cannot be planned on this tick, or ``None`` if it can.
+
+    Pure arithmetic on two ages and two bounds, lifted out of :meth:`VisualNavigator.run`
+    so the decision can be exercised without a robot, a camera or a thread.
+
+    WHY TWO MEASURES AND NOT ONE, since one of them subsumes the other. ``silence_s`` is
+    ``now - publish_time`` and ``frame_age_s`` is ``now - capture_time``; publishing
+    never precedes capture, so silence <= frame age always and at equal bounds the
+    silence test is unreachable. That is the shipped configuration and it is deliberate
+    — see :attr:`NavConfig.perception_silence_s`. The split buys two things:
+
+      * A NAME FOR WHAT HAPPENED. ``PERCEPTION_LATENT`` is a pipeline that is running and
+        is simply slower than the budget: the frame is over-age but a result did arrive
+        recently, so the fix is ``--input-size``, a faster host, or a wider margin.
+        ``PERCEPTION_SILENT`` is a pipeline that has stopped delivering: the camera is
+        unplugged, the RPC has wedged, every cycle is throwing. Those want opposite
+        responses from an operator and the old single message ("perception stale") sent
+        both to the same wrong place.
+      * A FLOOR UNDER THE DEAD-PIPELINE STOP. Raising ``--perception-timeout`` to live
+        with a slow host would otherwise raise the dead-camera stop by the same amount,
+        because it was the same number. It no longer is.
+
+    Both branches HOLD. Nothing here is a route to moving on data the old code would
+    have stopped for: this returns non-``None`` on a strict superset of the ticks
+    ``frame_age_s > perception_timeout_s`` used to, for every setting of the two bounds.
+    """
+    silent = silence_s > config.silence_budget_s
+    latent = frame_age_s > config.perception_timeout_s
+    if not (silent or latent):
+        return None
+    # SILENCE IS REPORTED IN PREFERENCE TO LATENCY WHEN BOTH FIRE, because it is the
+    # stronger claim and the more urgent one. A silent pipeline is over-age too, by
+    # construction, so a tick that satisfied both is not "a bit slow" — it is one that
+    # has heard nothing at all for longer than the budget, and saying "latent" there
+    # would file a dead camera as a tuning problem.
+    return PERCEPTION_SILENT if silent else PERCEPTION_LATENT
 
 
 def blocked_stop(command) -> bool:
@@ -692,6 +889,17 @@ class VisualNavigator:
         #: camera model is reached through the perception worker, and a constructor that
         #: touched it would make every test that injects a stub worker need one.
         self._saturation_floor: float | None = None
+        #: How many ticks each perception hold cost, keyed by
+        #: :data:`PERCEPTION_LATENT` / :data:`PERCEPTION_SILENT`. Printed in the run
+        #: summary. A per-tick console line answers "is it holding right now?" and a
+        #: reader scrolling 900 of them cannot answer "how much of the run was this, and
+        #: which kind?" — which is the question 7-14% versus 100% turns on, and is what
+        #: issue #195 got wrong by eye.
+        self._perception_holds: Counter = Counter()
+        #: Set once per kind, so the console explains each failure the first time it
+        #: happens and then shuts up. Without this a 4 Hz pipeline prints the same
+        #: paragraph 90 times in a 90 s run and the operator stops reading it.
+        self._explained_holds: set = set()
 
     # ── Posture ─────────────────────────────────────────────────────────────
     @staticmethod
@@ -792,6 +1000,87 @@ class VisualNavigator:
                 for landmark in self._static_map.confirmed())
         return obstacles
 
+    # ── Perception holds ────────────────────────────────────────────────────
+    def _note_perception_hold(self, reason: str, frame_age: float, silence: float,
+                              result: PerceptionResult) -> None:
+        """Count one perception hold and say, once per kind, what it actually is.
+
+        The old line was ``perception stale (0.62s) — holding``, on every held tick, for
+        both failures. Two problems with it, and they are the reason this method exists
+        rather than an f-string at the call site:
+
+          * IT NAMED A NUMBER AND NOT A CAUSE. 0.62 s is over the budget, and an operator
+            cannot tell from that whether the camera is dead or the detector is 30 ms too
+            slow. Those want a technician and a ``--input-size`` respectively.
+          * IT SCROLLED. At 10 Hz a run that holds 14% of ticks prints it 120 times, and
+            the only thing anyone can do with 120 identical lines is stop reading them.
+            The count belongs in the summary; the explanation belongs once.
+
+        The per-tick line stays — a hold the operator cannot see happening is worse than
+        a noisy one — but it is one short line, and the paragraph fires once.
+        """
+        self._perception_holds[reason] += 1
+        config = self._config
+        if reason == PERCEPTION_SILENT:
+            print(f"[visual_nav] perception SILENT {silence:.2f}s "
+                  f"(frame {frame_age:.2f}s old) — holding")
+        else:
+            print(f"[visual_nav] perception LATENT: frame {frame_age:.2f}s old "
+                  f"(> {config.perception_timeout_s:.2f}s) — holding")
+        if reason in self._explained_holds:
+            return
+        self._explained_holds.add(reason)
+        if reason == PERCEPTION_SILENT:
+            print(f"[visual_nav]   nothing has been PUBLISHED for {silence:.2f}s, past "
+                  f"the {config.silence_budget_s:.2f}s silence budget.")
+            # "A running detector publishes every cycle" is true, and it is exactly why
+            # a budget SHORTER THAN ONE CYCLE cannot be met by a healthy pipeline: the
+            # silence sweeps 0 -> cycle_ms between publishes, so any budget below that
+            # ceiling is tripped on the tail of every cycle. Measured on the shipped
+            # 250 ms cycle: --perception-silence 0.20 holds 19% of ticks, 0.10 holds 59%,
+            # 0.05 holds 79% -- a robot that looks broken while every component works.
+            # Diagnosing that as an unplugged camera sends the operator to the hardware
+            # for a number they typed, so this branch has to be told apart FIRST.
+            cycle_s = result.cycle_ms / 1000.0
+            if cycle_s > 0.0 and config.silence_budget_s <= cycle_s:
+                # Deliberately NOT "this is not the camera": the camera may well also
+                # be dead, and this branch cannot tell, because an unsatisfiable budget
+                # masks the very signal that would say so. What IS certain is that the
+                # budget cannot be met by a working pipeline, so it has to be fixed
+                # before a camera fault can be diagnosed at all. Claiming more than that
+                # would trade one confident misdiagnosis for another.
+                print(f"[visual_nav]   ⚠️  THE BUDGET IS UNSATISFIABLE, whatever else is "
+                      f"wrong. The last cycle took {result.cycle_ms:.0f}ms, so silence "
+                      f"reaches {result.cycle_ms:.0f}ms between publishes on a perfectly "
+                      f"HEALTHY pipeline, and the budget is "
+                      f"{config.silence_budget_s:.2f}s. No working detector can satisfy "
+                      f"it, so this hold says nothing about the camera either way. "
+                      f"Raise --perception-silence above one cycle (try "
+                      f"{max(2 * cycle_s, 0.1):.2f}) or drop the flag to track "
+                      f"--perception-timeout, then read the run again.")
+                return
+            print(f"[visual_nav]   This is not a slow detector — a running one publishes "
+                  f"every cycle, and the last one here took {result.cycle_ms:.0f}ms, "
+                  f"inside the budget. Check the camera, the DDS transport and the "
+                  f"'[perception] cycle failed' lines above. The robot holds until it "
+                  f"hears something.")
+            return
+        # `cycle_ms` is the measured compute of the cycle that produced THIS result, so
+        # the sentence below is arithmetic on this run rather than a quote from the
+        # module docstring's Jetson.
+        cycle_s = result.cycle_ms / 1000.0
+        margin_m = reaction_distance_m(self._planner.limits.max_vx,
+                                       config.perception_timeout_s)
+        print(f"[visual_nav]   the pipeline is ALIVE — it published {silence:.2f}s ago "
+              f"after a {cycle_s * 1000:.0f}ms cycle — and a control tick sees roughly "
+              f"TWO cycles of age ({2 * cycle_s:.2f}s here), because a result stays the "
+              f"newest thing this loop has for the whole of the next cycle.")
+        print(f"[visual_nav]   shrink the CYCLE (--input-size 224 is ~1.7x faster than "
+              f"300) or raise --perception-timeout from "
+              f"{config.perception_timeout_s:.2f}s and widen --soft-gap to match: the "
+              f"margin is {margin_m:.2f} m "
+              f"at this budget and grows in proportion to it.")
+
     # ── Main loop ───────────────────────────────────────────────────────────
     def run(self) -> str:
         config = self._config
@@ -875,22 +1164,34 @@ class VisualNavigator:
                 pose = (pose_obj.x, pose_obj.y, pose_obj.yaw)
                 obstacles = self._obstacles(now)
 
+            # TWO AGES, BOTH TRUE, MEASURING DIFFERENT THINGS. `frame_age` is how old the
+            # belief is and stays the number the safety margin is priced on; `silence` is
+            # how long since perception last spoke. See `perception_hold_reason`.
             frame_age = now - result.capture_time
-            if frame_age > config.perception_timeout_s:
+            silence = result.silence_s(now)
+            perception_hold = perception_hold_reason(frame_age, silence, config)
+            if perception_hold is not None:
                 # Blind. Stop rather than coast on a stale belief. Odometry is a DDS
                 # topic and is still good here, so the tick is still worth recording.
                 self._command((0.0, 0.0, 0.0))
-                print(f"[visual_nav] perception stale ({frame_age:.2f}s) — holding")
+                self._note_perception_hold(perception_hold, frame_age, silence, result)
                 # The LATCHED goal, not None. A stale frame means the robot cannot see,
                 # not that it has forgotten where it was going, and recording null here
                 # reads downstream as "goal lost" — which is a different and much more
                 # alarming event. `stale` is what says what actually happened.
                 latched = self._goal.goal_xy()
+                # `stale=True` AND `hold_reason` together, not one or the other. `stale`
+                # is the versioned contract every existing reader of this file already
+                # parses (`evidence/sample_telemetry.jsonl`, the READMEs, the whitepaper),
+                # and dropping it to make room for a finer word would break all of them
+                # to say something they can already infer. `hold_reason` is the finer
+                # word, on the same tick, for the readers that want it.
                 self._telemetry_tick(
                     elapsed, pose, latched,
                     None if latched is None else
                     math.hypot(latched[0] - pose[0], latched[1] - pose[1]),
-                    obstacles, frame_age, result, stale=True)
+                    obstacles, frame_age, result, stale=True,
+                    hold_reason=perception_hold)
                 self._sleep_out_the_period(tick_start, period)
                 continue
 
@@ -1025,11 +1326,23 @@ class VisualNavigator:
         # apart from a long blind one when reading the log afterwards.
         print(f"[visual_nav] perception: {self._perception.cycles} cycles, "
               f"{self._perception.errors} errors")
+        # THE HOLD LEDGER, ALWAYS PRINTED — including the zero. "0 latent, 0 silent" is
+        # the sentence that retires issue #195's "stale on every tick", and a summary
+        # that only appears when something went wrong cannot be used as evidence that
+        # nothing did. Ticks, not seconds, because that is what the console lines above
+        # are counted in and what a reader can cross-check against them.
+        latent = self._perception_holds[PERCEPTION_LATENT]
+        silent = self._perception_holds[PERCEPTION_SILENT]
+        print(f"[visual_nav] perception holds: {latent} latent, {silent} silent "
+              f"(budgets {config.perception_timeout_s:.2f}s frame / "
+              f"{config.silence_budget_s:.2f}s silence)")
         print(f"[visual_nav] outcome: {outcome}")
         if self._telemetry is not None:
             self._telemetry.write_outcome(
                 outcome, perception_cycles=self._perception.cycles,
                 perception_errors=self._perception.errors,
+                perception_holds={PERCEPTION_LATENT: latent,
+                                  PERCEPTION_SILENT: silent},
                 elapsed_s=round(time.monotonic() - started, 3))
         return outcome
 
@@ -1644,7 +1957,8 @@ def _preprocessing_record(args) -> dict:
 #: A walking person's speed, for the ONE purpose of saying how far someone travels while
 #: this robot is still looking at a stale frame. Not a detection threshold and not a
 #: tracker parameter -- it appears only in :func:`reaction_distance_m`, which exists to
-#: print what a lowered ``--soft-gap`` actually leaves. 1.4 m/s is the ordinary figure for
+#: print what a lowered ``--soft-gap`` or a raised ``--perception-timeout`` actually
+#: leaves (the inequality opens from either side). 1.4 m/s is the ordinary figure for
 #: an adult walking; it is deliberately NOT the figure for someone stepping backwards into
 #: a robot they have not noticed, which is faster and is the case the margin is really for.
 WALKING_PERSON_M_S = 1.4
@@ -1657,8 +1971,52 @@ def reaction_distance_m(top_speed_m_s: float, perception_timeout_s: float) -> fl
     travel during one staleness window, and a walking person's travel during the same
     window. A margin below this is not caution being trimmed -- it is reaction distance
     being removed, and the robot arrives where the person now is.
+
+    ``perception_timeout_s`` IS THE RIGHT WINDOW TO PUT HERE, and it is worth saying why
+    now that the frame age is known to be ~2 cycles rather than 1. The event this margin
+    covers is "a person steps into the lane at time t"; the robot can only know once a
+    frame captured after t has been PROCESSED, which takes up to one cycle to be picked
+    up plus one cycle to run, and then up to one control period to be acted on. That is
+    the same ~2 cycles ``perception_timeout_s`` caps, and it is a bound on the frame age
+    rather than a coincidence. Pricing this on one cycle instead would halve the margin
+    while the robot's actual reaction time did not move.
+
+    The lever that DOES move it is the cycle. Halve the cycle and both this number and
+    the hold rate halve together, honestly; see the module docstring.
     """
     return (top_speed_m_s + WALKING_PERSON_M_S) * perception_timeout_s
+
+
+def announce_perception_budgets(config: NavConfig, printer=print) -> None:
+    """Put both perception budgets on the console BEFORE the run.
+
+    They are settable now and the frame budget is the multiplier in the person margin,
+    yet until this line the only places they appeared were the telemetry header and the
+    end-of-run summary -- both read after the robot has already moved.
+
+    STATED, NOT JUDGED. Whether a silence budget clears one perception cycle depends on
+    the cycle, which has not been measured when this runs, so guessing here would mean
+    either a threshold that cries wolf on a fast pipeline or one that misses a slow one.
+    :meth:`VisualNavigator._note_perception_hold` names it from the MEASURED cycle the
+    first time it actually bites. What this can say without measuring anything is which
+    of the two configurations is in force, and they differ in what a later
+    ``--perception-timeout`` change will do: an unset silence budget follows the frame
+    budget up, and a set one does not.
+
+    Extracted from ``main`` rather than inlined there for the same reason
+    :func:`warn_if_soft_gap_is_below_reaction` is -- a line an operator relies on before
+    committing a robot should be checkable without a camera, a robot or a thread.
+    """
+    if config.perception_silence_s is None:
+        printer(f"[visual_nav] perception budgets: frame "
+                f"{config.perception_timeout_s:.2f}s, silence tracking it "
+                f"(--perception-silence unset, so it can never fire first)")
+        return
+    printer(f"[visual_nav] perception budgets: frame "
+            f"{config.perception_timeout_s:.2f}s, silence "
+            f"{config.silence_budget_s:.2f}s. A silence budget below ONE perception "
+            f"cycle holds on most ticks with nothing wrong; the run will say so if that "
+            f"is what happens.")
 
 
 def warn_if_soft_gap_is_below_reaction(args, limits, nav, default_gap_m: float,
@@ -1669,13 +2027,33 @@ def warn_if_soft_gap_is_below_reaction(args, limits, nav, default_gap_m: float,
     crowded booth is the honest example -- and refusing there would only push the run
     onto a robot with no margin stated at all. What is not acceptable is lowering it
     QUIETLY, so this prints the arithmetic and names the number it is compared against.
+
+    Named for the case it was written for, and it now covers the mirror image as well:
+    the margin can fall below the reaction distance because the margin came down OR
+    because ``--perception-timeout`` went up. The function name is left alone because
+    ``build_parser``'s callers and the tests refer to it, and the header line says which
+    of the two happened.
     """
-    if args.soft_gap >= default_gap_m:
-        return
     reaction = reaction_distance_m(limits.max_vx, nav.perception_timeout_s)
+    lowered = args.soft_gap < default_gap_m
+    # ⚠️ TWO WAYS TO OPEN THIS INEQUALITY, AND ONLY ONE OF THEM USED TO BE WATCHED.
+    # `soft_gap < reaction` is the property that matters, and `--perception-timeout` is
+    # now a flag, so it can be broken from either side: lower the gap, or raise the
+    # timeout the reaction distance is proportional to. Guarding only the first would
+    # mean `--perception-timeout 1.2` on the shipped 1.20 m margin sails through in
+    # silence at a 2.34 m reaction distance — the same defect as a lowered --soft-gap,
+    # reached by the flag this change added. Both are checked, and the header says which
+    # one happened.
+    if not lowered and args.soft_gap >= reaction:
+        return
     printer("!" * 78)
-    printer(f"[visual_nav] PERSON MARGIN LOWERED: --soft-gap {args.soft_gap:.2f} m, "
-            f"below the {default_gap_m:.2f} m default.")
+    if lowered:
+        printer(f"[visual_nav] PERSON MARGIN LOWERED: --soft-gap {args.soft_gap:.2f} m, "
+                f"below the {default_gap_m:.2f} m default.")
+    else:
+        printer(f"[visual_nav] PERCEPTION BUDGET RAISED: --perception-timeout "
+                f"{nav.perception_timeout_s:.2f}s has outgrown the "
+                f"{args.soft_gap:.2f} m person margin, which was not moved.")
     printer(f"    At {limits.max_vx:.2f} m/s with {nav.perception_timeout_s:.2f}s "
             f"perception, this robot needs {reaction:.2f} m just to react to a person "
             f"who steps toward it.")
@@ -1904,6 +2282,25 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
                           help="hard run-time budget")
     envelope.add_argument("--rest-after", type=float, default=nav.rest_after_s,
                           help="seconds held before the platform's supported rest action")
+    envelope.add_argument("--perception-timeout", type=float,
+                          default=nav.perception_timeout_s, metavar="SECONDS",
+                          help="oldest FRAME the robot may plan on; past this it stops. "
+                               "This is the multiplier in the person margin — at "
+                               f"{limits.max_vx:.2f} m/s the robot needs "
+                               f"(max_vx + {WALKING_PERSON_M_S}) x this many metres of "
+                               "reaction distance, so raising it needs --soft-gap raised "
+                               "with it and the run will say so. A control tick sees "
+                               "roughly TWO perception cycles of age, not one, so the "
+                               "way to lower this is to lower the cycle (try "
+                               "--input-size 224) and re-measure, not to set it and hope")
+    envelope.add_argument("--perception-silence", type=float, default=None,
+                          metavar="SECONDS",
+                          help="longest the robot may plan through with NO new "
+                               "perception result at all. Defaults to "
+                               "--perception-timeout, where it can never fire first and "
+                               "changes nothing. Set it lower when raising "
+                               "--perception-timeout for a slow host, so a camera that "
+                               "dies still stops the robot on the old clock")
     envelope.add_argument("--arrive", type=float, default=nav.arrive_tolerance_m,
                           help="stop this far short of the goal. Check it against the "
                                "staging: an arrival circle that encloses a mapped "
@@ -1959,6 +2356,8 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         max_run_s=args.max_seconds,
         arrive_tolerance_m=args.arrive,
         rest_after_s=args.rest_after,
+        perception_timeout_s=args.perception_timeout,
+        perception_silence_s=args.perception_silence,
         require_arm=not getattr(args, "no_require_arm", True),
         latch_arm=not getattr(args, "no_latch_arm", True),
         motion_mode=getattr(args, "motion_mode", "manual"),
@@ -2097,11 +2496,17 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                                        soft_gap_m=args.soft_gap,
                                        body_length_m=args.body_length,
                                        body_width_m=args.body_width)
-        warn_if_soft_gap_is_below_reaction(args, limits, config, PlannerConfig().soft_gap_m)
+        # `config`, not a bare `nav` -- #217 fixed that NameError. Keeping `config` is
+        # load-bearing for a second reason now that `--perception-timeout` exists: it is
+        # the NavConfig this run will actually use, so the reaction distance is computed
+        # against the timeout that was PASSED rather than against the dataclass default.
+        warn_if_soft_gap_is_below_reaction(args, limits, config,
+                                           PlannerConfig().soft_gap_m)
         print(f"[visual_nav] planner: horizon {planner_config.horizon_s:.1f}s "
               f"({planner_config.horizon_s * limits.max_vx:.2f} m of lookahead at "
               f"top speed), robot radius {planner_config.robot_radius_m:.2f} m, "
               f"mover radius {planner_config.obstacle_radius_m:.2f} m")
+        announce_perception_budgets(config)
         planner = planner_factory(limits=limits, config=planner_config)
         expansion = ExpansionConsistency() if args.expansion_filter else None
         if expansion is not None:
@@ -2174,6 +2579,13 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                 "static_profile": static_profile_telemetry(args, static_profile_used),
                 "arrive_tolerance_m": config.arrive_tolerance_m,
                 "control_hz": config.control_hz,
+                # Both budgets, because they are now settable and because the person
+                # margin below is only defensible against a stated one. A recorded run
+                # whose header says `soft_gap_m: 1.20` and nothing about the timeout
+                # cannot be checked against `reaction_distance_m` after the fact — and
+                # every run before this flag existed is in exactly that position.
+                "perception_timeout_s": config.perception_timeout_s,
+                "perception_silence_s": config.silence_budget_s,
                 "camera": {"width": width, "height": height,
                            "focal_px": camera_model.focal_px,
                            "hfov_deg": camera_model.hfov_deg,

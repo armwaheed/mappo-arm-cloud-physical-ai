@@ -23,11 +23,17 @@ from __future__ import annotations
 
 import os
 import re
+import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CSS = os.path.join(HERE, "static", "dashboard.css")
 JS = os.path.join(HERE, "static", "dashboard.js")
 HTML = os.path.join(HERE, "templates", "index.html")
+
+sys.path.insert(0, HERE)
+
+# Imported after the sys.path insert above, which is what makes it importable.
+import run_control
 
 #: ``$("some-id")`` in the script, and ``id="some-id"`` in the markup.
 _LOOKUP = re.compile(r'\$\("([a-z0-9-]+)"\)')
@@ -176,6 +182,67 @@ def test_a_direction_that_fires_unmeasured_gets_its_own_caveat_before_the_generi
     assert measured_check < generic_check, (
         "the per-direction unmeasured-speed caveat must be checked before the generic "
         "gait-floor caveat, or the generic one always wins")
+
+
+def test_every_place_that_declares_the_heading_servo_default_agrees():
+    """THREE files declare it and they silently disagreed for a whole session.
+
+    `mappo_drive.py`'s argparse default was changed to `goal` in #212. `HEADING_SERVOS`
+    in `run_control.py` is the dropdown ORDER. And `index.html` ships a placeholder
+    `<option>` that is selected before any JavaScript runs -- which `dashboard.js` then
+    preserves, because preserving an operator's choice across a re-render is correct.
+    So the placeholder IS the default, and it outvoted the other two.
+
+    An operator who never touches the control gets whatever this test protects.
+    """
+    with open(HTML) as handle:
+        html = handle.read()
+    marker = html[html.index('id="run-servo"'):]
+    placeholder = marker[marker.index('value="') + 7:]
+    placeholder = placeholder[:placeholder.index('"')]
+
+    assert placeholder == run_control.HEADING_SERVOS[0], (
+        f"index.html ships {placeholder!r} but HEADING_SERVOS leads with "
+        f"{run_control.HEADING_SERVOS[0]!r}")
+    # The third declaration -- mappo_drive.py's argparse `default=GOAL` -- lives in a
+    # tree this test cannot import without dragging in the vision stack. It is pinned
+    # from its own side by test_mappo_drive.py's
+    # `test_a_drive_command_that_names_no_servo_gets_the_goal_law_and_never_travel`.
+    # Both ends assert the same literal, so moving either one alone fails a test.
+    assert placeholder == "goal", (
+        "the default must be the law that faces the goal; 'travel' is issue #16 and "
+        "'off' was measured walking 1.23x the direct line")
+
+
+def test_every_place_that_declares_the_policy_mode_default_agrees():
+    """The heading-servo bug, applied to the control that decides whether the veto runs.
+
+    `run-mode`'s options are written out in `index.html` rather than filled from
+    `POLICY_MODES`, so the two are declarations that can disagree -- and the FIRST option
+    ships selected, which makes page order the default an operator gets by not touching
+    the control. That is how `off` outvoted the heading-servo default for a whole
+    session, and this is the same shape on a control whose two settings differ by whether
+    anything stops for a person.
+
+    Pinned rather than de-duplicated because the page's option LABELS carry text no
+    constant should ("raw -- NO veto, cleared lane only"), so the list stays hand-written
+    and this test keeps it honest.
+    """
+    with open(HTML) as handle:
+        html = handle.read()
+    marker = html[html.index('id="run-mode"'):]
+    options = re.findall(r'<option value="([a-z]+)"', marker[:marker.index("</select>")])
+
+    assert options == list(run_control.POLICY_MODES), (
+        f"index.html offers {options} but POLICY_MODES is "
+        f"{list(run_control.POLICY_MODES)} -- the first entry of each is the default an "
+        f"operator gets without choosing, so these two disagreeing is a silent "
+        f"behaviour change")
+    assert options[0] == "raw", (
+        "raw is the default since 2026-09-07: measured 7 arrived/2 collided against "
+        "supervised's 6/0/4 on the repo's 10 scenarios, chosen because the veto was "
+        "holding for people walking PAST the lane. If this is being changed back, change "
+        "mappo_drive.py's argparse default and robot_driver.start_run together")
 
 
 if __name__ == "__main__":

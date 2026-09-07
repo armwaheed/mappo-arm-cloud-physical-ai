@@ -124,9 +124,19 @@ RUN_STARTUP_GRACE_S = 30.0
 #: margin rather than racing its own caller.
 RUN_STOP_TIMEOUT_S = 4.0
 
-#: ``mappo_drive.py --policy-mode``. ``raw`` removes the planner's feasibility veto; the
-#: closed-loop simulation had raw colliding in every configuration tested and supervised not.
-POLICY_MODES = ("supervised", "raw")
+#: ``mappo_drive.py --policy-mode``, and the ORDER here is the dropdown order, so the
+#: first entry is what an operator who never touches the control gets. ``raw`` leads as
+#: of 2026-09-07.
+#:
+#: ``raw`` removes the planner's feasibility veto. The previous note here said the
+#: simulation had raw "colliding in every configuration tested", which is not what the
+#: scenario set says -- measured 2026-09-07 on the repo's own 10 scenarios at the shipped
+#: scale: raw 7 arrived / 2 collided / 1 timeout, supervised 6 / 0 / 4. The veto removes
+#: the collisions and costs three timeouts, and the timeouts were the failure the demo
+#: actually hit, because the veto held for people walking PAST the lane rather than into
+#: it. Hence the order. It is only the right order for a CLEARED lane; a crowded run
+#: wants ``supervised`` chosen by hand.
+POLICY_MODES = ("raw", "supervised")
 
 #: ``mappo_drive.py --heading-servo``. ``goal`` is the default since #212, and the ORDER
 #: here is the dropdown order, so it is listed first. ``off`` was the default while nothing
@@ -663,13 +673,13 @@ def describe(profile: RunProfile, allow_motion: bool = False) -> dict:
       such command. Showing one would be the one line on the page telling the operator a
       gate is not there.
     """
-    preview = build_run_argv(profile, seconds=DEFAULT_RUN_SECONDS, policy_mode="supervised",
+    preview = build_run_argv(profile, seconds=DEFAULT_RUN_SECONDS, policy_mode=POLICY_MODES[0],
                              heading_servo="off", live=False, allow_motion=True,
                              run_id="PREVIEW")
     armed = None
     if allow_motion:
         armed = build_run_argv(profile, seconds=DEFAULT_RUN_SECONDS,
-                               policy_mode="supervised", heading_servo="off", live=True,
+                               policy_mode=POLICY_MODES[0], heading_servo="off", live=True,
                                allow_motion=True, run_id="PREVIEW")
     return {
         "supported": True,
