@@ -20,6 +20,7 @@ Run: ``python3 test_visual_nav.py``
 from __future__ import annotations
 
 import ast
+import builtins
 import contextlib
 import io
 import json
@@ -80,6 +81,8 @@ from tracker import (
     observation_from,
 )
 from visual_nav import (
+    PERCEPTION_LATENT,
+    PERCEPTION_SILENT,
     STATIC_DETECT_LABEL,
     NavConfig,
     PerceptionResult,
@@ -88,6 +91,7 @@ from visual_nav import (
     blocked_stop,
     build_camera_model,
     build_parser,
+    perception_hold_reason,
     static_detect_prior,
 )
 
@@ -2737,6 +2741,673 @@ def test_a_lowered_margin_still_above_reaction_warns_without_the_hard_line():
     text = " ".join(out)
     assert "PERSON MARGIN LOWERED" in text
     assert "SMALLER THAN THE REACTION DISTANCE" not in text
+
+
+# ── Two ages, one gate: latency against silence ─────────────────────────────
+#: A cycle cost in the measured band (LITE3-A, 742 ticks over three runs: median cycle
+#: 200-270 ms, median frame age 0.43-0.47 s, p90 0.587-0.616 s, max 0.698 s).
+MEASURED_CYCLE_S = 0.25
+
+
+def _result_at(capture_time: float, publish_time: float) -> PerceptionResult:
+    """A published result with the two stamps set independently.
+
+    Independently on purpose: everything below turns on the fact that they are two
+    different measurements of two different events, and a helper that derived one from
+    the other would only ever be able to test one of them.
+    """
+    return PerceptionResult(seq=1, capture_time=capture_time, pose=(0.0, 0.0, 0.0),
+                            observations=[], ranged=[], publish_time=publish_time,
+                            cycle_ms=(publish_time - capture_time) * 1000.0)
+
+
+def _saw_tooth(cycle_s: float = MEASURED_CYCLE_S, cycles: int = 4,
+               control_hz: float = 10.0) -> list:
+    """``(frame_age, silence)`` at every control tick across ``cycles`` cycles.
+
+    Models the pipeline exactly as the module docstring describes it: perception grabs a
+    frame, spends one cycle on it, publishes, and that result is what ``latest()``
+    returns for the WHOLE of the next cycle because nothing newer exists yet. The
+    control loop samples asynchronously at ``control_hz``.
+    """
+    period = 1.0 / control_hz
+    samples = []
+    tick = 0.0
+    horizon = cycle_s * cycles
+    while tick < horizon:
+        # The newest PUBLISHED result at `tick`: captured at the start of the cycle that
+        # ended most recently, published at the end of it.
+        finished = math.floor(tick / cycle_s)
+        if finished >= 1:
+            capture = (finished - 1) * cycle_s
+            publish = finished * cycle_s
+            result = _result_at(capture, publish)
+            samples.append((tick - result.capture_time, result.silence_s(tick)))
+        tick += period
+    return samples
+
+
+def test_the_frame_age_a_tick_sees_is_two_cycles_and_the_silence_is_one():
+    """THE MEASUREMENT THIS WHOLE CHANGE RESTS ON, reproduced from the arithmetic.
+
+    Measured on LITE3-A: median frame age 0.43-0.47 s against a median CYCLE of
+    200-270 ms. That is not a broken timestamp, it is the shape of the pipeline — a
+    result is one cycle old the instant it exists and stays the newest thing the loop
+    has for one more — and the two ages this test separates are the two halves of it.
+
+    ⚠️ Issue #195 says the frame is "stale on every tick". It is not, and this is where
+    that is written down: at the shipped 0.6 s budget a 0.25 s cycle is over the line on
+    NONE of these ticks, and it takes a cycle past 0.3 s before any of them are.
+    """
+    samples = _saw_tooth()
+    assert samples, "the model produced no ticks"
+    ages = [age for age, _ in samples]
+    silences = [silence for _, silence in samples]
+    # One cycle at the instant of publish, two just before the next one.
+    assert min(ages) >= MEASURED_CYCLE_S - 1e-9, min(ages)
+    assert max(ages) <= 2 * MEASURED_CYCLE_S + 1e-9, max(ages)
+    assert max(ages) > 1.5 * MEASURED_CYCLE_S, (
+        f"the model never reached the second cycle: {max(ages):.3f}s")
+    # Silence spans exactly one cycle, from nothing to a whole one.
+    assert min(silences) >= -1e-9 and max(silences) <= MEASURED_CYCLE_S + 1e-9, (
+        min(silences), max(silences))
+    # And the 0.6 s budget holds none of them, which is the anti-#195 half.
+    config = NavConfig()
+    assert not any(perception_hold_reason(age, silence, config)
+                   for age, silence in samples), "a 0.25 s cycle should never hold"
+
+
+def test_the_two_ages_step_apart_across_a_cycle_boundary():
+    """The boundary is where the two measures say different things, so it is where the
+    difference between them has to be pinned.
+
+    Immediately before a publish the frame age is at its maximum (two cycles) and the
+    silence is at ITS maximum (one cycle). Immediately after, the frame age drops by a
+    whole cycle and the silence drops to zero. A measure that did not do that would be
+    the frame age wearing a different name.
+    """
+    cycle = MEASURED_CYCLE_S
+    before = 2 * cycle - 1e-4        # a tick landing just before cycle 2 publishes
+    after = 2 * cycle + 1e-4         # ...and one just after
+    published_first = _result_at(capture_time=0.0, publish_time=cycle)
+    published_second = _result_at(capture_time=cycle, publish_time=2 * cycle)
+
+    assert abs((before - published_first.capture_time) - 2 * cycle) < 1e-3
+    assert abs(published_first.silence_s(before) - cycle) < 1e-3
+    assert abs((after - published_second.capture_time) - cycle) < 1e-3
+    assert published_second.silence_s(after) < 1e-3
+
+    # The frame age falls by one cycle across the boundary; the silence falls by one
+    # cycle to zero. Same drop, different floors, and that is the whole distinction.
+    assert (before - published_first.capture_time) - (
+        after - published_second.capture_time) > cycle * 0.9
+
+
+def test_silence_never_exceeds_the_frame_age_so_the_shipped_gate_is_unchanged():
+    """ANTI-REGRESSION FOR THE DEFAULT, and the reason the second bound is safe to add.
+
+    ``publish_time >= capture_time`` by construction — a cycle cannot finish before its
+    frame arrived — so silence <= frame age for every result, so at the shipped
+    ``perception_silence_s = None`` (which resolves to ``perception_timeout_s``) the
+    silence test can never be the one that fires. The new gate holds on exactly the
+    ticks the old ``frame_age > perception_timeout_s`` held on, and no others.
+    """
+    config = NavConfig()
+    assert config.silence_budget_s == config.perception_timeout_s
+    checked = 0
+    for cycle_s in (0.05, 0.15, MEASURED_CYCLE_S, 0.31, 0.45, 0.9):
+        for age, silence in _saw_tooth(cycle_s=cycle_s, cycles=4, control_hz=100.0):
+            assert silence <= age + 1e-9, (cycle_s, age, silence)
+            old_gate = age > config.perception_timeout_s
+            new_gate = perception_hold_reason(age, silence, config) is not None
+            assert old_gate == new_gate, (cycle_s, age, silence, old_gate, new_gate)
+            checked += 1
+    assert checked > 500, f"only {checked} samples — the sweep proves little"
+
+
+def test_the_gate_still_fires_and_names_which_failure_it_was():
+    """ANTI-VACUITY. A gate that cannot fire is not a safety feature, and one that fires
+    for both reasons under one word is the console line this change replaced.
+
+    Latency and silence are separated by holding ``frame_age`` fixed and moving only the
+    publish stamp, which is the one experiment the old single-measure gate could not
+    tell apart from doing nothing.
+    """
+    config = NavConfig(perception_timeout_s=0.6)
+    assert perception_hold_reason(0.45, 0.20, config) is None, "healthy must not hold"
+    assert perception_hold_reason(0.60, 0.25, config) is None, "the bound is exclusive"
+    # Over-age, but perception published 0.25 s ago: alive and slow.
+    assert perception_hold_reason(0.62, 0.25, config) == PERCEPTION_LATENT
+    # Over-age AND nothing published for 5 s: stopped.
+    assert perception_hold_reason(5.0, 5.0, config) == PERCEPTION_SILENT
+    # Silence wins when both fire — the stronger claim and the more urgent one.
+    assert perception_hold_reason(9.0, 0.9, config) == PERCEPTION_SILENT
+
+
+def test_a_raised_timeout_cannot_buy_unbounded_staleness_from_a_dead_pipeline():
+    """The knob the second bound exists for.
+
+    An operator on a slow host raises ``--perception-timeout`` to 2.0 s so a 0.9 s cycle
+    stops stuttering. Without a separate silence bound that also moves the dead-camera
+    stop to 2.0 s, because it WAS the same number. With ``--perception-silence 0.8`` the
+    latency budget moves and the dead-camera stop does not.
+    """
+    loose = NavConfig(perception_timeout_s=2.0)
+    assert perception_hold_reason(1.5, 1.5, loose) is None, (
+        "raising the frame budget must genuinely raise it, or the flag is a no-op")
+    pinned = NavConfig(perception_timeout_s=2.0, perception_silence_s=0.8)
+    assert pinned.silence_budget_s == 0.8
+    assert perception_hold_reason(1.5, 1.5, pinned) == PERCEPTION_SILENT
+    # ...while a pipeline that is merely LATENT under the raised budget still runs.
+    assert perception_hold_reason(1.5, 0.7, pinned) is None
+
+
+def test_the_silence_budget_follows_the_timeout_rather_than_the_shipped_default():
+    """An operator who lowers only ``--perception-timeout`` must not silently keep the
+    0.6 s silence bound they never asked for — that would be the new gate quietly being
+    the more permissive of the two."""
+    tight = NavConfig(perception_timeout_s=0.35)
+    assert tight.silence_budget_s == 0.35
+    assert perception_hold_reason(0.40, 0.40, tight) == PERCEPTION_SILENT
+
+
+def test_an_unstamped_result_reads_as_the_frame_age_and_not_as_fresh():
+    """The fallback has to fail SAFE. ``PerceptionResult`` is constructible in-process
+    (``integration/mappo_drive.py`` drives this navigator through a factory), and a
+    hand-built one carries no publish stamp. Reading that as ``0.0`` silence would report
+    a stopped pipeline as healthy; reading it as ``now`` would report the monotonic
+    clock's whole uptime. The frame age is the honest upper bound and is what it uses."""
+    unstamped = PerceptionResult(seq=1, capture_time=100.0, pose=(0.0, 0.0, 0.0),
+                                 observations=[], ranged=[])
+    # `is None`, not `== 0.0`: see
+    # test_an_unstamped_result_cannot_be_confused_with_a_real_timestamp for why a numeric
+    # sentinel made this very assertion pass while measuring the wrong thing.
+    assert unstamped.publish_time is None
+    assert abs(unstamped.silence_s(100.4) - 0.4) < 1e-9
+    stamped = _result_at(capture_time=100.0, publish_time=100.25)
+    assert abs(stamped.silence_s(100.4) - 0.15) < 1e-9
+
+
+def test_the_published_result_keeps_the_frames_own_stamp_and_adds_a_second_one():
+    """🔴 THE LIE THIS CHANGE EXISTS NOT TO TELL, pinned at the one line that could tell
+    it.
+
+    "Make the reported age one cycle instead of two" has an obvious cheap implementation:
+    stamp ``capture_time`` when the detector finishes instead of when the frame arrived.
+    Every number downstream improves at once — the frame age halves, the hold rate goes
+    to zero, ``reaction_distance_m`` halves the person margin — and every one of them is
+    false. The belief would be exactly as old as before; only the label would have moved.
+    That is the same defect as the ``hold``-versus-``v=(0,0,0)`` mislabel the module
+    docstring records, pointed at the safety margin.
+
+    So: the result must carry the FRAME's stamp, unmodified, and the publish stamp must
+    be a SEPARATE field that is later by the whole cost of the cycle. A detector that
+    burns real milliseconds is what makes the two distinguishable at all.
+    """
+    burn_s = 0.05
+    captured_at = time.monotonic()
+
+    class _OneFrameCamera:
+        def wait_for_new(self, _after_seq, timeout=0.5):
+            return Frame(image=np.zeros((40, 60, 3), dtype=np.uint8),
+                         capture_time=captured_at, seq=7, stamp=(0.0, 0.0, 0.0))
+
+    class _BurningDetector:
+        def detect_tiered(self, _image):
+            time.sleep(burn_s)
+            return [], []
+
+    worker = PerceptionWorker(_OneFrameCamera(), _BurningDetector(), MOUNTED_CAMERA,
+                              _NoGoalSource(), lambda: (0.0, 0.0, 0.0))
+    worker._cycle(0)
+    result = worker.latest()
+    assert result.capture_time == captured_at, (
+        "the published result re-stamped its frame: the belief is being reported "
+        "fresher than it is")
+    assert result.publish_time >= captured_at + burn_s, (
+        result.publish_time - captured_at)
+    # The gap between the two IS the cycle, which is the quantity the module docstring's
+    # `frame_age = cycle(N) + elapsed-into-cycle(N+1)` is built out of.
+    gap_s = result.publish_time - result.capture_time
+    assert abs(gap_s - result.cycle_ms / 1000.0) < 0.02, (gap_s, result.cycle_ms)
+    # And at the instant of publish the frame is already one cycle old while the
+    # pipeline has been silent for none of it — the two measures at their extremes.
+    assert result.silence_s(result.publish_time) == 0.0
+    assert result.publish_time - result.capture_time >= burn_s
+
+
+# ── A camera that stops must still stop the robot ───────────────────────────
+class _QuietDetector:
+    def detect_tiered(self, _image):
+        return [], []
+
+
+class _NoGoalSource:
+    description = "test goal"
+
+    def update(self, _image, _pose):
+        return None
+
+    def goal_xy(self):
+        return (10.0, 0.0)
+
+
+class _DyingCamera:
+    """Delivers exactly one frame and then never another — an unplugged camera.
+
+    NOT a camera that raises: a throw is the easy case and the worker already counts and
+    prints it. This is the silent one, where ``wait_for_new`` simply times out forever,
+    ``latest()`` keeps returning a result that was genuinely correct when it was made,
+    and nothing anywhere reports an error.
+    """
+
+    def __init__(self) -> None:
+        self.reads = 0
+
+    def wait_for_new(self, _after_seq, timeout=0.5):
+        self.reads += 1
+        if self.reads > 1:
+            time.sleep(min(timeout, 0.01))   # the real one blocks; keep the suite fast
+            return None
+        return Frame(image=np.zeros((40, 60, 3), dtype=np.uint8),
+                     capture_time=time.monotonic(), seq=1, stamp=(0.0, 0.0, 0.0))
+
+
+def test_a_camera_that_stops_producing_frames_still_stops_the_robot():
+    """🔴 THE PROPERTY NOTHING ABOVE IS ALLOWED TO COST. Every other test here is about
+    telling a slow pipeline from a dead one; this is the one that says the dead one still
+    parks the legs, through the REAL worker rather than a stub that freezes on purpose.
+
+    The failure it guards is specific and quiet. A camera that stops has no error to
+    report: the worker's ``_cycle`` returns early on a ``None`` frame, its error counter
+    stays at zero, its thread stays alive, and ``latest()`` goes on returning a result
+    that was perfectly good when it was published. Nothing raises. The only observable
+    is that the two stamps stop moving — and once ``publish_time`` is the thing being
+    watched, a change that made it fresher would take this hold away and nothing else
+    in the file would notice.
+    """
+    camera = _DyingCamera()
+    worker = PerceptionWorker(camera, _QuietDetector(), MOUNTED_CAMERA,
+                              _NoGoalSource(), lambda: (0.0, 0.0, 0.0))
+    worker.start()
+    loco = _FakeLoco()
+    try:
+        deadline = time.monotonic() + 2.0
+        while worker.latest() is None and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert worker.latest() is not None, "the worker never published its one frame"
+        assert worker.alive(), "the thread died, which is a DIFFERENT abort"
+        # Let the one good result age past a deliberately short budget. Real seconds,
+        # because the worker is a real thread on the real monotonic clock.
+        time.sleep(0.12)
+        navigator = VisualNavigator(
+            loco=loco, perception=worker, planner=_FakePlanner(),
+            tracker=ObstacleTracker(), goal_source=_NoGoalSource(),
+            health=_FakeHealth(ticks=5),
+            config=NavConfig(live=True, initially_standing=True, control_hz=200.0,
+                             perception_timeout_s=0.05, perception_silence_s=0.05))
+        with contextlib.redirect_stdout(io.StringIO()) as printed:
+            navigator.run()
+    finally:
+        worker.stop()
+
+    assert camera.reads > 1, "the camera was only asked once; it never got to go quiet"
+    assert worker.errors == 0, (
+        f"the dying camera raised ({worker.errors}) — this test is meant to cover the "
+        f"SILENT failure, where nothing reports anything")
+    assert loco.commands, "the loop never commanded anything"
+    assert all(command == (0.0, 0.0, 0.0) for command in loco.commands), loco.commands
+    assert navigator._perception_holds[PERCEPTION_SILENT] > 0, \
+        dict(navigator._perception_holds)
+    assert navigator._perception_holds[PERCEPTION_LATENT] == 0, \
+        dict(navigator._perception_holds)
+    assert "perception SILENT" in printed.getvalue(), printed.getvalue()
+
+
+class _LatentPerception(_FakePerception):
+    """A pipeline that is RUNNING and slower than the budget: the frame is over-age, and
+    a result was published a moment ago. The case the old single measure could not tell
+    from an unplugged camera."""
+
+    def __init__(self, frame_age_s: float = 5.0, silence_s: float = 0.01) -> None:
+        self._frame_age_s = frame_age_s
+        self._silence_s = silence_s
+        super().__init__()
+
+    def latest(self):
+        now = time.monotonic()
+        return PerceptionResult(seq=1, capture_time=now - self._frame_age_s,
+                                pose=(0.0, 0.0, 0.0), observations=[], ranged=[],
+                                cycle_ms=260.0,
+                                publish_time=now - self._silence_s,
+                                open_bearing_rad=self._open_bearing_rad)
+
+
+def test_a_latent_hold_is_still_a_hold_and_says_the_pipeline_is_alive():
+    """The relabelling must not become a relaxing. A frame over the budget stops the
+    robot whether or not perception is still publishing — the person who walked into the
+    lane after ``capture_time`` is in no frame this robot has looked at, and a healthy
+    detector does not invent them."""
+    loco = _FakeLoco()
+    navigator = VisualNavigator(
+        loco=loco, perception=_LatentPerception(), planner=_FakePlanner(),
+        tracker=ObstacleTracker(), goal_source=_FakeGoal(), health=_FakeHealth(ticks=5),
+        config=NavConfig(live=True, initially_standing=True, control_hz=200.0))
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        navigator.run()
+    assert loco.commands and all(c == (0.0, 0.0, 0.0) for c in loco.commands), \
+        loco.commands
+    assert navigator._perception_holds[PERCEPTION_LATENT] > 0, \
+        dict(navigator._perception_holds)
+    assert navigator._perception_holds[PERCEPTION_SILENT] == 0, \
+        dict(navigator._perception_holds)
+    text = printed.getvalue()
+    assert "perception LATENT" in text, text
+    assert "ALIVE" in text, "a latent hold must not read as a dead camera"
+    # The explanation fires ONCE, however many ticks hold.
+    assert text.count("shrink the CYCLE") == 1, text
+
+
+class _BudgetStarvedPerception(_FakePerception):
+    """A pipeline with NOTHING wrong with it, under a silence budget shorter than its own
+    cycle. Frame age is well inside the frame budget; the only thing over is silence, and
+    it is over because the operator typed a number below one cycle."""
+
+    def __init__(self, cycle_ms: float = 260.0, silence_s: float = 0.20) -> None:
+        self._cycle_ms = cycle_ms
+        self._silence_s = silence_s
+        super().__init__()
+
+    def latest(self):
+        now = time.monotonic()
+        return PerceptionResult(seq=1, capture_time=now - 0.05,
+                                pose=(0.0, 0.0, 0.0), observations=[], ranged=[],
+                                cycle_ms=self._cycle_ms,
+                                publish_time=now - self._silence_s,
+                                open_bearing_rad=self._open_bearing_rad)
+
+
+def test_an_unstamped_result_cannot_be_confused_with_a_real_timestamp():
+    """🔴 REGRESSION. `publish_time` was a `0.0` sentinel tested with `> 0.0`.
+
+    `time.monotonic()` has no defined epoch. On Linux it is system uptime and large; on
+    macOS, where these tests run, it starts near zero -- so a stub or a caller building a
+    result "4 seconds ago" produces a NEGATIVE stamp, and `> 0.0` files that genuine
+    timestamp as unstamped and silently reads frame age instead.
+
+    It failed in the SAFE direction, which is why it would have lasted: the fallback is an
+    upper bound, so nothing became unsafe. What it did was make a test that meant to
+    simulate a dead pipeline measure a healthy one and pass anyway. That is worse than an
+    unsafe bug in one specific way -- it removes the evidence that the guard works.
+    """
+    r = PerceptionResult(seq=1, capture_time=100.0, pose=(0.0, 0.0, 0.0),
+                         observations=[], ranged=[])
+    assert r.publish_time is None, "the unstamped sentinel must not be a number"
+    assert abs(r.silence_s(100.4) - 0.4) < 1e-9, \
+        "unstamped must fall back to frame age, the conservative reading"
+
+    # A stamp at or below zero is a STAMP, and must be honoured as one.
+    for stamp in (-3.9, 0.0, 0.05):
+        stamped = PerceptionResult(seq=1, capture_time=stamp, pose=(0.0, 0.0, 0.0),
+                                   observations=[], ranged=[], publish_time=stamp)
+        assert abs(stamped.silence_s(stamp + 2.0) - 2.0) < 1e-9, (
+            f"publish_time={stamp} was treated as unstamped; the epoch of "
+            f"time.monotonic() is not defined and must not be assumed positive")
+
+
+def test_a_silence_budget_below_one_cycle_is_named_as_the_budget_and_not_a_camera_fault():
+    """🔴 The foot-gun the second budget brings with it, and the one thing that makes
+    it safe to hand an operator.
+
+    Silence sweeps 0 -> cycle_ms between publishes, so a budget under one cycle is
+    tripped on the tail of EVERY cycle by a pipeline where nothing is wrong. Measured
+    against `perception_hold_reason` on the shipped 250 ms cycle: --perception-silence
+    0.20 holds 19% of ticks, 0.10 holds 59%, 0.05 holds 79%. The help text invites
+    exactly this ("set it lower when raising --perception-timeout"), and 0.2 s reads as
+    generous to someone who has not done the arithmetic.
+
+    Without this branch the run printed "check the camera, the DDS transport" and sent
+    that operator to the hardware to look for a number they had typed themselves -- the
+    same misdiagnosis the latent/silent split was introduced to remove, reached from the
+    other side.
+    """
+    loco = _FakeLoco()
+    navigator = VisualNavigator(
+        loco=loco, perception=_BudgetStarvedPerception(cycle_ms=260.0, silence_s=0.20),
+        planner=_FakePlanner(), tracker=ObstacleTracker(), goal_source=_FakeGoal(),
+        health=_FakeHealth(ticks=5),
+        config=NavConfig(live=True, initially_standing=True, control_hz=200.0,
+                         perception_timeout_s=0.6, perception_silence_s=0.05))
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        navigator.run()
+    text = printed.getvalue()
+
+    # It still HOLDS. The diagnosis is about where the operator is sent, never about
+    # letting the robot drive on a budget it is failing.
+    assert loco.commands and all(c == (0.0, 0.0, 0.0) for c in loco.commands), \
+        loco.commands
+    assert navigator._perception_holds[PERCEPTION_SILENT] > 0, \
+        dict(navigator._perception_holds)
+    assert "UNSATISFIABLE" in text, text
+    assert "260ms" in text, "the operator needs the measured cycle to pick a new number"
+    assert "DDS transport" not in text, \
+        "a budget the operator typed must not send them to the transport"
+    # It does not overclaim in the other direction either: a dead camera under an
+    # unsatisfiable budget is indistinguishable, and the text says so rather than
+    # ruling the camera out.
+    assert "says nothing about the camera" in text, text
+    assert text.count("UNSATISFIABLE") == 1, "the explanation fires once, not per tick"
+
+
+def test_a_dead_pipeline_under_a_workable_budget_is_still_sent_to_the_camera():
+    """The mirror of the test above, and the reason it is not enough on its own.
+
+    The unsatisfiable-budget branch is checked FIRST, so it is capable of swallowing the
+    real dead-camera message. It must fire only when the budget genuinely cannot be met:
+    here the cycle is 260 ms and the budget is the shipped 0.6 s, which a healthy
+    pipeline meets easily -- so 4 s of silence is a fault, and the operator belongs at
+    the hardware.
+    """
+    loco = _FakeLoco()
+    navigator = VisualNavigator(
+        loco=loco, perception=_BudgetStarvedPerception(cycle_ms=260.0, silence_s=4.0),
+        planner=_FakePlanner(), tracker=ObstacleTracker(), goal_source=_FakeGoal(),
+        health=_FakeHealth(ticks=5),
+        config=NavConfig(live=True, initially_standing=True, control_hz=200.0,
+                         perception_timeout_s=0.6, perception_silence_s=0.6))
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        navigator.run()
+    text = printed.getvalue()
+    assert navigator._perception_holds[PERCEPTION_SILENT] > 0, \
+        dict(navigator._perception_holds)
+    assert "DDS transport" in text, text
+    assert "UNSATISFIABLE" not in text, \
+        "a workable budget must not be blamed for a dead camera"
+
+
+def test_the_perception_budgets_are_on_the_console_before_the_run_not_only_after():
+    """Both budgets are settable and they set the person margin, so an operator has to be
+    able to see them without waiting for the summary that prints once the robot has
+    already moved. The unset case says so explicitly, because "silence 0.60s" and
+    "silence tracking the frame budget" have different implications for what a raised
+    --perception-timeout will do later."""
+    lines: list = []
+    visual_nav.announce_perception_budgets(NavConfig(), printer=lines.append)
+    default = "\n".join(lines)
+    assert "perception budgets: frame 0.60s" in default, default
+    assert "silence tracking it" in default, default
+
+    lines.clear()
+    visual_nav.announce_perception_budgets(
+        NavConfig(perception_timeout_s=1.0, perception_silence_s=0.4),
+        printer=lines.append)
+    raised = "\n".join(lines)
+    assert "perception budgets: frame 1.00s, silence 0.40s" in raised, raised
+    assert "below ONE perception cycle" in raised, raised
+
+    # And it is wired into the run path, not merely defined: main() must call it, or the
+    # operator gets a function nobody invokes. #214 shipped exactly that shape of bug.
+    source = inspect.getsource(visual_nav.main)
+    assert "announce_perception_budgets(" in source, \
+        "main() does not call the announcement, so no operator will ever see it"
+
+
+def test_the_hold_ledger_is_printed_even_when_it_is_all_zero():
+    """The sentence that retires "stale on every tick". A summary that only appears when
+    something went wrong cannot be cited as evidence that nothing did, so the zero is
+    printed too — with both budgets, so the counts can be read against them."""
+    loco = _FakeLoco()
+    navigator = VisualNavigator(
+        loco=loco, perception=_FakePerception(), planner=_FakePlanner(),
+        tracker=ObstacleTracker(), goal_source=_FakeGoal(), health=_FakeHealth(ticks=4),
+        config=NavConfig(live=True, control_hz=200.0))
+    with contextlib.redirect_stdout(io.StringIO()) as printed:
+        navigator.run()
+    text = printed.getvalue()
+    assert "perception holds: 0 latent, 0 silent" in text, text
+    assert "0.60s frame" in text and "0.60s silence" in text, text
+
+
+def test_a_perception_hold_reaches_the_telemetry_as_stale_AND_a_named_reason():
+    """``stale`` is the versioned field every existing reader parses; ``hold_reason`` is
+    the finer word. Both, on the same tick — dropping the first to make room for the
+    second would break `evidence/sample_telemetry.jsonl`'s consumers to say something
+    they could already infer."""
+    with tempfile.TemporaryDirectory() as directory:
+        ticks = _profiled_run(directory, perception=_LatentPerception())
+    assert ticks, "the loop wrote no ticks"
+    for tick in ticks:
+        assert tick["perception"]["stale"] is True, tick
+        assert tick["hold_reason"] == PERCEPTION_LATENT, tick
+        assert tick["command"] is None, tick
+    with tempfile.TemporaryDirectory() as directory:
+        healthy = _profiled_run(directory)
+    assert healthy and not any("hold_reason" in t for t in healthy), \
+        "a healthy tick must carry no hold_reason at all"
+
+
+# ── The budget is reachable, and cannot move in silence ─────────────────────
+def test_the_perception_budgets_are_real_cli_flags_agreeing_with_the_dataclass():
+    """``perception_timeout_s`` was hardcoded while the margin it prices had a flag,
+    which is backwards: the timeout is the term that lets the margin come down honestly.
+    Defaults are read off ``NavConfig`` rather than repeated as literals, so the CLI and
+    an in-process caller cannot disagree."""
+    defaults = build_parser().parse_args([])
+    assert defaults.perception_timeout == NavConfig().perception_timeout_s
+    assert defaults.perception_silence is None, (
+        "the silence default must track the timeout, not pin itself to 0.6")
+    passed = build_parser().parse_args(
+        ["--perception-timeout", "0.35", "--perception-silence", "0.2"])
+    assert passed.perception_timeout == 0.35
+    assert passed.perception_silence == 0.2
+    config = NavConfig(perception_timeout_s=passed.perception_timeout,
+                       perception_silence_s=passed.perception_silence)
+    assert perception_hold_reason(0.40, 0.05, config) == PERCEPTION_LATENT
+
+
+def _navconfig_keywords_in_main() -> dict:
+    """The keyword arguments ``main`` actually builds its ``NavConfig`` from.
+
+    Read off the AST rather than by calling ``main``, which needs a robot: the property
+    at stake is that the parsed flag REACHES the config, and a parser test alone cannot
+    see that. `ast.unparse` is 3.9+ and a 3.8 leg runs over this directory, so the value
+    is matched structurally instead of round-tripped through source.
+    """
+    tree = ast.parse(textwrap.dedent(inspect.getsource(visual_nav.main)))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.Call)
+                and getattr(node.func, "id", None) == "NavConfig"):
+            return {kw.arg: kw.value for kw in node.keywords}
+    raise AssertionError("main() no longer builds a NavConfig")
+
+
+def test_the_perception_timeout_flag_reaches_the_config_the_run_uses():
+    """A flag parsed and dropped on the floor is worse than no flag: the operator reads
+    the help, sets the budget, and the robot runs on the default anyway."""
+    keywords = _navconfig_keywords_in_main()
+    for field, flag in (("perception_timeout_s", "perception_timeout"),
+                        ("perception_silence_s", "perception_silence")):
+        value = keywords.get(field)
+        assert value is not None, f"main() does not pass {field}"
+        assert isinstance(value, ast.Attribute) and value.attr == flag, ast.dump(value)
+        assert getattr(value.value, "id", None) == "args", ast.dump(value)
+
+
+def test_main_reads_no_name_it_never_defined():
+    """🔴 REGRESSION. ``warn_if_soft_gap_is_below_reaction(args, limits, nav, ...)`` read
+    ``nav``, which is a local of ``build_parser`` and has never existed in ``main``'s
+    scope. Every live run raised ``NameError: name 'nav' is not defined`` one line after
+    the gait-floor print and before the planner was built — and no test saw it, because
+    ``main`` needs a robot to reach that line and the margin warning was tested only
+    through its own function.
+
+    A general check rather than one about ``nav``: this is the second-cheapest thing in
+    the file to get wrong (the first is a typo'd keyword, which argparse catches) and the
+    next one will not be called ``nav``."""
+    source = textwrap.dedent(inspect.getsource(visual_nav.main))
+    tree = ast.parse(source)
+    function = tree.body[0]
+    bound = {argument.arg for argument in
+             function.args.args + function.args.kwonlyargs}
+    for node in ast.walk(function):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            bound.add(node.id)
+        elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            bound.add(node.name)
+            bound.update(a.arg for a in node.args.args)
+        elif isinstance(node, ast.ExceptHandler) and node.name:
+            bound.add(node.name)
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            bound.update((alias.asname or alias.name).split(".")[0]
+                         for alias in node.names)
+        elif isinstance(node, ast.comprehension):
+            for target in ast.walk(node.target):
+                if isinstance(target, ast.Name):
+                    bound.add(target.id)
+    module_level = set(vars(visual_nav)) | set(dir(builtins))
+    unresolved = sorted({node.id for node in ast.walk(function)
+                         if isinstance(node, ast.Name)
+                         and isinstance(node.ctx, ast.Load)
+                         and node.id not in bound
+                         and node.id not in module_level})
+    assert not unresolved, (
+        f"main() reads names that exist nowhere it can see them: {unresolved}")
+
+
+def test_raising_the_perception_budget_warns_as_loudly_as_lowering_the_margin():
+    """The inequality opens from BOTH sides, and only one of them used to be watched.
+
+    ``--soft-gap`` had a guard; ``--perception-timeout`` did not exist. Now that it does,
+    leaving the margin alone and raising the budget reaches the same place — a robot that
+    cannot stop for someone it can see — by the flag this change added, and it must not
+    get there quietly."""
+    out = []
+    visual_nav.warn_if_soft_gap_is_below_reaction(
+        _Args(1.20), _Limits, NavConfig(perception_timeout_s=1.2), 1.20,
+        printer=out.append)
+    text = " ".join(out)
+    assert "PERCEPTION BUDGET RAISED" in text, text
+    assert "SMALLER THAN THE REACTION DISTANCE" in text, text
+    assert "1.20" in text and "2.34" in text, (
+        "both the margin and the reaction distance it no longer covers must appear")
+
+
+def test_the_shipped_budget_and_margin_still_pass_in_silence():
+    """Anti-vacuity for the above: the default configuration must print nothing at all,
+    or the warning is noise and will be tuned out."""
+    out = []
+    visual_nav.warn_if_soft_gap_is_below_reaction(
+        _Args(1.20), _Limits, NavConfig(), 1.20, printer=out.append)
+    assert out == [], out
+
+
+def test_the_run_header_records_both_budgets_so_a_file_can_be_checked_later():
+    """A recorded run whose header names ``soft_gap_m`` and not the timeout cannot be
+    checked against ``reaction_distance_m`` afterwards, and every run before this flag
+    existed is in exactly that position."""
+    source = inspect.getsource(visual_nav.main)
+    assert '"perception_timeout_s": config.perception_timeout_s' in source, source[:0]
+    assert '"perception_silence_s": config.silence_budget_s' in source, source[:0]
 
 
 if __name__ == "__main__":
