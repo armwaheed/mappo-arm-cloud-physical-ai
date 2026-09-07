@@ -17,6 +17,7 @@ from pathlib import Path
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
+import look_behind as _look_behind
 from venue_run import DEFAULTS, build_command
 
 #: What ``run_control.build_run_argv`` produces, in its own order.
@@ -142,7 +143,15 @@ _FLOURISH = {"MAPPO_FLOURISH": "1", "MAPPO_FLOURISH_LANE_WIDTH": "2.0",
              "MAPPO_ROBOT_ID": "LITE3-A", "MAPPO_FIRMWARE": "V1.0.8",
              "MAPPO_PAYLOAD": "none"}
 
-_FLIP = {"MAPPO_FLIP": "1", "MAPPO_FLIP_KIND": "backflip",
+#: The kind is taken from `look_behind.BACKWARD_KINDS` rather than written out, because
+#: `test_look_behind.py`'s directory sweep forbids any file here from carrying a
+#: travelling kind as a string constant -- and it is right to: a literal in a file on this
+#: path is the only thing that could reach a command line by accident. Deriving it also
+#: means this fixture tests whatever kinds are actually offered rather than one that was
+#: offered when it was written.
+_FLIP_KIND = _look_behind.BACKWARD_KINDS[0]
+
+_FLIP = {"MAPPO_FLIP": "1", "MAPPO_FLIP_KIND": _FLIP_KIND,
          "MAPPO_FLIP_REAR_CLEARANCE_M": "2.0",
          "MAPPO_FLIP_BATTERY_FLOOR_PCT": "60", "MAPPO_FLIP_HOLD_SECONDS": "7.0"}
 
@@ -194,7 +203,7 @@ def test_a_fully_answered_flip_reaches_the_supervisor_with_every_measurement():
     env = {**_FLOURISH, **_FLIP}
     cmd = build_command(["--goal", "x"], env=env)
     assert "--flip-on-arrival" in cmd, cmd
-    assert cmd[cmd.index("--flip-kind") + 1] == "backflip"
+    assert cmd[cmd.index("--flip-kind") + 1] == _FLIP_KIND
     assert cmd[cmd.index("--flip-rear-clearance-metres") + 1] == "2.0"
     assert cmd[cmd.index("--flip-battery-floor-pct") + 1] == "60"
     assert cmd[cmd.index("--flip-hold-seconds") + 1] == "7.0"

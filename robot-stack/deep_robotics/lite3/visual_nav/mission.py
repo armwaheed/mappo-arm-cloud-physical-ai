@@ -493,8 +493,27 @@ def main(argv: list[str] | None = None) -> int:
         # gesture the look-behind commands is built by `flourish_command`, which returns
         # None without this, so a flip armed without it would turn nothing and refuse at
         # the end of a run somebody had staged a flip for.
-        parser.error("--flip-on-arrival needs --flourish: the look-behind turns the robot "
-                     "through flourish.py, and --flourish is what licenses that at all")
+        parser.error("--flip-on-arrival needs --flourish: the flip is fired through "
+                     "flourish.py, and --flourish is what licenses that at all")
+    if args.flip_on_arrival:
+        # ⛔ VALIDATED HERE BECAUSE THE LOOK NO LONGER VALIDATES IT. Every one of these was
+        # checked inside `look_behind.Clearance`, which refused with a sentence naming the
+        # missing one. The direct flip path bypasses that, and formats three of them with
+        # `:.4f` -- so a `None` would not refuse, it would raise TypeError at the end of a
+        # run somebody had staged a flip for, on a robot standing at its goal. That is the
+        # #214/#217 shape exactly: a value that is fine everywhere except at the one call
+        # site no test reaches. Said at the parser, before the robot has moved at all.
+        missing = [name for name, value in (
+            ("--flip-kind", args.flip_kind),
+            ("--flip-rear-clearance-metres", args.flip_rear_clearance_metres),
+            ("--flip-battery-floor-pct", args.flip_battery_floor_pct),
+            ("--flip-hold-seconds", args.flip_hold_seconds)) if value is None]
+        if missing:
+            parser.error(
+                f"--flip-on-arrival needs {', '.join(missing)}. With the rear look "
+                f"disabled, --flip-rear-clearance-metres is the ONLY check on the space "
+                f"this manoeuvre travels ~1.5 m into, and this platform has no rear "
+                f"sensor of any kind. There is no default for it and there will not be.")
 
     voice = Voice(args.voice_dir, enabled=not args.no_voice,
                   device=args.voice_device)
@@ -544,21 +563,50 @@ def main(argv: list[str] | None = None) -> int:
         if attempt.arrived:
             print(f"[mission] ARRIVED on attempt {attempt_number} "
                   f"after {time.monotonic() - started:.0f}s")
-            play_flourish(command, "spin", args)
-            # ⛔ THE ONLY PATH FROM AN ARRIVAL TO A KIND THAT TRAVELS, and it is off unless
-            # --flip-on-arrival: `arrival_flip` returns None on its first line. It is not
-            # `play_flourish`, and the difference is the safety property. `play_flourish`
-            # is handed a CONSTANT kind at every call site and `test_flourish.py` reads
-            # those constants to prove they are all in `ARRIVAL_KINDS`; nothing in this
-            # file names a travelling kind, and nothing in this file can. What the runner
-            # below is asked to fire is decided inside `look_behind`, which will not name
-            # one until a completed outward turn, a completed return turn, and unanimous
-            # fresh frames from the run's own detector say the space is clear -- and which
-            # re-derives all of that at the moment it builds the command.
-            if look_behind is not None:
-                look_behind.arrival_flip(
-                    command, args,
-                    lambda kind, extra=(): run_gesture(command, args, kind, extra))
+            # ⛔⛔ ARRIVE, THEN FLIP, WITH NO LOOK AND NO SPIN -- the operator's explicit
+            # instruction on 2026-09-07, given twice, after being shown what it removes.
+            #
+            # THIS FILE NOW NAMES A KIND THAT TRAVELS. It did not, and could not, before:
+            # `play_flourish` was handed a CONSTANT kind at every call site and
+            # `test_flourish.py` read those constants to prove they were all in
+            # `ARRIVAL_KINDS` -- kinds that keep the robot's centre where it is. The route
+            # to a travelling kind ran through `look_behind`, which would not name one
+            # until a completed outward turn, a completed return turn and unanimous fresh
+            # frames from the run's own detector said the space behind was clear. That
+            # route is now bypassed, so those tests have been changed rather than deleted:
+            # they now pin exactly which travelling kind may be reached from here and that
+            # `flip_on_arrival` is what gates it. The boundary moved; it is still tested.
+            #
+            # WHAT IS LEFT GUARDING THE SPACE BEHIND IS ONE NUMBER: the operator's
+            # `--flip-rear-clearance-metres` tape measurement, enforced by
+            # `flourish.check_rear`, which refuses below the kind's own floor and refuses
+            # outright if the number is absent. That gate is deliberately still in the
+            # path and must stay -- with the look gone it is not one guard of two, it is
+            # the only one. The platform has no rear camera, no ultrasonic and no bumper,
+            # and the manoeuvre travels ~1.5 m into that space.
+            #
+            # The spin is skipped only on the flip path. A run that is not flipping keeps
+            # its victory spin, which nobody asked to change.
+            if args.flip_on_arrival and look_behind is not None:
+                print("[mission] ⛔⛔ FLIP ON ARRIVAL, NO REAR LOOK. The turn-and-look was "
+                      "disabled by operator instruction on 2026-09-07. Nothing observes "
+                      "the space behind this robot -- there is no rear sensor to observe "
+                      "it with -- and the only check is the "
+                      f"{args.flip_rear_clearance_metres} m clearance you stated.")
+                code = run_gesture(
+                    command, args, args.flip_kind,
+                    ("--rear-clearance-metres", f"{args.flip_rear_clearance_metres:.4f}",
+                     "--acrobatic-battery-floor-pct", f"{args.flip_battery_floor_pct:.4f}",
+                     "--action-hold-seconds", f"{args.flip_hold_seconds:.4f}"))
+                # Reported, never fatal: the robot ARRIVED, and that verdict is not the
+                # flip's to rewrite. `check_rear`'s refusal arrives here as a non-zero
+                # code and has to be legible, because a silent no-flip looks identical to
+                # a flip that never fired for a reason nobody will go looking for.
+                if code != 0:
+                    print(f"[mission] the {args.flip_kind} did not fire (exit {code}). "
+                          f"The arrival still stands.")
+            else:
+                play_flourish(command, "spin", args)
             voice.close()
             return 0
         if _STOP.is_set():

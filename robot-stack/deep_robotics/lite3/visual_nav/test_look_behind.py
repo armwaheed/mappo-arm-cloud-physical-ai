@@ -898,12 +898,40 @@ def test_arming_the_flip_without_the_gesture_is_refused_at_the_parser():
         raise AssertionError("--flip-on-arrival without --flourish was accepted")
 
 
-def test_nothing_on_the_dashboard_path_can_arm_a_flip():
-    """`venue_run.py` translates a deployment's environment into a mission command line.
-    It builds no `--flip-*` flag from any variable, so a flip is only ever armed by
-    somebody typing it -- which is a property worth pinning, not a coincidence."""
+def test_the_dashboard_path_can_arm_a_flip_but_only_with_every_measurement_answered():
+    """SUPERSEDES `test_nothing_on_the_dashboard_path_can_arm_a_flip`, and the change is
+    deliberate rather than a guard rotting away.
+
+    That test asserted `venue_run.py` builds no `--flip-*` flag from any variable, so a
+    flip could only be armed by somebody typing a command line -- and the dashboard could
+    not reach it at all. On 2026-09-07 the operator asked for a dashboard checkbox,
+    because "a flip is only ever armed by somebody typing it" in practice meant the flip
+    had never been armed once, on either robot, in the life of the repository.
+
+    So the property being pinned is no longer "unreachable". It is "reachable only with
+    every measurement of the room answered": `MAPPO_FLIP` alone arms nothing, and the four
+    settings have no defaults and never will, because the manoeuvre travels ~1.5 m into
+    the one direction this platform cannot sense. `test_venue_run.py` holds the behavioural
+    half -- partial answers, the off-switch spellings, and the flourish requirement. This
+    holds the structural half: the switch is read from the environment, and the four
+    measurements are read from it too rather than being written into this file.
+    """
     source = (_HERE / "venue_run.py").read_text()
-    assert "--flip" not in source, "venue_run.py can now arm a flip from the environment"
+    assert "--flip-on-arrival" in source, (
+        "venue_run.py no longer arms a flip at all. If that is deliberate, restore the "
+        "old assertion and say why; do not leave this passing on a technicality")
+
+    # The switch and every measurement come from the ENVIRONMENT. A number written into
+    # this file would be the repo guessing about a room it cannot see.
+    for name in ("MAPPO_FLIP", "MAPPO_FLIP_KIND", "MAPPO_FLIP_REAR_CLEARANCE_M",
+                 "MAPPO_FLIP_BATTERY_FLOOR_PCT", "MAPPO_FLIP_HOLD_SECONDS"):
+        assert name in source, f"{name} is not read from the environment"
+
+    # And no travelling kind is named here, so the sweep above still covers this file.
+    literals = [node.value for node in ast.walk(ast.parse(source, filename="venue_run.py"))
+                if isinstance(node, ast.Constant)
+                and node.value in flourish.OPERATOR_ONLY_KINDS]
+    assert not literals, f"venue_run.py carries {literals} as a value"
 
 
 if __name__ == "__main__":
