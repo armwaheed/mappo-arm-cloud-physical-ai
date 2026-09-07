@@ -41,9 +41,11 @@ from run_control import (
     describe,
     launch_command,
     load_profile,
+    local_env,
     new_run_id,
     output_paths,
     pidfile_for,
+    run_env_pairs,
     stop_command,
     unsupported,
 )
@@ -708,6 +710,47 @@ def test_the_snapshot_carries_what_ran_and_not_only_what_was_asked_for():
     snapshot = record.snapshot(now=1.0)
     assert snapshot["command"][0] == "ssh" and snapshot["argv"][0] != "ssh"
     assert snapshot["named_commit"] is None
+
+
+def test_the_flip_switch_is_sent_explicitly_when_it_is_OFF():
+    """🔴 The assertion that keeps an unticked box meaning OFF.
+
+    The profile's own ``env`` is exported into the same shell, and a deployment may
+    perfectly well carry ``MAPPO_FLIP=1`` in it. If an unticked box merely declined to say
+    otherwise, that standing value would survive and an operator who deliberately turned
+    the flip off would get a robot that flips ~1.5 m backward into its blind side.
+
+    Same rule ``build_run_argv`` follows for ``--policy-mode`` and ``--heading-servo``:
+    every setting is spelled, none is inherited, because the far end's state is whatever it
+    was on the day it was copied."""
+    assert run_env_pairs(flip=False) == ("MAPPO_FLIP=0",)
+    assert run_env_pairs(flip=True) == ("MAPPO_FLIP=1",)
+
+
+def test_the_per_run_switch_beats_the_profiles_standing_value_in_both_renderings():
+    """A remote run gets its variables from ``export`` lines in a shell command and a local
+    one from the spawn's env. Two renderings of one decision, so they have to agree about
+    which wins -- a divergence here is a robot behaving differently on one host, found by
+    the robot rather than by a test."""
+    profile = RunProfile(**{**LOCAL.__dict__,
+                            "env": ("MAPPO_FLIP=1", "MAPPO_VOICE_DIR=/voice")})
+
+    merged = local_env(profile, base={}, run_env=run_env_pairs(flip=False))
+    assert merged["MAPPO_FLIP"] == "0", "the per-run switch lost to the profile"
+    assert merged["MAPPO_VOICE_DIR"] == "/voice", "the overlay dropped the profile's own"
+
+    remote = RunProfile(**{**REMOTE.__dict__, "env": ("MAPPO_FLIP=1",)})
+    line = launch_command(remote, ["python", "run.py"], pidfile="/tmp/p",
+                          run_env=run_env_pairs(flip=False))[-1]
+    assert line.index("MAPPO_FLIP=1") < line.index("MAPPO_FLIP=0"), \
+        "the per-run export must come AFTER the profile's, or the profile wins"
+
+
+def test_an_absent_overlay_still_returns_none_for_a_profile_with_no_env():
+    """``local_env`` returning ``None`` means "inherit this process's environment", which is
+    not the same as an empty dict. Adding the overlay parameter must not turn every run into
+    a fully-specified environment that drops whatever the driver was started with."""
+    assert local_env(RunProfile(**{**LOCAL.__dict__, "env": ()}), run_env=()) is None
 
 
 if __name__ == "__main__":

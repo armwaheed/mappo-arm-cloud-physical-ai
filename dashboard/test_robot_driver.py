@@ -1727,9 +1727,12 @@ def test_all_six_directions_light_up_once_the_profile_evidences_them():
             "schema": "lite3-axis-profile/v1",
             "input_deadband": {"linear_m_s": 0.05, "yaw_rad_s": 0.1},
             "allowed_gait_states": [0],
-            "evidence": {name: "test fixture" for name in (
+            # `dict.fromkeys(names, "test fixture")` -- WITH the second argument. Ruff's
+            # C420 autofix drops it, and `dict.fromkeys(names)` gives every primitive a
+            # value of None, which is a fixture that silently stops asserting anything.
+            "evidence": dict.fromkeys((
                 "forward_positive", "forward_negative", "lateral_positive",
-                "lateral_negative", "yaw_positive", "yaw_negative")},
+                "lateral_negative", "yaw_positive", "yaw_negative"), "test fixture"),
             "primitives": {"forward_positive": 32767, "forward_negative": -32767,
                            "lateral_positive": 32767, "lateral_negative": -32767,
                            "yaw_positive": 16000, "yaw_negative": -16000},

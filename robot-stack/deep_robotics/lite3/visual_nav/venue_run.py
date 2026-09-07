@@ -51,6 +51,20 @@ DEFAULTS = {
 FLOURISH_SETTINGS = ("MAPPO_FLOURISH_LANE_WIDTH", "MAPPO_ROBOT_ID",
                      "MAPPO_FIRMWARE", "MAPPO_PAYLOAD")
 
+#: The flip is OFF unless the deployment asks for it AND answers all four measurements,
+#: and it is asked for here for the same reason the flourish is: the supervisor fires it
+#: after the drive has exited.
+#:
+#: ⚠️ THESE ARE NOT DEFAULTABLE AND NEVER WILL BE. The action travels ~1.5 m BACKWARD into
+#: the one direction this robot has no sensor of any kind pointing, and the operator
+#: holding the abort is the person who stands there. ``look_behind`` turns the robot round
+#: and looks first, but its detector finds VOC classes -- it cannot see a wall, a step or a
+#: stage edge -- so a TAPE-MEASURED rear clearance is still required beside the look and is
+#: not replaced by it. A default here would be this file guessing about a room it cannot
+#: see, on the one manoeuvre where guessing puts the robot through a person.
+FLIP_SETTINGS = ("MAPPO_FLIP_KIND", "MAPPO_FLIP_REAR_CLEARANCE_M",
+                 "MAPPO_FLIP_BATTERY_FLOOR_PCT", "MAPPO_FLIP_HOLD_SECONDS")
+
 
 def build_command(drive_args, env=None, python: str | None = None) -> list:
     """The ``mission.py`` command line that runs ``drive_args`` under supervision.
@@ -96,7 +110,36 @@ def build_command(drive_args, env=None, python: str | None = None) -> list:
                         "--firmware", answered["MAPPO_FIRMWARE"],
                         "--payload", answered["MAPPO_PAYLOAD"]]
 
-    return [python, "-u", "mission.py", *voice, *flourish,
+    # THE FLIP, which is the flourish's rule with one extra clause: it needs the flourish
+    # itself. `mission.py` refuses `--flip-on-arrival` without `--flourish` (its own check,
+    # kept there because a hand-typed command line must hit it too), and building the flags
+    # here anyway would turn an operator's tick into a refusal at the far end -- after the
+    # robot has been committed. Checked here so it degrades to "no flip" with a reason on
+    # the console instead.
+    flip: list = []
+    if env.get("MAPPO_FLIP", "").strip() not in ("", "0", "false", "False"):
+        answered = {name: env.get(name, "").strip() for name in FLIP_SETTINGS}
+        missing = [name for name, value in answered.items() if not value]
+        if not flourish:
+            print("[venue-run] MAPPO_FLIP is set but the flourish is not enabled, and the "
+                  "flip is fired BY the flourish; the run will NOT flip. Set MAPPO_FLOURISH "
+                  "and its four settings too.", flush=True)
+        elif missing:
+            print(f"[venue-run] MAPPO_FLIP is set but {', '.join(missing)} "
+                  f"{'is' if len(missing) == 1 else 'are'} not; the run will NOT flip. "
+                  f"These are measurements of the ROOM and have no safe default -- the "
+                  f"action travels ~1.5 m backward into the robot's blind side.",
+                  flush=True)
+        else:
+            flip = ["--flip-on-arrival",
+                    "--flip-kind", answered["MAPPO_FLIP_KIND"],
+                    "--flip-rear-clearance-metres",
+                    answered["MAPPO_FLIP_REAR_CLEARANCE_M"],
+                    "--flip-battery-floor-pct",
+                    answered["MAPPO_FLIP_BATTERY_FLOOR_PCT"],
+                    "--flip-hold-seconds", answered["MAPPO_FLIP_HOLD_SECONDS"]]
+
+    return [python, "-u", "mission.py", *voice, *flourish, *flip,
             "--patience", settings["MAPPO_MISSION_PATIENCE"],
             "--cooldown", settings["MAPPO_MISSION_COOLDOWN"],
             "--max-attempts", settings["MAPPO_MISSION_ATTEMPTS"],

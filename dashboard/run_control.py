@@ -498,6 +498,26 @@ def servo_flags(profile: RunProfile, heading_servo: str) -> list:
     return ["--heading-servo", heading_servo]
 
 
+def run_env_pairs(*, flip: bool) -> tuple:
+    """The per-run environment overlay, on top of the profile's own ``env``.
+
+    ``MAPPO_FLIP`` is what ``venue_run.py`` reads to decide whether to build
+    ``--flip-on-arrival``. The four measurements it needs beside it (kind, rear clearance,
+    battery floor, hold seconds) are NOT here: they describe the ROOM and the robot, they
+    are tape-measured, and they belong in the profile next to the flourish's own settings.
+    This is only the switch.
+
+    ⚠️ ``MAPPO_FLIP=0`` IS SENT EXPLICITLY WHEN THE BOX IS UNTICKED, and that is the whole
+    reason this returns a pair in both cases rather than an empty tuple. The profile's env
+    is exported into the same shell, a deployment may well carry ``MAPPO_FLIP=1`` in it,
+    and an unticked box that merely declines to say otherwise would leave that standing --
+    an operator who deliberately turned the flip OFF would get a robot that flips. Same
+    rule the argv follows two functions down: every setting is spelled, none is inherited,
+    because the far end's state is whatever it was on the day it was copied.
+    """
+    return (f"MAPPO_FLIP={'1' if flip else '0'}",)
+
+
 def build_run_argv(profile: RunProfile, *, seconds: float, policy_mode: str,
                    heading_servo: str, live: bool, allow_motion: bool,
                    run_id: str = "") -> list:
@@ -586,7 +606,8 @@ def pidfile_for(profile: RunProfile, run_id: str) -> str:
     return f"{profile.pidfile_dir.rstrip('/')}/mappo-dashboard-run-{run_id}.pid"
 
 
-def launch_command(profile: RunProfile, argv, pidfile: str = "") -> list:
+def launch_command(profile: RunProfile, argv, pidfile: str = "",
+                   run_env: tuple = ()) -> list:
     """The OS argv this process should actually spawn.
 
     Two shapes, and the difference is which machine the legs are on.
@@ -613,6 +634,9 @@ def launch_command(profile: RunProfile, argv, pidfile: str = "") -> list:
     # AFTER the source, because that is the order the known-good wrapper uses and because
     # these are meant to replace what the source left behind rather than be replaced by it.
     parts.extend("export " + shlex.quote(pair) for pair in profile.env)
+    # AFTER the profile's, so a per-run switch wins over a deployment's standing value.
+    # That ordering is the point of the overlay: see `run_env_pairs`.
+    parts.extend("export " + shlex.quote(pair) for pair in run_env)
     parts.append("cd " + shlex.quote(profile.workdir))
     # $$ is the remote shell's pid, and `exec` replaces that shell with the run, so the
     # recorded pid stays the run's for its whole life.
@@ -623,17 +647,20 @@ def launch_command(profile: RunProfile, argv, pidfile: str = "") -> list:
     return [*profile.launch_prefix, " && ".join(parts)]
 
 
-def local_env(profile: RunProfile, base=None):
+def local_env(profile: RunProfile, base=None, run_env: tuple = ()):
     """The environment for a LOCAL run, or ``None`` to inherit this process's.
 
     A remote run gets its variables from ``export`` lines inside the shell command; a local
     one has no shell, so they are handed to the spawn instead. Same source, two renderings,
     because there is no shell in the local path on purpose — see :func:`launch_command`.
     """
-    if not profile.env:
+    if not profile.env and not run_env:
         return None
     merged = dict(os.environ if base is None else base)
-    for pair in profile.env:
+    # Profile first, then the per-run overlay, so the two orderings agree. A local run and
+    # a remote one differing on which wins is the kind of divergence nobody finds until a
+    # robot does something different on one host.
+    for pair in (*profile.env, *run_env):
         name, _, value = pair.partition("=")
         merged[name] = value
     return merged
