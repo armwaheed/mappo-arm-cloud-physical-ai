@@ -138,6 +138,72 @@ def test_the_off_switch_accepts_the_shapes_a_run_profile_actually_writes():
         assert "--flourish" not in cmd, (value, cmd)
 
 
+_FLOURISH = {"MAPPO_FLOURISH": "1", "MAPPO_FLOURISH_LANE_WIDTH": "2.0",
+             "MAPPO_ROBOT_ID": "LITE3-A", "MAPPO_FIRMWARE": "V1.0.8",
+             "MAPPO_PAYLOAD": "none"}
+
+_FLIP = {"MAPPO_FLIP": "1", "MAPPO_FLIP_KIND": "backflip",
+         "MAPPO_FLIP_REAR_CLEARANCE_M": "2.0",
+         "MAPPO_FLIP_BATTERY_FLOOR_PCT": "60", "MAPPO_FLIP_HOLD_SECONDS": "7.0"}
+
+
+def test_the_flip_is_off_when_nothing_asks_for_it():
+    """The default an operator gets by not ticking the box, and by far the most important
+    assertion in this file: the action travels ~1.5 m BACKWARD into the one direction this
+    robot has no sensor pointing, and the person holding the abort stands there."""
+    cmd = build_command(["--goal", "x"], env=dict(_FLOURISH))
+    assert "--flip-on-arrival" not in cmd, cmd
+    for flag in ("--flip-kind", "--flip-rear-clearance-metres",
+                 "--flip-battery-floor-pct", "--flip-hold-seconds"):
+        assert flag not in cmd, (flag, cmd)
+
+
+def test_the_flip_off_switch_accepts_the_shapes_a_run_profile_actually_writes():
+    """`MAPPO_FLIP=0` is what the dashboard sends when the box is UNTICKED -- explicitly,
+    so it overrides a deployment carrying `MAPPO_FLIP=1` in its own profile env. If `0`
+    read as truthy, unticking the box would arm the flip."""
+    for value in ("0", "", "false", "False"):
+        env = {**_FLOURISH, **_FLIP, "MAPPO_FLIP": value}
+        cmd = build_command(["--goal", "x"], env=env)
+        assert "--flip-on-arrival" not in cmd, (value, cmd)
+
+
+def test_a_partial_flip_answer_is_treated_as_no_answer():
+    """The four settings are measurements of the ROOM -- rear clearance especially, which
+    `look_behind` cannot replace because its detector finds VOC classes and cannot see a
+    wall, a step or a stage edge. A half-configured flip must not fire."""
+    for missing in _FLIP:
+        if missing == "MAPPO_FLIP":
+            continue
+        env = {**_FLOURISH, **_FLIP}
+        del env[missing]
+        cmd = build_command(["--goal", "x"], env=env)
+        assert "--flip-on-arrival" not in cmd, (missing, cmd)
+
+
+def test_the_flip_needs_the_flourish_that_fires_it():
+    """`mission.py` refuses `--flip-on-arrival` without `--flourish`. Building the flags
+    anyway would turn an operator's tick into a refusal at the far end -- after the robot
+    has been committed -- so it is caught here and degrades to no flip instead."""
+    cmd = build_command(["--goal", "x"], env=dict(_FLIP))
+    assert "--flip-on-arrival" not in cmd, cmd
+    assert "--flourish" not in cmd, cmd
+
+
+def test_a_fully_answered_flip_reaches_the_supervisor_with_every_measurement():
+    env = {**_FLOURISH, **_FLIP}
+    cmd = build_command(["--goal", "x"], env=env)
+    assert "--flip-on-arrival" in cmd, cmd
+    assert cmd[cmd.index("--flip-kind") + 1] == "backflip"
+    assert cmd[cmd.index("--flip-rear-clearance-metres") + 1] == "2.0"
+    assert cmd[cmd.index("--flip-battery-floor-pct") + 1] == "60"
+    assert cmd[cmd.index("--flip-hold-seconds") + 1] == "7.0"
+    # To mission.py, NOT to the drive after the separator. `venue_run` forwards its argv
+    # verbatim to `mappo_drive.py`, which would exit 2 on a flag it does not know.
+    assert cmd.index("--flip-on-arrival") < cmd.index("--"), \
+        "the supervisor fires the flip, not the drive"
+
+
 if __name__ == "__main__":
     tests = [value for name, value in sorted(globals().items()) if name.startswith("test_")]
     for test in tests:

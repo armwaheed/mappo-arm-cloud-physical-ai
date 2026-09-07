@@ -199,12 +199,36 @@ SPDX-License-Identifier: Apache-2.0
       </label>
     </div>
 
+    <!-- The gates, stacked, then the action. Reading order is the order they apply:
+         motion, then the acrobatic that needs motion, then Start. -->
     <div class="row">
       <label class="field check arm" id="run-arm-field"
              title="The second of two gates. The first is --allow-motion on the driver.">
         <input id="run-arm" type="checkbox">
         <span>⛔ arm motion — the policy drives the legs</span>
       </label>
+    </div>
+
+    <div class="row">
+      <!-- OFF by default and never auto-ticked. `run-arm` re-ticks itself on a fresh
+           robot because a scene check is the common case; this must not, because the
+           common case for a manoeuvre that travels ~1.5 m into the robot's blind side is
+           NOT doing it. Disabled unless arm motion is on: the flip is fired by the
+           flourish, which needs --live, so an armed-looking box on a dry run would be a
+           promise the run cannot keep. -->
+      <label class="field check flip" id="run-flip-field"
+             title="Fires a BACKWARD vendor acrobatic on arrival, after look_behind turns
+the robot round and looks with the run's own camera. Needs arm motion. Needs the profile
+to answer MAPPO_FLIP_KIND, MAPPO_FLIP_REAR_CLEARANCE_M, MAPPO_FLIP_BATTERY_FLOOR_PCT and
+MAPPO_FLIP_HOLD_SECONDS — measurements of the room, no defaults. The detector finds VOC
+classes and CANNOT SEE A WALL, a step or a stage edge, so the tape-measured rear clearance
+is required beside the look, not replaced by it.">
+        <input id="run-flip" type="checkbox">
+        <span>⛔⛔ flip on arrival — travels ~1.5 m BACKWARD, into the blind side</span>
+      </label>
+    </div>
+
+    <div class="row">
       <button class="btn" id="run-start">Start run</button>
       <button class="btn stop-all" id="run-stop">■ Stop run &amp; take control</button>
     </div>

@@ -1021,7 +1021,7 @@ class MappoRobotDriver(DeviceDriver):
     @rpc()
     async def start_run(self, seconds: float = run_control.DEFAULT_RUN_SECONDS,
                         policy_mode: str = "raw", heading_servo: str = "goal",
-                        arm_motion: bool = False) -> dict:
+                        arm_motion: bool = False, flip: bool = False) -> dict:
         """Start a MAPPO run. **By default it cannot move the robot**, and that is the point.
 
         ⛔ ``robot-stack/SAFETY.md`` governs this.
@@ -1070,6 +1070,20 @@ class MappoRobotDriver(DeviceDriver):
             arm_motion: ⛔ the second of two gates. ``true`` adds ``--live`` and hands the
                 legs to the policy, and needs the driver to have been started with
                 ``--allow-motion``. Default ``false``: a scene check that cannot move.
+            flip: ⛔⛔ fire a BACKWARD vendor acrobatic on arrival, after ``look_behind``
+                turns the robot round and looks. Default ``false``, and it is the third
+                gate rather than a mode: it needs ``arm_motion`` as well, since the flip
+                is fired by the flourish and the flourish needs ``--live``.
+
+                It sets ``MAPPO_FLIP`` for ``venue_run.py``, which builds the flags only
+                if the profile also answers all four of ``MAPPO_FLIP_KIND``,
+                ``MAPPO_FLIP_REAR_CLEARANCE_M``, ``MAPPO_FLIP_BATTERY_FLOOR_PCT`` and
+                ``MAPPO_FLIP_HOLD_SECONDS`` -- measurements of the room, which have no
+                safe default because the action travels ~1.5 m into the one direction this
+                robot cannot sense, and the operator on the abort is who stands there. A
+                partial answer prints which setting is missing and does not flip. ``false``
+                is sent as ``MAPPO_FLIP=0`` explicitly, so an unticked box overrides a
+                deployment that carries ``MAPPO_FLIP=1`` in its own profile env.
         """
         live = bool(arm_motion)
         if self.run_profile is None:
@@ -1121,7 +1135,8 @@ class MappoRobotDriver(DeviceDriver):
         return await self._launch(run_id, argv, live=live, policy_mode=policy_mode,
                                   heading_servo=heading_servo,
                                   seconds=run_control.clamp_seconds(seconds),
-                                  mode_note=mode_note or "")
+                                  mode_note=mode_note or "",
+                                  run_env=run_control.run_env_pairs(flip=bool(flip)))
 
     @rpc()
     async def stop_run(self, reason: str = "the operator took control") -> dict:
@@ -1213,11 +1228,13 @@ class MappoRobotDriver(DeviceDriver):
         return snapshot
 
     async def _launch(self, run_id: str, argv: list, *, live: bool, policy_mode: str,
-                      heading_servo: str, seconds: float, mode_note: str) -> dict:
+                      heading_servo: str, seconds: float, mode_note: str,
+                      run_env: tuple = ()) -> dict:
         """Spawn one run and start reporting it. Everything that could refuse already has."""
         profile = self.run_profile
         pidfile = run_control.pidfile_for(profile, run_id) if profile.launch_prefix else ""
-        command = run_control.launch_command(profile, argv, pidfile)
+        command = run_control.launch_command(profile, argv, pidfile,
+                                             run_env=run_env)
         # ``cwd`` applies to the process THIS machine starts. On a remote run that process
         # is ``ssh`` and the directory that matters is the ``cd`` inside the shell line;
         # setting cwd here would apply this machine's path to the other machine's tree.
@@ -1227,7 +1244,8 @@ class MappoRobotDriver(DeviceDriver):
         # deliberately no shell in the local path to sit between a SIGTERM and the run.
         try:
             process = await asyncio.create_subprocess_exec(
-                *command, cwd=cwd, env=run_control.local_env(profile),
+                *command, cwd=cwd,
+                env=run_control.local_env(profile, run_env=run_env),
                 stdout=asyncio.subprocess.PIPE,
                 # Merged, not separate: ``visual_nav`` warns on stderr and ``mappo_drive``
                 # reports on stdout, and an operator reading two interleaved streams out of

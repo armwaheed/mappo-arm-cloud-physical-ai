@@ -524,6 +524,18 @@ function renderRunControls(caps) {
   } else if (!$("run-arm").dataset.touched) {
     $("run-arm").checked = true;
   }
+  // THE FLIP IS GATED ON THE BOX ABOVE IT, and unlike that box it is never auto-ticked.
+  // `run-arm` defaults ON for an armed driver because a scene check is the common case and
+  // a forgotten tick costs a wasted run. The common case for an acrobatic that travels
+  // ~1.5 m into the direction this robot has no sensor for is NOT doing it, so the cost of
+  // the two mistakes is not symmetric and the defaults are not either.
+  //
+  // Unticking arm motion unticks this too, rather than leaving it armed-looking under a
+  // dry run it cannot act on: the flip is fired by the flourish, which needs --live.
+  const flipBox = $("run-flip");
+  flipBox.disabled = !armable || !$("run-arm").checked;
+  if (flipBox.disabled) flipBox.checked = false;
+  $("run-flip-field").classList.toggle("held", flipBox.disabled);
   $("run-start").disabled = !run.supported || state.controlOwner === "policy";
   $("run-where").textContent = run.supported
     ? (run.remote ? `on the robot, over ${(run.launch_prefix || []).join(" ")}`
@@ -571,6 +583,7 @@ async function startRun() {
     policy_mode: $("run-mode").value,
     heading_servo: $("run-servo").value,
     arm_motion: $("run-arm").checked,
+    flip: $("run-flip").checked,
   };
   $("run-start").disabled = true;
   try {
@@ -1370,6 +1383,14 @@ function init() {
   $("run-stop").addEventListener("click", stopRun);
   $("run-arm").addEventListener("change", () => {
     $("run-arm").dataset.touched = "1";
+    // The flip's gate is arm motion, so it has to move when arm motion does -- otherwise
+    // the box stays live after its precondition is withdrawn.
+    const flipBox = $("run-flip");
+    // `run-arm`'s own disabled state IS the armability signal here -- it is set from
+    // `armable` in renderRunControls -- so there is no second copy to fall out of date.
+    flipBox.disabled = !$("run-arm").checked || $("run-arm").disabled;
+    if (flipBox.disabled) flipBox.checked = false;
+    $("run-flip-field").classList.toggle("held", flipBox.disabled);
     renderRunPreview();
   });
   $("run-mode").addEventListener("change", renderRunPreview);
