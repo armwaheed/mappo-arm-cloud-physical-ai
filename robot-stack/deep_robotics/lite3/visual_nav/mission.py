@@ -31,6 +31,20 @@ across back-to-back attempts, and ``robot-stack/SAFETY.md`` and AGENTS.md both r
 moving runs to stay bounded. The compromise is a high attempt cap, a real cooldown between
 attempts, and a total wall-clock ceiling: the robot keeps trying for as long as an operator
 would reasonably let it, and then stops and says so rather than deciding for itself.
+
+⛔ THE GESTURES THIS FIRES ARE THE ONES THAT DO NOT TRAVEL, and that is a safety property
+rather than a preference. `play_flourish` runs after a run has arrived, failed, or lost
+sight of its goal -- by which point nobody is necessarily watching -- so every call site
+here hands it a CONSTANT kind out of `flourish.ARRIVAL_KINDS`, all four of which keep the
+robot's centre where it is. `test_flourish.py` reads those constants out of this file's
+syntax tree and asserts it.
+
+There is now exactly ONE path from an arrival to a vendor canned action that TRAVELS, and
+it is not `play_flourish` and is not named in this file. `--flip-on-arrival` hands
+`look_behind.arrival_flip` a runner, and that module turns the robot around, looks at the
+space with the run's own camera and detector, turns back, and refuses unless the look
+authorised it. Off by default; `look_behind.py`'s docstring carries the argument, including
+what a VOC detector cannot see.
 """
 
 from __future__ import annotations
@@ -50,6 +64,25 @@ if str(_HERE) not in sys.path:
     sys.path.insert(0, str(_HERE))
 
 from voice import Voice  # noqa: E402
+
+try:
+    import look_behind
+except Exception as _absent:  # pragma: no cover - a tree staged without locomotion/
+    # ⚠️ GUARDED, AND NOT OUT OF TIDINESS. `look_behind` imports `flourish`, which lives
+    # in the SIBLING `locomotion/` directory -- and `flourish_command` below already
+    # anticipates a deployment where that file is not there, by checking `is_file()` and
+    # skipping the gesture rather than failing. A bare import here would turn that
+    # survivable absence into a crash on every run, including the runs that never wanted a
+    # gesture at all. The flip is the only thing that becomes unreachable, and it says so
+    # at the parser rather than at the goal.
+    look_behind = None
+    LOOK_BEHIND_ABSENT = repr(_absent)
+else:
+    LOOK_BEHIND_ABSENT = None
+
+#: What :func:`run_gesture` returns when no command could be built. Mirrored here so this
+#: module still has a value for it in a tree where ``look_behind`` did not import.
+GESTURE_UNAVAILABLE = -1 if look_behind is None else look_behind.GESTURE_UNAVAILABLE
 
 #: Tick statuses that mean the robot is NOT making progress. Taken from the words
 #: ``visual_nav`` already prints, so this cannot drift into inventing its own vocabulary.
@@ -336,6 +369,30 @@ def flourish_command(command: list[str], kind: str, args,
     return out
 
 
+def run_gesture(command: list[str], args, kind: str, extra: tuple = ()) -> int:
+    """Run one gesture and hand back its EXIT CODE, rather than swallowing it.
+
+    ``play_flourish`` is deliberately not this and is left alone. A gesture is decoration:
+    its failure must never rewrite a run's verdict, so that one prints and returns nothing.
+    The look-behind is the opposite case -- whether a turn actually completed is the whole
+    difference between a measurement and a guess, and ``look_behind`` refuses without it.
+    Same command builder, so the same ``--live`` inheritance and the same passthrough; only
+    the return value differs.
+
+    Never raises. A subprocess that could not be started is reported as
+    ``GESTURE_UNAVAILABLE``, which ``look_behind`` reads as "nothing ran", which refuses.
+    """
+    argv = flourish_command(command, kind, args, extra)
+    if argv is None:
+        return GESTURE_UNAVAILABLE
+    print(f"[mission] {kind}")
+    try:
+        return subprocess.run(argv, check=False, timeout=60).returncode
+    except Exception as failure:
+        print(f"[mission] the {kind} did not run ({failure!r})")
+        return GESTURE_UNAVAILABLE
+
+
 def play_flourish(command: list[str], kind: str, args, extra: tuple = ()) -> None:
     """Run the gesture, and never let it change the mission's verdict.
 
@@ -378,6 +435,38 @@ def main(argv: list[str] | None = None) -> int:
     gesture.add_argument("--robot-id", default=None)
     gesture.add_argument("--firmware", default=None)
     gesture.add_argument("--payload", default=None)
+    # ⛔ THE FLIP. Off, and every flag below ships NO DEFAULT, which is `flourish.py`'s own
+    # rule for these actions restated at the layer that now fires them. Nothing on the
+    # dashboard path reaches this: `venue_run.py` builds no `--flip-*` flag from any
+    # environment variable, so a flip is only ever armed by somebody typing it.
+    flip = parser.add_argument_group(
+        "flip on arrival (OFF; it turns the robot around, LOOKS, turns back, and only "
+        "then fires a vendor canned action that TRAVELS BACKWARD)")
+    flip.add_argument("--flip-on-arrival", action="store_true",
+                      help="after arriving, look behind with the run's own camera and "
+                           "detector and fire --flip-kind if -- and only if -- the look "
+                           "authorises it. Needs --flourish, and every other --flip-* "
+                           "flag. Read look_behind.py before using this: the detector "
+                           "finds VOC classes and CANNOT SEE A WALL")
+    flip.add_argument("--flip-kind", default=None,
+                      choices=() if look_behind is None else look_behind.BACKWARD_KINDS,
+                      help="which vendor canned action. Only the kinds flourish's own "
+                           "table says travel BACKWARD are offered, because a look behind "
+                           "is no evidence about a manoeuvre whose direction nobody has "
+                           "observed")
+    flip.add_argument("--flip-rear-clearance-metres", type=float, default=None, metavar="M",
+                      help="clear floor BEHIND the robot, measured with a tape. STILL "
+                           "REQUIRED and not replaced by the look: the detector does not "
+                           "find walls, steps or stage edges. Passed unchanged to "
+                           "flourish's own --rear-clearance-metres gate")
+    flip.add_argument("--flip-battery-floor-pct", type=float, default=None, metavar="PCT",
+                      help="refuse below this battery percentage; fed to flourish's "
+                           "--acrobatic-battery-floor-pct")
+    flip.add_argument("--flip-hold-seconds", type=float, default=None, metavar="S",
+                      help="how long flourish holds while the firmware runs the action. "
+                           "Measured 2026-09-07: the two flips took 5.4-5.9 s to return "
+                           "the robot to force-control 6, and returning sooner hands "
+                           "control back mid-manoeuvre")
     parser.add_argument("--patience", type=float, default=DEFAULT_PATIENCE_S,
                         help="seconds held before asking the room to clear")
     parser.add_argument("--cooldown", type=float, default=DEFAULT_COOLDOWN_S,
@@ -394,6 +483,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("give the drive command after --")
     if args.max_attempts < 1:
         parser.error("--max-attempts must be at least 1")
+    if args.flip_on_arrival and look_behind is None:
+        parser.error(f"--flip-on-arrival cannot be honoured in this tree: the look-behind "
+                     f"would not import ({LOOK_BEHIND_ABSENT}). Most likely the sibling "
+                     f"locomotion/ directory was not staged, which also means there is no "
+                     f"flourish.py to turn the robot with.")
+    if args.flip_on_arrival and not args.flourish:
+        # Said at the parser rather than discovered after the robot has arrived: every
+        # gesture the look-behind commands is built by `flourish_command`, which returns
+        # None without this, so a flip armed without it would turn nothing and refuse at
+        # the end of a run somebody had staged a flip for.
+        parser.error("--flip-on-arrival needs --flourish: the look-behind turns the robot "
+                     "through flourish.py, and --flourish is what licenses that at all")
 
     voice = Voice(args.voice_dir, enabled=not args.no_voice,
                   device=args.voice_device)
@@ -444,6 +545,20 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[mission] ARRIVED on attempt {attempt_number} "
                   f"after {time.monotonic() - started:.0f}s")
             play_flourish(command, "spin", args)
+            # ⛔ THE ONLY PATH FROM AN ARRIVAL TO A KIND THAT TRAVELS, and it is off unless
+            # --flip-on-arrival: `arrival_flip` returns None on its first line. It is not
+            # `play_flourish`, and the difference is the safety property. `play_flourish`
+            # is handed a CONSTANT kind at every call site and `test_flourish.py` reads
+            # those constants to prove they are all in `ARRIVAL_KINDS`; nothing in this
+            # file names a travelling kind, and nothing in this file can. What the runner
+            # below is asked to fire is decided inside `look_behind`, which will not name
+            # one until a completed outward turn, a completed return turn, and unanimous
+            # fresh frames from the run's own detector say the space is clear -- and which
+            # re-derives all of that at the moment it builds the command.
+            if look_behind is not None:
+                look_behind.arrival_flip(
+                    command, args,
+                    lambda kind, extra=(): run_gesture(command, args, kind, extra))
             voice.close()
             return 0
         if _STOP.is_set():
