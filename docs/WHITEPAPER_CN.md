@@ -761,7 +761,7 @@ JetPack 5，只提供 3.8.10 和 3.9.5，而 venv 是*基于*一个解释器构�
    │  NETGEAR RAX50 │◄────────── LAN port
    │  192.168.1.1   │
    │  WAN: EMPTY    │◄···· WiFi ····► robot 1  192.168.1.120  (DHCP reservation)
-   └────────────────┘                 robot 2  192.168.1.121  (DHCP reservation)
+   └────────────────┘                 robot 2  192.168.1.2    (reservation still to do)
                                       ...      one broadcast domain, multicast works
 ```
 
