@@ -128,10 +128,13 @@ RUN_STOP_TIMEOUT_S = 4.0
 #: closed-loop simulation had raw colliding in every configuration tested and supervised not.
 POLICY_MODES = ("supervised", "raw")
 
-#: ``mappo_drive.py --heading-servo``. ``off`` is the default since issue #16 and is the only
-#: configuration that has not driven a robot into something. ``travel`` is issue #16's own
-#: control law, kept so those runs stay reproducible.
-HEADING_SERVOS = ("off", "goal", "travel")
+#: ``mappo_drive.py --heading-servo``. ``goal`` is the default since #212, and the ORDER
+#: here is the dropdown order, so it is listed first. ``off`` was the default while nothing
+#: had driven ``goal``; that stopped being true on 2026-09-07, when LITE3-A drove it and
+#: reached its goal, and ``off`` was measured to walk 1.23x the direct line and overshoot.
+#: ``travel`` is issue #16's own control law, kept so those runs stay reproducible and
+#: never made a default again.
+HEADING_SERVOS = ("goal", "off", "travel")
 
 #: The two spellings of the heading servo, and which tree understands which. See
 #: :attr:`RunProfile.heading_servo_flag`.
