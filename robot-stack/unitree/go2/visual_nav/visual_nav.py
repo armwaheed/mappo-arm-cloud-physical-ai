@@ -2097,7 +2097,7 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
                                        soft_gap_m=args.soft_gap,
                                        body_length_m=args.body_length,
                                        body_width_m=args.body_width)
-        warn_if_soft_gap_is_below_reaction(args, limits, nav, PlannerConfig().soft_gap_m)
+        warn_if_soft_gap_is_below_reaction(args, limits, config, PlannerConfig().soft_gap_m)
         print(f"[visual_nav] planner: horizon {planner_config.horizon_s:.1f}s "
               f"({planner_config.horizon_s * limits.max_vx:.2f} m of lookahead at "
               f"top speed), robot radius {planner_config.robot_radius_m:.2f} m, "
