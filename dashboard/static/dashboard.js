@@ -491,14 +491,20 @@ function renderRunControls(caps) {
   const servo = $("run-servo");
   const chosen = servo.value;
   servo.innerHTML = "";
-  for (const mode of run.heading_servos || ["off"]) {
+  const servos = run.heading_servos || ["goal"];
+  for (const mode of servos) {
     const option = document.createElement("option");
     option.value = mode;
-    option.textContent = mode === "off" ? "off — the robot crabs (the only one never to "
-      + "have driven into anything)" : mode;
+    option.textContent = mode === "off"
+      ? "off — the robot crabs (measured: 1.23x the direct line, and it overshoots)"
+      : (mode === "travel" ? "travel — issue #16's law; drove into a wall 3 runs of 4"
+                           : "goal — faces the goal bearing (default)");
     servo.appendChild(option);
   }
-  servo.value = (run.heading_servos || ["off"]).includes(chosen) ? chosen : "off";
+  // Fall back to `goal`, not `off`: `off` is what left the robot crabbing, and the
+  // dashboard picking its own default silently disagreed with `mappo_drive.py`, whose
+  // argparse default became `goal` in #212. One default, named in both places.
+  servo.value = servos.includes(chosen) ? chosen : (servos.includes("goal") ? "goal" : servos[0]);
   if (run.max_seconds) $("run-seconds").max = run.max_seconds;
   if (run.default_seconds && !$("run-seconds").dataset.touched) {
     $("run-seconds").value = run.default_seconds;
