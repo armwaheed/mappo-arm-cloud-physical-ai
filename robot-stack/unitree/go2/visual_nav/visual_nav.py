@@ -1262,20 +1262,62 @@ class VisualNavigator:
         except Exception:
             return None
 
-    def _command(self, velocity: tuple[float, float, float]) -> None:
+    def _command(self, velocity: tuple[float, float, float], *,
+                 _retry: bool = False) -> None:
         # Timed HERE and not at the five call sites: every path through the loop commands
         # something, including the ones that command a stop, and a stage wired in at four
         # of five places reads as a cheap transport.
+        refused: Exception | None = None
         with self._profiler.stage("command"):
             # Reset FIRST: the transport record belongs to the tick that commanded it,
             # and a dry tick or a backend that cannot report its axes leaves nothing
             # rather than replaying whatever the last live tick sent.
             self._last_transport = None
             if self._config.live and self._standing:
-                self._loco.set_velocity(*velocity)
-                report = getattr(self._loco, "transport_axes", None)
-                if callable(report):
-                    self._last_transport = report()
+                try:
+                    self._loco.set_velocity(*velocity)
+                except Exception as exc:
+                    # THE TRANSPORT REFUSED THIS COMMAND, NOT THE ROOM. Caught
+                    # structurally rather than by name: this module is
+                    # platform-neutral (tracked against upstream by PROVENANCE.md)
+                    # and must not import a specific backend's exception type to
+                    # recognise its own refusal — e.g. the Deep Robotics Lite3
+                    # sign-only transport's `AxisProfileError`, raised for a
+                    # direction with no physically evidenced primitive
+                    # (straight-back is one, and the shipped `--max-vy 0` config
+                    # makes it reachable every tick the policy asks for it).
+                    # Whatever a backend's concrete exception class, its meaning at
+                    # this call is the same: this exact velocity cannot reach the
+                    # wire. `avoidance.is_feasible` returns True on an empty
+                    # obstacle list without ever consulting the transport, so this
+                    # is the last point able to turn a refusal into a hold instead
+                    # of a traceback out of `run()`.
+                    refused = exc
+                else:
+                    report = getattr(self._loco, "transport_axes", None)
+                    if callable(report):
+                        self._last_transport = report()
+        if refused is not None:
+            print("[visual_nav] ⚠️  THE TRANSPORT REFUSED THIS COMMAND "
+                  "— IT IS NOT THE ROOM, NOT AN OBSTACLE, AND NOT THE TETHER")
+            print(f"    {type(self._loco).__name__} refused {velocity}: {refused}")
+            if not _retry:
+                print("    Holding at zero for this tick instead.")
+                self._command((0.0, 0.0, 0.0), _retry=True)
+                # Overwrite AFTER the retry, not before: the retry's own successful
+                # `transport_axes` report would otherwise clobber this tick's
+                # refusal record with the zero fallback's, hiding the thing
+                # telemetry needs to show. Same shape `Lite3Bindings.axis_preview`
+                # uses for a refusal it can only predict, so a consumer already
+                # parsing one recognises this.
+                self._last_transport = {"error": str(refused)}
+                return
+            # The zero command itself was refused. Nothing lower to fall back to —
+            # stop retrying, and let `_last_command` below record the zero that was
+            # ATTEMPTED rather than replaying a stale nonzero one.
+            print("    The zero fallback was ALSO refused; holding without "
+                  "confirmation.")
+            self._last_transport = {"error": str(refused)}
         self._last_command = velocity
 
     def _log(self, elapsed: float, command, distance: float,

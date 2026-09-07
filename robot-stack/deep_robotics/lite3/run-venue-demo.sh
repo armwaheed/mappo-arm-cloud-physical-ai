@@ -104,7 +104,7 @@ exec python3 mission.py \
      --state-bind 127.0.0.1 \
      "${LIVE[@]}" \
      --gait-floor 0.30 --actuator-gain 1.07 --robot-radius 0.40 \
-     --max-vx 0.55 --max-vy 0 --max-wz 0.90 \
+     --max-vx 0.55 --max-vy 0.25 --max-wz 0.90 \
      --accept-no-motor-temperatures --max-seconds "${SECS:-90}" \
      --record "$STAGE/evidence/$RUN_ID.mp4" \
      --record-raw "$STAGE/evidence/$RUN_ID-raw.mp4" \

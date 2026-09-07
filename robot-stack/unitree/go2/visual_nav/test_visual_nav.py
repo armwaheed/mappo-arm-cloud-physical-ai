@@ -955,6 +955,132 @@ def test_the_two_deliberate_stops_do_not_share_a_sentence():
         0.0, (0.0, 0.0, 0.0)) is None
 
 
+# ── An ACTUAL transport refusal (a raised exception, not a predicted one) becomes a
+# hold, not a crash ──────────────────────────────────────────────────────────────
+#
+# `TRANSPORT_STOP` above is what `avoidance.DynamicWindowPlanner` emits when it
+# PREDICTS a sign-only transport would substitute a full-speed primitive for a creep
+# (issue #145) — a zero command the planner chose on purpose. What follows is the
+# other case: `avoidance.is_feasible` returns True on an empty obstacle list without
+# ever asking the transport anything, so a direction the legs cannot execute at all
+# (the Lite3's `forward_negative`, which is `null` and stays `null` on both robots)
+# reaches `_command` unchallenged, and `set_velocity` raises. Before this fix that
+# propagated out of `_command`, out of `run()`'s `while True:`, and out of `main()`,
+# ending the run on a traceback.
+
+class _RefusingLoco(_FakeLoco):
+    """A backend whose ``set_velocity`` raises for any command it cannot execute.
+
+    The exception is neither ``AxisProfileError`` nor anything this test file (or
+    ``visual_nav``) could plausibly import from ``deep_robotics`` — deliberately, since
+    the fix under test must recognise a refusal STRUCTURALLY, by catching whatever
+    ``set_velocity`` happens to raise, not by matching a name it is not allowed to
+    import. Zero always succeeds, matching every real transport in this stack: a
+    sign-only axis backend maps a sub-deadband velocity to sign 0 on both linear axes
+    before it ever consults a primitive, so a stop is never the direction with no
+    evidence behind it.
+    """
+
+    class Refusal(RuntimeError):
+        """An arbitrary backend-local exception type — see the class docstring."""
+
+    def set_velocity(self, vx, vy, wz):
+        if (vx, vy, wz) != (0.0, 0.0, 0.0):
+            raise self.Refusal(
+                f"asked for ({vx}, {vy}, {wz}) and this transport has no such "
+                f"primitive")
+        super().set_velocity(vx, vy, wz)
+
+
+def test_a_transport_refusal_holds_instead_of_crashing():
+    navigator = _navigator_with(_RefusingLoco(), live=True)
+    navigator._standing = True
+    with contextlib.redirect_stdout(io.StringIO()):
+        navigator._command((-0.30, 0.0, 0.0))     # a direction this fake refuses
+    assert navigator._loco.commands == [(0.0, 0.0, 0.0)], (
+        "a refused command must be converted into an explicit zero, not left as "
+        f"whatever the legs were already doing: {navigator._loco.commands}")
+    assert navigator._last_command == (0.0, 0.0, 0.0)
+
+
+def test_a_transport_refusal_does_not_end_the_run():
+    """Same fix, from `run()`: the loop must survive a refusal on every tick a
+    planner keeps asking for the same unexecutable direction, not just the first —
+    this is what a `--max-vy 0` config reaching for straight-back does every tick."""
+    class _AlwaysBackward:
+        config = PlannerConfig()
+        limits = Limits()
+
+        def plan(self, *_args, **_kwargs):
+            return Command(vx=-0.30, vy=0.0, wz=0.0, reason="goal", gap_m=math.inf)
+
+        def reset_gait_floor_guard(self):
+            pass
+
+    navigator = _navigator_with(_RefusingLoco(), live=True, ticks=6)
+    navigator._planner = _AlwaysBackward()
+    with contextlib.redirect_stdout(io.StringIO()):
+        outcome = navigator.run()               # must return, not raise
+    assert outcome is not None and "health abort" in outcome, outcome
+    assert navigator._loco.commands, "the navigator should have commanded something"
+    assert all(c == (0.0, 0.0, 0.0) for c in navigator._loco.commands), (
+        f"every tick asked for a direction this transport refuses: "
+        f"{navigator._loco.commands}")
+
+
+def test_a_transport_refusal_names_the_transport_not_the_room():
+    """Prior art: ``integration/mappo_drive.py``'s ``_note_transport_refusal`` exists
+    because operators kept blaming the tether or the room for a PREDICTED refusal.
+    Same wording, same reason, for the un-predicted, raised kind."""
+    navigator = _navigator_with(_RefusingLoco(), live=True)
+    navigator._standing = True
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        navigator._command((0.0, -0.30, 0.0))
+    printed = out.getvalue()
+    assert "THE TRANSPORT REFUSED THIS COMMAND" in printed, printed
+    assert "NOT THE ROOM" in printed and "NOT AN OBSTACLE" in printed, printed
+    assert "_RefusingLoco" in printed, (
+        f"the message must name the backend, not just say 'the transport': {printed}")
+
+
+def test_a_backend_that_never_refuses_is_unaffected():
+    """The anti-vacuity half. A magnitude-preserving transport (the Go2, or the
+    Lite3's ROS Twist / UDP backends) must see no behaviour change at all: same
+    command reaches ``set_velocity``, ``transport_axes`` handling is untouched, and
+    nothing new is printed."""
+    navigator = _navigator_with(_FakeLoco(), live=True)
+    navigator._standing = True
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        navigator._command((0.30, 0.05, -0.1))
+    assert navigator._loco.commands == [(0.3, 0.05, -0.1)]
+    assert navigator._last_command == (0.30, 0.05, -0.1)
+    assert navigator._last_transport is None      # _FakeLoco has no transport_axes
+    assert out.getvalue() == "", (
+        f"an unrefused command must print nothing new: {out.getvalue()!r}")
+
+
+def test_the_zero_fallback_failing_too_does_not_recurse_forever():
+    """Belt and braces: if even the zero command were refused, `_command` must give
+    up rather than recurse without limit — the fix's `_retry` guard is what stands
+    between this test and a `RecursionError`."""
+    class _RefusesEverything(_FakeLoco):
+        class Refusal(RuntimeError):
+            pass
+
+        def set_velocity(self, vx, vy, wz):
+            raise self.Refusal(f"asked for ({vx}, {vy}, {wz}) and refused that too")
+
+    navigator = _navigator_with(_RefusesEverything(), live=True)
+    navigator._standing = True
+    with contextlib.redirect_stdout(io.StringIO()):
+        navigator._command((0.30, 0.0, 0.0))       # must return, not recurse forever
+    assert navigator._loco.commands == [], "nothing this backend accepts was sent"
+    assert navigator._last_command == (0.0, 0.0, 0.0), (
+        "even unconfirmed, the intended command was zero, not the original ask")
+
+
 def test_a_dry_run_clears_the_planners_gait_floor_guard_as_well():
     """⚠️ AGAINST A REAL PLANNER, because a fake cannot go wrong in the way that matters.
 
