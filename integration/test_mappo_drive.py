@@ -746,7 +746,20 @@ def test_the_policy_flags_do_not_collide_with_the_stack_flags():
     parser = _add_arguments(argparse.ArgumentParser())
     args = parser.parse_args(["--policy-mode", "raw", "--policy-scale", "2.5"])
     assert args.policy_mode == "raw" and args.policy_scale == 2.5
-    assert parser.parse_args([]).policy_mode == "supervised", "supervised is the default"
+    # THE DEFAULT MOVED TO `raw` ON 2026-09-07, deliberately and with the cost stated.
+    # Measured on this repo's own 10 closed-loop scenarios at the shipped scale:
+    #   raw          7 arrived / 2 collided / 1 timeout
+    #   supervised   6 arrived / 0 collided / 4 timeouts
+    # The veto removes both collisions. It is not the default anyway, because the
+    # timeouts are the failure the demo kept hitting and the operator's runs showed why:
+    # the veto was holding for people walking PAST the lane, not into it, and a demo that
+    # never finishes is the failure in front of an audience. `raw` is therefore a
+    # statement about the SPACE -- a cleared lane -- and not a claim that the veto was
+    # wrong. `test_supervision_removes_the_collisions_the_raw_policy_has` in
+    # test_closed_loop_sim.py still pins the collision difference, so this default cannot
+    # be mistaken later for evidence that the veto stopped mattering.
+    assert parser.parse_args([]).policy_mode == "raw", \
+        "raw is the default since 2026-09-07; see the numbers above"
 
 
 def test_the_stack_path_does_not_shadow_the_d1_arm_package():

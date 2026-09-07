@@ -181,9 +181,12 @@ SPDX-License-Identifier: Apache-2.0
       </label>
       <label class="field">
         <span>Policy</span>
+        <!-- ORDER IS THE DEFAULT here too: the first option ships selected. `raw` is
+             first as of 2026-09-07 because it is what the demo runs. See POLICY_MODES
+             in run_control.py, which test_stylesheet.py pins this against. -->
         <select id="run-mode">
+          <option value="raw">raw — NO veto, cleared lane only</option>
           <option value="supervised">supervised — planner keeps its veto</option>
-          <option value="raw">raw — NO veto, empty arena only</option>
         </select>
       </label>
       <label class="field">

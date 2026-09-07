@@ -1322,9 +1322,18 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                        help="the policy package directory")
     group.add_argument("--policy-config", type=Path,
                        help="alternative policy config.json")
-    group.add_argument("--policy-mode", choices=("supervised", "raw"),
-                       default="supervised",
-                       help="supervised keeps the planner's feasibility veto (default)")
+    group.add_argument("--policy-mode", choices=("raw", "supervised"),
+                       default="raw",
+                       help="raw (THE DEFAULT since 2026-09-07) hands the policy's "
+                            "command to the legs unfiltered. supervised keeps the "
+                            "planner's feasibility veto, which on the repo's own 10 "
+                            "scenarios removed both of raw's collisions and cost 3 extra "
+                            "timeouts (raw 7 arrived/2 collided/1 timeout; supervised "
+                            "6/0/4). The default is raw because the timeouts were what "
+                            "the demo actually hit: the veto held for people walking "
+                            "PAST the lane, not into it. That trade is only sound in a "
+                            "CLEARED area -- with a crowd in the lane, pass "
+                            "--policy-mode supervised")
     group.add_argument("--policy-scale", type=float, metavar="M_PER_UNIT",
                        help="override meters_per_vmas_unit for this run")
     group.add_argument("--policy-command-scale", type=float, metavar="FRACTION",
@@ -1564,9 +1573,24 @@ def main(argv=None, bindings=None) -> int:
                   f"{cfg.max_vx_mps} = {top_speed:.3f}. Pass --policy-command-scale "
                   f"{floor / cfg.max_vx_mps:.2f} or higher.")
         platform_floor = platform_gait_floor(bindings, args)
+        # This now fires on EVERY run, because raw is the default. A warning nobody can
+        # avoid is a warning everybody learns to skip, so it says the one thing that is
+        # actionable -- what has to be true of the space -- rather than repeating that a
+        # veto is off. The counter-case is stated too: `supervised` is no longer what an
+        # operator gets by not choosing, so a booth run has to ask for it by name.
         if args.policy_mode == "raw":
-            print("[mappo_drive] ⚠️  NO VETO. In the closed-loop simulation the raw "
-                  "policy collided and the supervised one did not. Empty arena only.")
+            print("[mappo_drive] ⚠️  NO VETO (raw is the default). Nothing between the "
+                  "policy's command and the legs. On the repo's 10 closed-loop "
+                  "scenarios raw collided in 2 and supervised in 0; raw arrived in 7 "
+                  "against 6, and supervised timed out in 4.")
+            print("[mappo_drive]    THIS REQUIRES A CLEARED LANE. It is the right trade "
+                  "when the holds you are losing were people walking PAST the robot; it "
+                  "is the wrong one when someone can step INTO its path, because nothing "
+                  "here will stop for them. Crowded run: --policy-mode supervised.")
+        else:
+            print("[mappo_drive] veto ON (--policy-mode supervised, no longer the "
+                  "default): the planner's feasibility check filters every command. "
+                  "Expect it to hold for people near the lane -- that is what it is for.")
         if args.heading_servo == "off":
             # NOT the default since #212 -- reaching this line means the operator asked
             # for 'off' explicitly, so tell them what they gave up rather than
