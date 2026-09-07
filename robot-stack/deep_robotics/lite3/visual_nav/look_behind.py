@@ -5,14 +5,22 @@
 
 """Turn around, look at the space the flip travels into, turn back, and only then flip.
 
-⛔ THIS FILE IS THE ONLY PATH IN THIS REPOSITORY FROM AN UNATTENDED ARRIVAL TO A VENDOR
-CANNED ACTION, AND EVERY LINE OF IT EXISTS TO MAKE THAT PATH REFUSABLE. Read the seam
-argument below before changing anything here.
+⛔ THIS FILE WAS THE ONLY PATH IN THIS REPOSITORY FROM AN UNATTENDED ARRIVAL TO A VENDOR
+CANNED ACTION, AND EVERY LINE OF IT EXISTS TO MAKE THAT PATH REFUSABLE. Since 2026-09-07 it
+is not the only one and not the live one: `mission.py` fires the flip directly, licensed by
+the operator's per-run dashboard checkbox instead of by the evidence below. Read the seam
+argument before changing anything here, and read it before restoring this path too -- it is
+the argument for what a look can and cannot prove, and none of that has changed.
 
 WHAT THE OPERATOR ASKED FOR. A flip at the goal. Today ``flourish.py`` will not do that
 unattended: the two backflips travel BACKWARD into the one direction this platform is
 completely blind in, so each demands ``--rear-clearance-metres`` -- a human with a tape
-measure -- and ``--operator-triggered``, which no end-of-run path passes.
+measure -- and ``--operator-triggered``. That flag was passed by no end-of-run path at all
+until 2026-09-07, when `mission.py` gained a direct arrival flip licensed by the operator's
+per-run dashboard checkbox, and the turn-and-look below was disabled on their instruction.
+This module is therefore no longer on the live flip path; it remains the only route that
+earns the flag with evidence rather than with a tick, and it is what to restore if the
+rear look is ever wanted back.
 
 WHAT THIS DOES INSTEAD. On arrival, with everything below armed:
 

@@ -593,9 +593,32 @@ def main(argv: list[str] | None = None) -> int:
                       "the space behind this robot -- there is no rear sensor to observe "
                       "it with -- and the only check is the "
                       f"{args.flip_rear_clearance_metres} m clearance you stated.")
+                # ⛔⛔ `--operator-triggered` IS PASSED HERE, and this is the sentence that
+                # has to justify it. `flourish.check_vendor` refuses without it and says
+                # why: "Pass it only if you are standing there, looking at the robot, with
+                # the emergency stop in your hand." Until now nothing automatic passed it
+                # -- that was the flag's whole point -- and `look_behind` earned it with a
+                # completed look.
+                #
+                # WHAT EARNS IT NOW IS A PER-RUN HUMAN ACT, and nothing weaker: the
+                # dashboard's flip checkbox, which ships unticked, is never auto-ticked,
+                # is disabled unless arm motion is on, and reaches this process as
+                # `MAPPO_FLIP=1` for THIS run only. An operator ticking it and pressing
+                # Start is standing at the robot watching it -- which is the condition the
+                # refusal names. It is not ambient configuration: `MAPPO_FLIP=0` is sent
+                # explicitly when the box is clear, so a profile carrying `MAPPO_FLIP=1`
+                # cannot license a flip the operator did not ask for on the day.
+                #
+                # It is still a downgrade and it should be read as one. The flag used to
+                # mean "a human is looking at this robot right now, and a look-behind
+                # agreed". It now means "a human ticked a box before this run started".
+                # `flourish_command` is deliberately NOT the place this is added --
+                # `test_flourish.py` pins that the bare builder never grows this flag, so
+                # the licence lives at the ONE call site that can argue for it.
                 code = run_gesture(
                     command, args, args.flip_kind,
-                    ("--rear-clearance-metres", f"{args.flip_rear_clearance_metres:.4f}",
+                    ("--operator-triggered",
+                     "--rear-clearance-metres", f"{args.flip_rear_clearance_metres:.4f}",
                      "--acrobatic-battery-floor-pct", f"{args.flip_battery_floor_pct:.4f}",
                      "--action-hold-seconds", f"{args.flip_hold_seconds:.4f}"))
                 # Reported, never fatal: the robot ARRIVED, and that verdict is not the
