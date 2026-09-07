@@ -440,8 +440,9 @@ def main(argv: list[str] | None = None) -> int:
     # dashboard path reaches this: `venue_run.py` builds no `--flip-*` flag from any
     # environment variable, so a flip is only ever armed by somebody typing it.
     flip = parser.add_argument_group(
-        "flip on arrival (OFF; it turns the robot around, LOOKS, turns back, and only "
-        "then fires a vendor canned action that TRAVELS BACKWARD)")
+        "flip on arrival (OFF; fires a vendor canned action that TRAVELS ~1.5 m BACKWARD. "
+        "Runbook: deploy/FLIP_ON_ARRIVAL.md, which lists every gate that refuses this and "
+        "why the rear clearance is easy to measure in the wrong direction)")
     flip.add_argument("--flip-on-arrival", action="store_true",
                       help="after arriving, look behind with the run's own camera and "
                            "detector and fire --flip-kind if -- and only if -- the look "
