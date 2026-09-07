@@ -1568,9 +1568,14 @@ def main(argv=None, bindings=None) -> int:
             print("[mappo_drive] ⚠️  NO VETO. In the closed-loop simulation the raw "
                   "policy collided and the supervised one did not. Empty arena only.")
         if args.heading_servo == "off":
-            print("[mappo_drive] heading servo off (the default): the robot will crab "
-                  "and will not turn to look where it is going. --heading-servo "
-                  f"{GOAL} faces the goal instead; it is simulated, not yet driven.")
+            # NOT the default since #212 -- reaching this line means the operator asked
+            # for 'off' explicitly, so tell them what they gave up rather than
+            # congratulating them on a default they overrode.
+            print("[mappo_drive] ⚠️  heading servo off (you asked for it; the default is "
+                  f"{GOAL}): the robot will crab and will not turn to look where it is "
+                  "going. Measured 2026-09-07, a crabbing run walked 1.23x the direct "
+                  f"line and overshot its arrival. Drop the flag to get {GOAL}, which "
+                  "LITE3-A has been driven with and reached its goal.")
         elif args.heading_servo == TRAVEL:
             print("[mappo_drive] ⚠️  --heading-servo travel is issue #16's control law. "
                   "It saturated the yaw rate and put this robot into a cubicle panel or "

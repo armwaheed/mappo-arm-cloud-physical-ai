@@ -794,7 +794,7 @@ def test_the_policy_flags_are_stripped_before_the_vendored_parser_sees_them():
     assert stack.robot_radius == 0.25 and stack.max_seconds == 45.0
 
 
-# ── The heading servo is opt-in (issue #16) ────────────────────────────────
+# ── The heading servo is ON by default since #212; 'travel' never is (issue #16) ──
 def _servo_for(argv: list):
     """The servo ``main()`` would build for this command line, without running a robot."""
     import visual_nav
@@ -827,14 +827,19 @@ def test_a_drive_command_that_names_no_servo_gets_the_goal_law_and_never_travel(
 
 def test_the_retired_spelling_is_consumed_and_still_means_off():
     """``--no-heading-servo`` is in operator command lines and in ``deploy/``. It always
-    meant off, and off is now the default, so honouring it costs nothing — whereas
-    exiting 2 on it would break a runbook that is currently correct.
+    meant off, and honouring it costs nothing — whereas exiting 2 on it would break a
+    runbook that is currently correct.
 
-    Asserting the servo alone would pass whether or not the option exists: ``split_argv``
-    uses ``parse_known_args``, so a flag nobody declared is silently left in the argv and
-    ``heading_servo`` keeps its default of ``off`` either way. The bite is that the
-    leftover then reaches ``visual_nav``'s parser, which exits 2 on an option it does not
-    know — so what has to be checked is that the flag was CONSUMED.
+    Since #212 the default is ``goal``, not ``off``, which changes what this test proves.
+    ``split_argv`` uses ``parse_known_args``, so a flag nobody declared is silently left
+    in the argv — and ``heading_servo`` would then hold ``goal``, so the servo assertion
+    below now does catch a missing option. It did not when ``off`` was the default and
+    both paths agreed; the assertion was dead and this docstring said so.
+
+    Both halves still matter, for different reasons: the leftover reaches ``visual_nav``'s
+    parser, which exits 2 on an option it does not know, so CONSUMPTION is what keeps the
+    runbook working — and the servo value is what keeps the retired spelling meaning what
+    operators think it means instead of silently becoming the new default.
     """
     import visual_nav
     argv = ["--goal-class", "chair", "--goal-height", "1.067", "--no-heading-servo"]
