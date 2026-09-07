@@ -173,8 +173,13 @@ function groupHeader(platform, group) {
   tr.className = "group";
 
   const notes = [];
-  for (const axis of caps.unmeasured_axes || []) {
-    notes.push(`no measured ${axis} gait floor`);
+  // Same guard as `applyCaveats`: a gait floor is not a thing on the sign-only axis
+  // transport, so this group's representative robot does not get to claim one is missing.
+  const signOnly = !!(caps.locomotion && caps.locomotion.preserves_magnitude === false);
+  if (!signOnly) {
+    for (const axis of caps.unmeasured_axes || []) {
+      notes.push(`no measured ${axis} gait floor`);
+    }
   }
   if (caps.lie_down_changes_posture === false) notes.push("lie down does not change posture");
 
@@ -1063,11 +1068,31 @@ function setAlerts(open) {
 function applyCaveats(caps) {
   const axisFor = { strafe_left: "lateral", strafe_right: "lateral",
                     turn_left: "yaw", turn_right: "yaw", walk_forward: "forward" };
-  const unmeasured = new Set(caps ? caps.unmeasured_axes || [] : []);
+  // A GAIT FLOOR IS NOT A THING ON EVERY TRANSPORT -- `renderCapabilities` already keeps
+  // this exact caveat off the summary note and hides `force sub-floor` for the same reason
+  // (see `signOnly` there): on the sign-only axis transport every command past the deadband
+  // emits the same primitive at full scale, so there is no sub-floor command for a "gait
+  // floor" to be measured against. This function used to skip that memo and show the
+  // per-key caveat anyway, so a strafe key the profile had just evidenced at 0.208 m/s
+  // (2026-09-07 commissioning, robot 1) still warned "may produce no movement at all" —
+  // true of nothing on this transport, obsolete the day the primitive was measured.
+  const signOnly = !!(caps && caps.locomotion && caps.locomotion.preserves_magnitude === false);
+  const unmeasured = new Set(signOnly ? [] : (caps ? caps.unmeasured_axes || [] : []));
+  // Per-direction truth, when the transport can give one. `available && measured === false`
+  // is the sign-only transport's OWN version of "unmeasured": the primitive fires -- the key
+  // is live, not greyed -- but no `axis_primitive_probe.py` run has ever timed it, so the
+  // speed a press produces is not a number anything here can print. Checked ahead of the
+  // gait-floor branch because it is the more precise answer wherever both could apply.
+  const directions = caps ? caps.motion_directions || null : null;
   for (const key of document.querySelectorAll(".key")) {
     const fn = key.dataset.fn;
     let caveat = null;
-    if (unmeasured.has(axisFor[fn])) {
+    const direction = directions ? directions[fn] : undefined;
+    if (direction && direction.available && direction.measured === false) {
+      caveat = direction.reason ||
+        `This direction fires an evidenced primitive with no measured speed: it moves ` +
+        `the ${caps.platform}, but at a rate nothing here has timed.`;
+    } else if (unmeasured.has(axisFor[fn])) {
       caveat = `No measured ${axisFor[fn]} gait floor on the ${caps.platform}. This may ` +
                `produce no movement at all, and that would not be a fault (issue #42).`;
     } else if (fn === "walk_back") {

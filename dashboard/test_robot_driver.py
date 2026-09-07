@@ -33,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from device_connect_edge.drivers import DeviceDriver
 
 import run_control
-from robot_driver import PEER_FOOTPRINT_M, MappoRobotDriver
+from robot_driver import MOTION_INTENTS, PEER_FOOTPRINT_M, MappoRobotDriver
 
 #: The checkpoint this repository actually ships, served as-is by the model-server tests.
 DELIVERED_MODELS = Path(__file__).resolve().parent.parent / "policy" / "models"
@@ -1701,9 +1701,102 @@ def test_a_direction_the_axis_profile_cannot_execute_is_advertised_as_unavailabl
         assert directions["walk_forward"]["available"] is True, directions
         assert directions["turn_left"]["available"] is True, directions
         assert directions["turn_right"]["available"] is True, directions
+        # Every evidenced direction here also has a `measured_m_s`/`measured_rad_s` entry,
+        # so `measured` must say so too -- `available` alone cannot tell a timed primitive
+        # from one that merely fires.
+        assert directions["walk_forward"]["measured"] is True, directions
+        assert directions["turn_left"]["measured"] is True, directions
+        assert directions["turn_right"]["measured"] is True, directions
         for absent in ("walk_back", "strafe_left", "strafe_right"):
             assert directions[absent]["available"] is False, directions
+            assert directions[absent]["measured"] is False, directions
             assert directions[absent]["reason"], "a greyed key must say why"
+
+
+def test_all_six_directions_light_up_once_the_profile_evidences_them():
+    """Robot 1, 2026-09-07: `axis_primitive_probe.py` measured the three primitives that
+    were `null` above, and the profile that used to grey `back`, `strafe L` and `strafe R`
+    now carries all six. Nothing in `_motion_directions` is platform- or robot-specific --
+    it asks the profile fresh every call -- so this is a fixture change, not a code change,
+    and that absence of a code change is exactly the property being tested.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        profile = tmp / "axis.json"
+        profile.write_text(json.dumps({
+            "schema": "lite3-axis-profile/v1",
+            "input_deadband": {"linear_m_s": 0.05, "yaw_rad_s": 0.1},
+            "allowed_gait_states": [0],
+            "evidence": {name: "test fixture" for name in (
+                "forward_positive", "forward_negative", "lateral_positive",
+                "lateral_negative", "yaw_positive", "yaw_negative")},
+            "primitives": {"forward_positive": 32767, "forward_negative": -32767,
+                           "lateral_positive": 32767, "lateral_negative": -32767,
+                           "yaw_positive": 16000, "yaw_negative": -16000},
+            "measured_m_s": {"forward_positive": 0.5362, "forward_negative": 0.260,
+                              "lateral_negative": 0.208, "lateral_positive": 0.209},
+            "measured_rad_s": {"yaw_positive": 0.8566, "yaw_negative": 0.8563},
+        }))
+        driver = _driver(tmp, platform="lite3",
+                         lite3_link={"locomotion-transport": "axis",
+                                     "axis-profile": str(profile)})
+        directions = driver._motion_directions()
+        try:
+            from drive_bridge import _stack_dir
+            if _stack_dir() not in sys.path:
+                sys.path.insert(0, _stack_dir())
+            import deep_robotics.lite3.locomotion.lite3_axis_locomotion  # noqa: F401
+        except Exception:
+            return
+        assert directions is not None, directions
+        for key in MOTION_INTENTS:
+            assert directions[key]["available"] is True, (key, directions)
+            assert directions[key]["measured"] is True, (key, directions)
+            assert directions[key]["reason"] == "", (key, directions)
+
+
+def test_a_fired_primitive_with_no_measured_speed_is_available_but_not_measured():
+    """`measured_rad_s` stays undeclared on every profile in this repository today,
+    deliberately -- `axis_primitive_probe.py` refuses to time yaw. A yaw key must therefore
+    stay LIVE (the primitive fires; `map_velocity` would send it) while saying, distinctly
+    from a fully evidenced direction, that the rate it turns at has never been timed. Folding
+    this into plain `available: True` is exactly the "read the docstring, still lied to the
+    operator" failure mode #198 was written to close for the availability axis; this closes
+    it for the measured axis too.
+    """
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        profile = tmp / "axis.json"
+        profile.write_text(json.dumps({
+            "schema": "lite3-axis-profile/v1",
+            "input_deadband": {"linear_m_s": 0.05, "yaw_rad_s": 0.1},
+            "allowed_gait_states": [0],
+            "evidence": {"forward_positive": "test fixture", "yaw_positive": "test fixture",
+                         "yaw_negative": "test fixture"},
+            "primitives": {"forward_positive": 32767, "forward_negative": None,
+                           "lateral_positive": None, "lateral_negative": None,
+                           "yaw_positive": 16000, "yaw_negative": -16000},
+            "measured_m_s": {"forward_positive": 0.5362},
+            "measured_rad_s": {},
+        }))
+        driver = _driver(tmp, platform="lite3",
+                         lite3_link={"locomotion-transport": "axis",
+                                     "axis-profile": str(profile)})
+        directions = driver._motion_directions()
+        try:
+            from drive_bridge import _stack_dir
+            if _stack_dir() not in sys.path:
+                sys.path.insert(0, _stack_dir())
+            import deep_robotics.lite3.locomotion.lite3_axis_locomotion  # noqa: F401
+        except Exception:
+            return
+        assert directions is not None, directions
+        for turn in ("turn_left", "turn_right"):
+            assert directions[turn]["available"] is True, (turn, directions)
+            assert directions[turn]["measured"] is False, (turn, directions)
+            assert directions[turn]["reason"], "an unmeasured-but-live key must say why"
+        assert directions["walk_forward"]["available"] is True, directions
+        assert directions["walk_forward"]["measured"] is True, directions
 
 
 def test_reverse_supported_is_derived_and_can_be_false():

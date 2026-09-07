@@ -115,6 +115,69 @@ def test_the_id_check_is_reading_a_page_that_has_ids():
     assert len(present) > 20 and len(wanted) > 20, (len(present), len(wanted))
 
 
+def _function_body(js: str, name: str) -> str:
+    """The full body of ``function name(...) { ... }``, brace-matched.
+
+    A regex cannot know where a JS function ends — nested braces mean the first ``}`` is
+    rarely the last one. This walks the source counting braces from the opening one instead,
+    which is exactly as much of a parser as a file that is otherwise all regexes needs.
+    """
+    marker = f"function {name}("
+    start = js.index(marker)
+    open_brace = js.index("{", start)
+    depth = 0
+    for i in range(open_brace, len(js)):
+        if js[i] == "{":
+            depth += 1
+        elif js[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return js[open_brace:i + 1]
+    raise AssertionError(f"unbalanced braces reading function {name}")
+
+
+def test_a_gait_floor_caveat_is_not_shown_on_a_transport_that_has_no_gait_floor():
+    """``applyCaveats`` and ``groupHeader`` used to warn "no measured lateral/yaw/forward
+    gait floor" on every Lite3 key and every Lite3 fleet row, regardless of transport — even
+    though a gait floor is not a thing the sign-only axis transport has at all
+    (``drive_bridge._precheck`` skips the identical check for the identical reason), and even
+    once a primitive there carries a real ``measured_m_s`` entry. Measured 2026-09-07: robot
+    1's lateral primitives went from absent to evidenced at 0.208/0.209 m/s, and a strafe key
+    that could now execute at a known speed still said it "may produce no movement at all".
+
+    ``renderCapabilities`` already suppresses the equivalent summary note and the
+    ``force sub-floor`` checkbox for exactly this reason (its own ``signOnly``); this pins
+    that the two other places carrying the same caveat text got the same guard.
+    """
+    with open(JS) as handle:
+        js = handle.read()
+    for name in ("applyCaveats", "groupHeader"):
+        body = _function_body(js, name)
+        assert "preserves_magnitude === false" in body, (
+            f"{name} shows the 'no measured ... gait floor' caveat with no guard for a "
+            f"transport that has no gait floor to be unmeasured on")
+
+
+def test_a_direction_that_fires_unmeasured_gets_its_own_caveat_before_the_generic_one():
+    """The sign-only axis transport's OWN "unmeasured" is
+    ``motion_directions[fn].measured === false`` — an evidenced primitive that fires with no
+    declared speed — and it is the more precise answer wherever both it and the generic
+    per-axis gait-floor caveat could apply to the same key. It has to be checked first, or
+    the generic caveat wins and prints a sentence about a gait floor that transport does not
+    have, instead of the true one about a primitive nobody has timed.
+    """
+    with open(JS) as handle:
+        js = handle.read()
+    body = _function_body(js, "applyCaveats")
+    assert "measured === false" in body, \
+        "applyCaveats no longer distinguishes a fired-but-unmeasured direction"
+    measured_check = body.index("measured === false")
+    generic_check = body.index("unmeasured.has(axisFor[fn])")
+    assert measured_check < generic_check, (
+        "the per-direction unmeasured-speed caveat must be checked before the generic "
+        "gait-floor caveat, or the generic one always wins")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

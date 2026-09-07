@@ -1739,7 +1739,21 @@ class MappoRobotDriver(DeviceDriver):
         on every press is, from the operator's side of the screen, a broken dashboard. That
         is what it looked like: measured on robot 1's profile 2026-09-04, `forward_positive`
         and both yaw directions execute, while `forward_negative`, `lateral_positive` and
-        `lateral_negative` are absent, which is three of the six directional keys.
+        `lateral_negative` are absent, which is three of the six directional keys. By
+        2026-09-07 all six were evidenced (`axis_primitive_probe.py`), and this method needs
+        no edit for that — it asks the profile fresh every call, so an unmeasured direction
+        that gets its speed measured tomorrow lights up here without anyone touching this
+        file, the same way it would grey out again if a profile regressed.
+
+        Each entry also carries ``measured``, which ``available`` alone cannot say. A
+        primitive can FIRE with no declared ``measured_m_s``/``measured_rad_s`` — yaw stays
+        undeclared on every profile in this repository today, deliberately
+        (``axis_primitive_probe.py`` refuses to time it) — and that is a real thing this
+        transport does: the key is live and the robot moves, but at a rate nothing has ever
+        timed. ``available=True, measured=False`` says exactly that rather than folding it
+        into the same "it works" bucket as a fully evidenced primitive, because an unmeasured
+        speed is exactly the number the rest of this repository refuses to treat as known
+        (see ``GAIT_FLOORS`` and ``ExecutedVelocity.unmeasured``).
 
         ``None`` when the answer is not knowable from here — a platform that is not a Lite3,
         no axis profile named, or a locomotion stack this process cannot import. The page
@@ -1773,10 +1787,24 @@ class MappoRobotDriver(DeviceDriver):
         directions = {}
         for key, (vx, vy, wz) in MOTION_INTENTS.items():
             try:
-                profile.map_velocity(vx, vy, wz)
-                directions[key] = {"available": True, "reason": ""}
+                # `executed_velocity`, not `map_velocity`: the same refusal for a direction
+                # with no evidenced primitive, PLUS `.unmeasured`, which is the only way to
+                # tell a direction that fires-and-is-timed from one that fires-and-is-not.
+                executed = profile.executed_velocity(vx, vy, wz)
             except AxisProfileError as refusal:
-                directions[key] = {"available": False, "reason": str(refusal)}
+                directions[key] = {"available": False, "measured": False,
+                                   "reason": str(refusal)}
+                continue
+            if executed.unmeasured:
+                directions[key] = {
+                    "available": True,
+                    "measured": False,
+                    "reason": (f"{executed.unmeasured[0]} fires an evidenced primitive, "
+                               "but no measured speed is declared for it: this direction "
+                               "moves the robot at a rate nothing has timed."),
+                }
+            else:
+                directions[key] = {"available": True, "measured": True, "reason": ""}
         return directions
 
     def _transport_preserves_magnitude(self) -> bool:

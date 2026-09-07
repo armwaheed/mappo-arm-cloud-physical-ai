@@ -191,8 +191,24 @@ GAIT_FLOORS = {
 #: Default speeds for a dashboard nudge, chosen to be at or above the Go2's floors — the only
 #: floors anybody has. ``DEFAULT_VY`` 0.20 is both the Go2's measured lateral floor and the
 #: envelope's lateral cap (``avoidance.Limits.max_vy``); those coincide, and that coincidence
-#: is load-bearing in ``integration/mappo_drive.py``. On a Lite3 these defaults are refused,
-#: which is the point: there is no Lite3 speed anybody can say is safe to press.
+#: is load-bearing in ``integration/mappo_drive.py``. **That is a GO2 coincidence and nothing
+#: here reads a Lite3 ``--max-vy`` at all**, so the Lite3's own envelope changing — ``--max-vy``
+#: 0 to 0.25 in the branch that also commissioned the primitives below — cannot break or
+#: mislead it; the two numbers are unrelated by construction, not by luck holding twice.
+#:
+#: ⚠️ **"On a Lite3 these defaults are refused" stopped being true the day a Lite3 axis
+#: profile carried a primitive.** It is still exactly true on the magnitude-preserving
+#: ``udp`` transport — ``GAIT_FLOORS["lite3"]`` is still all ``None``, no gait floor has
+#: been probed on either Venture, and :func:`check_gait_floor` refuses a platform where
+#: nothing at all has been measured. It was NEVER true on the sign-only ``axis`` transport
+#: for that reason, though — a gait floor is not a thing that transport has to be refused
+#: for (:func:`check_gait_floor` is never even called; see
+#: ``MappoRobotDriver._transport_preserves_magnitude``) — and since robot 1's profile was
+#: commissioned 2026-09-07 the primitive each of these three defaults fires there is itself
+#: evidenced with a ``measured_m_s``/``measured_rad_s`` entry. A press of ``strafe``,
+#: ``turn`` or the reverse-capped ``walk`` on that robot's axis transport is not a speed
+#: anybody chose here — the transport discards the magnitude — but it is a measured,
+#: executing primitive, not a refusal.
 DEFAULT_VX = 0.35
 DEFAULT_VY = 0.20
 DEFAULT_WZ = 0.70
