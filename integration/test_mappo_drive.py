@@ -804,11 +804,25 @@ def _servo_for(argv: list):
             else HeadingServo(mode=args.heading_servo))
 
 
-def test_a_drive_command_that_names_no_servo_gets_no_servo():
-    """Issue #16. The servo was opt-OUT, so the configuration an operator got by not
-    thinking about it was the one that saturated the yaw rate and drove into a wall on
-    three runs out of four. The runbook's own copy-pasteable command passed no flag."""
-    assert _servo_for([]) is None
+def test_a_drive_command_that_names_no_servo_gets_the_goal_law_and_never_travel():
+    """Issue #16's lesson, kept, but pointed at the thing that actually caused it.
+
+    The servo was once opt-OUT and the configuration an operator got by not thinking about
+    it saturated the yaw rate and drove into a wall on three runs out of four. That law was
+    ``travel`` -- face the direction you are moving -- whose feedback loop rotates the frame
+    its own input is expressed in. ``goal`` faces a bearing the robot is not steering by,
+    so it does not close that loop.
+
+    The default is now ``goal`` because ``off`` was measured to be worse in the other
+    direction: on 2026-09-07 a crabbing run walked 1.23x the direct line, spent 31% of its
+    linear effort sideways, commanded yaw on 9 ticks out of 71, and overshot its arrival.
+    LITE3-A has since been driven with ``goal`` and reached its goal.
+
+    What must NEVER become the default is ``travel``, and that is what this pins."""
+    servo = _servo_for([])
+    assert servo is not None, "the default must steer the nose; 'off' crabs"
+    assert servo.mode == GOAL, f"default should be {GOAL!r}, got {servo.mode!r}"
+    assert servo.mode != TRAVEL, "issue #16: 'travel' must never be reachable by default"
 
 
 def test_the_retired_spelling_is_consumed_and_still_means_off():

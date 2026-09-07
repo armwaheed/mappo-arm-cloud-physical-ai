@@ -419,7 +419,8 @@ def test_the_audit_has_a_population_to_check():
     partial copy and a partial copy shortens a count as easily as a list. A fourth walking
     probe is a deliberate addition to this list; three that became two is the bug.
     """
-    assert moving_modules(_HERE) == ["actuator_gain_probe.py", "axis_primitive_probe.py",
+    assert moving_modules(_HERE) == ["actuator_gain_probe.py", "arc_probe.py",
+                                     "axis_primitive_probe.py",
                                      "gait_floor_probe.py"], moving_modules(_HERE)
 
 
@@ -544,12 +545,12 @@ def test_the_runbook_check_fails_on_the_section_as_it_actually_read():
     """
     walkers = walking_modules(_HERE)
     as_it_read = (runbook_safety_section()
-                  .replace("`axis_primitive_probe.py`", "")
-                  .replace("**Three**", "**Two**").replace("**三个**", "**两个**"))
+                  .replace("`arc_probe.py`", "")
+                  .replace("**Four**", "**Three**").replace("**四个**", "**三个**"))
     findings = runbook_omissions(as_it_read, walkers)
     assert len(findings) == 2, findings
-    assert "axis_primitive_probe.py is not named" in findings
-    assert findings[1] == "the count does not read '**Three**' / '**三个**'"
+    assert "arc_probe.py is not named" in findings
+    assert findings[1] == "the count does not read '**Four**' / '**四个**'"
 
 
 if __name__ == "__main__":
