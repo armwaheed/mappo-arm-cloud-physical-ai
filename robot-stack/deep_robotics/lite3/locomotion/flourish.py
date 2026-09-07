@@ -59,12 +59,23 @@ above stops being true, and it stops being true exactly where it was load-bearin
     backflip                   TRAVELS ~1.5 m BACKWARD. Vendor figure. Never measured here.
     twist-jump                 travel UNKNOWN. Never sent from this repository, by anyone.
 
-⛔ THE TRAVELLING KINDS ARE THEREFORE NOT SAFE TO FIRE UNATTENDED, AND ARE NOT WIRED TO
-ARRIVAL. The property that licensed firing a gesture at the end of a run nobody is steering
-is the one property these two do not have. They are operator-triggered only: on top of
-everything the turns require they need `--operator-triggered`, no automatic end-of-run path
-passes it, and `test_flourish.py` pins both halves -- that no arrival path names them, and
-that a mission-shaped invocation of one is refused rather than run.
+⛔ THE TRAVELLING KINDS ARE NOT SAFE TO FIRE UNATTENDED. The property that licensed firing
+a gesture at the end of a run nobody is steering -- that the robot's centre stays put -- is
+the one property these two do not have. They still need `--operator-triggered` on top of
+everything the turns require, and `_validate_action` still refuses without it.
+
+⚠️ "NO AUTOMATIC END-OF-RUN PATH PASSES IT" WAS TRUE UNTIL 2026-09-07 AND IS NO LONGER.
+`mission.py` now passes it on ONE path: an arrival, when the operator ticked the dashboard's
+flip checkbox for that run. The box ships unticked, is never auto-ticked, is disabled unless
+arm motion is on, and arrives as `MAPPO_FLIP=1` for a single run -- so what licenses the
+flag is a per-run human act rather than configuration. That is weaker than what this
+paragraph used to promise and should be read as such: the flag now means "a human ticked a
+box before this run started", not "a human is watching this robot and a look-behind agreed".
+The operator asked for it twice on 2026-09-07 having been shown what it removes.
+`test_flourish.py` still pins that no arrival path NAMES these kinds, that
+`mission.flourish_command` never grows this flag on its own, and -- newly -- that the one
+call site which does pass it also carries the rear clearance that is now the only check on
+the space behind.
 
 ⛔ ZERO REAR SENSING. Not poor rear sensing: none. There is no rear camera, no rear
 ultrasonic and no bumper, and the one camera on the platform looks FORWARD through 134
@@ -323,7 +334,8 @@ VENDOR_ACTIONS = {
 #: travels or has never been observed well enough to claim it does not. ``mission.py``
 #: fires the first set from `play_flourish` when a run arrives, fails or loses sight of its
 #: goal, with nobody necessarily watching. It cannot reach the second: `_validate_action`
-#: refuses without ``--operator-triggered``, which nothing on that path passes, and
+#: refuses without ``--operator-triggered``. Since 2026-09-07 ONE arrival path passes that
+#: flag -- the operator's per-run flip checkbox; see the module docstring -- and
 #: ``test_flourish.py`` asserts both that no arrival path names these kinds and that a
 #: mission-shaped invocation of one is refused.
 ARRIVAL_KINDS = (Flourish.SPIN, Flourish.SHAKE, Flourish.SWEEP, Flourish.LOOK)

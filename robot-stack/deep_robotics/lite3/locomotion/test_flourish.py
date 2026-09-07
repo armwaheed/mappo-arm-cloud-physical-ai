@@ -611,6 +611,16 @@ def test_the_direct_arrival_flip_is_gated_and_carries_the_only_remaining_check()
         assert "action-hold-seconds" in rendered, (
             "no hold seconds: returning before the firmware finishes hands control back "
             "mid-manoeuvre")
+        # ⛔ AND THE FLAG THAT USED TO MEAN NO AUTOMATIC PATH COULD DO THIS. `check_vendor`
+        # refuses without it -- "Pass it only if you are standing there, looking at the
+        # robot, with the emergency stop in your hand." Since 2026-09-07 this one call site
+        # passes it, licensed by the operator's per-run flip checkbox. Pinned here so the
+        # licence stays visible at the site rather than becoming an ambient default: if a
+        # SECOND dynamic call site ever appears, this loop makes it argue for itself too.
+        assert "operator-triggered" in rendered, (
+            "a travelling kind is fired without --operator-triggered, so flourish will "
+            "refuse it at the end of every run -- or, worse, somebody has weakened "
+            "check_vendor instead of arguing for the licence here")
 
     # Gated, not unconditional. `flip_on_arrival` has to appear in a test guarding it.
     guards = [node for node in ast.walk(tree)
