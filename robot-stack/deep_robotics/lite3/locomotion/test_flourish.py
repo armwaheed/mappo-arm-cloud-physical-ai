@@ -3,30 +3,56 @@
 #
 # SPDX-License-Identifier: Apache-2.0
 
-"""Offline tests for the arrival spin and the surrender shake.
+"""Offline tests for the arrival spin, the surrender shake, and the two vendor actions.
 
 Both gestures are state machines over measured heading, so all of this runs with no robot.
 What earns a test is what hardware would otherwise have taught: that a full revolution
 crosses the +/-pi discontinuity, that the two gestures are distinguishable rather than one
 being a shorter version of the other, and that neither one travels.
+
+⛔ THE VENDOR CANNED ACTIONS ARE TESTED FOR THE OPPOSITE PROPERTY. `backflip` and
+`twist-jump` are single opcodes whose effect NOBODY IN THIS REPOSITORY HAS OBSERVED, so
+there is no state machine to test and no measured number to check one against. What is left
+is the only thing that can be checked without a robot, and it happens to be the thing that
+matters: that the right four bytes go out in the right order, and that every path which
+could put them on the wire without a human deciding to is closed. Those tests are the only
+safety layer these two kinds have, because there is no second one downstream.
 """
 from __future__ import annotations
 
+import argparse
+import contextlib
+import io
 import math
+import struct
 import sys
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(_HERE))
 
+import flourish
 from flourish import (
+    ARRIVAL_KINDS,
+    BACKFLIP_CODE,
+    BACKFLIP_TRAVEL_M,
+    CARPET_BACKFLIP_CODE,
+    END_ACTION_CODE,
     LEG_TOLERANCE_RAD,
+    OPERATOR_ONLY_KINDS,
     SHAKE_COUNT,
     SHAKE_SWEEP_RAD,
     STALL_WINDOW_S,
+    TWIST_JUMP_CODE,
+    UNKNOWNS,
+    VENDOR_ACTIONS,
     Flourish,
     Refusal,
+    action_brief,
+    action_packets,
     describe,
+    fire,
+    vendor_packet,
 )
 from reverse_along_path import wrap_pi
 
@@ -251,6 +277,413 @@ def test_a_look_of_zero_is_refused_rather_than_being_a_silent_no_op():
         assert "sees nothing new" in str(refusal), refusal
     else:
         raise AssertionError("a zero-degree look must be refused")
+
+
+# ── the vendor canned actions: the opcodes ──────────────────────────────────
+class _FakeSocket:
+    """Records datagrams instead of sending them. ``sendto`` is all ``fire`` uses."""
+
+    def __init__(self) -> None:
+        self.sent: list = []
+        self.bound = None
+        self.closed = False
+
+    def bind(self, address) -> None:
+        self.bound = address
+
+    def sendto(self, packet: bytes, address) -> None:
+        self.sent.append((packet, address))
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _run_cli(argv: list[str]):
+    """``flourish.main(argv)`` with its printing captured. Returns (code, stdout, stderr)."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        code = flourish.main(argv)
+    return code, out.getvalue(), err.getvalue()
+
+
+def _argv(kind: str, *, operator_triggered: bool = True, live: bool = False, **changes):
+    """A COMPLETE, valid operator invocation for a vendor canned action.
+
+    Keyword names are flags with their dashes as underscores, and passing ``None`` DROPS
+    the flag -- which is how "the operator did not state it" is exercised. Complete by
+    default, so every refusal test differs from a working invocation in exactly one way and
+    a test cannot pass because of some other missing flag.
+    """
+    values = {"kind": kind, "robot-id": "LITE3-A", "firmware": "V1.0.8", "payload": "none",
+              "locomotion-transport": "axis", "axis-profile": "lite3-axis-LITE3-A.json",
+              "lane-width-metres": "2.0", "rear-clearance-metres": "2.5",
+              "acrobatic-battery-floor-pct": "60", "action-hold-seconds": "4"}
+    values.update({name.replace("_", "-"): value for name, value in changes.items()})
+    argv = [item for name, value in values.items() if value is not None
+            for item in (f"--{name}", str(value))]
+    if operator_triggered:
+        argv.append("--operator-triggered")
+    if live:
+        argv += ["--live", "--operator-ready"]
+    return argv
+
+
+def test_the_new_kinds_emit_the_opcodes_the_vendor_gui_sends():
+    """The four bytes, computed here independently of the module that builds them.
+
+    Reference GUI `Lite3_All_control_v20153.py:310-320`, `send_simple(code)`. A typo in one
+    of these is not a test failure on hardware, it is an unknown opcode executed by a robot
+    standing in the room, so the numbers are restated rather than imported.
+    """
+    assert VENDOR_ACTIONS["backflip"].code == 0x21010502, "后空翻 backflip"
+    assert VENDOR_ACTIONS["twist-jump"].code == 0x2101020D, "扭身跳 twist jump"
+    assert END_ACTION_CODE == 0x21010C0B, "结束动作 END ACTION"
+    for code in (0x21010502, 0x2101020D, 0x21010C0B):
+        assert vendor_packet(code) == struct.pack("<3I", code, 0, 0), f"{code:#010x}"
+        assert len(vendor_packet(code)) == 12
+
+
+def test_no_end_action_is_sent_because_the_controller_does_not_send_one():
+    """MEASURED, not assumed. The hand controller was packet-captured performing all three
+    of these actions and sent NO end-action for any of them, while the state stream showed
+    the robot returning to force-control 6 unaided every time. Sending a stop the vendor
+    never sends would be inventing behaviour on a robot mid-acrobatic."""
+    for kind, action in VENDOR_ACTIONS.items():
+        packets = action_packets(action)
+        assert [label for label, _, _ in packets] == [kind], packets
+        assert [code for _, code, _ in packets] == [action.code]
+        assert END_ACTION_CODE not in [code for _, code, _ in packets]
+
+
+def test_fire_sends_one_datagram_then_holds_for_the_manoeuvre():
+    """One opcode, then the operator's `--action-hold-seconds`. The hold outlives the
+    manoeuvre rather than separating two packets: a backflip was measured taking 5.4-5.9 s
+    to return the robot to force-control 6, and returning sooner closes the socket while
+    the robot is still inverted."""
+    for action in VENDOR_ACTIONS.values():
+        sock, slept = _FakeSocket(), []
+        fire(sock, ("10.0.0.1", 43893), action, hold_s=3.5,
+             sleep=slept.append, printer=lambda _line: None)
+        assert [packet for packet, _ in sock.sent] == [
+            struct.pack("<3I", action.code, 0, 0)], sock.sent
+        assert {address for _, address in sock.sent} == {("10.0.0.1", 43893)}
+        assert slept == [3.5], "exactly one wait, and it is the operator's number"
+
+
+def test_an_opcode_this_file_does_not_name_is_refused_rather_than_sent():
+    """Same rule as `lite3_control_mode_udp` and `lite3_axis_udp`: on this channel an
+    unrecognised code is not an error that comes back, it is whatever that code means on
+    this firmware, executed by a robot in the room."""
+    for code in (0x21010202, 0x21010C05, 0x21010D06, 0x21010C0E, 0x00000000):
+        try:
+            vendor_packet(code)
+        except Refusal as refusal:
+            assert "unsupported" in str(refusal), refusal
+        else:
+            raise AssertionError(f"{code:#010x} was packed without being named")
+
+
+# ── the vendor canned actions: the room ─────────────────────────────────────
+def test_a_missing_rear_clearance_is_refused_and_says_why():
+    """⛔ THIS ROBOT HAS ZERO REAR SENSING. There is no rear camera, no ultrasonic and no
+    bumper, so nothing in software will ever notice what a backflip is about to travel
+    into. The clearance is the operator's tape measure and there is no default."""
+    for kind in OPERATOR_ONLY_KINDS:
+        code, _, err = _run_cli(_argv(kind, rear_clearance_metres=None))
+        assert code == 1, kind
+        assert "--rear-clearance-metres" in err, err
+        assert "NO REAR SENSING" in err, "the refusal has to say why, not just which flag"
+
+
+def test_a_rear_clearance_below_the_backflip_travel_is_refused():
+    """1.5 m is the vendor's own backward-travel figure. It is a floor to refuse below,
+    never a promise about where this robot will stop."""
+    for stated in ("0.0", "0.5", "1.49"):
+        code, _, err = _run_cli(_argv("backflip", rear_clearance_metres=stated))
+        assert code == 1, stated
+        assert "--rear-clearance-metres" in err and f"{BACKFLIP_TRAVEL_M:.2f}" in err, err
+    code, _, _ = _run_cli(_argv("backflip", rear_clearance_metres="1.5", live=False))
+    assert code == 0, "exactly the vendor figure is the floor, not one above it"
+
+
+def test_the_twist_jump_clearance_floor_is_the_platform_and_not_an_invented_number():
+    """Nobody knows how far a twist jump goes, so the floor is the one number that is
+    already evidenced here: the robot's own footprint. Inventing a travel figure for it
+    would be the exact failure this file exists to avoid."""
+    from reverse_along_path import PLATFORM_HALF_DIAGONAL_M
+    assert VENDOR_ACTIONS["twist-jump"].rear_clearance_m == 2 * PLATFORM_HALF_DIAGONAL_M
+    assert "UNKNOWN" in VENDOR_ACTIONS["twist-jump"].travel
+    code, _, err = _run_cli(_argv("twist-jump", rear_clearance_metres="0.4"))
+    assert code == 1 and "--rear-clearance-metres" in err, err
+
+
+def test_every_unknown_precondition_is_refused_rather_than_defaulted():
+    """The house rule, applied to the three things nobody here has measured. A default for
+    any of them would be this file inventing a precondition and then checking it."""
+    for flag in ("acrobatic_battery_floor_pct", "action_hold_seconds", "lane_width_metres"):
+        code, _, err = _run_cli(_argv("backflip", **{flag: None}))
+        assert code == 1, flag
+        assert flag.replace("_", "-") in err, (flag, err)
+
+
+def test_the_battery_floor_is_the_operators_and_is_fed_to_robot_links_own_gate():
+    """⛔ ONE BATTERY GATE, AND IT IS robot_link's. An acrobatic manoeuvre is the highest
+    current this robot draws and a brownout mid-flip is a fall -- but the number is the
+    operator's, and it is folded into `--battery-abort` rather than becoming a second check
+    that somebody can forget to apply."""
+    parser = flourish.build_parser()
+    args = parser.parse_args(_argv("backflip", acrobatic_battery_floor_pct="65"))
+    assert args.battery_abort < 65, "the default abort is the one every probe shares"
+    flourish._validate_action(args, VENDOR_ACTIONS["backflip"])
+    assert args.battery_abort == 65, "the operator's floor must reach robot_link.preflight"
+
+    lower = parser.parse_args(_argv("backflip", acrobatic_battery_floor_pct="1"))
+    default_abort = lower.battery_abort
+    flourish._validate_action(lower, VENDOR_ACTIONS["backflip"])
+    assert lower.battery_abort == default_abort, "a lower floor must not WEAKEN the gate"
+
+
+def _stub_robot_link(implementation, order):
+    """Swap robot_link's two live entry points for recorders. Returns the restorer.
+
+    Stubbed rather than skipped because the ORDER of the gates is the property under test,
+    and the order is the whole of what protects a robot here: there is no state machine
+    downstream of these opcodes that could refuse anything later.
+    """
+    sys.path.insert(0, str(_HERE.parents[2]))
+    from deep_robotics.lite3.commissioning import robot_link
+
+    class _Locomotion:
+        def shutdown(self):
+            order.append("shutdown")
+
+    saved = robot_link.connect, robot_link.preflight
+    robot_link.connect = lambda args: robot_link.Link(
+        locomotion=_Locomotion(), implementation=implementation)
+    robot_link.preflight = lambda link, args, printer=print: order.append("preflight")
+
+    def restore():
+        robot_link.connect, robot_link.preflight = saved
+
+    return restore
+
+
+def test_no_opcode_reaches_a_socket_until_both_gates_have_passed():
+    """⛔ THE ORDER IS THE SAFETY PROPERTY. robot_link's preflight -- battery, state age,
+    error_state -- and the transport's own vendor state gate both have to have passed
+    before the first byte goes out. A backflip fired at a robot that is lying down is a
+    backflip fired at a robot that is lying down, whatever the flags said."""
+    order, sockets = [], []
+
+    class _Implementation:
+        def assert_axis_state_ready(self):
+            order.append("gate")
+
+    def _socket_factory(*_args):
+        order.append("socket")
+        sockets.append(_FakeSocket())
+        return sockets[-1]
+
+    restore = _stub_robot_link(_Implementation(), order)
+    try:
+        args = flourish.build_parser().parse_args(_argv("backflip", live=True))
+        flourish._validate_action(args, VENDOR_ACTIONS["backflip"])
+        code = flourish.perform_action(args, VENDOR_ACTIONS["backflip"],
+                                       printer=lambda _line: None,
+                                       socket_factory=_socket_factory, sleep=lambda _s: None)
+    finally:
+        restore()
+    assert code == 0
+    assert order == ["preflight", "gate", "socket", "shutdown"], order
+    assert [packet for packet, _ in sockets[0].sent] == [
+        struct.pack("<3I", BACKFLIP_CODE, 0, 0)], sockets[0].sent
+    assert sockets[0].bound == ("0.0.0.0", args.axis_local_port), (
+        "the opcode leaves from the same source port the accepted axis commands do, and "
+        "the bind doubles as a lock against a run already in progress elsewhere")
+    assert sockets[0].closed
+
+
+def test_a_transport_with_no_state_gate_is_refused_before_a_socket_exists():
+    """The gate lives on the axis transport only. Firing an unvalidated acrobatic opcode
+    with no state gate at all is worse than not firing it."""
+    order = []
+
+    def _socket_factory(*_args):
+        raise AssertionError("a socket was opened without a vendor state gate")
+
+    restore = _stub_robot_link(object(), order)   # no assert_axis_state_ready on it
+    try:
+        args = flourish.build_parser().parse_args(_argv("backflip", live=True))
+        flourish._validate_action(args, VENDOR_ACTIONS["backflip"])
+        flourish.perform_action(args, VENDOR_ACTIONS["backflip"],
+                                printer=lambda _line: None, socket_factory=_socket_factory)
+    except Refusal as refusal:
+        assert "--locomotion-transport axis" in str(refusal), refusal
+    else:
+        raise AssertionError("an opcode was sent through a transport with no state gate")
+    finally:
+        restore()
+    assert order == ["preflight", "shutdown"], order
+
+
+# ── not wired to arrival ────────────────────────────────────────────────────
+def test_no_arrival_path_can_name_a_travelling_kind():
+    """⛔ THE SAFETY PROPERTY, PINNED FROM THE MISSION END.
+
+    `mission.play_flourish` fires a gesture when a run arrives, gives up, or loses sight of
+    its goal -- by which point nobody is necessarily watching the robot. Every kind it can
+    reach must be one that keeps the robot's centre where it is. This asserts the two halves
+    separately, because they fail differently: a new `play_flourish` call site with a
+    travelling kind, and a travelling kind's name appearing anywhere on that path at all.
+    """
+    import ast
+
+    visual_nav = _HERE.parents[0] / "visual_nav"
+    for name in ("mission.py", "venue_run.py"):
+        source = (visual_nav / name).read_text()
+        for kind in OPERATOR_ONLY_KINDS:
+            assert kind not in source, (
+                f"{name} names {kind!r}, which travels and must never be fired by an "
+                f"end-of-run path that nobody is watching")
+
+    tree = ast.parse((visual_nav / "mission.py").read_text(), filename="mission.py")
+    fired = [node.args[1].value for node in ast.walk(tree)
+             if isinstance(node, ast.Call)
+             and getattr(node.func, "id", None) == "play_flourish"
+             and len(node.args) > 1 and isinstance(node.args[1], ast.Constant)]
+    assert fired, "mission.py no longer calls play_flourish; fix this scan, don't delete it"
+    assert set(fired) <= set(ARRIVAL_KINDS), (
+        f"mission.py fires {sorted(set(fired))} automatically and only "
+        f"{sorted(ARRIVAL_KINDS)} keep the robot's centre where it is")
+
+
+def test_a_mission_shaped_invocation_of_a_travelling_kind_is_refused():
+    """⛔ THE SAME PROPERTY, PINNED FROM THE FLOURISH END, and it is the half that holds if
+    somebody later adds the call site. The command `mission.flourish_command` builds is the
+    real one, so this breaks if that command ever grows the flags these kinds need."""
+    sys.path.insert(0, str(_HERE.parents[0] / "visual_nav"))
+    import mission
+
+    args = argparse.Namespace(flourish=True, robot_id="LITE3-A", firmware="V1.0.8",
+                              payload="none", flourish_lane_width=3.0)
+    for kind in OPERATOR_ONLY_KINDS:
+        for drive in ([], ["--live"]):
+            argv = mission.flourish_command(drive, kind, args)
+            assert argv is not None and "--operator-triggered" not in argv, argv
+            code, _, err = _run_cli(argv[2:])   # drop the interpreter and the script path
+            assert code == 1, (kind, drive, err)
+            assert "--operator-triggered" in err, err
+
+
+def test_the_dry_run_of_a_travelling_kind_opens_nothing_and_sends_nothing():
+    """A plan is text. Nothing without `--live` may reach a socket, and a `--kind backflip`
+    dry run is the one an operator will run first and read."""
+    reached = []
+    original = flourish.perform_action
+    flourish.perform_action = lambda *args, **kwargs: reached.append(args) or 0
+    try:
+        for kind in OPERATOR_ONLY_KINDS:
+            code, out, err = _run_cli(_argv(kind))
+            assert code == 0, (kind, err)
+            assert not reached, "a run without --live reached the send path"
+            assert "nothing was sent" in out, out
+
+        # And the complement, so the assertion above cannot pass by never running at all.
+        code, _, err = _run_cli(_argv("backflip", live=True))
+        assert code == 0 and len(reached) == 1, (code, err, reached)
+    finally:
+        flourish.perform_action = original
+
+
+def test_live_without_operator_ready_is_refused():
+    code, _, err = _run_cli([*_argv("backflip"), "--live"])
+    assert code == 1 and "--operator-ready" in err, err
+
+
+# ── the existing kinds are untouched ────────────────────────────────────────
+def test_an_arrival_kind_is_never_asked_for_any_of_the_new_flags():
+    """`--kind spin` must behave exactly as it did. It runs here against a profile with no
+    measured yaw speed, so reaching THAT refusal is the proof it went down the turn path
+    and asked for no clearance, no battery floor and no hold on the way."""
+    code, out, err = _run_cli([
+        "--robot-id", "LITE3-A", "--firmware", "V1.0.8", "--payload", "none",
+        "--locomotion-transport", "axis",
+        "--axis-profile", str(_HERE / "lite3_axis_profile.example.json"),
+        "--kind", "spin", "--lane-width-metres", "2.0"])
+    assert code == 1, (code, out, err)
+    assert "no measured yaw speed" in err, err
+    assert "VENDOR CANNED ACTION" not in out, "a spin must not print the acrobatic brief"
+    for flag in ("--rear-clearance-metres", "--operator-triggered", "--action-hold-seconds"):
+        assert flag not in err, f"a spin was asked for {flag}"
+
+
+def test_the_two_sets_of_kinds_are_disjoint_and_cover_every_choice():
+    assert not set(ARRIVAL_KINDS) & set(OPERATOR_ONLY_KINDS)
+    assert set(OPERATOR_ONLY_KINDS) == set(VENDOR_ACTIONS)
+    choices = flourish.build_parser()._option_string_actions["--kind"].choices
+    assert set(choices) == set(ARRIVAL_KINDS) | set(OPERATOR_ONLY_KINDS), choices
+
+
+def test_describe_refuses_a_canned_action_rather_than_printing_the_shake_plan():
+    """⚠️ THE ONE SENTENCE THAT MUST NEVER BE PRINTED ABOUT A BACKFLIP is `describe`'s
+    "travel none -- the centre does not move". Falling through its final `else` would print
+    exactly that over an opcode that travels 1.5 m backward."""
+    for kind in OPERATOR_ONLY_KINDS:
+        try:
+            describe(kind, YAW_RAD_S)
+        except Refusal as refusal:
+            assert "vendor canned action" in str(refusal), refusal
+        else:
+            raise AssertionError(f"describe({kind!r}) printed a turn's plan")
+
+
+# ── the brief says what is not known ────────────────────────────────────────
+def test_the_brief_says_the_opcodes_have_never_been_sent_and_lists_every_unknown():
+    """Constraint: where a precondition is unknown, refuse or say so LOUDLY. The operator
+    reading this cannot read the source, and this is the only place they are told."""
+    parser = flourish.build_parser()
+    for kind, action in VENDOR_ACTIONS.items():
+        args = parser.parse_args(_argv(kind))
+        text = action_brief(action, args)
+        assert "NEITHER OPCODE HAS EVER BEEN SENT BY THIS REPOSITORY" in text, text
+        assert "NO REAR SENSING" in text and f"{action.code:#010x}" in text
+        assert f"{END_ACTION_CODE:#010x}" not in text, (
+            "the stop opcode is no longer sent, so it must not appear in the plan")
+        assert action.travel.split(" --")[0] in text
+        squashed = " ".join(text.split())
+        for unknown in UNKNOWNS:
+            head = " ".join(unknown.split()[:6])
+            assert head in squashed, f"the brief dropped an unknown: {head}"
+
+
+def test_the_docstring_says_which_kinds_travel_and_which_do_not():
+    """⛔ THE REASONING THAT LICENSED FIRING A GESTURE UNATTENDED IS IN THE DOCSTRING, and
+    it is only true of the turns. If the travel table or the unattended warning is deleted,
+    the next reader inherits "these are safe to fire automatically" applied to a backflip."""
+    doc = flourish.__doc__
+    assert "keep the robot's centre where it" in doc, "the original argument must survive"
+    assert "spin, shake, sweep, look" in doc, "the in-place kinds must still be named"
+    assert f"TRAVELS ~{BACKFLIP_TRAVEL_M:.1f} m BACKWARD" in doc
+    assert "NOT SAFE TO FIRE UNATTENDED" in doc
+    assert "ZERO REAR SENSING" in doc
+    assert "travel UNKNOWN" in doc, "the twist jump's travel must not be claimed"
+
+
+def test_the_opcodes_are_not_reachable_without_the_travelling_kinds():
+    """A last sweep of the source: the three opcodes may appear only in the constants that
+    name them, so no other path in this file can put one on the wire."""
+    import ast
+
+    tree = ast.parse((_HERE / "flourish.py").read_text(), filename="flourish.py")
+    codes = [BACKFLIP_CODE, CARPET_BACKFLIP_CODE, TWIST_JUMP_CODE, END_ACTION_CODE]
+    literals = [node for node in ast.walk(tree)
+                if isinstance(node, ast.Constant) and node.value in codes]
+    assigned = [node for node in ast.walk(tree)
+                if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant)
+                and node.value.value in codes]
+    assert len(literals) == len(assigned) == 4, (
+        "an opcode literal appears somewhere other than its own constant; every send has "
+        "to go through vendor_packet, which refuses a code it does not name")
 
 
 if __name__ == "__main__":
