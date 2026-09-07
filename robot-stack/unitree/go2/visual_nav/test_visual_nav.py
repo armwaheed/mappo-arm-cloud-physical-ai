@@ -2685,6 +2685,60 @@ def test_every_refusal_says_that_it_is_one():
         f"failed run's output misses them: {unmarked}")
 
 
+class _Args:
+    def __init__(self, soft_gap): self.soft_gap = soft_gap
+
+
+class _Limits:
+    max_vx = 0.55
+
+
+class _Nav:
+    perception_timeout_s = 0.6
+
+
+def test_the_person_margin_default_is_the_reaction_distance_not_padding():
+    """The number that decides whether --soft-gap may be lowered, and it is not a taste.
+
+    A person margin has to cover the robot's own travel during one staleness window PLUS
+    the person's. At this robot's numbers that is 1.17 m, and the shipped default is
+    1.20 m -- so the default is the minimum that is physically defensible, with 3 cm to
+    spare. Anyone lowering it is removing reaction distance, not caution.
+    """
+    reaction = visual_nav.reaction_distance_m(_Limits.max_vx, _Nav.perception_timeout_s)
+    assert 1.15 < reaction < 1.20, reaction
+    assert visual_nav.PlannerConfig().soft_gap_m >= reaction, (
+        "the shipped person margin has fallen below this robot's reaction distance")
+
+
+def test_lowering_the_person_margin_says_so_loudly_and_names_the_number():
+    out = []
+    visual_nav.warn_if_soft_gap_is_below_reaction(
+        _Args(0.5), _Limits, _Nav, 1.20, printer=out.append)
+    text = " ".join(out)
+    assert "PERSON MARGIN LOWERED" in text
+    assert "0.50" in text and "1.20" in text, "both numbers must appear"
+    assert "SMALLER THAN THE REACTION DISTANCE" in text
+
+
+def test_a_margin_at_or_above_the_default_prints_nothing():
+    """Anti-vacuity: the warning must not fire on the shipped configuration."""
+    out = []
+    visual_nav.warn_if_soft_gap_is_below_reaction(
+        _Args(1.20), _Limits, _Nav, 1.20, printer=out.append)
+    assert out == [], out
+
+
+def test_a_lowered_margin_still_above_reaction_warns_without_the_hard_line():
+    """Below the default but still able to stop: warn, but do not claim it cannot."""
+    out = []
+    visual_nav.warn_if_soft_gap_is_below_reaction(
+        _Args(1.18), _Limits, _Nav, 1.20, printer=out.append)
+    text = " ".join(out)
+    assert "PERSON MARGIN LOWERED" in text
+    assert "SMALLER THAN THE REACTION DISTANCE" not in text
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -1641,6 +1641,50 @@ def _preprocessing_record(args) -> dict:
     }
 
 
+#: A walking person's speed, for the ONE purpose of saying how far someone travels while
+#: this robot is still looking at a stale frame. Not a detection threshold and not a
+#: tracker parameter -- it appears only in :func:`reaction_distance_m`, which exists to
+#: print what a lowered ``--soft-gap`` actually leaves. 1.4 m/s is the ordinary figure for
+#: an adult walking; it is deliberately NOT the figure for someone stepping backwards into
+#: a robot they have not noticed, which is faster and is the case the margin is really for.
+WALKING_PERSON_M_S = 1.4
+
+
+def reaction_distance_m(top_speed_m_s: float, perception_timeout_s: float) -> float:
+    """How far this robot travels before it can act on what it has just seen.
+
+    Two terms and no more, both already stated elsewhere in this file: the robot's own
+    travel during one staleness window, and a walking person's travel during the same
+    window. A margin below this is not caution being trimmed -- it is reaction distance
+    being removed, and the robot arrives where the person now is.
+    """
+    return (top_speed_m_s + WALKING_PERSON_M_S) * perception_timeout_s
+
+
+def warn_if_soft_gap_is_below_reaction(args, limits, nav, default_gap_m: float,
+                                       printer=print) -> None:
+    """Say out loud what a lowered person margin leaves, in the units it is spent in.
+
+    Not a refusal. The operator may have a venue where the default cannot be met -- a
+    crowded booth is the honest example -- and refusing there would only push the run
+    onto a robot with no margin stated at all. What is not acceptable is lowering it
+    QUIETLY, so this prints the arithmetic and names the number it is compared against.
+    """
+    if args.soft_gap >= default_gap_m:
+        return
+    reaction = reaction_distance_m(limits.max_vx, nav.perception_timeout_s)
+    printer("!" * 78)
+    printer(f"[visual_nav] PERSON MARGIN LOWERED: --soft-gap {args.soft_gap:.2f} m, "
+            f"below the {default_gap_m:.2f} m default.")
+    printer(f"    At {limits.max_vx:.2f} m/s with {nav.perception_timeout_s:.2f}s "
+            f"perception, this robot needs {reaction:.2f} m just to react to a person "
+            f"who steps toward it.")
+    if args.soft_gap < reaction:
+        printer("    ⚠️  THE MARGIN IS NOW SMALLER THAN THE REACTION DISTANCE. The robot "
+                "cannot stop for someone it sees at this range.")
+    printer("!" * 78)
+
+
 def build_parser(bindings=None) -> argparse.ArgumentParser:
     """The CLI, separated from ``main`` so it can be exercised without a robot.
 
@@ -1709,6 +1753,13 @@ def build_parser(bindings=None) -> argparse.ArgumentParser:
                     help="the loaded robot's measured plan-view planning radius in "
                          "metres. It sets both obstacle clearance and MAPPO scale; do "
                          "not copy the value from another platform")
+    ap.add_argument("--soft-gap", type=float, default=planner.soft_gap_m,
+                    help="clearance the planner keeps from a TRACKED MOVER, in metres, on "
+                         "top of --robot-radius. This is a PERSON margin: it is separate "
+                         "from, and much larger than, the static gap, because a person "
+                         "can step toward the robot faster than the robot can notice. "
+                         "Lower it only with a number you can defend -- the run prints "
+                         "what margin is left against the robot's own reaction distance.")
     ap.add_argument("--obstacle-radius", type=float, default=planner.obstacle_radius_m,
                     help="plan-view footprint of a TRACKED MOVER in metres. The default "
                          "is a person's; anything smaller wants its own number, because "
@@ -2043,8 +2094,10 @@ def main(argv: Sequence[str] | None = None, planner_factory=DynamicWindowPlanner
         planner_config = PlannerConfig(horizon_s=args.horizon,
                                        obstacle_radius_m=args.obstacle_radius,
                                        robot_radius_m=robot_radius,
+                                       soft_gap_m=args.soft_gap,
                                        body_length_m=args.body_length,
                                        body_width_m=args.body_width)
+        warn_if_soft_gap_is_below_reaction(args, limits, nav, PlannerConfig().soft_gap_m)
         print(f"[visual_nav] planner: horizon {planner_config.horizon_s:.1f}s "
               f"({planner_config.horizon_s * limits.max_vx:.2f} m of lookahead at "
               f"top speed), robot radius {planner_config.robot_radius_m:.2f} m, "
