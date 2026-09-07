@@ -29,6 +29,7 @@ from avoidance import Obstacle
 
 from turn_drive_supervisor import (
     HEADING_TOLERANCE_RAD,
+    LATERAL_HANDOFF_RAD,
     TurnDriveSupervisor,
     _point_to_segment_m,
 )
@@ -271,6 +272,88 @@ def test_every_drive_of_the_executed_detour_passes_the_shared_veto():
     else:
         raise AssertionError("the detour never handed control back")
     assert drove > 0, "a detour with no drive phase is not the path under test"
+
+
+# ── lateral_capable: standing down for a commissioned strafe ────────────────────
+
+
+def test_lateral_capable_defaults_to_off_and_changes_nothing():
+    """Omitting ``lateral_capable`` must reproduce today's full detour exactly, tick
+    for tick — a caller that never heard of the new parameter (every existing test
+    above this one included) gets today's commands, unchanged."""
+    baseline = _supervisor()
+    explicit_off = _supervisor(lateral_capable=False)
+    pose, goal, obstacles = (0.0, 0.0, 0.0), (3.0, 0.0), [_bin()]
+    _poses_a, commands_a = _execute(baseline, pose, goal, obstacles)
+    _poses_b, commands_b = _execute(explicit_off, pose, goal, obstacles)
+    assert commands_a, "the scene must still produce a detour to be a real test"
+    assert commands_a == commands_b, \
+        "an unset and an explicitly-False capability must be byte-identical"
+
+
+def test_lateral_capable_stands_down_when_the_target_is_reachable():
+    """A commissioned strafe primitive changes nothing about WHETHER a detour exists
+    — only whether this module still drives it itself. With the nose already on the
+    leg bearing (today's 'drive' case — see
+    ``test_a_drive_phase_command_faces_the_leg_within_tolerance``) a lateral-capable
+    supervisor must stand down instead, because the policy's own combined vx/vy
+    reaches exactly this leg in one motion."""
+    capable = _supervisor(lateral_capable=True)
+    obstacle = _bin()
+    waypoint, _side = capable._waypoint((0.0, 0.0, 0.0), (3.0, 0.0), obstacle,
+                                        [obstacle])
+    bearing = math.atan2(waypoint[1], waypoint[0])
+    command = capable.command((0.0, 0.0, bearing), (3.0, 0.0), [obstacle])
+    assert command is None, command
+    # Positive control: the SAME geometry, without the capability, still drives — the
+    # blocker and its detour did not stop existing, only this module's ownership of it.
+    incapable = _supervisor()
+    still_acts = incapable.command((0.0, 0.0, bearing), (3.0, 0.0), [obstacle])
+    assert still_acts is not None and still_acts.phase == "drive", still_acts
+
+
+def test_lateral_capable_still_turns_when_the_target_is_behind_the_nose():
+    """A target more than ninety degrees off the nose still needs a turn no matter
+    what the robot can strafe at: ``mappo_drive`` never samples reverse (its own
+    "FORWARD ONLY" clamp), so no forward+lateral combination reaches a bearing behind
+    the robot. ``lateral_capable`` must narrow this module's authority, not switch it
+    off wholesale."""
+    capable = _supervisor(lateral_capable=True)
+    obstacle = _bin()
+    waypoint, _side = capable._waypoint((0.0, 0.0, 0.0), (3.0, 0.0), obstacle,
+                                        [obstacle])
+    bearing = math.atan2(waypoint[1], waypoint[0])
+    behind = bearing + math.pi
+    command = capable.command((0.0, 0.0, behind), (3.0, 0.0), [obstacle])
+    assert command is not None and command.phase == "turn", command
+    assert command.vy == 0.0 and command.vx == 0.0, command
+
+
+def test_lateral_handoff_boundary_is_exactly_ninety_degrees():
+    """Pin the cutover point itself: just inside the reachable forward hemisphere
+    stands down, just outside it still turns. ``LATERAL_HANDOFF_RAD`` is not a tuned
+    tolerance the way ``HEADING_TOLERANCE_RAD`` is — it is the exact boundary of "a
+    forward component exists" — so this checks the boundary, not a margin around it."""
+    capable = _supervisor(lateral_capable=True)
+    obstacle = _bin()
+    waypoint, _side = capable._waypoint((0.0, 0.0, 0.0), (3.0, 0.0), obstacle,
+                                        [obstacle])
+    bearing = math.atan2(waypoint[1], waypoint[0])
+    just_inside = bearing - (LATERAL_HANDOFF_RAD - math.radians(1.0))
+    just_outside = bearing - (LATERAL_HANDOFF_RAD + math.radians(1.0))
+    assert capable.command((0.0, 0.0, just_inside), (3.0, 0.0), [obstacle]) is None
+    outside_cmd = capable.command((0.0, 0.0, just_outside), (3.0, 0.0), [obstacle])
+    assert outside_cmd is not None and outside_cmd.phase == "turn", outside_cmd
+
+
+def test_a_detour_through_a_second_obstacle_is_still_refused_when_lateral_capable():
+    """The genuinely-impossible case (no two-segment detour exists on either side)
+    must still refuse to invent one when the robot can strafe — a wider commissioned
+    envelope does not make a corridor that is not there appear. Same scene as
+    ``test_a_detour_through_a_second_obstacle_is_refused_not_invented``."""
+    capable = _supervisor(lateral_capable=True)
+    walls = [_bin(y=0.0), _bin(y=1.60), _bin(y=-1.60)]
+    assert capable.command((0.0, 0.0, 0.0), (3.0, 0.0), walls) is None
 
 
 if __name__ == "__main__":

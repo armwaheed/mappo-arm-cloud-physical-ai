@@ -233,9 +233,11 @@ class MappoPlanner(DynamicWindowPlanner):
         self._runner = runner
         self._supervised = supervised
         #: The turn-drive execution supervisor, or ``None``. When it is set and a
-        #: mapped static obstacle blocks the straight line to the goal, its command —
-        #: built only from the primitives this robot was measured to perform —
-        #: replaces the policy's, and the SAME veto is then applied to it. See
+        #: mapped static obstacle blocks the straight line to the goal, it either
+        #: hands back a command — built only from the primitives this robot was
+        #: measured to perform — that replaces the policy's, and the SAME veto is then
+        #: applied to it, or returns ``None`` to say the policy's own command already
+        #: reaches around the blocker on primitives this robot has. See
         #: ``--execution-supervisor``.
         self._execution_supervisor = execution_supervisor
         #: Optional ``(vx, vy, wz) -> dict`` translating a command into the raw
@@ -1391,14 +1393,18 @@ def _add_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
                             "obstacle blocks the straight line to the goal. "
                             "'turn-drive' (the Lite3's answer) replaces the policy's "
                             "command with a two-segment detour executed as pure turns "
-                            "and pure drives — the only motions this Lite3's measured "
-                            "axis profile can perform, since its lateral and reverse "
-                            "primitives are unmeasured and --max-vy 0 deletes the "
-                            "holonomic policy's strafe intent at the envelope clamp. "
-                            "The planner's veto still runs on the supervisor's command, "
-                            "so a person stepping onto the detour holds the robot. "
-                            "'none' (the default) is today's behaviour: the policy's "
-                            "command, clamped, is what the veto judges")
+                            "and pure drives when the blocked target is not reachable "
+                            "by the robot's own forward+lateral motion — reverse is "
+                            "never sampled, so a target behind the nose still needs a "
+                            "turn. When --max-vy is above zero the axis profile has "
+                            "evidenced both strafe primitives (the platform bindings "
+                            "refuse to walk live otherwise), so a reachable target is "
+                            "instead left for the policy's own command, which the same "
+                            "veto still judges. The planner's veto always runs on "
+                            "whichever command leaves, so a person stepping onto either "
+                            "path's line holds the robot. 'none' (the default) is "
+                            "today's behaviour: the policy's command, clamped, is what "
+                            "the veto judges")
     group.add_argument("--heading-servo", choices=("off", *SERVO_MODES), default="off",
                        help="turn the nose towards something the policy does not steer "
                             "for. The policy commands no yaw at all, so with the servo "
@@ -1581,10 +1587,27 @@ def main(argv=None, bindings=None) -> int:
                 # accuracy — any command past the deadband leaves at the primitive's
                 # measured rate — so the veto's rollout of a supervisor command
                 # describes the motion the robot will actually make.
+                #
+                # ``lateral_capable`` IS ``limits.max_vy > 0``, not a new flag, and not
+                # a read into an axis profile this module has no business touching.
+                # ``limits`` is this run's ENVELOPE, already resolved from
+                # ``--max-vy`` by the time the run loop calls this factory, and it is
+                # the one signal ``TurnDriveSupervisor`` was designed to be handed
+                # rather than to go read for itself (see its own constructor
+                # docstring). It is also, today, a SOUND signal and not merely a
+                # convenient one: ``Lite3Bindings._validate_axis_profile_for_envelope``
+                # refuses to walk live with ``--max-vy`` above zero unless the axis
+                # profile evidences BOTH ``lateral_positive`` and ``lateral_negative``,
+                # so "the operator raised max-vy off the SOP's zero" and "both strafe
+                # primitives are commissioned" cannot come apart on a live run. No new
+                # ``--execution-supervisor`` value is needed for the same reason: the
+                # thing that changed is a capability of THIS run's already-stated
+                # envelope, not a new mode an operator would ever choose between.
                 supervisor = TurnDriveSupervisor(
                     robot_radius_m=config.robot_radius_m,
                     drive_speed_m_s=limits.max_vx,
-                    turn_rate_rad_s=limits.max_wz)
+                    turn_rate_rad_s=limits.max_wz,
+                    lateral_capable=limits.max_vy > 0.0)
             planner = MappoPlanner(limits, config, runner,
                                    supervised=args.policy_mode == "supervised",
                                    refusal_log=args.refusal_log,

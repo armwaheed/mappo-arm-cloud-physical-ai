@@ -7,25 +7,43 @@
 
 THE MISMATCH THIS EXISTS FOR. The shipped MAPPO checkpoint is a holonomic VMAS agent: it
 can ask for any ``(vx, vy, wz)``, and threading a gap is exactly where it asks for a
-sideways component. The Lite3 it now drives has been measured to perform THREE motions
-and no more — straight ahead, and a left or right turn in place
-(``lite3_axis_profile_LITE3-A.json``: ``forward_positive`` and both yaw primitives
-evidenced, lateral and reverse ``null``). The deployment SOP therefore runs with
-``--max-vy 0``, which deletes the policy's lateral intent at the envelope clamp, and the
-axis mapping is sign-only besides, so no magnitude survives either. What was observed on
-2026-08-26 was the consequence: the robot walked straight at the bin it had detected,
-because "detected" and "able to execute the avoidance the policy wants" are different
-properties and only the first held.
+sideways component. The Lite3 it now drives had been measured, at the time this module
+was written, to perform THREE motions and no more — straight ahead, and a left or right
+turn in place (``lite3_axis_profile_LITE3-A.json``: ``forward_positive`` and both yaw
+primitives evidenced, lateral and reverse ``null``). The deployment SOP therefore ran
+with ``--max-vy 0``, which deletes the policy's lateral intent at the envelope clamp,
+and the axis mapping is sign-only besides, so no magnitude survives either. What was
+observed on 2026-08-26 was the consequence: the robot walked straight at the bin it had
+detected, because "detected" and "able to execute the avoidance the policy wants" are
+different properties and only the first held. (Both lateral primitives are since
+measured — see ``lateral_capable`` below — but the sign-only mapping and the yaw/drive
+split this module was built around are unchanged, which is why its OWN commands still
+never ask for a lateral component.)
 
-This module is option B of the two legitimate fixes, chosen over commissioning an
-unmeasured lateral primitive: restrict the AVOIDANCE to motions the physical execution
-layer has actually demonstrated. When a mapped static obstacle blocks the straight line
-from the robot to the goal, the supervisor replaces the policy's command with a
-two-segment detour — out to a waypoint beside the obstacle, then on to the goal —
-executed as a sequence of pure turns and pure straight drives. No segment ever asks for
-a lateral component, and no segment combines forward with yaw, because a sign-only
-mapping that snaps a diagonal to one of eight directions does not trace the arc the
-combined command was planned as.
+This module was written as option B of the two legitimate fixes, chosen AT THE TIME
+over commissioning an unmeasured lateral primitive: restrict the AVOIDANCE to motions
+the physical execution layer had actually demonstrated. When a mapped static obstacle
+blocks the straight line from the robot to the goal, the supervisor replaces the
+policy's command with a two-segment detour — out to a waypoint beside the obstacle,
+then on to the goal — executed as a sequence of pure turns and pure straight drives. No
+segment this module EMITS ever asks for a lateral component, and no segment combines
+forward with yaw, because a sign-only mapping that snaps a diagonal to one of eight
+directions does not trace the arc the combined command was planned as, and
+``SupervisorCommand.__post_init__`` still enforces both invariants structurally — this
+module was never taught to strafe, and still is not.
+
+OPTION A HAS SINCE BEEN DONE, ON BOTH SIDES: ``lateral_negative`` (the robot's left)
+measured 0.206 m/s and ``lateral_positive`` (its right) 0.209 m/s (2026-09-07). That
+does not retire this module — an obstacle far enough off the line that no lateral step
+reaches around it still needs the two-segment detour, and the type this module returns
+still cannot express a strafe — but it does mean the detour is no longer the only
+executable answer to a blocked line. ``lateral_capable``, passed in by the caller
+rather than read off an axis profile this class has never touched, tells ``command()``
+when the segment it would otherwise turn toward is reachable by SOME nonnegative-vx,
+any-vy combination in one motion. When it is, ``command()`` returns ``None`` instead of
+building that segment, handing the tick to the policy the primitive was commissioned
+for. See :data:`LATERAL_HANDOFF_RAD` and the comment in :meth:`TurnDriveSupervisor.
+command` for exactly where that boundary sits.
 
 THE WAYPOINT IS A TANGENT-LINE INTERSECTION, and the reason is a measurement, not a
 taste. The naive placement — the point beside the obstacle at the required gap,
@@ -79,6 +97,18 @@ from geometry import wrap_pi  # noqa: E402
 #: enough that driving starts with the robot genuinely pointing at the waypoint rather
 #: than vaguely toward it.
 HEADING_TOLERANCE_RAD = math.radians(15.0)
+
+#: The heading error beyond which a lateral-capable robot's own strafe cannot reach the
+#: current leg's target without commanding reverse. ``mappo_drive`` clamps the forward
+#: component of every command that leaves its planner — this module's own turn/drive
+#: pair included — to ``max(0.0, ...)`` (its "FORWARD ONLY" comment; the camera is a
+#: forward cone and there is nothing behind it but unobserved floor). A target within
+#: this many radians of the nose is reachable by SOME nonnegative-vx, any-vy
+#: combination in a single motion; past it, only a turn brings the bearing into range
+#: at all, strafe or no strafe. Ninety degrees is not a tuned tolerance the way
+#: ``HEADING_TOLERANCE_RAD`` is — it is the exact boundary of "a forward component
+#: exists", ``cos(bearing) >= 0``, so there is no measurement that could move it.
+LATERAL_HANDOFF_RAD = math.radians(90.0)
 
 #: How close to the waypoint the robot must be before the SECOND leg is even
 #: considered — a necessary condition, not a sufficient one: the goal becomes the
@@ -170,13 +200,36 @@ class TurnDriveSupervisor:
             the deadband executes at the primitive's measured speed — so pass the
             measured primitive speed (or the envelope ceiling above it), not a wish.
         turn_rate_rad_s: the same, for yaw.
+        lateral_capable: whether this robot has an EVIDENCED lateral primitive to drive
+            on, on top of the turn/drive ones this module was built around. A single
+            flag, not a per-side pair, and that is a judgement call worth stating: the
+            one caller that can populate it — ``mappo_drive``'s planner factory — has
+            only ONE signal available where this class is built, the envelope's
+            ``max_vy`` ceiling, and that ceiling is symmetric by construction (the
+            planner clamps ``vy`` to ``[-max_vy, +max_vy]``, one number both ways). A
+            per-side parameter here would just receive that same bit twice. It would
+            also assert a distinction the platform's own gate does not let exist live:
+            ``Lite3Bindings._validate_axis_profile_for_envelope`` refuses to walk with
+            ``--max-vy`` above zero unless BOTH ``lateral_positive`` AND
+            ``lateral_negative`` are evidenced, so by the time a live run reaches this
+            class, "capable" and "capable on both sides" are the same fact — which
+            matches what commissioning actually did here: LEFT first, then RIGHT,
+            both before any run sets ``--max-vy`` off zero. A future SOP that ships a
+            transport where one side can go live without the other is the moment to
+            split this into two flags, not before (YAGNI, and it is an additive
+            constructor change when it happens). Default ``False`` reproduces every
+            tick this module computed before either side was measured: turning
+            wherever the straight line was blocked, whether or not a strafe would have
+            done the same job — see :data:`LATERAL_HANDOFF_RAD` for where ``True``
+            changes that.
     """
 
     def __init__(self, *, robot_radius_m: float,
                  clearance_m: float = STATIC_HARD_GAP_M + EXECUTION_MARGIN_M,
                  drive_speed_m_s: float, turn_rate_rad_s: float,
                  heading_tolerance_rad: float = HEADING_TOLERANCE_RAD,
-                 waypoint_arrival_m: float = WAYPOINT_ARRIVAL_M) -> None:
+                 waypoint_arrival_m: float = WAYPOINT_ARRIVAL_M,
+                 lateral_capable: bool = False) -> None:
         for name, value in (("robot_radius_m", robot_radius_m),
                             ("clearance_m", clearance_m),
                             ("drive_speed_m_s", drive_speed_m_s),
@@ -191,6 +244,7 @@ class TurnDriveSupervisor:
         self._turn_rate_rad_s = turn_rate_rad_s
         self._heading_tolerance_rad = heading_tolerance_rad
         self._waypoint_arrival_m = waypoint_arrival_m
+        self._lateral_capable = lateral_capable
 
     def _required_gap_m(self, obstacle) -> float:
         """Centre-line clearance the straight path must keep from this obstacle."""
@@ -323,7 +377,10 @@ class TurnDriveSupervisor:
         it AND clear to run at the goal in a straight line (see below — the disc alone
         reaches into the blocker's clearance circle), then the goal; the phase is
         "turn" until the nose is within tolerance of that target's bearing, then
-        "drive".
+        "drive" — UNLESS ``lateral_capable`` was set and the target is already within
+        the reachable forward hemisphere, in which case this returns ``None`` instead
+        of either phase; see the comment above the check for why that is correct and
+        not a strafe smuggled through a ``None``.
         """
         obstacle = self.blocker(pose, goal, obstacles)
         if obstacle is None:
@@ -353,6 +410,33 @@ class TurnDriveSupervisor:
             target = waypoint
         error = wrap_pi(math.atan2(target[1] - y, target[0] - x) - yaw)
         blocker_id = getattr(obstacle, "object_id", None)
+
+        # STAND DOWN RATHER THAN LEARN TO STRAFE. A future edit that has this method
+        # EMIT a lateral component fights ``SupervisorCommand.__post_init__``'s own
+        # invariant (``vy`` is always ``0.0``) — the fix for a commissioned strafe
+        # primitive is "get out of the way", not "grow a fourth phase". When the
+        # current target is within the reachable forward hemisphere (see
+        # :data:`LATERAL_HANDOFF_RAD`), a holonomic command combining ``vx`` and ``vy``
+        # gets there in one motion — exactly what the strafe primitives were
+        # commissioned for, and exactly the manoeuvre this turn-then-drive pair spends
+        # two phases and a stop-turn-stop-drive cadence approximating. Returning
+        # ``None`` here hands the tick to ``mappo_drive``'s policy-then-veto path,
+        # which carries a lateral component through untouched (its own "FORWARD ONLY"
+        # clamp restricts ``vx``, never ``vy``) and re-judges the ACTUAL command
+        # against the same static map on every subsequent tick — so a policy that
+        # picks a worse line than this module's own tangent corner is caught by that
+        # veto, not trusted blindly on the strength of a geometry check run before it
+        # ever moved.
+        #
+        # Outside the reachable hemisphere this still turns, unconditionally —
+        # ``lateral_capable`` changes nothing there, because a strafe cannot stand in
+        # for a turn whose whole job is bringing a behind-the-nose bearing into range.
+        # `test_the_supervisor_still_turns_when_lateral_capable_cannot_reach_the_leg`
+        # pins that this flag narrows the module's authority rather than switching it
+        # off wholesale.
+        if self._lateral_capable and abs(error) <= LATERAL_HANDOFF_RAD:
+            return None
+
         # DRIVE ONLY FROM THE OUTWARD HALF OF THE TOLERANCE BAND. The bearing to the
         # waypoint IS the tangent angle along the first leg, so a nose pointed even one
         # degree short of it (toward the blocker) is a straight line that enters the

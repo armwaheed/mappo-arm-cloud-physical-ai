@@ -1702,6 +1702,34 @@ def test_the_execution_supervisor_replaces_the_policy_on_a_blocked_line():
     assert decision["final"]["reason"] == "exec-turn"
 
 
+def test_the_execution_supervisor_stands_down_once_lateral_is_commissioned():
+    """The other half of the 2026-09-07 fix, at the same seam. With BOTH strafe
+    primitives commissioned (``lateral_capable=True``) and the nose already on the
+    waypoint bearing — the exact tick the test above turns the robot for — the
+    supervisor must instead return ``None`` and let the policy's own command reach
+    the legs, lateral component included: the envelope only zeroes ``vy`` when
+    ``--max-vy 0``, which a lateral-capable run is not."""
+    supervisor = TurnDriveSupervisor(robot_radius_m=0.25, drive_speed_m_s=0.50,
+                                     turn_rate_rad_s=1.0, lateral_capable=True)
+    static_bin = _lite3_bin()
+    blocker = supervisor.blocker((0.0, 0.0, 0.0), (3.0, 0.0), [static_bin])
+    waypoint, side = supervisor._waypoint((0.0, 0.0, 0.0), (3.0, 0.0), blocker,
+                                          [static_bin])
+    yaw = math.atan2(waypoint[1], waypoint[0])
+    # A small OUTWARD lateral ask — away from the blocker's side of the leg, same
+    # convention `command()` itself uses — so the stub's command clears the veto
+    # instead of testing an unrelated refusal.
+    lateral = 0.05 if side == "left" else -0.05
+    planner = _supervised_planner(_StubRunner((0.30, lateral, 0.0)), supervisor)
+    command = planner.plan((0.0, 0.0, yaw), (3.0, 0.0), (0.0, 0.0, 0.0), [static_bin])
+    assert command.reason == "policy", command.reason
+    assert command.vy != 0.0, "the lateral component must survive to the legs"
+    assert planner.counts["turn_drive"] == 0 and planner.counts["vetoed"] == 0
+    decision = planner.decision_record()
+    assert "supervisor" not in decision, \
+        "a stand-down must record no supervisor layer, same as an unblocked line"
+
+
 def test_the_shared_veto_still_judges_the_supervisors_command():
     """A person stepping onto the detour path must hold the robot EVEN THOUGH the
     command came from the supervisor. The supervisor only ever reads the static map;
