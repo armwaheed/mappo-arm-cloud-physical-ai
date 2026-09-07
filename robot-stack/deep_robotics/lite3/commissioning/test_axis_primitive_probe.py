@@ -42,6 +42,7 @@ from deep_robotics.lite3.commissioning.axis_primitive_probe import (
     COMMAND_MARGIN,
     PRIMITIVES,
     _profile_sha256,
+    _validate,
     analyse,
     build_parser,
     compare_with_profile,
@@ -165,8 +166,8 @@ class SignOnlyLocomotion:
         self.time += seconds
 
 
-def _run(loco, plan, segment=2.0):
-    return execute(loco, plan, segment_s=segment, tick_s=0.1,
+def _run(loco, plan, segment=2.0, settle=0.0):
+    return execute(loco, plan, segment_s=segment, tick_s=0.1, settle_s=settle,
                    printer=lambda _line: None, clock=loco.clock, sleep=loco.sleep)
 
 
@@ -473,6 +474,59 @@ def test_the_parser_offers_no_default_for_anything_physical():
     assert defaults.lane_metres is None
     assert defaults.lane_width_metres is None
     assert defaults.axis_profile is None
+
+
+def test_the_default_settle_adds_no_commands_at_all():
+    """Zero is the default so that today's run stays comparable with the forward and yaw
+    primitives already evidenced on both Ventures, which were measured without a dwell."""
+    profile = _profile()
+    plan = plan_for(_BY_NAME["lateral_negative"], 0.05, 2)
+    without = SignOnlyLocomotion(profile, {"lateral_negative": 0.3})
+    _run(without, plan)
+    with_zero = SignOnlyLocomotion(profile, {"lateral_negative": 0.3})
+    _run(with_zero, plan, settle=0.0)
+    assert without.commands == with_zero.commands
+
+
+def test_a_settle_holds_zero_before_every_segment_including_the_first():
+    """The first segment opens straight out of prepare_motion, not out of a measured
+    segment, so it needs the dwell as much as the ones after a treatment do."""
+    profile = _profile()
+    plan = plan_for(_BY_NAME["lateral_negative"], 0.05, 2)
+    loco = SignOnlyLocomotion(profile, {"lateral_negative": 0.3})
+    _run(loco, plan, settle=0.5)
+    # The dwell commands zero on all three axes; a control segment does too, so count
+    # the run's zero commands against a dwell-free run of the same plan.
+    bare = SignOnlyLocomotion(profile, {"lateral_negative": 0.3})
+    _run(bare, plan)
+    zeros = lambda loco: sum(1 for c in loco.commands if c == (0.0, 0.0, 0.0))
+    assert zeros(loco) > zeros(bare), "a dwell must put extra zero commands on the wire"
+
+
+def test_a_settle_never_commands_anything_but_zero():
+    profile = _profile()
+    plan = plan_for(_BY_NAME["lateral_negative"], 0.05, 2)
+    loco = SignOnlyLocomotion(profile, {"lateral_negative": 0.3})
+    _run(loco, plan, settle=0.5)
+    for vx, vy, vyaw in loco.commands:
+        assert vyaw == 0.0
+        assert (vx, vy) == (0.0, 0.0) or vy > 0.0, (vx, vy)
+
+
+def test_a_negative_settle_is_refused_before_anything_connects():
+    """And refused BY NAME. With the lane flags left off, this same call refuses for
+    those instead, and a test that only asserted "it refused" would pass without the
+    dwell check existing at all."""
+    room = ["--assume-up-to", "0.5", "--lane-metres", "3.0", "--lane-width-metres", "2.0"]
+    good = build_parser().parse_args([*_CONTEXT, *_AXIS, *room, "--settle", "0.0"])
+    _validate(good)                       # zero is legal and must not refuse
+    bad = build_parser().parse_args([*_CONTEXT, *_AXIS, *room, "--settle", "-1.0"])
+    try:
+        _validate(bad)
+    except Refusal as refusal:
+        assert "--settle" in str(refusal), str(refusal)
+    else:
+        raise AssertionError("a negative --settle was accepted")
 
 
 if __name__ == "__main__":

@@ -106,9 +106,11 @@ from deep_robotics.lite3.commissioning.measurement import (
     paste_block,
     print_paste_block,
     refuse_unmeasured,
+    require_non_negative_finite,
     require_positive_finite,
     run_main,
     run_segment,
+    settle,
     stopped_afterwards,
     write_record,
 )
@@ -130,6 +132,13 @@ REPEATS = 3
 #: above the deadband emits the identical datagram, so this only has to clear it; it is
 #: above 1.0 by enough that a float comparison at the boundary cannot decide the run.
 COMMAND_MARGIN = 1.5
+
+#: Seconds held at zero before each segment, measuring nothing. Zero by default because
+#: every forward and yaw primitive already evidenced on both Ventures was measured
+#: without it, and a dwell that switched itself on would silently make this run
+#: incomparable with those. Pass ``--settle`` when a primitive's own coast is landing in
+#: the next segment; see :func:`measurement.settle`.
+SETTLE_S = 0.0
 
 
 class Primitive:
@@ -217,12 +226,19 @@ def planned_excursion_m(plan: list, segment_s: float, delivered_m_s: float) -> f
     return len(treatments) * segment_s * delivered_m_s
 
 
-def execute(loco, plan, *, segment_s: float, tick_s: float, printer=print,
-            clock=time.monotonic, sleep=time.sleep) -> list:
-    """Walk one primitive's plan, printing each segment as it lands. Always ends stopped."""
+def execute(loco, plan, *, segment_s: float, tick_s: float, settle_s: float = 0.0,
+            printer=print, clock=time.monotonic, sleep=time.sleep) -> list:
+    """Walk one primitive's plan, printing each segment as it lands. Always ends stopped.
+
+    ``settle_s`` is held at zero BEFORE every segment, the first one included: a segment
+    has to open from a stopped body, and the first opens straight out of
+    ``prepare_motion`` rather than out of a measured segment. See :func:`settle` for why
+    a longer ``segment_s`` is not the same fix.
+    """
     segments = []
     with stopped_afterwards(loco):
         for index, (role, vx, vy) in enumerate(plan, start=1):
+            settle(loco, duration_s=settle_s, tick_s=tick_s, clock=clock, sleep=sleep)
             segment = run_segment(loco, role=role, vx=vx, vy=vy,
                                   duration_s=segment_s, tick_s=tick_s,
                                   clock=clock, sleep=sleep)
@@ -373,6 +389,7 @@ def record_context(args, profile, present) -> dict:
         "firmware": args.firmware,
         "payload": args.payload,
         "segment_s": args.segment,
+        "settle_s": args.settle,
         "tick_s": args.tick,
         "repeats": args.repeats,
         "commanded_m_s": profile.linear_deadband_m_s * COMMAND_MARGIN,
@@ -399,6 +416,11 @@ def build_parser() -> argparse.ArgumentParser:
                         help=f"seconds per segment (default: {SEGMENT_S})")
     method.add_argument("--tick", type=float, default=TICK_S,
                         help=f"command period, seconds (default: {TICK_S})")
+    method.add_argument("--settle", type=float, default=SETTLE_S, metavar="SECONDS",
+                        help="hold zero for this long before each segment, measuring "
+                             "nothing, so a segment opens from a stopped body rather "
+                             "than from one still coasting out of the last command "
+                             f"(default: {SETTLE_S}, which is the old behaviour)")
     method.add_argument("--assume-up-to", type=float, default=None, metavar="M_S",
                         help="for the ROOM CHECK ONLY: the fastest this robot might turn "
                              "out to walk. Nobody knows it yet -- that is what this probe "
@@ -434,6 +456,7 @@ def _validate(args) -> None:
                                "--segment": args.segment, "--tick": args.tick,
                                "--lane-metres": args.lane_metres,
                                "--lane-width-metres": args.lane_width_metres})
+    require_non_negative_finite(**{"--settle": args.settle})
     if args.tick >= args.segment:
         raise Refusal("--tick must be shorter than --segment, or a segment carries at "
                       "most one command")
@@ -568,7 +591,8 @@ def main(argv=None) -> int:
             plan = plan_for(primitive, deadband, args.repeats)
             _check_room(primitive, plan, args, print)
             print(f"\n[axis] {primitive.name}, {len(plan)} segments")
-            segments = execute(loco, plan, segment_s=args.segment, tick_s=args.tick)
+            segments = execute(loco, plan, segment_s=args.segment, tick_s=args.tick,
+                               settle_s=args.settle)
             results[primitive.name] = analyse(segments, primitive, print)
     finally:
         loco.shutdown()
