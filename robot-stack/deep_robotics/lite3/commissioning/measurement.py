@@ -101,6 +101,19 @@ def require_positive_finite(**values: float) -> None:
         raise Refusal("these values must be finite and positive: " + ", ".join(sorted(bad)))
 
 
+def require_non_negative_finite(**values: float) -> None:
+    """Refuse for every keyword that is not a finite number of zero or more.
+
+    Separate from :func:`require_positive_finite` rather than a flag on it, because the
+    two say different things about a missing value: a lane length of zero is a lane
+    nobody measured, while a dwell of zero is a dwell somebody chose not to take.
+    """
+    bad = [name for name, value in values.items()
+           if value is None or not math.isfinite(float(value)) or float(value) < 0.0]
+    if bad:
+        raise Refusal("these values must be finite and not negative: " + ", ".join(sorted(bad)))
+
+
 def brief(title: str, *, does: str, needs: Sequence[str], means: str,
           moves: bool, printer: Callable[[str], None] = print) -> None:
     """Print what this probe is about to do, before it does any of it.
@@ -242,6 +255,43 @@ def run_segment(loco, *, role: str, vx: float, vy: float, duration_s: float,
         estimator_forward_mps=(sum(estimates) / len(estimates)) if estimates else math.nan,
         estimator_samples=len(estimates), estimator_failures=failures,
     )
+
+
+def settle(loco, *, duration_s: float, tick_s: float,
+           clock: Callable[[], float] = time.monotonic,
+           sleep: Callable[[float], None] = time.sleep) -> None:
+    """Hold zero between segments so the NEXT segment opens from a stopped body.
+
+    :func:`run_segment` samples ``start_pose`` the instant the previous segment ends, so
+    a body still coasting from the last command has that coast measured as part of the
+    next segment. On a zero-command control it reads as odometry drift, and
+    :func:`check_controls_are_still` then refuses the whole run for being unable to tell
+    motion from noise -- the right refusal for the wrong reason. Measured on LITE3-A,
+    2026-09-07: a 0.202 m/s left strafe was followed by controls reading 0.062 then
+    0.039 m/s, scaling with the preceding travel and decaying after it, which is the
+    signature of coast rather than of an estimator wandering on its own.
+
+    **Lengthening ``--segment`` does not fix this, and that is the trap.** The coast is a
+    fixed DISTANCE and :data:`WALKED_MARGIN_M` is in metres, so a longer segment carries
+    exactly the same contaminant and merely spreads it over more seconds.
+
+    Zero is re-sent every tick for the reason :func:`run_segment` re-sends: the vendor
+    interface is edge-triggered with a 250 ms axis timeout, so one send is
+    indistinguishable from a dropped datagram for the rest of the dwell.
+
+    Deliberately measures nothing and returns nothing. A dwell that produced a
+    :class:`Segment` would be a third kind of row with no treatment to compare it
+    against, and the whole point of these seconds is that nobody may attribute them to a
+    primitive.
+    """
+    if not math.isfinite(duration_s) or duration_s < 0.0:
+        raise Refusal("settle duration must be finite and not negative")
+    if duration_s == 0.0:
+        return
+    start = clock()
+    while clock() - start < duration_s:
+        loco.set_velocity(0.0, 0.0, 0.0)
+        sleep(tick_s)
 
 
 def check_anchors_walked(segments: Iterable[Segment]) -> None:

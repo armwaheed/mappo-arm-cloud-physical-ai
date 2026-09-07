@@ -46,10 +46,12 @@ from deep_robotics.lite3.commissioning.measurement import (
     paste_block,
     read_record,
     refuse_unmeasured,
+    require_non_negative_finite,
     require_positive_finite,
     require_reviewed,
     run_main,
     run_segment,
+    settle,
     write_record,
 )
 
@@ -483,6 +485,67 @@ def test_run_main_turns_a_refusal_into_a_banner_and_exit_two():
 
 def test_run_main_passes_a_success_through():
     assert run_main(lambda: 0, "x", printer=lambda _line: None) == 0
+
+
+class ZeroRecorder:
+    """Records what a dwell sends. A dwell may only ever send zero."""
+
+    def __init__(self):
+        self.commands = []
+
+    def set_velocity(self, vx, vy, vyaw):
+        self.commands.append((vx, vy, vyaw))
+
+
+def _fake_clock(step):
+    state = {"t": 0.0}
+
+    def clock():
+        return state["t"]
+
+    def sleep(seconds):
+        state["t"] += seconds if seconds else step
+
+    return clock, sleep
+
+
+def test_a_zero_settle_sends_nothing_at_all():
+    """The default must be byte-identical to the behaviour every existing profile was
+    measured under, or today's numbers are not comparable with 2026-08-26's."""
+    loco = ZeroRecorder()
+    clock, sleep = _fake_clock(0.1)
+    settle(loco, duration_s=0.0, tick_s=0.1, clock=clock, sleep=sleep)
+    assert loco.commands == []
+
+
+def test_a_settle_holds_zero_and_re_sends_every_tick():
+    loco = ZeroRecorder()
+    clock, sleep = _fake_clock(0.1)
+    settle(loco, duration_s=0.5, tick_s=0.1, clock=clock, sleep=sleep)
+    assert len(loco.commands) == 5, loco.commands
+    assert set(loco.commands) == {(0.0, 0.0, 0.0)}, "a dwell may only ever command zero"
+
+
+def test_a_settle_refuses_a_negative_or_infinite_dwell():
+    loco = ZeroRecorder()
+    for bad in (-0.1, float("inf"), float("nan")):
+        try:
+            settle(loco, duration_s=bad, tick_s=0.1)
+        except Refusal:
+            continue
+        raise AssertionError(f"settle accepted {bad}")
+    assert loco.commands == []
+
+
+def test_non_negative_finite_admits_zero_but_not_below_it():
+    require_non_negative_finite(**{"--settle": 0.0})
+    require_non_negative_finite(**{"--settle": 2.5})
+    for bad in (-0.001, float("inf"), None):
+        try:
+            require_non_negative_finite(**{"--settle": bad})
+        except Refusal:
+            continue
+        raise AssertionError(f"accepted {bad}")
 
 
 if __name__ == "__main__":
