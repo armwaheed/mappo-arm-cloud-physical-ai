@@ -535,6 +535,15 @@ def test_no_arrival_path_can_name_a_travelling_kind():
     reach must be one that keeps the robot's centre where it is. This asserts the two halves
     separately, because they fail differently: a new `play_flourish` call site with a
     travelling kind, and a travelling kind's name appearing anywhere on that path at all.
+
+    ⚠️ READ THIS BEFORE TRUSTING IT. On 2026-09-07 the operator had the rear look disabled
+    and `mission.py` gained a DIRECT arrival path to a travelling kind. This test went on
+    passing, unchanged, because that path names the kind through `args.flip_kind` rather
+    than as a literal -- so both halves above stayed true while the property in the title
+    stopped holding. It is still worth keeping: a hardcoded travelling kind is a real
+    regression and this catches it. But it is no longer the whole boundary, and
+    `test_the_direct_arrival_flip_is_gated_and_carries_the_only_remaining_check` is the
+    half that covers what replaced it. Neither is sufficient alone.
     """
     import ast
 
@@ -555,6 +564,66 @@ def test_no_arrival_path_can_name_a_travelling_kind():
     assert set(fired) <= set(ARRIVAL_KINDS), (
         f"mission.py fires {sorted(set(fired))} automatically and only "
         f"{sorted(ARRIVAL_KINDS)} keep the robot's centre where it is")
+
+
+def test_the_direct_arrival_flip_is_gated_and_carries_the_only_remaining_check():
+    """⛔⛔ WHAT REPLACED THE REAR LOOK, pinned at the source.
+
+    Until 2026-09-07 the route from an arrival to a kind that TRAVELS ran through
+    `look_behind`, which refused until a completed outward turn, a completed return turn
+    and unanimous fresh frames from the run's own detector said the space behind was
+    clear. The operator had that disabled -- twice asked for, and granted -- so the route
+    is now direct.
+
+    That leaves exactly ONE check on the space a ~1.5 m backward manoeuvre travels into,
+    on a platform with no rear camera, no ultrasonic and no bumper: the operator's
+    `--flip-rear-clearance-metres` tape measurement, enforced by `check_rear`. If that
+    argument ever stops being passed on this path, nothing anywhere refuses and nothing
+    else in this suite notices -- the literal-name test above kept passing right through
+    the change that removed the look.
+
+    So this asserts three things about the direct path: it is gated on `flip_on_arrival`,
+    it passes the rear clearance, and the parser refuses when the clearance is absent.
+    """
+    import ast
+
+    source = (_HERE.parents[0] / "visual_nav" / "mission.py").read_text()
+    tree = ast.parse(source, filename="mission.py")
+
+    # The dynamic gesture calls -- the ones a literal-name scan cannot see.
+    dynamic = [node for node in ast.walk(tree)
+               if isinstance(node, ast.Call)
+               and getattr(node.func, "id", None) == "run_gesture"
+               and len(node.args) > 2
+               and not isinstance(node.args[2], ast.Constant)]
+    assert dynamic, (
+        "no dynamic run_gesture call in mission.py. If the direct arrival flip was "
+        "removed and the rear look restored, delete this test and say so; do not leave "
+        "it passing vacuously")
+
+    for call in dynamic:
+        rendered = ast.dump(call)
+        assert "rear-clearance-metres" in rendered, (
+            "a dynamically-named gesture is fired without --rear-clearance-metres. With "
+            "the rear look gone that argument is the ONLY thing standing between this "
+            "robot and whatever is behind it")
+        assert "acrobatic-battery-floor-pct" in rendered, "no battery floor on the flip path"
+        assert "action-hold-seconds" in rendered, (
+            "no hold seconds: returning before the firmware finishes hands control back "
+            "mid-manoeuvre")
+
+    # Gated, not unconditional. `flip_on_arrival` has to appear in a test guarding it.
+    guards = [node for node in ast.walk(tree)
+              if isinstance(node, ast.If) and "flip_on_arrival" in ast.dump(node.test)
+              and any(call in ast.walk(node) for call in dynamic)]
+    assert guards, "the direct flip is not gated on flip_on_arrival"
+
+    # And the parser refuses a flip armed without the clearance, rather than formatting
+    # None with :.4f at the end of a run on a robot standing at its goal.
+    assert "--flip-rear-clearance-metres" in source
+    assert "if value is None" in source, (
+        "the parser no longer checks the flip values for None; they were validated inside "
+        "look_behind, which this path bypasses")
 
 
 def test_a_mission_shaped_invocation_of_a_travelling_kind_is_refused():
