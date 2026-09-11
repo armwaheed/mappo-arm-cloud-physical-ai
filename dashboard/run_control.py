@@ -498,24 +498,43 @@ def servo_flags(profile: RunProfile, heading_servo: str) -> list:
     return ["--heading-servo", heading_servo]
 
 
-def run_env_pairs(*, flip: bool) -> tuple:
+#: What the robot does when it reaches the goal. ORDER IS THE DROPDOWN ORDER, so the first
+#: entry is what an operator gets without choosing -- and it is ``spin`` deliberately.
+#:
+#: ``spin`` is a full 360 degree turn and is flourish's own ARRIVAL_KIND: a gesture that
+#: keeps the robot's centre where it is, which is the property that makes it safe to fire
+#: at the end of a run nobody is steering. It is what has always happened on arrival.
+#:
+#: The other two are VENDOR CANNED ACTIONS: one opcode, executed by the firmware, with
+#: nothing in this stack able to shape, slow, shorten or interrupt it once sent. They need
+#: the room's measurements in the profile, and ``flourish.check_rear`` holds each to its
+#: OWN floor -- 1.5 m for the carpet backflip, which travels backward into the one
+#: direction this platform cannot sense, and 0.90 m for ``hello``, whose travel nobody has
+#: measured and which is therefore held to the platform's own footprint.
+ARRIVAL_ACTIONS = ("spin", "hello", "carpet-backflip")
+
+
+def run_env_pairs(*, arrival_action: str) -> tuple:
     """The per-run environment overlay, on top of the profile's own ``env``.
 
-    ``MAPPO_FLIP`` is what ``venue_run.py`` reads to decide whether to build
-    ``--flip-on-arrival``. The four measurements it needs beside it (kind, rear clearance,
-    battery floor, hold seconds) are NOT here: they describe the ROOM and the robot, they
-    are tape-measured, and they belong in the profile next to the flourish's own settings.
-    This is only the switch.
+    ``MAPPO_ARRIVAL_ACTION`` is what ``venue_run.py`` reads to decide what fires at the
+    goal. The room's measurements it needs beside it -- rear clearance, battery floor, hold
+    seconds -- are NOT here: they describe the ROOM and the robot, they are tape-measured,
+    and they belong in the profile next to the flourish's own settings. This is only the
+    choice.
 
-    ⚠️ ``MAPPO_FLIP=0`` IS SENT EXPLICITLY WHEN THE BOX IS UNTICKED, and that is the whole
-    reason this returns a pair in both cases rather than an empty tuple. The profile's env
-    is exported into the same shell, a deployment may well carry ``MAPPO_FLIP=1`` in it,
-    and an unticked box that merely declines to say otherwise would leave that standing --
-    an operator who deliberately turned the flip OFF would get a robot that flips. Same
-    rule the argv follows two functions down: every setting is spelled, none is inherited,
-    because the far end's state is whatever it was on the day it was copied.
+    ⚠️ BOTH VARIABLES ARE SENT EXPLICITLY, EVERY RUN, and that is the whole reason this
+    returns pairs rather than an empty tuple for the default. The profile's env is exported
+    into the same environment; a deployment may carry ``MAPPO_FLIP=1`` from before this
+    control existed, and ``venue_run`` still honours that legacy spelling as "carpet
+    backflip" so a written-down runbook keeps working. An operator choosing ``spin`` who
+    merely declined to say otherwise would leave that standing and get a robot that
+    backflips. So ``MAPPO_FLIP=0`` goes out on every run and the new variable is
+    authoritative. Same rule the argv follows below: every setting is spelled, none is
+    inherited, because the far end's state is whatever it was on the day it was copied.
     """
-    return (f"MAPPO_FLIP={'1' if flip else '0'}",)
+    check_choice("arrival_action", arrival_action, ARRIVAL_ACTIONS)
+    return (f"MAPPO_ARRIVAL_ACTION={arrival_action}", "MAPPO_FLIP=0")
 
 
 def build_run_argv(profile: RunProfile, *, seconds: float, policy_mode: str,

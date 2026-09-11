@@ -11,12 +11,13 @@ This is the Lite3 Venture binding for the same visual navigator and MAPPO integr
 used on the Go2. It assumes the two event robots have one forward RGB camera and **no
 LiDAR**. Nothing in this path starts a LiDAR node or consumes a point cloud.
 
-🤸 **Want the flip on arrival?** The robot fires a vendor backflip when it reaches its
-goal, armed by a dashboard checkbox that ships off. It travels **~1.5 m backward into the
-one direction this platform has no sensor for**, so read
-[`../../../deploy/FLIP_ON_ARRIVAL.md`](../../../deploy/FLIP_ON_ARRIVAL.md) first — it lists
-the five gates that refuse it, the rear-clearance measurement that is easy to take in the
-wrong direction, and what is still unmeasured about the manoeuvre.
+🤸 **What happens when it reaches the goal?** Chosen per run on the dashboard: a 360°
+dance (the default, and the only one this stack can interrupt), the vendor `hello` wave, or
+a carpet backflip that travels **~1.5 m backward into the one direction this platform has
+no sensor for**. Read
+[`../../../deploy/ARRIVAL_ACTIONS.md`](../../../deploy/ARRIVAL_ACTIONS.md) first — it lists
+every gate that refuses one, the rear-clearance measurement that is easy to take in the
+wrong direction, and what is still unmeasured.
 
 📄 **Bringing this robot up against the Device Connect dashboard for the first time?** Use
 [`LITE3-DASHBOARD-BRINGUP-PROMPT.md`](LITE3-DASHBOARD-BRINGUP-PROMPT.md) — a bilingual

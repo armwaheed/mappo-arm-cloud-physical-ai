@@ -245,6 +245,53 @@ def test_every_place_that_declares_the_policy_mode_default_agrees():
         "mappo_drive.py's argparse default and robot_driver.start_run together")
 
 
+def test_every_place_that_declares_the_arrival_actions_agrees():
+    """The same three-way agreement as the policy control, on the one that decides whether
+    the robot fires a vendor canned action at the goal.
+
+    `run-arrival`'s options are written out in `index.html` rather than filled from
+    `ARRIVAL_ACTIONS`, because the option LABELS carry text no constant should ("travels
+    ~1.5 m BACKWARD, into the blind side"). So the two are declarations that can disagree,
+    and the FIRST option ships selected -- which makes page order the default an operator
+    gets by not touching the control.
+    """
+    with open(HTML) as handle:
+        html = handle.read()
+    marker = html[html.index('id="run-arrival"'):]
+    options = re.findall(r'<option value="([a-z-]+)"',
+                         marker[:marker.index("</select>")])
+
+    assert options == list(run_control.ARRIVAL_ACTIONS), (
+        f"index.html offers {options} but ARRIVAL_ACTIONS is "
+        f"{list(run_control.ARRIVAL_ACTIONS)}")
+    assert options[0] == "spin", (
+        "the default arrival action must be the one that keeps the robot's centre where "
+        "it is. A vendor canned action as the default would fire an uninterruptible "
+        "opcode at the end of every run nobody deliberately configured")
+
+
+def test_the_vendor_arrival_actions_are_the_ones_flourish_calls_operator_only():
+    """The page must not offer an arrival action that flourish would refuse, and must not
+    quietly treat a travelling kind as if it were a gesture.
+
+    `spin` is in flourish's ARRIVAL_KINDS; everything else offered here is a vendor canned
+    action and therefore in OPERATOR_ONLY_KINDS, which is what makes `--operator-triggered`
+    and a rear clearance mandatory for it.
+    """
+    import sys
+    lite3 = os.path.normpath(os.path.join(
+        HERE, "..", "robot-stack", "deep_robotics", "lite3", "locomotion"))
+    sys.path.insert(0, lite3)
+    import flourish
+
+    offered = list(run_control.ARRIVAL_ACTIONS)
+    assert offered[0] in flourish.ARRIVAL_KINDS, offered[0]
+    for action in offered[1:]:
+        assert action in flourish.OPERATOR_ONLY_KINDS, (
+            f"{action!r} is offered on arrival but flourish does not class it as a vendor "
+            f"canned action, so nothing would require a rear clearance for it")
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

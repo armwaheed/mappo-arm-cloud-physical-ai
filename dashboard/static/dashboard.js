@@ -69,10 +69,19 @@ function show(el, value, isError) {
 
 // ── devices ─────────────────────────────────────────────────────────────────
 async function onDeviceChanged() {
+  // FIRST, before any await: the robot we just left must not decide anything about this
+  // one. Without this the stale owner is on screen for the whole of the chain below.
+  applyControl("unknown", null);
+  // Started here and awaited last, so the status read overlaps the capability and model
+  // calls rather than queueing behind them. `get_status` costs the robot a subprocess --
+  // the comment on `refreshControl` measures it at 1.94 s on the Go2's Jetson -- and it
+  // was the LAST of three sequential awaits, which is the lag an operator sees as a
+  // button that stays grey for seconds after switching robots.
+  const control = refreshControl();
   const capabilities = await invoke("get_capabilities");
   renderCapabilities(capabilities.ok === false ? null : capabilities);
   await refreshModels();
-  await refreshControl();
+  await control;
 }
 
 // One status read on a focus change, and never on a timer. `get_status` costs the robot a
@@ -81,7 +90,18 @@ async function onDeviceChanged() {
 // event stream keeps it current for free.
 async function refreshControl() {
   const status = await invoke("get_status");
-  if (status.ok === false) return;
+  if (status.ok === false) {
+    // NOT a bare `return`. That left `controlOwner` holding whatever the previously
+    // focused robot was doing, permanently, with Start greyed and no reason on screen --
+    // and an unreachable robot is exactly when a status read fails, so the failure and
+    // the confusing symptom arrived together.
+    applyControl("unknown", null);
+    addNote($("run-notes"), "bad",
+      "<strong>Could not read this robot's status.</strong> Start is disabled because "
+      + "who is holding the legs is unknown, not because another robot is running. "
+      + escapeHtml(describeError(status.error)));
+    return;
+  }
   applyControl((status.control || {}).owner, (status.run || {}).run_id || null);
   if (status.mode_accepts_motion === false) {
     addNote($("run-notes"), "bad",
@@ -92,15 +112,32 @@ async function refreshControl() {
 // The one state an operator must never have to work out mid-run. It is a badge that cannot
 // be dismissed and a pad that is visibly inert, because "who is driving" is a state and not
 // a message.
+// ⛔ THREE STATES, NOT TWO, AND THE THIRD IS WHY THIS WAS A BUG. `controlOwner` is one
+// GLOBAL, and nothing reset it when the focus moved to another robot -- so robot 1 driving
+// left "policy" standing, and the robot you switched TO had its Start button greyed out by
+// a robot it has nothing to do with. It cleared when robot 1 finished, which made it look
+// like the two were coupled. They are not; the variable was just stale.
+//
+// "unknown" is what the focus change sets, and it gates exactly as conservatively as
+// "policy" does: a robot whose status has not been read yet must not offer Start and must
+// not offer the motion pad, because both would be a guess about who is holding the legs.
+// The difference is that it SAYS it is checking rather than claiming a robot is driving.
+function startBlocked() {
+  return state.controlOwner !== "operator";
+}
+
 function applyControl(owner, runId) {
-  state.controlOwner = owner === "policy" ? "policy" : "operator";
+  state.controlOwner =
+    owner === "policy" ? "policy" : owner === "unknown" ? "unknown" : "operator";
   state.runId = runId || null;
   const policy = state.controlOwner === "policy";
-  setBadge($("control-badge"), policy ? "policy is driving" : "control: operator",
-    policy ? "hot" : "on");
+  const unknown = state.controlOwner === "unknown";
+  setBadge($("control-badge"),
+    unknown ? "checking who is driving…" : policy ? "policy is driving" : "control: operator",
+    unknown ? "muted" : policy ? "hot" : "on");
   $("run-stop").disabled = false;             // never gated, in any state
-  $("run-start").disabled = policy;
-  setPadEnabled(!policy && !!(state.capabilities || {}).motion_enabled);
+  $("run-start").disabled = startBlocked();
+  setPadEnabled(!startBlocked() && !!(state.capabilities || {}).motion_enabled);
 }
 
 function setBadge(el, text, cls) {
@@ -481,6 +518,29 @@ function setPadEnabled(enabled) {
   $("motion-panel").classList.toggle("held", state.controlOwner === "policy");
 }
 
+//: Arrival actions that are VENDOR CANNED ACTIONS rather than flourish gestures. Derived
+//: from the option list rather than restated, so adding one to the page cannot leave a
+//: second copy here disagreeing about which need arming.
+function vendorArrivalOptions() {
+  return Array.from($("run-arrival").options).filter((o) => o.value !== "spin");
+}
+
+// THE VENDOR ACTIONS ARE GATED ON ARM MOTION; the spin is not. Both are fired by the
+// flourish, which needs `--live`, so on a dry run the only honest option is the one that
+// would have run anyway. Rather than disabling the whole control -- which would hide WHY
+// the choice narrowed -- the two vendor options are disabled individually and the value
+// snaps back to the spin, so an operator sees the options they cannot have and the reason
+// is on the label.
+function syncArrivalActions(armable) {
+  const armed = !!armable && $("run-arm").checked;
+  const select = $("run-arrival");
+  for (const option of vendorArrivalOptions()) {
+    option.disabled = !armed;
+  }
+  if (!armed && select.value !== "spin") select.value = "spin";
+  $("run-arrival-field").classList.toggle("held", !armed);
+}
+
 // ── the run ─────────────────────────────────────────────────────────────────
 function renderRunControls(caps) {
   const run = (caps || {}).run || { supported: false };
@@ -524,19 +584,8 @@ function renderRunControls(caps) {
   } else if (!$("run-arm").dataset.touched) {
     $("run-arm").checked = true;
   }
-  // THE FLIP IS GATED ON THE BOX ABOVE IT, and unlike that box it is never auto-ticked.
-  // `run-arm` defaults ON for an armed driver because a scene check is the common case and
-  // a forgotten tick costs a wasted run. The common case for an acrobatic that travels
-  // ~1.5 m into the direction this robot has no sensor for is NOT doing it, so the cost of
-  // the two mistakes is not symmetric and the defaults are not either.
-  //
-  // Unticking arm motion unticks this too, rather than leaving it armed-looking under a
-  // dry run it cannot act on: the flip is fired by the flourish, which needs --live.
-  const flipBox = $("run-flip");
-  flipBox.disabled = !armable || !$("run-arm").checked;
-  if (flipBox.disabled) flipBox.checked = false;
-  $("run-flip-field").classList.toggle("held", flipBox.disabled);
-  $("run-start").disabled = !run.supported || state.controlOwner === "policy";
+  syncArrivalActions(armable);
+  $("run-start").disabled = !run.supported || startBlocked();
   $("run-where").textContent = run.supported
     ? (run.remote ? `on the robot, over ${(run.launch_prefix || []).join(" ")}`
                   : "as a child of the driver, on the driver's own machine")
@@ -583,7 +632,7 @@ async function startRun() {
     policy_mode: $("run-mode").value,
     heading_servo: $("run-servo").value,
     arm_motion: $("run-arm").checked,
-    flip: $("run-flip").checked,
+    arrival_action: $("run-arrival").value,
   };
   $("run-start").disabled = true;
   try {
@@ -591,7 +640,7 @@ async function startRun() {
     show($("run-result"), summariseRun(result), result.ok === false);
     if (result.ok !== false) applyControl(result.live ? "policy" : "operator", result.run_id);
   } finally {
-    $("run-start").disabled = state.controlOwner === "policy";
+    $("run-start").disabled = startBlocked();
   }
 }
 
@@ -1383,14 +1432,10 @@ function init() {
   $("run-stop").addEventListener("click", stopRun);
   $("run-arm").addEventListener("change", () => {
     $("run-arm").dataset.touched = "1";
-    // The flip's gate is arm motion, so it has to move when arm motion does -- otherwise
-    // the box stays live after its precondition is withdrawn.
-    const flipBox = $("run-flip");
-    // `run-arm`'s own disabled state IS the armability signal here -- it is set from
-    // `armable` in renderRunControls -- so there is no second copy to fall out of date.
-    flipBox.disabled = !$("run-arm").checked || $("run-arm").disabled;
-    if (flipBox.disabled) flipBox.checked = false;
-    $("run-flip-field").classList.toggle("held", flipBox.disabled);
+    // The vendor actions' gate is arm motion, so it has to move when arm motion does --
+    // otherwise they stay selectable after their precondition is withdrawn. `run-arm`'s
+    // own disabled state IS the armability signal, so there is no second copy here.
+    syncArrivalActions(!$("run-arm").disabled);
     renderRunPreview();
   });
   $("run-mode").addEventListener("change", renderRunPreview);

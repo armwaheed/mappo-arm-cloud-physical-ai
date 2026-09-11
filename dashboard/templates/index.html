@@ -210,21 +210,28 @@ SPDX-License-Identifier: Apache-2.0
     </div>
 
     <div class="row">
-      <!-- OFF by default and never auto-ticked. `run-arm` re-ticks itself on a fresh
-           robot because a scene check is the common case; this must not, because the
-           common case for a manoeuvre that travels ~1.5 m into the robot's blind side is
-           NOT doing it. Disabled unless arm motion is on: the flip is fired by the
-           flourish, which needs --live, so an armed-looking box on a dry run would be a
-           promise the run cannot keep. -->
-      <label class="field check flip" id="run-flip-field"
-             title="Fires a BACKWARD vendor acrobatic on arrival, after look_behind turns
-the robot round and looks with the run's own camera. Needs arm motion. Needs the profile
-to answer MAPPO_FLIP_KIND, MAPPO_FLIP_REAR_CLEARANCE_M, MAPPO_FLIP_BATTERY_FLOOR_PCT and
-MAPPO_FLIP_HOLD_SECONDS — measurements of the room, no defaults. The detector finds VOC
-classes and CANNOT SEE A WALL, a step or a stage edge, so the tape-measured rear clearance
-is required beside the look, not replaced by it.">
-        <input id="run-flip" type="checkbox">
-        <span>⛔⛔ flip on arrival — travels ~1.5 m BACKWARD, into the blind side</span>
+      <!-- ORDER IS THE DEFAULT: the first option ships selected, and `spin` is first
+           deliberately. It is flourish's own ARRIVAL_KIND — it keeps the robot's centre
+           where it is, which is the property that makes a gesture safe at the end of a run
+           nobody is steering, and it is what has always happened on arrival.
+
+           The other two are VENDOR CANNED ACTIONS: one opcode, executed by the firmware,
+           with nothing in this stack able to shape, slow, shorten or interrupt it once
+           sent. They are disabled unless arm motion is on, because they are fired by the
+           flourish and the flourish needs --live. Pinned against run_control.ARRIVAL_ACTIONS
+           by test_stylesheet.py. -->
+      <label class="field" id="run-arrival-field"
+             title="What the robot does when it reaches the ArUco goal. The two vendor
+actions need arm motion, and need the profile to answer MAPPO_FLIP_REAR_CLEARANCE_M,
+MAPPO_FLIP_BATTERY_FLOOR_PCT and MAPPO_FLIP_HOLD_SECONDS — measurements of the room, which
+have no defaults. flourish.check_rear holds each action to its own floor: 1.5 m for the
+carpet backflip, 0.90 m for hello.">
+        <span>On arrival</span>
+        <select id="run-arrival">
+          <option value="spin">🕺 360° dance — turns in place, stays put</option>
+          <option value="hello">👋 hello — the front-leg wave (vendor 打招呼)</option>
+          <option value="carpet-backflip">⛔⛔ carpet backflip — travels ~1.5 m BACKWARD, into the blind side</option>
+        </select>
       </label>
     </div>
 

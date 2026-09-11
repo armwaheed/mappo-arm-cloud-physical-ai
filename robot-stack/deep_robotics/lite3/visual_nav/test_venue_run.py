@@ -151,7 +151,7 @@ _FLOURISH = {"MAPPO_FLOURISH": "1", "MAPPO_FLOURISH_LANE_WIDTH": "2.0",
 #: offered when it was written.
 _FLIP_KIND = _look_behind.BACKWARD_KINDS[0]
 
-_FLIP = {"MAPPO_FLIP": "1", "MAPPO_FLIP_KIND": _FLIP_KIND,
+_FLIP = {"MAPPO_ARRIVAL_ACTION": _FLIP_KIND,
          "MAPPO_FLIP_REAR_CLEARANCE_M": "2.0",
          "MAPPO_FLIP_BATTERY_FLOOR_PCT": "60", "MAPPO_FLIP_HOLD_SECONDS": "7.0"}
 
@@ -168,11 +168,11 @@ def test_the_flip_is_off_when_nothing_asks_for_it():
 
 
 def test_the_flip_off_switch_accepts_the_shapes_a_run_profile_actually_writes():
-    """`MAPPO_FLIP=0` is what the dashboard sends when the box is UNTICKED -- explicitly,
-    so it overrides a deployment carrying `MAPPO_FLIP=1` in its own profile env. If `0`
-    read as truthy, unticking the box would arm the flip."""
-    for value in ("0", "", "false", "False"):
-        env = {**_FLOURISH, **_FLIP, "MAPPO_FLIP": value}
+    """`MAPPO_ARRIVAL_ACTION=spin` is what the dashboard sends when the operator picks the
+    360 degree dance. If `spin` -- or an unset value -- were read as a vendor action, the
+    default arrival gesture would fire an uninterruptible opcode."""
+    for value in ("spin", ""):
+        env = {**_FLOURISH, **_FLIP, "MAPPO_ARRIVAL_ACTION": value}
         cmd = build_command(["--goal", "x"], env=env)
         assert "--flip-on-arrival" not in cmd, (value, cmd)
 
@@ -182,7 +182,7 @@ def test_a_partial_flip_answer_is_treated_as_no_answer():
     `look_behind` cannot replace because its detector finds VOC classes and cannot see a
     wall, a step or a stage edge. A half-configured flip must not fire."""
     for missing in _FLIP:
-        if missing == "MAPPO_FLIP":
+        if missing == "MAPPO_ARRIVAL_ACTION":
             continue
         env = {**_FLOURISH, **_FLIP}
         del env[missing]
