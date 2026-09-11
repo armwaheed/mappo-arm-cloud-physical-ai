@@ -30,6 +30,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import run_control
 from run_control import (
+    ARRIVAL_ACTIONS,
     MAX_RUN_SECONDS,
     RESERVED_FLAGS,
     RunProfile,
@@ -712,19 +713,43 @@ def test_the_snapshot_carries_what_ran_and_not_only_what_was_asked_for():
     assert snapshot["named_commit"] is None
 
 
-def test_the_flip_switch_is_sent_explicitly_when_it_is_OFF():
-    """🔴 The assertion that keeps an unticked box meaning OFF.
+def test_choosing_the_spin_neutralises_the_legacy_flip_switch():
+    """🔴 The assertion that keeps "360 degree dance" meaning the dance.
 
-    The profile's own ``env`` is exported into the same shell, and a deployment may
-    perfectly well carry ``MAPPO_FLIP=1`` in it. If an unticked box merely declined to say
-    otherwise, that standing value would survive and an operator who deliberately turned
-    the flip off would get a robot that flips ~1.5 m backward into its blind side.
+    The profile's own ``env`` is exported into the same environment, and both robots'
+    profiles still carry ``MAPPO_FLIP`` from before this control existed -- a spelling
+    ``venue_run`` deliberately still honours as "carpet backflip", so the runbook keeps
+    working. If choosing the spin merely declined to say otherwise, a profile carrying
+    ``MAPPO_FLIP=1`` would survive and an operator who picked the dance would get a robot
+    that backflips ~1.5 m into its blind side.
 
-    Same rule ``build_run_argv`` follows for ``--policy-mode`` and ``--heading-servo``:
-    every setting is spelled, none is inherited, because the far end's state is whatever it
-    was on the day it was copied."""
-    assert run_env_pairs(flip=False) == ("MAPPO_FLIP=0",)
-    assert run_env_pairs(flip=True) == ("MAPPO_FLIP=1",)
+    So BOTH go out on every run: the new variable, which is authoritative, and the legacy
+    one set to 0. Same rule ``build_run_argv`` follows for ``--policy-mode`` and
+    ``--heading-servo``: every setting is spelled, none is inherited, because the far end's
+    state is whatever it was on the day it was copied."""
+    assert run_env_pairs(arrival_action="spin") == (
+        "MAPPO_ARRIVAL_ACTION=spin", "MAPPO_FLIP=0")
+    assert run_env_pairs(arrival_action="carpet-backflip") == (
+        "MAPPO_ARRIVAL_ACTION=carpet-backflip", "MAPPO_FLIP=0")
+    assert run_env_pairs(arrival_action="hello") == (
+        "MAPPO_ARRIVAL_ACTION=hello", "MAPPO_FLIP=0")
+    # And the legacy switch is never SET by this path, in either direction -- the only
+    # thing that can turn it on now is a profile written before the control existed.
+    for action in ARRIVAL_ACTIONS:
+        assert "MAPPO_FLIP=1" not in run_env_pairs(arrival_action=action)
+
+
+def test_an_arrival_action_nobody_declared_is_refused():
+    """``ARRIVAL_ACTIONS`` is the list the dropdown is pinned against, and it is shorter
+    than flourish's own OPERATOR_ONLY_KINDS on purpose: `backflip` and `twist-jump` are
+    reachable from a command line and are deliberately not offered as one click at a
+    venue. A caller naming one is refused rather than quietly honoured."""
+    for action in ("backflip", "twist-jump", "", "moonwalk"):
+        try:
+            run_env_pairs(arrival_action=action)
+        except RunRefused:
+            continue
+        raise AssertionError(f"{action!r} was accepted as an arrival action")
 
 
 def test_the_per_run_switch_beats_the_profiles_standing_value_in_both_renderings():
@@ -735,13 +760,13 @@ def test_the_per_run_switch_beats_the_profiles_standing_value_in_both_renderings
     profile = RunProfile(**{**LOCAL.__dict__,
                             "env": ("MAPPO_FLIP=1", "MAPPO_VOICE_DIR=/voice")})
 
-    merged = local_env(profile, base={}, run_env=run_env_pairs(flip=False))
+    merged = local_env(profile, base={}, run_env=run_env_pairs(arrival_action="spin"))
     assert merged["MAPPO_FLIP"] == "0", "the per-run switch lost to the profile"
     assert merged["MAPPO_VOICE_DIR"] == "/voice", "the overlay dropped the profile's own"
 
     remote = RunProfile(**{**REMOTE.__dict__, "env": ("MAPPO_FLIP=1",)})
     line = launch_command(remote, ["python", "run.py"], pidfile="/tmp/p",
-                          run_env=run_env_pairs(flip=False))[-1]
+                          run_env=run_env_pairs(arrival_action="spin"))[-1]
     assert line.index("MAPPO_FLIP=1") < line.index("MAPPO_FLIP=0"), \
         "the per-run export must come AFTER the profile's, or the profile wins"
 

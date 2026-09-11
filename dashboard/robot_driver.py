@@ -1021,7 +1021,8 @@ class MappoRobotDriver(DeviceDriver):
     @rpc()
     async def start_run(self, seconds: float = run_control.DEFAULT_RUN_SECONDS,
                         policy_mode: str = "raw", heading_servo: str = "goal",
-                        arm_motion: bool = False, flip: bool = False) -> dict:
+                        arm_motion: bool = False,
+                        arrival_action: str = "spin") -> dict:
         """Start a MAPPO run. **By default it cannot move the robot**, and that is the point.
 
         ⛔ ``robot-stack/SAFETY.md`` governs this.
@@ -1070,20 +1071,29 @@ class MappoRobotDriver(DeviceDriver):
             arm_motion: ⛔ the second of two gates. ``true`` adds ``--live`` and hands the
                 legs to the policy, and needs the driver to have been started with
                 ``--allow-motion``. Default ``false``: a scene check that cannot move.
-            flip: ⛔⛔ fire a BACKWARD vendor acrobatic on arrival, after ``look_behind``
-                turns the robot round and looks. Default ``false``, and it is the third
-                gate rather than a mode: it needs ``arm_motion`` as well, since the flip
-                is fired by the flourish and the flourish needs ``--live``.
+            arrival_action: what the robot does when it reaches the goal, one of
+                ``run_control.ARRIVAL_ACTIONS``. Default ``"spin"``.
 
-                It sets ``MAPPO_FLIP`` for ``venue_run.py``, which builds the flags only
-                if the profile also answers all four of ``MAPPO_FLIP_KIND``,
-                ``MAPPO_FLIP_REAR_CLEARANCE_M``, ``MAPPO_FLIP_BATTERY_FLOOR_PCT`` and
-                ``MAPPO_FLIP_HOLD_SECONDS`` -- measurements of the room, which have no
-                safe default because the action travels ~1.5 m into the one direction this
-                robot cannot sense, and the operator on the abort is who stands there. A
-                partial answer prints which setting is missing and does not flip. ``false``
-                is sent as ``MAPPO_FLIP=0`` explicitly, so an unticked box overrides a
-                deployment that carries ``MAPPO_FLIP=1`` in its own profile env.
+                ``spin`` is a 360 degree turn and is flourish's own ARRIVAL_KIND -- it
+                keeps the robot's centre where it is, which is what makes it safe at the
+                end of a run nobody is steering. It needs nothing beyond the flourish.
+
+                ⛔⛔ ``hello`` and ``carpet-backflip`` are VENDOR CANNED ACTIONS: one
+                opcode, executed by the firmware, with nothing in this stack able to
+                shape, slow, shorten or interrupt it once sent. Both need ``arm_motion``
+                as well, since they are fired by the flourish and the flourish needs
+                ``--live``. ``carpet-backflip`` travels ~1.5 m BACKWARD into the one
+                direction this platform cannot sense; ``hello`` is the front-leg wave and
+                its travel has never been measured, so it is held to the platform's own
+                0.90 m footprint rather than to a number somebody invented.
+
+                It sets ``MAPPO_ARRIVAL_ACTION`` for ``venue_run.py``, which builds the
+                flags only if the profile also answers ``MAPPO_FLIP_REAR_CLEARANCE_M``,
+                ``MAPPO_FLIP_BATTERY_FLOOR_PCT`` and ``MAPPO_FLIP_HOLD_SECONDS`` --
+                measurements of the room, which have no safe default. A partial answer
+                prints which setting is missing and falls back to the spin. ``MAPPO_FLIP=0``
+                is also sent on every run, so a profile carrying the legacy ``MAPPO_FLIP=1``
+                cannot override an operator who chose the spin.
         """
         live = bool(arm_motion)
         if self.run_profile is None:
@@ -1136,7 +1146,8 @@ class MappoRobotDriver(DeviceDriver):
                                   heading_servo=heading_servo,
                                   seconds=run_control.clamp_seconds(seconds),
                                   mode_note=mode_note or "",
-                                  run_env=run_control.run_env_pairs(flip=bool(flip)))
+                                  run_env=run_control.run_env_pairs(
+                                      arrival_action=arrival_action))
 
     @rpc()
     async def stop_run(self, reason: str = "the operator took control") -> dict:

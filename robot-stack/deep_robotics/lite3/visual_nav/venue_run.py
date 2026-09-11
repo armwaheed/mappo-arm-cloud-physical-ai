@@ -62,8 +62,25 @@ FLOURISH_SETTINGS = ("MAPPO_FLOURISH_LANE_WIDTH", "MAPPO_ROBOT_ID",
 #: stage edge -- so a TAPE-MEASURED rear clearance is still required beside the look and is
 #: not replaced by it. A default here would be this file guessing about a room it cannot
 #: see, on the one manoeuvre where guessing puts the robot through a person.
-FLIP_SETTINGS = ("MAPPO_FLIP_KIND", "MAPPO_FLIP_REAR_CLEARANCE_M",
+FLIP_SETTINGS = ("MAPPO_FLIP_REAR_CLEARANCE_M",
                  "MAPPO_FLIP_BATTERY_FLOOR_PCT", "MAPPO_FLIP_HOLD_SECONDS")
+
+#: What the robot does when it reaches the goal, chosen per run from the dashboard.
+#:
+#: ``spin`` is the 360 degree turn `mission.py` has always fired on arrival: an
+#: ARRIVAL_KIND, which is flourish's word for a gesture that keeps the robot's centre where
+#: it is, and therefore the one value here that needs no clearance and no operator gate.
+#: Every other value is a VENDOR CANNED ACTION -- a single opcode the firmware executes
+#: with nothing in this stack able to shape, slow, shorten or interrupt it -- so each one
+#: goes through `--flip-on-arrival` and is checked against its OWN floor by
+#: `flourish.check_rear`.
+#:
+#: ⚠️ `MAPPO_FLIP_KIND` IS NO LONGER READ. The kind is the operator's per-run choice now,
+#: not a deployment constant, so it arrives in this variable instead. A profile still
+#: carrying `MAPPO_FLIP_KIND` is ignored rather than obeyed -- silently honouring a stale
+#: deployment default would be the dashboard's choice losing to a file.
+ARRIVAL_SPIN = "spin"
+ARRIVAL_ACTION = "MAPPO_ARRIVAL_ACTION"
 
 
 def build_command(drive_args, env=None, python: str | None = None) -> list:
@@ -117,22 +134,37 @@ def build_command(drive_args, env=None, python: str | None = None) -> list:
     # robot has been committed. Checked here so it degrades to "no flip" with a reason on
     # the console instead.
     flip: list = []
-    if env.get("MAPPO_FLIP", "").strip() not in ("", "0", "false", "False"):
+    action = env.get(ARRIVAL_ACTION, "").strip()
+    # ⛔ THE LEGACY BOOLEAN IS REFUSED, NOT TRANSLATED. `MAPPO_FLIP=1` meant one thing when
+    # it was the only switch, and the tempting kindness is to keep honouring it as that
+    # thing. It is the wrong call twice over: it would put a travelling kind's NAME in this
+    # file, which `test_look_behind.py`'s sweep forbids for the good reason that a literal
+    # here is the only thing that could reach a command line by accident -- and it would
+    # mean a stale variable in a profile written weeks ago silently deciding what a robot
+    # does at the goal. Saying so is the whole point: an operator reading this line knows
+    # their old setting did nothing, which "it still works" would never tell them.
+    if not action and env.get("MAPPO_FLIP", "").strip() not in ("", "0", "false", "False"):
+        print(f"[venue-run] MAPPO_FLIP is set but {ARRIVAL_ACTION} is not. MAPPO_FLIP is "
+              f"RETIRED and is being IGNORED -- it is not read as any action. Set "
+              f"{ARRIVAL_ACTION} to one of the kinds in flourish.OPERATOR_ONLY_KINDS, or "
+              f"to '{ARRIVAL_SPIN}'. This run will {ARRIVAL_SPIN}.", flush=True)
+    if action and action != ARRIVAL_SPIN:
         answered = {name: env.get(name, "").strip() for name in FLIP_SETTINGS}
         missing = [name for name, value in answered.items() if not value]
         if not flourish:
-            print("[venue-run] MAPPO_FLIP is set but the flourish is not enabled, and the "
-                  "flip is fired BY the flourish; the run will NOT flip. Set MAPPO_FLOURISH "
-                  "and its four settings too.", flush=True)
+            print(f"[venue-run] {ARRIVAL_ACTION}={action} but the flourish is not enabled, "
+                  f"and the action is fired BY the flourish; the run will NOT do it. Set "
+                  f"MAPPO_FLOURISH and its four settings too.", flush=True)
         elif missing:
-            print(f"[venue-run] MAPPO_FLIP is set but {', '.join(missing)} "
-                  f"{'is' if len(missing) == 1 else 'are'} not; the run will NOT flip. "
-                  f"These are measurements of the ROOM and have no safe default -- the "
-                  f"action travels ~1.5 m backward into the robot's blind side.",
+            print(f"[venue-run] {ARRIVAL_ACTION}={action} but {', '.join(missing)} "
+                  f"{'is' if len(missing) == 1 else 'are'} not; the run will NOT do it. "
+                  f"These are measurements of the ROOM and have no safe default -- a "
+                  f"vendor canned action is a single opcode nothing here can interrupt, "
+                  f"and some of these travel ~1.5 m into the robot's blind side.",
                   flush=True)
         else:
             flip = ["--flip-on-arrival",
-                    "--flip-kind", answered["MAPPO_FLIP_KIND"],
+                    "--flip-kind", action,
                     "--flip-rear-clearance-metres",
                     answered["MAPPO_FLIP_REAR_CLEARANCE_M"],
                     "--flip-battery-floor-pct",

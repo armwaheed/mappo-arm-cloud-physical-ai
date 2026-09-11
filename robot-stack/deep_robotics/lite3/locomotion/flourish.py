@@ -146,6 +146,9 @@ LEG_TOLERANCE_RAD = 0.12
 BACKFLIP_CODE = 0x21010502        # 后空翻 -- the PLAIN backflip, listed in the 2.0.153 GUI
 CARPET_BACKFLIP_CODE = 0x2101050C  # "Carpet Backflip" -- listed in NO vendor GUI we hold
 TWIST_JUMP_CODE = 0x2101020D    # 扭身跳 -- twist jump
+HELLO_CODE = 0x21010507         # 打招呼 -- GREET: the front-leg wave. On a quadruped this
+                                # is what "arm wave" means; there is no manipulator on a
+                                # Venture and `MAPPO_PAYLOAD` is `none` on both of ours.
 END_ACTION_CODE = 0x21010C0B    # 结束动作 -- END ACTION, its own separate RED button there
 
 #: Metres the backflip travels BACKWARD.
@@ -313,6 +316,19 @@ VENDOR_ACTIONS = {
         rear_basis=f"the operator's ~{BACKFLIP_TRAVEL_M:.1f} m figure, unmeasured because "
                    f"the pose channel does not run during the manoeuvre",
     ),
+    "hello": VendorAction(
+        kind="hello",
+        code=HELLO_CODE,
+        vendor_name="打招呼 / greet -- the front-leg wave",
+        travel="travel UNKNOWN -- never sent from this repository, by anyone. A greeting "
+               "SHOULD lift a front leg and put it back, and that is exactly the "
+               "assumption this file is not allowed to make: nothing here has watched it, "
+               "so it is treated as one that travels",
+        rear_clearance_m=2 * PLATFORM_HALF_DIAGONAL_M,
+        rear_basis=f"this platform's own {2 * PLATFORM_HALF_DIAGONAL_M:.2f} m footprint, "
+                   f"because its real travel is unmeasured and no number here may be "
+                   f"invented to stand in for it. Measure it and this can come down",
+    ),
     "twist-jump": VendorAction(
         kind="twist-jump",
         code=TWIST_JUMP_CODE,
@@ -388,7 +404,8 @@ def vendor_packet(code: int) -> bytes:
     unrecognised opcode is not an error that comes back, it is whatever that opcode happens
     to mean on this firmware, executed by a robot standing in the room.
     """
-    if code not in (BACKFLIP_CODE, CARPET_BACKFLIP_CODE, TWIST_JUMP_CODE, END_ACTION_CODE):
+    if code not in (BACKFLIP_CODE, CARPET_BACKFLIP_CODE, TWIST_JUMP_CODE, HELLO_CODE,
+                    END_ACTION_CODE):
         raise Refusal(f"unsupported Lite3 vendor action code: {code:#010x}")
     return _VENDOR_COMMAND.pack(code, 0, 0)
 

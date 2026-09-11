@@ -13,10 +13,11 @@ use the same simulation/shadow/drive ladder with the platform commissioning runb
 [`../robot-stack/deep_robotics/lite3/README.md`](../robot-stack/deep_robotics/lite3/README.md);
 do not run the Unitree SDK installer on a Lite3 host.
 
-For the Lite3 **flip on arrival** — the robot firing a vendor backflip when it reaches its
-goal — see [`FLIP_ON_ARRIVAL.md`](FLIP_ON_ARRIVAL.md). It travels ~1.5 m backward into the
-one direction the platform cannot sense, and that runbook lists the five gates that refuse
-it and the rear-clearance measurement that is easy to take in the wrong direction.
+For the Lite3 **arrival actions** — what the robot does when it reaches its goal, chosen
+per run on the dashboard: a 360° dance, the vendor `hello` wave, or a carpet backflip that
+travels ~1.5 m backward into the one direction the platform cannot sense — see
+[`ARRIVAL_ACTIONS.md`](ARRIVAL_ACTIONS.md). It lists every gate that refuses one and the
+rear-clearance measurement that is easy to take in the wrong direction.
 
 **[`../robot-stack/SAFETY.md`](../robot-stack/SAFETY.md) governs anything that moves a
 leg and is not optional.** `--live` is still the only flag that moves the robot, an

@@ -84,6 +84,18 @@ else:
 #: module still has a value for it in a tree where ``look_behind`` did not import.
 GESTURE_UNAVAILABLE = -1 if look_behind is None else look_behind.GESTURE_UNAVAILABLE
 
+
+def flourish_kinds() -> tuple:
+    """Every vendor canned action this tree can fire, or ``()`` if flourish is absent.
+
+    Read from ``flourish.OPERATOR_ONLY_KINDS`` rather than listed here, for the reason
+    ``look_behind`` gives about its own table: a second copy is a second thing to forget to
+    update, and the one that goes stale is the one an operator is offered.
+    """
+    if look_behind is None:
+        return ()
+    return tuple(look_behind.flourish.OPERATOR_ONLY_KINDS)
+
 #: Tick statuses that mean the robot is NOT making progress. Taken from the words
 #: ``visual_nav`` already prints, so this cannot drift into inventing its own vocabulary.
 HELD = frozenset({"hold", "veto-hold", "stop", "blocked", "goal-search"})
@@ -440,9 +452,12 @@ def main(argv: list[str] | None = None) -> int:
     # dashboard path reaches this: `venue_run.py` builds no `--flip-*` flag from any
     # environment variable, so a flip is only ever armed by somebody typing it.
     flip = parser.add_argument_group(
-        "flip on arrival (OFF; fires a vendor canned action that TRAVELS ~1.5 m BACKWARD. "
-        "Runbook: deploy/FLIP_ON_ARRIVAL.md, which lists every gate that refuses this and "
-        "why the rear clearance is easy to measure in the wrong direction)")
+        "vendor canned action on arrival (OFF. One opcode, executed by the firmware, with "
+        "nothing here able to shape, slow, shorten or interrupt it once sent. Each kind is "
+        "held to its OWN travel floor -- a kind that goes ~1.5 m BACKWARD to that, a kind "
+        "whose travel nobody has measured to this platform's own footprint. Runbook: "
+        "deploy/ARRIVAL_ACTIONS.md, which lists every gate that refuses one and why the "
+        "rear clearance is easy to measure in the wrong direction)")
     flip.add_argument("--flip-on-arrival", action="store_true",
                       help="after arriving, look behind with the run's own camera and "
                            "detector and fire --flip-kind if -- and only if -- the look "
@@ -450,11 +465,18 @@ def main(argv: list[str] | None = None) -> int:
                            "flag. Read look_behind.py before using this: the detector "
                            "finds VOC classes and CANNOT SEE A WALL")
     flip.add_argument("--flip-kind", default=None,
-                      choices=() if look_behind is None else look_behind.BACKWARD_KINDS,
-                      help="which vendor canned action. Only the kinds flourish's own "
-                           "table says travel BACKWARD are offered, because a look behind "
-                           "is no evidence about a manoeuvre whose direction nobody has "
-                           "observed")
+                      choices=() if look_behind is None else sorted(
+                          flourish_kinds() or look_behind.BACKWARD_KINDS),
+                      help=f"which vendor canned action fires on arrival, one of "
+                           f"{', '.join(sorted(flourish_kinds())) or '(none available)'}. "
+                           f"Each is checked against its OWN travel floor. WAS "
+                           "restricted to the BACKWARD kinds, because a look behind is no "
+                           "evidence about a manoeuvre whose direction nobody has "
+                           "observed -- true, and it stopped applying on 2026-09-07 when "
+                           "the look was disabled. What gates every kind now is the "
+                           "operator's --flip-rear-clearance-metres, which flourish "
+                           "checks against each action's OWN floor, so a kind that needs "
+                           "less is not thereby less checked")
     flip.add_argument("--flip-rear-clearance-metres", type=float, default=None, metavar="M",
                       help="clear floor BEHIND the robot, measured with a tape. STILL "
                            "REQUIRED and not replaced by the look: the detector does not "
